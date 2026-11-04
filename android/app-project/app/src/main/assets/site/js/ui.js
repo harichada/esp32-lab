@@ -23,7 +23,7 @@
     // ----- zoom + minimap -----
     const zoomBy = (f) => { const r = $('#stage').getBoundingClientRect(), v = ed.view, s = Math.min(4, Math.max(0.15, v.s * f)), cx = v.x + r.width / v.s / 2, cy = v.y + r.height / v.s / 2; v.x = cx - r.width / s / 2; v.y = cy - r.height / s / 2; v.s = s; ed.applyView(); };
     app.zoomBy = zoomBy; $('#bZoomIn').onclick = () => zoomBy(1.25); $('#bZoomOut').onclick = () => zoomBy(0.8);
-    const mm = $('#minimap'); if (!get('minimap', true)) mm.classList.add('off'); $('#bMap').classList.toggle('on', !mm.classList.contains('off'));
+    const mm = $('#minimap'); if (!get('minimap', window.innerWidth > 1400)) mm.classList.add('off'); $('#bMap').classList.toggle('on', !mm.classList.contains('off'));
     $('#bMap').onclick = () => { mm.classList.toggle('off'); put('minimap', !mm.classList.contains('off')); $('#bMap').classList.toggle('on', !mm.classList.contains('off')); drawMap(true); };
     let mmT = null, lastKey = '';
     function drawMap(force) {

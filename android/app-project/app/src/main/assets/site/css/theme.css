@@ -1,3 +1,4 @@
+[hidden]{display:none!important}
 /* ===== Circuit Lab design system: tokens, chrome, panels, terminal, editor. Part artwork classes live in app.css. ===== */
 @font-face{font-family:Inter;src:url(../fonts/Inter-var.woff2) format('woff2');font-weight:100 900;font-display:swap}
 @font-face{font-family:'JetBrains Mono';src:url(../fonts/JetBrainsMono-400.woff2) format('woff2');font-weight:400;font-display:swap}
@@ -176,3 +177,10 @@ body.reconnecting #status{border-color:var(--warn);box-shadow:0 0 0 3px rgba(251
 .bom-q{color:var(--acc);font-weight:600}.bom-n{color:var(--txt);min-width:0}.bom-n small{display:block;color:var(--mut);font-size:11px}
 .bom-a{white-space:nowrap;font-size:12px;font-weight:500;color:var(--acc);text-decoration:none;padding:4px 10px;border:1px solid var(--line2);border-radius:var(--r1);background:var(--l1)}.bom-a:hover{background:var(--acc-bg);border-color:var(--acc)}
 @media (max-width:640px){.bom-row{grid-template-columns:36px 1fr;row-gap:6px}.bom-a{grid-column:2;justify-self:start}.bom-h{flex-wrap:wrap}}
+/* visual upgrade: wires + parts */
+.w-line{stroke-width:2.6}
+.w-hl{fill:none;stroke:#fff;stroke-width:.7;opacity:.28;stroke-linecap:round;stroke-linejoin:round;pointer-events:none;transform:translate(-.35px,-.6px)}
+.w-shadow{stroke:rgba(0,0,0,.45);stroke-width:4.4;filter:blur(.6px)}
+.kp-key{cursor:pointer}.kp-key:hover rect:nth-child(2){filter:brightness(1.12)}
+.lbl-hit{cursor:move}
+.espp{cursor:crosshair}

@@ -4,11 +4,14 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
 import android.os.Build
+import android.net.Uri
 import android.os.Bundle
+import android.os.Message
 import android.os.Handler
 import android.os.Looper
 import android.view.View
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 
@@ -26,8 +29,26 @@ class MainActivity : Activity() {
         web.settings.domStorageEnabled = true        // projects.js keeps projects in localStorage
         web.settings.databaseEnabled = true
         web.settings.allowFileAccess = false
-        web.webViewClient = WebViewClient()
-        web.webChromeClient = WebChromeClient()
+        web.settings.setSupportMultipleWindows(true)   // target=_blank -> onCreateWindow -> external browser
+        web.settings.javaScriptCanOpenWindowsAutomatically = true
+        web.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView, req: WebResourceRequest): Boolean = openExternalIfNeeded(req.url)
+            @Deprecated("Deprecated in Java")
+            override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean = openExternalIfNeeded(Uri.parse(url))
+        }
+        web.webChromeClient = object : WebChromeClient() {
+            override fun onCreateWindow(view: WebView, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message): Boolean {
+                // Capture the popup's URL with a throwaway WebView, then hand it to the system browser.
+                val tmp = WebView(this@MainActivity)
+                tmp.webViewClient = object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(v: WebView, req: WebResourceRequest): Boolean { openExternal(req.url); v.destroy(); return true }
+                    override fun onPageStarted(v: WebView, url: String?, favicon: android.graphics.Bitmap?) { if (url != null && url != "about:blank") { openExternal(Uri.parse(url)); v.stopLoading(); v.destroy() } }
+                }
+                (resultMsg.obj as WebView.WebViewTransport).webView = tmp
+                resultMsg.sendToTarget()
+                return true
+            }
+        }
         web.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
         setContentView(web)
         if (savedInstanceState != null) web.restoreState(savedInstanceState) else waitAndLoad(0)
@@ -58,6 +79,18 @@ class MainActivity : Activity() {
         }
         else if (n < 100000) Handler(Looper.getMainLooper()).postDelayed({ waitAndLoad(n + 1) }, 100)
         else web.loadData("<h3>Local server failed to start</h3><pre>${ServerService.lastError}</pre>", "text/html", "utf-8")
+    }
+
+    private fun isLocal(u: Uri): Boolean = u.host == "127.0.0.1" || u.host == "localhost"
+    private fun openExternalIfNeeded(u: Uri): Boolean {
+        val sch = u.scheme?.lowercase() ?: return false
+        if ((sch == "http" || sch == "https") && isLocal(u)) return false
+        if (sch == "about" || sch == "data" || sch == "blob" || sch == "javascript") return false
+        openExternal(u); return true
+    }
+    private fun openExternal(u: Uri) {
+        try { startActivity(Intent(Intent.ACTION_VIEW, u).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+        catch (e: Exception) { android.widget.Toast.makeText(this, "No app to open $u", android.widget.Toast.LENGTH_SHORT).show() }
     }
 
     override fun onSaveInstanceState(outState: Bundle) { super.onSaveInstanceState(outState); web.saveState(outState) }

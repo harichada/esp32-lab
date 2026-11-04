@@ -1640,8 +1640,110 @@ void loop() {
     k.lbl('HEAT', 600, 370, 11); k.lbl('FAN', 600, 330, 11); k.lbl('drag the DHT22 sliders →', 60, 130, 11);
     return fun('DHT22 thermostat (LCD + heater/fan)', THERMOSTAT_INO, k, 'A DHT22 (GPIO27) read with the Adafruit DHT library every 2 s; the 16×2 LCD shows temperature, humidity and the set point. UP/DOWN arrows change the set point; the red HEAT LED runs below it and the blue FAN LED above it (0.5 °C hysteresis). Select the DHT22 and drag its temperature slider to watch the thermostat react.');
   };
+
+  const KEYLOCK_INO = `// Keypad door lock: 4x4 membrane keypad (Keypad.h) + 16x2 I2C LCD + SG90 servo bolt + status LEDs
+// Type the PIN (default 1234) and press # to unlock. * clears. A = lock now, B = show hint.
+#include <Keypad.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <ESP32Servo.h>
+
+const byte ROWS = 4, COLS = 4;
+char keys[ROWS][COLS] = {
+  {'1', '2', '3', 'A'},
+  {'4', '5', '6', 'B'},
+  {'7', '8', '9', 'C'},
+  {'*', '0', '#', 'D'}
+};
+byte rowPins[ROWS] = {13, 12, 14, 27};   // R1..R4
+byte colPins[COLS] = {26, 25, 33, 32};   // C1..C4
+Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+Servo bolt;
+
+const int SERVO_PIN = 18, LED_RED = 4, LED_GREEN = 2;
+const String PIN_CODE = "1234";
+String entry;
+bool unlocked = false;
+unsigned long unlockedAt = 0;
+
+void prompt() {
+  lcd.clear();
+  lcd.setCursor(0, 0); lcd.print("Enter PIN, #=OK");
+  lcd.setCursor(0, 1); lcd.print("> ");
+  for (unsigned i = 0; i < entry.length(); i++) lcd.print('*');
+}
+
+void lock() {
+  unlocked = false; bolt.write(0);
+  digitalWrite(LED_RED, HIGH); digitalWrite(LED_GREEN, LOW);
+  entry = ""; prompt();
+  Serial.println("LOCKED");
+}
+
+void unlock() {
+  unlocked = true; unlockedAt = millis(); bolt.write(90);
+  digitalWrite(LED_RED, LOW); digitalWrite(LED_GREEN, HIGH);
+  lcd.clear(); lcd.setCursor(0, 0); lcd.print("  ACCESS GRANTED");
+  lcd.setCursor(0, 1); lcd.print("  door unlocked");
+  Serial.println("UNLOCKED");
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(LED_RED, OUTPUT); pinMode(LED_GREEN, OUTPUT);
+  Wire.begin();
+  lcd.init(); lcd.backlight();
+  bolt.setPeriodHertz(50);
+  bolt.attach(SERVO_PIN, 544, 2400);
+  lcd.setCursor(0, 0); lcd.print("Keypad door lock");
+  lcd.setCursor(0, 1); lcd.print("ESP32 + Keypad.h");
+  delay(1200);
+  lock();
+}
+
+void loop() {
+  char k = keypad.getKey();
+  if (k) {
+    Serial.printf("key %c\\n", k);
+    if (unlocked) { if (k == 'A' || k == '*') lock(); }
+    else if (k == '*') { entry = ""; prompt(); }
+    else if (k == 'B') { lcd.setCursor(0, 1); lcd.print("hint: 1..4     "); delay(900); prompt(); }
+    else if (k == '#') {
+      if (entry == PIN_CODE) unlock();
+      else {
+        lcd.clear(); lcd.setCursor(0, 0); lcd.print(" ACCESS DENIED");
+        for (int i = 0; i < 3; i++) { digitalWrite(LED_RED, LOW); delay(120); digitalWrite(LED_RED, HIGH); delay(120); }
+        entry = ""; prompt();
+      }
+    } else if (k != 'A' && entry.length() < 8) { entry += k; prompt(); }
+  }
+  if (unlocked && millis() - unlockedAt > 8000) lock();   // auto re-lock
+}
+`;
+  EX.keylock = () => {
+    const k = funKit(); let sv;
+    const kp = k.add(part('keypad', 320, 300, {}, 0, 'KEYPAD1'));
+    const map = [['R1', 'D13', 'white'], ['R2', 'D12', 'yellow'], ['R3', 'D14', 'orange'], ['R4', 'D27', 'red'], ['C1', 'D26', 'purple'], ['C2', 'D25', 'blue'], ['C3', 'D33', 'green'], ['C4', 'D32', 'gray']];
+    for (const [a, b, c] of map) k.wires.push(wire(pin(kp, a), pin(k.esp, b), c));
+    k.route('bot', [
+      { pin: 'D18', side: 'R', color: 'orange', make: (y, x) => {
+        sv = k.add(part('servo', 680, 400, {}, 0, 'SERVO1')); k.gnd(pin(sv, 'GND'));
+        const s5 = k.add(part('vcc5', 640, 450, {}, 0, 'V5')); k.gnd(pin(s5, 'GND'));
+        k.wires.push(path('red', pin(sv, 'V+'), pt(690, 425), pt(640, 425), pin(s5, '+')));
+        k.wires.push(path('orange', pt(700, y), pin(sv, 'SIG'))); return pt(700, y); } },
+      { pin: 'D4', side: 'R', color: 'brown', make: k.led('red') },
+      { pin: 'D2', side: 'R', color: 'green', make: k.led('green') },
+    ], 160, 560);
+    const lcd = k.add(part('lcd1602', 40, 600, { addr: '0x27', color: 'green' }, 0, 'LCD1'));
+    k.i2c([lcd]);
+    k.lbl('PIN 1234 then #  ·  * clears  ·  A locks', 250, 70, 12);
+    k.lbl('type keys on your keyboard or click them', 270, 86, 10);
+    k.lbl('LOCKED', 620, 568, 10); k.lbl('OPEN', 620, 608, 10); k.lbl('bolt (servo)', 650, 300, 10);
+    return fun('Keypad door lock (Keypad.h + LCD + servo)', KEYLOCK_INO, k, 'A real Keypad.h sketch scans the 4x4 membrane keypad (rows GPIO13/12/14/27 as INPUT_PULLUP, columns GPIO26/25/33/32 driven low one at a time). Each pressed key connects its row to its column in the circuit model, so the scan works exactly like on hardware. Enter 1234 and # to swing the servo bolt open (green LED); * clears, A re-locks. Click the keys or type them on your keyboard while running.');
+  };
   // ---- END fun projects ----
-  const LIST = [['blink', 'Blink'], ['button', 'Button + LED'], ['pot', 'Potentiometer → LED PWM'], ['potjs', 'Pot → PWM (JS sketch)'], ['fade', 'LED fade (LEDC)'], ['i2c', 'I2C OLED + BME280 + MPU6050'], ['spi', 'SPI TFT + MCP3008 + SD card'], ['rc', 'RC charging (scope)'], ['transistor', 'Transistor switch'], ['remote', 'Wi-Fi/IR TV Remote'], ['traffic', '★ Traffic light + pedestrian button'], ['reaction', '🎮 Reaction-time game (OLED)'], ['simon', '🎮 Simon memory game'], ['weather', '★ OLED weather station (BME280)'], ['dice', '🎮 Electronic dice (OLED + shake)'], ['stopwatch', '★ OLED stopwatch with laps'], ['vumeter', '★ LED bar-graph VU meter'], ['morse', '★ Morse code transceiver'], ['snake', '🎮 Snake game (OLED)'], ['pong', '🎮 Pong vs the ESP32 (OLED + pot)'], ['level', '★ Bubble spirit level (MPU6050)'], ['servo', '★ Servo knob + radar sweep'], ['neoring', '★ NeoPixel ring light show'], ['lcdclock', '★ 16×2 LCD clock + menu'], ['thermostat', '★ DHT22 thermostat (LCD)'], ['blank', 'Blank']];
+  const LIST = [['blink', 'Blink'], ['button', 'Button + LED'], ['pot', 'Potentiometer → LED PWM'], ['potjs', 'Pot → PWM (JS sketch)'], ['fade', 'LED fade (LEDC)'], ['i2c', 'I2C OLED + BME280 + MPU6050'], ['spi', 'SPI TFT + MCP3008 + SD card'], ['rc', 'RC charging (scope)'], ['transistor', 'Transistor switch'], ['remote', 'Wi-Fi/IR TV Remote'], ['traffic', '★ Traffic light + pedestrian button'], ['reaction', '🎮 Reaction-time game (OLED)'], ['simon', '🎮 Simon memory game'], ['weather', '★ OLED weather station (BME280)'], ['dice', '🎮 Electronic dice (OLED + shake)'], ['stopwatch', '★ OLED stopwatch with laps'], ['vumeter', '★ LED bar-graph VU meter'], ['morse', '★ Morse code transceiver'], ['snake', '🎮 Snake game (OLED)'], ['pong', '🎮 Pong vs the ESP32 (OLED + pot)'], ['level', '★ Bubble spirit level (MPU6050)'], ['servo', '★ Servo knob + radar sweep'], ['neoring', '★ NeoPixel ring light show'], ['lcdclock', '★ 16×2 LCD clock + menu'], ['thermostat', '★ DHT22 thermostat (LCD)'], ['keylock', '★ Keypad door lock (4×4 keypad + LCD + servo)'], ['blank', 'Blank']];
   const api = { EX, LIST, BLINK, BUTTON };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.Examples = api;

@@ -665,12 +665,21 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
 <h3>Circuit solver</h3><p>Modified nodal analysis with Newton–Raphson (diode/LED Shockley, zener breakdown, Ebers–Moll BJT, square-law MOSFET, LDO), backward-Euler transient for capacitors. LEDs burn out above 2× their rating; supply/GPIO shorts are flagged.</p>
 <h3>Shortcuts</h3><p>Ctrl+Enter run · click pin → click pin to wire · R rotate · Del/Backspace delete · right-click wire for menu · double-click wire adds a bend · Ctrl+Z / Ctrl+Y undo/redo · Ctrl+S save (examples: makes a copy) · F fit · Esc cancel · keys/buttons respond to their labelled keyboard key while running.</p>`;
   }
-  function keyPart(k) { return app.proj.parts.find((q) => P.T[q.type] && P.T[q.type].interactive && q.props.key && (q.props.key === k || q.props.key.toLowerCase() === String(k).toLowerCase())); }
+  function keyPart(k) { const kp = app.proj.parts.find((q) => q.type === 'keypad' && P.T.keypad.keyAt(q, k) >= 0); if (kp) { kp._kidx = P.T.keypad.keyAt(kp, k); return kp; } return app.proj.parts.find((q) => P.T[q.type] && P.T[q.type].interactive && q.props.key && (q.props.key === k || q.props.key.toLowerCase() === String(k).toLowerCase())); }
   const MIN_SCANS = 400, MAX_LATCH_MS = 6000;   // ~400 GPIO updates ≈ 30+ matrix scans ≈ well past the firmware's 30 ms debounce
-  function press(p, v) {
+  function press(p, v, kidx) {
     const st = app.sim.partState(p);
+    if (v && p.type === 'keypad' && !p._kpApply) {   // one key at a time: Keypad.h getKey() only reports a key that goes down after the previous one went up
+      const k = kidx !== undefined ? kidx : p._kidx;
+      if (st.pressed || kpQueued.has(p)) {
+        st.queue = (st.queue || []).concat(k);
+        if (!kpQueued.has(p)) { kpQueued.add(p); st.pressed = false; st.releasePending = false; latched.delete(p); st.gapAt = app.gpioCount || 0; st.gapT = performance.now(); app.sim.dirty = true; app.editor.refreshDynamic(); invalidateGpio(); }
+        return;
+      }
+      st.kidx = k;
+    }
     if (v) { st.pressed = true; st.gpioAtPress = app.run && app.run.kind === 'qemu' ? null : (app.gpioCount || 0); pressedWait.add(st); st.tPress = performance.now(); st.releasePending = false; }
-    else if (app.run && app.run.kind === 'qemu' && !directReleaseOk(p, st) && (st.gpioAtPress == null || directButton(p) || (app.gpioCount || 0) - st.gpioAtPress < MIN_SCANS) && performance.now() - (st.tPress || 0) < MAX_LATCH_MS) { st.releasePending = true; latched.add(p); return; }
+    else if (app.run && app.run.kind === 'qemu' && !directReleaseOk(p, st) && (st.gpioAtPress == null || directButton(p) || (app.gpioCount || 0) - st.gpioAtPress < (p.type === 'keypad' ? KP_SCANS : MIN_SCANS)) && performance.now() - (st.tPress || 0) < MAX_LATCH_MS) { st.releasePending = true; latched.add(p); return; }
     else { st.pressed = false; st.releasePending = false; latched.delete(p); }
     app.sim.dirty = true; app.editor.refreshDynamic(); invalidateGpio();
   }
@@ -692,12 +701,21 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     return now - t0 >= DIRECT_MAX_MS || (now - t0 >= DIRECT_MIN_MS && now - Math.max(t0, app.lastLockstep || 0) >= DIRECT_MIN_MS);
   }
   function invalidateGpio() { if (app.run && app.run.kind === 'qemu') { app.sim.settle(); sendRun({ t: 'inv' }); } }
-  const latched = new Set(), pressedWait = new Set();
+  const latched = new Set(), pressedWait = new Set(), kpQueued = new Set();
+  const KP_SCANS = 120, KP_GAP = 60;
   // the server echoes 'invack' once it has dropped cached GPIO answers; only GPIO traffic after that point saw the new key state
   function onInvAck() { for (const st of pressedWait) if (st.gpioAtPress == null) st.gpioAtPress = app.gpioCount || 0; pressedWait.clear(); }
   function latchTick() {   // release taps once the firmware has had time to see them
+    for (const p of [...kpQueued]) { const st = app.sim.partState(p);
+      if (!app.run || !(st.queue || []).length) { kpQueued.delete(p); st.queue = []; continue; }
+      if (st.pressed) continue;
+      if (st.gapAt === Infinity) { st.gapAt = app.gpioCount || 0; st.gapT = performance.now(); continue; }   // just released: give the scan a gap
+      if ((app.gpioCount || 0) - st.gapAt >= KP_GAP || performance.now() - st.gapT > 1500) {
+        const k = st.queue.shift(); p._kpApply = true; st.kidx = k; press(p, true, k); press(p, false); p._kpApply = false; st.gapAt = Infinity;
+        if (!st.queue.length) kpQueued.delete(p);
+      } }
     for (const p of [...latched]) { const st = app.sim.partState(p); if (!st.releasePending) { latched.delete(p); continue; }
-      if (!app.run || directReleaseOk(p, st) || (st.gpioAtPress != null && !directButton(p) && (app.gpioCount || 0) - st.gpioAtPress >= MIN_SCANS) || performance.now() - st.tPress >= MAX_LATCH_MS) press(p, false); }
+      if (!app.run || directReleaseOk(p, st) || (st.gpioAtPress != null && !directButton(p) && (app.gpioCount || 0) - st.gpioAtPress >= (p.type === 'keypad' ? KP_SCANS : MIN_SCANS)) || performance.now() - st.tPress >= MAX_LATCH_MS) press(p, false); }
   }
   setInterval(latchTick, 20);
   function init() {
@@ -710,7 +728,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     buildPalette(); about();
     $('#selExample').innerHTML = '<option value="">Examples…</option>' + Examples.LIST.map(([k, n]) => `<option value="${k}">${n}</option>`).join('');
     $('#selExample').onchange = (e) => { if (e.target.value) loadExample(e.target.value); e.target.value = ''; };
-    $('#selWireColor').innerHTML = Object.keys(window.WIRE_COLORS).map((c) => `<option>${c}</option>`).join(''); $('#selWireColor').onchange = (e) => app.editor.setWireColor(e.target.value);
+    $('#selWireColor').innerHTML = ['auto', ...Object.keys(window.WIRE_COLORS)].map((c) => `<option>${c}</option>`).join(''); $('#selWireColor').onchange = (e) => app.editor.setWireColor(e.target.value);
     $('#bRun').onclick = startRun; $('#bStop').onclick = stopRun; $('#bReset').onclick = () => { app.sim.resetState(); app.editor.render(); };
     $('#bUndo').onclick = () => app.editor.undo(); $('#bRedo').onclick = () => app.editor.redo(); $('#bRot').onclick = () => app.editor.rotateSel(); $('#bDel').onclick = () => app.editor.deleteSel();
     $('#bSave').onclick = save; $('#bDownload').onclick = download; $('#fileIn').onchange = (e) => { if (e.target.files[0]) openFile(e.target.files[0]); e.target.value = ''; }; $('#bFit').onclick = () => app.editor.fit();

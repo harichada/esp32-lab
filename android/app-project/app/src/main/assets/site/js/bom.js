@@ -37,6 +37,7 @@
     servo: () => ({ key: 'servo', name: 'Micro servo SG90', q: 'SG90 micro servo' }),
     neopixel: (p) => ({ key: 'np' + p.n, name: 'NeoPixel strip WS2812B (' + p.n + ' LEDs)', q: 'WS2812B ' + p.n + ' LED strip' }),
     neoring: (p) => ({ key: 'nr' + p.n, name: 'NeoPixel ring WS2812B (' + p.n + ' LEDs)', q: 'WS2812B ' + p.n + ' LED ring' }),
+    keypad: () => ({ key: 'keypad', name: '4x4 matrix membrane keypad', q: '4x4 matrix membrane keypad' }),
     dht22: () => ({ key: 'dht', name: 'DHT22 / AM2302 temp/humidity', q: 'DHT22 AM2302 sensor module' }),
   };
   function list(proj) {

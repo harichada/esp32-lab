@@ -4,7 +4,7 @@ android {
     compileSdk = 34
     defaultConfig {
         applicationId = "com.hari.esp32lab"
-        minSdk = 24; targetSdk = 34; versionCode = 6; versionName = "0.6"
+        minSdk = 24; targetSdk = 34; versionCode = 7; versionName = "0.7"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
     // native executables must be extracted to nativeLibraryDir so they can be exec()'d

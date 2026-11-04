@@ -10,7 +10,7 @@
     const a = Math.abs(v);
     const P = [[1e9, 'G'], [1e6, 'M'], [1e3, 'k'], [1, ''], [1e-3, 'm'], [1e-6, 'µ'], [1e-9, 'n'], [1e-12, 'p']];
     if (a === 0) return '0 ' + unit;
-    for (const [m, p] of P) if (a >= m * 0.9999) return (v / m).toPrecision(3).replace(/\.?0+$/, '') + ' ' + p + unit;
+    for (const [m, p] of P) if (a >= m * 0.9999) { const t = (v / m).toPrecision(3); return (t.includes('.') ? t.replace(/\.?0+$/, '') : t) + ' ' + p + unit; }
     return v.toExponential(2) + ' ' + unit;
   }
   function parseVal(s) {

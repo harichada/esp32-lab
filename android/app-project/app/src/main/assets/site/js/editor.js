@@ -7,7 +7,7 @@
   class Editor {
     constructor(svg, hooks) {
       this.svg = svg; this.hooks = hooks; this.lParts = svg.querySelector('#lParts'); this.lWires = svg.querySelector('#lWires'); this.lOver = svg.querySelector('#lOver');
-      this.view = { x: -40, y: -40, s: 1 }; this.sel = null; this.undoS = []; this.redoS = []; this.mode = null; this.wireColor = 'green'; this.partEls = new Map(); this.svgCache = new Map(); this.ortho = true; this._pinIdx = null; this.hoverPin = null;
+      this.view = { x: -40, y: -40, s: 1 }; this.sel = null; this.undoS = []; this.redoS = []; this.mode = null; this.wireColor = 'auto'; this.partEls = new Map(); this.svgCache = new Map(); this.ortho = true; this._pinIdx = null; this.hoverPin = null;
       this.lOver.innerHTML = '<g class="ov-hl"></g><g class="ov-wire"></g>'; this.ovHl = this.lOver.firstChild; this.ovWire = this.lOver.lastChild;
       this.hintEl = svg.parentElement && svg.parentElement.querySelector('.hint'); this.menu = null;
       this._bind();
@@ -46,13 +46,33 @@
       }
       this.renderWires();
     }
+    autoColor(a, b) {
+      const nm = (q) => q ? String((q.pin && q.pin.name) || q.name || '') : '', n = [nm(a), nm(b)].join(' ').toUpperCase();
+      if (/GND|VSS|(^|\s)-(\s|$)|(^|\s)[TB]N\d+/.test(n)) return 'black';
+      if (/(^|\s)[TB]P\d+/.test(n)) return 'red';
+      if (/3V3|5V|VIN|VCC|VDD|V\+|(^|\s)\+(\s|$)/.test(n)) return 'red';
+      const pal = ['green', 'blue', 'yellow', 'orange', 'purple', 'white', 'brown', 'gray'];
+      return pal[(this.proj.wires.length) % pal.length];
+    }
+    static roundPath(pts, r = 6) {
+      if (pts.length < 3) return 'M' + pts.map((q) => `${q.x} ${q.y}`).join(' L');
+      let d = `M${pts[0].x} ${pts[0].y}`;
+      for (let i = 1; i < pts.length - 1; i++) {
+        const p0 = pts[i - 1], p1 = pts[i], p2 = pts[i + 1];
+        const l1 = Math.hypot(p1.x - p0.x, p1.y - p0.y), l2 = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+        const rr = Math.min(r, l1 / 2, l2 / 2); if (rr < 0.5) { d += ` L${p1.x} ${p1.y}`; continue; }
+        const ax = p1.x + (p0.x - p1.x) * rr / l1, ay = p1.y + (p0.y - p1.y) * rr / l1, bx = p1.x + (p2.x - p1.x) * rr / l2, by = p1.y + (p2.y - p1.y) * rr / l2;
+        d += ` L${ax.toFixed(2)} ${ay.toFixed(2)} Q${p1.x} ${p1.y} ${bx.toFixed(2)} ${by.toFixed(2)}`;
+      }
+      const e = pts[pts.length - 1]; return d + ` L${e.x} ${e.y}`;
+    }
     renderWires() {
       let s = '';
       for (const w of this.proj.wires) {
         const pts = [w.a, ...(w.pts || []), w.b].map((q) => `${q.x},${q.y}`).join(' ');
-        const col = WIRE_COLORS[w.color] || w.color || '#3ddc84', sel = this.sel && this.sel.wire === w.id;
+        const dP = Editor.roundPath([w.a, ...(w.pts || []), w.b]), col = WIRE_COLORS[w.color] || w.color || '#3ddc84', sel = this.sel && this.sel.wire === w.id;
         const hd = sel ? (w.pts || []).map((q, i) => `<circle cx="${q.x}" cy="${q.y}" r="3.2" class="w-bend" data-bend="${i}"/>`).join('') : '';
-        s += `<g class="wire${sel ? ' sel' : ''}" data-wid="${w.id}"><polyline points="${pts}" class="w-hit"/><polyline points="${pts}" class="w-shadow"/><polyline points="${pts}" class="w-line" style="stroke:${col}"/><polyline points="${pts}" class="w-flow"/><circle cx="${w.a.x}" cy="${w.a.y}" r="2.2" class="w-end" style="fill:${col}"/><circle cx="${w.b.x}" cy="${w.b.y}" r="2.2" class="w-end" style="fill:${col}"/>${hd}</g>`;
+        s += `<g class="wire${sel ? ' sel' : ''}" data-wid="${w.id}"><path d="${dP}" class="w-hit"/><path d="${dP}" class="w-shadow"/><path d="${dP}" class="w-line" style="stroke:${col}"/><path d="${dP}" class="w-hl"/><path d="${dP}" class="w-flow"/><circle cx="${w.a.x}" cy="${w.a.y}" r="2.2" class="w-end" style="fill:${col}"/><circle cx="${w.b.x}" cy="${w.b.y}" r="2.2" class="w-end" style="fill:${col}"/>${hd}</g>`;
       }
       this.lWires.innerHTML = s;
     }
@@ -129,7 +149,7 @@
         ev.preventDefault(); if (this.mode && this.mode.k === 'wire') { this.cancelWire(); return; }
         const wEl = ev.target.closest && ev.target.closest('.wire'); if (wEl) { this.select({ wire: wEl.dataset.wid }); this.wireMenu(wEl.dataset.wid, ev); }
       });
-      svg.addEventListener('dblclick', (ev) => { const t = document.elementFromPoint(ev.clientX, ev.clientY) || ev.target, wEl = t.closest && t.closest('.wire'); if (wEl && !(this.mode && this.mode.k === 'wire') && !(Date.now() - (this._dblBend || 0) < 600)) this.addBend(wEl.dataset.wid, this.toWorld(ev)); });
+      svg.addEventListener('dblclick', (ev) => { { const pg = ev.target.closest && ev.target.closest('.part'), pp = pg && this.part(pg.dataset.id); if (pp && P.T[pp.type].dblclick) { this.push(); if (P.T[pp.type].dblclick(pp)) { this.render(); this.hooks.changed(true); this.hooks.selected(this.sel); } return; } } const t = document.elementFromPoint(ev.clientX, ev.clientY) || ev.target, wEl = t.closest && t.closest('.wire'); if (wEl && !(this.mode && this.mode.k === 'wire') && !(Date.now() - (this._dblBend || 0) < 600)) this.addBend(wEl.dataset.wid, this.toWorld(ev)); });
       window.addEventListener('pointerdown', (ev) => { if (this.menu && !this.menu.contains(ev.target)) this.closeMenu(); }, true);
       svg.addEventListener('dragover', (ev) => ev.preventDefault());
       svg.addEventListener('drop', (ev) => { ev.preventDefault(); const t = ev.dataTransfer.getData('text/x-part'); if (t && P.T[t]) { const w = this.toWorld(ev); this.addPart(t, w.x, w.y); } });
@@ -159,7 +179,7 @@
       const w = this.toWorld(ev), pin = this.pinAtEvent(ev);
       if (this.mode && this.mode.k === 'wire') {
         const m = this.mode;
-        if (pin) { if (pin.pos.x === m.a.x && pin.pos.y === m.a.y && !m.pts.length) { this.cancelWire(); return; } this._finishWire(pin.pos); return; }
+        if (pin) { if (pin.pos.x === m.a.x && pin.pos.y === m.a.y && !m.pts.length) { this.cancelWire(); return; } this._finishWire(pin.pos, pin); return; }
         const last = m.pts.length ? m.pts[m.pts.length - 1] : m.a; const q = { x: snap(w.x), y: snap(w.y) };
         if (ev.detail >= 2) { this._finishWire(q); return; }   // double click ends a wire on empty space
         m.pts.push(...this._ortho(last, q)); this._drawWirePreview(w); return;
@@ -175,7 +195,7 @@
       if (p) {
         const d = P.T[p.type];
         if (d.wheel && !ev.shiftKey) { this.select({ part: p.id }); this.mode = { k: 'knob', p, sy: ev.clientY, sx: ev.clientX, pos0: +p.props.pos }; svg_capture(this.svg, ev); return; }
-        if (this.hooks.running() && d.interactive && !ev.shiftKey) { this.hooks.press(p, true); this.mode = { k: 'press', p }; svg_capture(this.svg, ev); return; }
+        if (this.hooks.running() && d.interactive && !ev.shiftKey) { const kEl = ev.target.closest && ev.target.closest('[data-key]'); if (d.keyAt && !kEl) { /* keypad body: fall through to drag */ } else { this.hooks.press(p, true, kEl ? +kEl.dataset.key : undefined); this.mode = { k: 'press', p }; svg_capture(this.svg, ev); return; } }
         if (d.click && !ev.shiftKey && this.hooks.running()) { if (d.click(p)) { this.render(); this.hooks.changed(false); } return; }
         this.select({ part: p.id });
         this.mode = { k: 'drag', p, ox: p.x, oy: p.y, sx: w.x, sy: w.y, moved: false };
@@ -188,15 +208,15 @@
     _drawWirePreview(w) {
       const m = this.mode, last = m.pts.length ? m.pts[m.pts.length - 1] : m.a, tgt = this.pinNear(w), end = tgt ? tgt.pos : { x: snap(w.x), y: snap(w.y) };
       const pts = [m.a, ...m.pts, ...this._ortho(last, end)].map((q) => `${q.x},${q.y}`).join(' ');
-      this.ovWire.innerHTML = `<polyline points="${pts}" class="w-preview" style="stroke:${WIRE_COLORS[this.wireColor] || this.wireColor}"/>` + (tgt ? `<circle cx="${end.x}" cy="${end.y}" r="5.5" class="hl-target"/>` : '');
+      this.ovWire.innerHTML = `<polyline points="${pts}" class="w-preview" style="stroke:${this.wireColor === 'auto' ? this.autoColor(m.start, null) : (WIRE_COLORS[this.wireColor] || this.wireColor)}"/>` + (tgt ? `<circle cx="${end.x}" cy="${end.y}" r="5.5" class="hl-target"/>` : '');
     }
-    _finishWire(b) {
+    _finishWire(b, endPin) {
       const m = this.mode; this.mode = null; this.ovWire.innerHTML = ''; this.highlight(null); this.setHint();
       if (b.x === m.a.x && b.y === m.a.y && !m.pts.length) return;
       const last = m.pts.length ? m.pts[m.pts.length - 1] : m.a; if (this.ortho) { const c = this._ortho(last, b); if (c.length > 1) m.pts.push(c[0]); }
       this.push();
       let n = 1; while (this.proj.wires.some((w) => w.id === 'w' + n)) n++;
-      this.proj.wires.push({ id: 'w' + n, a: { ...m.a }, b: { x: b.x, y: b.y }, pts: m.pts, color: this.wireColor });
+      this.proj.wires.push({ id: 'w' + n, a: { ...m.a }, b: { x: b.x, y: b.y }, pts: m.pts, color: this.wireColor === 'auto' ? this.autoColor(m.start, endPin) : this.wireColor });
       this.renderWires(); this.hooks.changed(true);
     }
     _move(ev) {
@@ -230,7 +250,7 @@
       if (m.k === 'knob') { this.mode = null; return; }
       if (m.k === 'wire') {   // drag-release on a pin finishes a wire too
         const pin = this.pinAtEvent(ev);
-        if (pin && (pin.pos.x !== m.a.x || pin.pos.y !== m.a.y) && !m.pts.length) this._finishWire(pin.pos);
+        if (pin && (pin.pos.x !== m.a.x || pin.pos.y !== m.a.y) && !m.pts.length) this._finishWire(pin.pos, pin);
       }
     }
     _wheel(ev) {
