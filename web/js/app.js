@@ -126,6 +126,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   function modeNote() {
     $('#modeNote').innerHTML = app.proj.mode === 'qemu'
       ? '<b>Real firmware.</b> Compiled by arduino-cli (esp32 core 3.3, DOIT DevKit V1) and executed in Espressif QEMU (Xtensa LX6). GPIO out/in/enable, pull-ups, RMT (IR) and UART0 are bridged to this circuit. ADC (SAR with a typical chip’s non-linear response + eFuse Vref, so analogReadMilliVolts is right up to 3.13 V), LEDC PWM + hardware fades, I²C (SSD1306, BME280, MPU6050) and SPI (ILI9341 TFT, MCP3008, microSD/FAT) are bridged; Wi-Fi sketches run real lwIP (TCP/HTTP + UDP) over QEMU’s open_eth NIC. <span class="warn">Not emulated: the 802.11 radio, Bluetooth, deep sleep.</span>'
+      : app.proj.mode === 'circuit' ? '<b>Basic circuit (no ESP32).</b> No code and no compile step: the circuit is solved live (MNA + Newton-Raphson, backward-Euler transient). Press switches/buttons, turn knobs and watch LEDs, lamps, motors and meters respond. Over-current burns out LEDs, resistors and lamps — press Run (or Stop/Run) to reset.'
       : '<b>JS sketch.</b> Arduino-style JavaScript in the browser, virtual time. <span class="warn">Not Xtensa emulation</span> — use it for analogRead/analogWrite/ledcWrite experiments that the QEMU bridge does not cover.';
   }
   // ---------------- serial ----------------
@@ -218,7 +219,11 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
   async function startRun() {
     syncCode(); stopRun(); app.proj.defines = $('#inDefines').value.split(',').map((s) => s.trim()).filter(Boolean);
-    const esp = espPart(); if (!esp) { toast('Add an ESP32 to the circuit first', true); return; }
+    const esp = espPart();
+    if (!esp || app.proj.mode === 'circuit') {   // basic circuit (no ESP32): nothing to compile — the MNA solver already runs live; Run just (re)starts it from t=0
+      app.sim.resetState(); app.run = { kind: 'circuit', t0: performance.now() }; setStatus('run', 'running (circuit — no ESP32, no compile)');
+      serialAppend('\n[circuit simulation started — no ESP32 in this circuit, so there is no firmware to compile]\n'); return;
+    }
     app.sim.resetState(); uartBuf = ''; app.lastBits = null; app.i2c = {}; app.i2cCur = null; app.spi = {}; app.spiMask = -1;
     if (app.proj.mode === 'js') {
       const sk = new JsSketchMod.JsSketch(app.proj.code, { sim: app.sim, espPart: esp, serial: serialAppend, onError: (e) => { serialAppend('\n[JS error] ' + e.message + '\n'); setStatus('err', 'error'); } });
@@ -723,10 +728,11 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       changed: (topo) => { if (topo) app.sim.topoDirty = true; app.sim.dirty = true; invalidateGpio(); autosave(); }, beforeEdit,
       netKey: (x, y) => { app.sim.netAt(x, y); return app.sim.uf.find(Math.round(x) + ',' + Math.round(y)); },
       selected: (s) => { renderInspector(s); if (s) { /* keep current tab */ } },
-      hover, state: (p) => app.sim ? app.sim.partState(p) : null, running: () => !!app.run, press,
+      hover, state: (p) => app.sim ? app.sim.partState(p) : null, running: () => !!app.run || !espPart(), press,
     });
     buildPalette(); about();
-    $('#selExample').innerHTML = '<option value="">Examples…</option>' + Examples.LIST.map(([k, n]) => `<option value="${k}">${n}</option>`).join('');
+    { const grp = {}; for (const [k, n, c] of Examples.LIST) (grp[c || 'ESP32 projects'] = grp[c || 'ESP32 projects'] || []).push(`<option value="${k}">${n}</option>`);
+      $('#selExample').innerHTML = '<option value="">Examples…</option>' + Object.entries(grp).map(([c, o]) => `<optgroup label="${P.esc(c)}">${o.join('')}</optgroup>`).join(''); }
     $('#selExample').onchange = (e) => { if (e.target.value) loadExample(e.target.value); e.target.value = ''; };
     $('#selWireColor').innerHTML = ['auto', ...Object.keys(window.WIRE_COLORS)].map((c) => `<option>${c}</option>`).join(''); $('#selWireColor').onchange = (e) => app.editor.setWireColor(e.target.value);
     $('#bRun').onclick = startRun; $('#bStop').onclick = stopRun; $('#bReset').onclick = () => { app.sim.resetState(); app.editor.render(); };

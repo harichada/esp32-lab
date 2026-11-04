@@ -38,6 +38,14 @@
     neopixel: (p) => ({ key: 'np' + p.n, name: 'NeoPixel strip WS2812B (' + p.n + ' LEDs)', q: 'WS2812B ' + p.n + ' LED strip' }),
     neoring: (p) => ({ key: 'nr' + p.n, name: 'NeoPixel ring WS2812B (' + p.n + ' LEDs)', q: 'WS2812B ' + p.n + ' LED ring' }),
     keypad: () => ({ key: 'keypad', name: '4x4 matrix membrane keypad', q: '4x4 matrix membrane keypad' }),
+    battery9v: () => ({ key: 'b9v', name: '9 V battery + snap connector', q: '9V battery snap connector with leads' }),
+    aapack: (p) => ({ key: 'aa' + p.n, name: p.n + '×AA battery holder with leads (+ ' + p.n + ' AA cells)', q: p.n + ' AA battery holder with wire leads' }),
+    coincell: () => ({ key: 'cr2032', name: 'CR2032 coin cell + holder', q: 'CR2032 battery holder with leads' }),
+    bench: () => ({ key: 'bench', name: 'Adjustable DC bench power supply 0–30 V', q: 'adjustable DC bench power supply 30V 5A' }),
+    lamp: (p) => ({ key: 'lamp' + p.v, name: 'Miniature incandescent lamp ' + p.v + ' V + holder', q: p.v + 'V miniature incandescent bulb with holder' }),
+    motor: () => ({ key: 'motor', name: 'Small DC hobby motor 3–6 V', q: 'small DC hobby motor 3V 6V' }),
+    toggle: () => ({ key: 'toggle', name: 'SPST toggle switch', q: 'SPST mini toggle switch' }),
+    multimeter: () => ({ key: 'dmm', name: 'Digital multimeter', q: 'digital multimeter' }),
     dht22: () => ({ key: 'dht', name: 'DHT22 / AM2302 temp/humidity', q: 'DHT22 AM2302 sensor module' }),
   };
   function list(proj) {
@@ -45,7 +53,7 @@
     const parts = (proj && proj.parts) || [];
     for (const p of parts) { const f = C[p.type]; if (f) add(f(p.props || {})); }
     if (parts.length) {
-      if (!m.has('esp32')) add(C.esp32());
+      if (!m.has('esp32') && proj.mode !== 'circuit') add(C.esp32());
       if (!m.has('bb')) add(C.breadboard());
       const w = ((proj && proj.wires) || []).length;
       add({ key: 'jw', name: 'Jumper wires (M-M / M-F assortment)', q: 'breadboard jumper wires dupont kit', note: w ? '~' + w + ' wires in this circuit' : '' }, 1);

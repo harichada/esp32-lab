@@ -121,7 +121,7 @@
       for (let i = 1; i < gk.length; i++) uf.union(gk[0], gk[i]);
       // ground selection
       let gbest = null, gprio = -1;
-      for (const p of proj.parts) for (const [pn, pr] of (GROUND_PINS[p.type] || [])) { const k = pinKey.get(p.id + ':' + pn); if (k && pr > gprio) { gprio = pr; gbest = uf.find(k); } }
+      for (const p of proj.parts) for (const [pn, pr] of (GROUND_PINS[p.type] || (P.T[p.type] && P.T[p.type].groundPins) || [])) { const k = pinKey.get(p.id + ':' + pn); if (k && pr > gprio) { gprio = pr; gbest = uf.find(k); } }
       const netId = new Map(); let n = 1;
       if (gbest) netId.set(gbest, 0);
       const pinNet = new Map();
@@ -154,7 +154,7 @@
       this._espVersions = [...this.esp.values()].map((r) => r.version).join(',');
     }
     needsRebuild() { if (this.dirty || this.topoDirty) return true; const v = [...this.esp.values()].map((r) => r.version).join(','); return v !== this._espVersions; }
-    hasDynamics() { return this.project.parts.some((p) => p.type === 'capacitor' || p.type === 'scope'); }
+    hasDynamics() { return this.project.parts.some((p) => p.type === 'capacitor' || p.type === 'scope' || (P.T[p.type] && P.T[p.type].dynamic)); }
     // advance simulated time by dt seconds (transient), measuring parts afterwards
     advance(dt, maxSteps = 400) {
       if (this.needsRebuild()) this.build();

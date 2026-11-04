@@ -81,7 +81,7 @@
       <div class="tab on" id="tab-code">
         <div class="row codebar">
           <div class="filetabs" id="fileTabs"></div><span class="tabs-sp"></span>
-          <label class="fld">Runtime <select id="selMode"><option value="qemu">Real firmware (QEMU)</option><option value="js">JS sketch (browser)</option></select></label>
+          <label class="fld">Runtime <select id="selMode"><option value="qemu">Real firmware (QEMU)</option><option value="js">JS sketch (browser)</option><option value="circuit">Basic circuit (no ESP32)</option></select></label>
           <label class="fld" title="Extra -D defines, comma separated">-D <input id="inDefines" size="10" placeholder="SIM"></label>
         </div>
         <div id="codeWrap" class="codewrap"><div id="codeGutter" class="gutter"></div><div class="code-scroll"><pre id="codeHl" class="code-hl" aria-hidden="true"></pre><textarea id="code" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea></div></div>
@@ -136,19 +136,20 @@
 <script src="js/solver.js"></script>
 <script src="js/parts.js?v=23"></script>
 <script src="js/parts-art.js?v=2"></script>
-<script src="js/sim.js"></script>
+<script src="js/sim.js?v=2"></script>
 <script src="js/remote_logic.js"></script>
 <script src="js/devices.js?v=3"></script>
 <script src="js/netlog.js?v=3"></script>
 <script src="js/i2cdev.js"></script>
   <script src="js/spidev.js"></script>
 <script src="js/jssketch.js"></script>
-<script src="js/examples.js?v=2"></script>
-<script src="js/bom.js?v=2"></script>
+<script src="js/examples.js?v=3"></script>
+<script src="js/basic.js?v=2"></script>
+<script src="js/bom.js?v=3"></script>
 <script src="js/projects.js?v=6"></script>
 <script src="js/editor.js?v=22"></script>
 <script src="js/codeview.js?v=20"></script>
 <script src="js/ui.js?v=21"></script>
-<script src="js/app.js?v=30"></script>
+<script src="js/app.js?v=31"></script>
 </body>
 </html>
