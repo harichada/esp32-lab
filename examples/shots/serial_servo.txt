@@ -1,0 +1,86 @@
+— Servo: knob aim + radar sweep (ESP32Servo) —
+A real ESP32Servo sketch: the knob (GPIO34) sets the SG90 angle through a 50 Hz LEDC pulse (544-2400 µs). Press SWEEP (key s) for an automatic radar sweep. The servo horn follows the decoded pulse width at SG90 speed, and its label shows the angle and pulse.
+
+[compiled ; starting QEMU]
+[qemu] qemu started
+ets Jul 29 2019 12:21:46
+
+rst:0x1 (POWERON_RESET),boot:0x12 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:1
+load:0x3fff0030,len:4640
+load:0x40078000,len:15592
+load:0x40080400,len:3164
+entry 0x4008059c
+Servo ready: knob = angle, S = radar sweep
+angle  82 deg  pulse 1386 us
+angle   0 deg  pulse  527 us
+angle 180 deg  pulse 2382 us
+angle  82 deg  pulse 1386 us
+mode: RADAR SWEEP
+angle  94 deg  pulse 1503 us
+angle 106 deg  pulse 1621 us
+angle 118 deg  pulse 1757 us
+angle 130 deg  pulse 1875 us
+angle 142 deg  pulse 1992 us
+angle 154 deg  pulse 2128 us
+angle 166 deg  pulse 2246 us
+angle 178 deg  pulse 2363 us
+angle 180 deg  pulse 2382 us
+angle 168 deg  pulse 2265 us
+angle 156 deg  pulse 2148 us
+angle 144 deg  pulse 2011 us
+angle 132 deg  pulse 1894 us
+angle 120 deg  pulse 1777 us
+angle 108 deg  pulse 1640 us
+angle  96 deg  pulse 1523 us
+angle  84 deg  pulse 1406 us
+angle  72 deg  pulse 1269 us
+angle  60 deg  pulse 1152 us
+angle  48 deg  pulse 1035 us
+angle  36 deg  pulse  898 us
+angle  24 deg  pulse  781 us
+angle  12 deg  pulse  664 us
+angle   0 deg  pulse  527 us
+angle  12 deg  pulse  664 us
+angle  24 deg  pulse  781 us
+angle  36 deg  pulse  898 us
+angle  48 deg  pulse 1035 us
+angle  60 deg  pulse 1152 us
+angle  72 deg  pulse 1269 us
+angle  84 deg  pulse 1406 us
+angle  96 deg  pulse 1523 us
+angle 108 deg  pulse 1640 us
+angle 120 deg  pulse 1777 us
+angle 132 deg  pulse 1894 us
+angle 144 deg  pulse 2011 us
+angle 156 deg  pulse 2148 us
+angle 168 deg  pulse 2265 us
+angle 180 deg  pulse 2382 us
+angle 168 deg  pulse 2265 us
+angle 156 deg  pulse 2148 us
+angle 144 deg  pulse 2011 us
+angle 132 deg  pulse 1894 us
+angle 120 deg  pulse 1777 us
+angle 108 deg  pulse 1640 us
+angle  96 deg  pulse 1523 us
+angle  84 deg  pulse 1406 us
+angle  72 deg  pulse 1269 us
+angle  60 deg  pulse 1152 us
+angle  48 deg  pulse 1035 us
+angle  36 deg  pulse  898 us
+angle  24 deg  pulse  781 us
+angle  12 deg  pulse  664 us
+angle   0 deg  pulse  527 us
+angle  12 deg  pulse  664 us
+angle  24 deg  pulse  781 us
+angle  36 deg  pulse  898 us
+angle  48 deg  pulse 1035 us
+angle  60 deg  pulse 1152 us
+angle  72 deg  pulse 1269 us
+angle  84 deg  pulse 1406 us
+angle  96 deg  pulse 1523 us
+angle 108 deg  pulse 1640 us
+angle 120 deg  pulse 1777 us
+angle 132 deg  pulse 1894 us

@@ -1,0 +1,62 @@
+[
+ {
+  "name": "palette drag&drop adds an LED",
+  "ok": true,
+  "info": "{'id': 'LED1', 'type': 'led', 'x': 440, 'y': 110, 'rot': 0, 'props': {'color': 'red', 'vf': 1.9, 'imax': 0.03}}"
+ },
+ {
+  "name": "dragging moves the part on the 0.1\" grid",
+  "ok": true,
+  "info": "440,110 -> 500,140"
+ },
+ {
+  "name": "pin-to-pin drag creates a wire joining both nets",
+  "ok": true,
+  "info": "{'id': 'w1', 'a': {'x': 50, 'y': 140}, 'b': {'x': 500, 'y': 140}, 'pts': [], 'color': 'green'}"
+ },
+ {
+  "name": "Ctrl+Z undoes the wire",
+  "ok": true,
+  "info": ""
+ },
+ {
+  "name": "Ctrl+Y redoes it",
+  "ok": true,
+  "info": ""
+ },
+ {
+  "name": "Wokwi diagram.json import (parts, attrs, connections)",
+  "ok": true,
+  "info": "{'n': 3, 'w': 3, 'types': ['esp32', 'resistor', 'led'], 'r': '220', 'c': 'green'}"
+ },
+ {
+  "name": "imported circuit runs real Blink firmware (LED toggles)",
+  "ok": true,
+  "info": "[61, 61, 61, 0, 0, 0, 61, 61, 61, 61]"
+ },
+ {
+  "name": "transistor firmware: GPIO4 HIGH -> NPN saturates, LED current flows",
+  "ok": true,
+  "info": "{'on': [1, '20.4 mA', 'Ic=20.4 mA Ib=2.46 mA Vce=37.6 mV'], 'off': [0, '18.4 pA', 'Ic=1.33e-14 A Ib=-3.33e-15 A Vce=4.22 V']}"
+ },
+ {
+  "name": "Stage 2: unmodified-API analogRead (SAR ADC, calibrated) + analogReadMilliVolts + analogWrite (LEDC 1 kHz) in QEMU follow the pot",
+  "ok": true,
+  "info": "[{'v': 2.474921106690348, 'pwm': 0.70703125, 'freq': 1000, 'line': 'pot=2899  duty= 70%  2475 mV', 'expect': 2899, 'raw': 2899, 'mv': 2475}, {'v': 0.3299898030079886, 'pwm': 0.0546875, 'freq': 1000, 'line': 'pot= 233  duty=  5%   330 mV', 'expect': 233, 'raw': 233, 'mv': 330}, {'v': 3.134904461401237, 'pwm': 1, 'freq': 1000, 'line': 'pot=4095  duty=100%  3134 mV', 'expect': 4095, 'raw': 4095, 'mv': 3134}, {'v': 2.903909812341198, 'pwm': 0.875, 'freq': 1000, 'line': 'pot=3591  duty= 87%  2904 mV', 'expect': 3591, 'raw': 3591, 'mv': 2904}, {'v': 3.002907450113499, 'pwm': 0.92578125, 'freq': 1000, 'line': 'pot=3796  duty= 92%  3003 mV', 'expect': 3796, 'raw': 3796, 'mv': 3003}]"
+ },
+ {
+  "name": "I2C: BME280 slider -> firmware reads 31.70 C / 62 %, OLED framebuffer drawn",
+  "ok": true,
+  "info": "{'serial': 'T=31.70 C  H=62.0 %  P=1013.25 hPa  az=9.81', 'oled_lit_px': 1276}"
+ },
+ {
+  "name": "SPI: TFT draws (orange header, navy body), MCP3008 code matches pot voltage, SD mount + read hello.txt + append log.txt",
+  "ok": true,
+  "info": "{'header': [255, 166, 0], 'body': [0, 0, 123], 'expect': 389, 'log': '0,389\\n1,389\\n2,389\\n3,389\\n4,389\\n5,389\\n6,389\\n7,389\\n8,389\\n9,389\\n', 'sdreads': 55, 'sdwrites': 105, 'serial': ['SD mounted, 64 MB card', 'hello.txt: Hello from the virtual SD card!', 'MCP3008 CH0=389 (1.255 V)  log.txt 347 bytes']}"
+ },
+ {
+  "name": "no page errors",
+  "ok": true,
+  "info": "[]"
+ }
+]

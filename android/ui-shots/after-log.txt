@@ -1,0 +1,19 @@
+desktop html.m = False
+mobile html.m = True
+stage {'h': 795, 'top': 56, 'vh': 915} share 87 %
+pinch zoom 0.587 -> 1.993
+pan dx(world) 35.1
+readOnly after copy False
+add part 4 -> 5
+selected {"part":"RES1"} sheet open True
+long-press move [280, 60] -> [300, 100]
+wiring mode wire From RES1 Resistor · pin 1 → tap a pin
+wires 3 -> 4 to GND.2
+run tapped
+running; status running (QEMU)
+firmware booted (ROM entry seen)
+LED svg variants seen while running 3
+serial tail 'ST_FLASH_BOOT)configsip: 0, SPIWP:0xeeclk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00mode:DIO, clock div:1load:0x3fff0030,len:4876ho 0 tail 12 room 4load:0x40078000,len:16532load:0x40080400,len:3500entry 0x400805b4E (605) qio_mode: Failed to set QIE bit, not enabling QIO mode'
+fab Stop
+after stop running= False
+page errors []

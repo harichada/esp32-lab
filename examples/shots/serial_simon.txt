@@ -1,0 +1,25 @@
+— Simon memory game (real firmware) —
+Watch the colour sequence (each colour has its own note on the buzzer), then repeat it with keys 1-4 or by clicking the buttons. Every round adds one step and it speeds up; the Serial tab shows level and score.
+
+[compiled ; starting QEMU]
+[qemu] qemu started
+ets Jul 29 2019 12:21:46
+
+rst:0x1 (POWERON_RESET),boot:0x12 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:1
+load:0x3fff0030,len:4640
+load:0x40078000,len:15592
+load:0x40080400,len:3164
+entry 0x4008059c
+SIMON - watch, listen, repeat. Keys 1-4 (or click the buttons).
+level 1: green 
+  correct! score 1
+level 2: green red 
+  correct! score 2
+level 3: green red red 
+  correct! score 3
+level 4: green red red red 
+  wrong: pressed red, expected green
+GAME OVER - you reached level 3 (best 3)

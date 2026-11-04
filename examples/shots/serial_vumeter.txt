@@ -1,0 +1,22 @@
+— LED bar-graph VU meter (pot / music, real firmware) —
+Eight LEDs (5 green, 2 yellow, 1 red) show the level from the pot on GPIO34 with fast attack, slow release and a falling peak-hold dot. Flip the slide switch to MUSIC for a simulated beat. Scroll over the pot or drag its slider.
+
+[compiled ; starting QEMU]
+[qemu] qemu started
+ets Jul 29 2019 12:21:46
+
+rst:0x1 (POWERON_RESET),boot:0x12 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:1
+load:0x3fff0030,len:4640
+load:0x40078000,len:15592
+load:0x40080400,len:3164
+entry 0x4008059c
+VU meter: turn the pot, or flip the switch for MUSIC mode
+POT   [##......]  25%
+POT   [.|......]   3%
+POT   [########] 100%
+POT   [#######|]  91%
+POT   [####...|]  51%
+MUSIC [########] 100%

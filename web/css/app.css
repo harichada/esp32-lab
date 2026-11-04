@@ -1,0 +1,62 @@
+.netlog{font-size:12px;max-height:260px;overflow:auto}.nl summary{cursor:pointer;padding:2px 0}.nl pre{white-space:pre-wrap;font-size:11px;background:#0a0e14;padding:6px;border-radius:4px}.nl .pr{display:inline-block;min-width:38px;font-weight:600;color:var(--acc2)}.nl.c403 summary{color:var(--err)}.nl.c-1 summary{color:var(--warn)}
+/* devices */
+#devView{display:grid;grid-template-columns:1fr 1fr;gap:8px}.dev{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px}.dev.tv{grid-column:1/3}.dev-h{font-weight:600;display:flex;gap:6px;align-items:center}.dev-sub{color:var(--mut);font-weight:400;font-size:11px}
+.tv-screen{position:relative;aspect-ratio:16/8;background:#000;border:6px solid #111;border-radius:6px;margin-top:6px;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.tv-off{color:#444;font-size:12px}.tv-live{color:#fff;text-align:center;font-size:18px;background:linear-gradient(135deg,#1c3b6b,#5b2d77);width:100%;height:100%;display:flex;flex-direction:column;justify-content:center}.tv-app{color:#fff;font-size:20px}
+.tv-home,.roku-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;padding:10px;width:100%}.tile,.rtile{background:#22324a;border-radius:4px;padding:10px 4px;text-align:center;font-size:11px;color:#cfe0ff;border:2px solid transparent}.tile.cur,.rtile.cur{border-color:#fff;background:#2f4b75}
+.tv-osd{position:absolute;top:8px;right:10px;background:#000a;color:#fff;padding:3px 8px;border-radius:4px;font-size:12px}
+.tv-bar{display:flex;align-items:center;gap:8px;margin-top:6px}.tv-vol{flex:1;height:6px;background:#222;border-radius:3px;overflow:hidden}.tv-vol div{height:100%;background:var(--acc2)}.ir-rx{color:#444;font-size:11px}.ir-rx.hit{color:#c79bff;text-shadow:0 0 8px #a970ff}
+.led-dot{width:8px;height:8px;border-radius:50%;background:#400;display:inline-block}.led-dot.on{background:#3f3;box-shadow:0 0 6px #3f3}.led-dot.stby{background:#f33}
+.lamp{display:flex;flex-direction:column;align-items:center;margin:8px}.bulb{width:34px;height:34px;border-radius:50%;background:#333}.lamp.on .bulb{background:#ffe27a;box-shadow:0 0 30px #ffd84a}.lamp-base{width:16px;height:12px;background:#666}
+/* svg parts */
+.part{cursor:move}.part.inter{cursor:pointer}.part.sel>*:first-child{filter:drop-shadow(0 0 3px #4aa3ff)}.part.warn>*:first-child{filter:drop-shadow(0 0 4px #ff5a5a)}
+.pin{fill:#c9a227;stroke:#000;stroke-width:.5;cursor:crosshair}.pin:hover{fill:#fff;r:4}
+.hole{fill:#1c1c1c;cursor:crosshair}.hole:hover{fill:#3ddc84}
+.lead{stroke:#b9c0c8;stroke-width:1.6;fill:none}.lead.bypass{stroke:#ff9a3d;stroke-dasharray:3 2}
+.plbl{fill:#c9d4e3;font-size:8px;text-anchor:middle;font-family:ui-monospace,monospace}.plbl.small{font-size:6.5px;fill:#8796aa}
+.free-lbl{fill:#8fa5c2;font-weight:600}
+.bb-body{fill:#e9e6dc;stroke:#cfcabb}.bb-channel{fill:#d6d1c2}.rail-p{stroke:#d33;stroke-width:1}.rail-n{stroke:#25f;stroke-width:1}.bb-num,.bb-lbl{fill:#8a8574;font-size:6px;text-anchor:middle;font-family:ui-monospace,monospace}
+.esp-pcb{fill:#1e2a3a;stroke:#0e1520}.esp-usb{fill:#b8bec6;stroke:#777}.esp-can{fill:#b8bfc8;stroke:#8a929c}.esp-can-t{font-size:6.5px;fill:#333;text-anchor:middle;font-family:ui-monospace,monospace}.esp-ant{stroke:#c9a227;fill:none;stroke-width:1.4}
+.esp-t{fill:#fff;font-weight:700;font-size:12px}.esp-t2{fill:#9fb0c5;font-size:7px}.esp-t3{fill:#ccc;font-size:5px;text-anchor:middle}.esp-pl{fill:#e6edf5;font-size:5.5px;font-family:ui-monospace,monospace}.btn-sm{fill:#333;stroke:#888}
+.res-body{fill:#d8c39a;stroke:#9a855c}
+.ecap{fill:#20304f;stroke:#0f1a2e}.ecap-stripe{fill:#c8d2e0}.ecap-t{fill:#fff;font-size:7px}.ccap{fill:#d9a23b;stroke:#8a6420}
+.led-body{stroke:#0004}.led-rim{stroke:#0006;stroke-width:1.5}.glow{pointer-events:none;filter:blur(4px)}
+.smoke circle{fill:#777;opacity:.6;animation:smoke 1.4s infinite ease-out}@keyframes smoke{from{transform:translateY(4px);opacity:.7}to{transform:translateY(-8px);opacity:0}}
+.dio-body{fill:#e2683c;opacity:.9}.dio-band{fill:#111}.zen-body{fill:#9fd0ff}
+.to92{fill:#222;stroke:#000}.to92-t{fill:#ccc;font-size:6px;text-anchor:middle}
+.pb-body{fill:#2b2b2b;stroke:#111}.pb-cap{fill:#d33}.pb-cap.down{fill:#911}.pb-key,.pb-key2{fill:#fff;font-size:6.5px;text-anchor:middle;font-family:ui-monospace,monospace;pointer-events:none}.pb-key2{fill:#9fb0c5}
+.key-cap{fill:#3c4656;stroke:#5d6a7d}.key-cap.down{fill:#2f9e5b;stroke:#4fdc8a}.key-t{fill:#fff;font-size:6.6px;text-anchor:middle;pointer-events:none;font-weight:600}
+.sw-body{fill:#2c3f5c}.sw-knob{fill:#ddd}.pot-body{fill:#1f4f8f}.pot-knob{fill:#ddd;stroke:#888}.pot-ind{stroke:#222;stroke-width:2}
+.ldr-body{fill:#e8d8a8}.ldr-track{stroke:#b04;fill:none}
+.bat-body{fill:#2468c9}.bat-tip{fill:#999}.bat-t{fill:#fff;font-size:7px;text-anchor:middle}.sup-body{fill:#5a2a2a;stroke:#a33}.sup-t{fill:#fff;font-size:8px;text-anchor:middle;font-weight:700}
+.gnd-sym{stroke:#b9c0c8;stroke-width:1.6;fill:none}.buz-body{fill:#111;stroke:#444}.buz-hole{fill:#444}.buz-wave{stroke:#ffd84a;fill:none}
+.meter{fill:#222c1a;stroke:#5a7a3a}.meter.amm{fill:#2c1a24;stroke:#7a3a5a}.meter-t{fill:#b8ff8a;font-size:8px;text-anchor:middle;font-family:ui-monospace,monospace}
+.wire-red{stroke:#e33;stroke-width:1.6}.wire-blk{stroke:#111;stroke-width:1.6}.probe{stroke:#000}
+.wire{cursor:pointer}.w-hit{stroke:transparent;stroke-width:8;fill:none}.w-shadow{stroke:#0008;stroke-width:4;fill:none;stroke-linejoin:round}.w-line{stroke-width:2.4;fill:none;stroke-linejoin:round;stroke-linecap:round}.wire.sel .w-line{stroke-width:3.4;filter:drop-shadow(0 0 3px #fff)}
+.w-preview{stroke-width:2.4;fill:none;stroke-dasharray:5 3;pointer-events:none}
+.oled-pcb{fill:#1d3f8a;stroke:#0d2350}.oled-glass{fill:#05070a;stroke:#333}.mod-pcb{fill:#5a2a8a;stroke:#2c1046}.mod-pcb.mpu{fill:#1d5a3a}.mod-chip{fill:#222;stroke:#888}
+
+.tft-pcb{fill:#b3261e;stroke:#5c120e}.mod-pcb.sd{fill:#1f6f8b}.sd-card{fill:#222;stroke:#bbb}
+
+
+/* projects + wiring UX */
+.hl-net{fill:none;stroke:#3ddc84;stroke-width:1.4;pointer-events:none;opacity:.9}.hl-pin{fill:#3ddc8455;stroke:#fff;stroke-width:1.6;pointer-events:none}.hl-target{fill:none;stroke:#ffd23d;stroke-width:2;pointer-events:none}
+#stage.on-pin{cursor:crosshair}.w-hit{stroke-width:12}.w-bend{fill:#fff;stroke:#000;stroke-width:.8;cursor:move}
+@media (pointer:coarse){.pin{r:4}.w-hit{stroke-width:18}}
+/* hi-fi part art (v21) */
+.bb-body{fill:url(#gBoard);stroke:#c8c2b0;stroke-width:.8}.bb-railband{fill:#00000008}.bb-channel{fill:#cfc9b8}.bb-chedge{stroke:#b5ae99;stroke-width:1}.bb-chedge2{stroke:#fff8;stroke-width:1}
+.rail-p{fill:#e0393e;stroke:none}.rail-n{fill:#2f6fe0;stroke:none}.rail-p-t{fill:#d03237;font-weight:700}.rail-n-t{fill:#2f6fe0;font-weight:700}
+.hole{fill:#2b2a26;stroke:#a9a28c;stroke-width:.6}.hole:hover{fill:#22d3ee;stroke:#22d3ee}.bb-num{fill:#8f8a78;font-family:Inter,system-ui,sans-serif;font-weight:500}
+.esp-pcb{fill:#15181d;stroke:#05070a}.esp-pcb-in{fill:none;stroke:#2a2f37;stroke-width:.6}.esp-hdr{fill:#0b0c0e;stroke:#2c3037;stroke-width:.5}
+.pin{fill:#d8b23a;stroke:#6b5410;stroke-width:.5}
+.esp-ic{fill:url(#gBlack);stroke:#000;stroke-width:.4}.esp-t4{fill:#aab;font-size:3.4px;text-anchor:middle;font-family:'JetBrains Mono',monospace}
+.esp-mod{fill:#1d2128;stroke:#0a0c10;stroke-width:.6}.esp-can-t{font-size:5.4px;fill:#3a4048;font-weight:700;text-anchor:middle;font-family:Inter,sans-serif}.esp-can-t2{font-size:3.6px;fill:#57606b;text-anchor:middle;font-family:Inter,sans-serif}
+.esp-ant{fill:none;stroke:#d8b23a;stroke-width:1.6;stroke-linejoin:miter}.esp-t{font-family:Inter,sans-serif;letter-spacing:.5px}.esp-pl{fill:#f1f4f8;font-family:'JetBrains Mono',monospace;font-weight:500}
+.res-body{stroke:#8c7448;stroke-width:.5}.ecap{fill:#24396b;stroke:#0f1a2e;stroke-width:.6}.ecap-stripe{fill:#cfd8e6}.ccap{fill:#e0a23a;stroke:#8a6420;stroke-width:.6}.ccap-t{fill:#5a3a08;font-size:4.2px;text-anchor:middle;font-family:'JetBrains Mono',monospace}
+.led-body{stroke:#0005;stroke-width:.6}.led-rim{stroke:#0005;stroke-width:.4}.glow{pointer-events:none}
+.ir-arcs path{fill:none;stroke:#b49cff;stroke-width:1.3;stroke-linecap:round;animation:irpulse .9s ease-out infinite}@keyframes irpulse{0%{opacity:.1}40%{opacity:1}100%{opacity:.1}}
+.pot-body{fill:#1f4b8f;stroke:#0d2350}.pot-track{fill:none;stroke:#ffffff40;stroke-width:1.2;stroke-dasharray:1 2}.pot-knob{stroke:#0b0d10;stroke-width:.6}.pot-ind{stroke:#22d3ee;stroke-width:1.6;stroke-linecap:round}
+.pb-cap{fill:#d6363b;stroke:#7a1316;stroke-width:.6}.pb-cap.down{fill:#9b1b1f}.key-cap{fill:#3c4656;stroke:#5d6a7d;transition:all .08s}.key-cap.down{fill:#0e7490;stroke:#22d3ee}
+.to92{stroke:#000;stroke-width:.5}.bezel{fill:#0b0c0f;stroke:#000}.mhole{fill:#0007;stroke:#c9a227;stroke-width:.6}.oled-glass{fill:#030405;stroke:#1d1f24}
+.lcd-pcb{fill:#1a7a3a;stroke:#0c4020}.lcd-bezel{fill:#15161a;stroke:#000}.servo-body{fill:#1f5fbf;stroke:#0d3375}.servo-hub{fill:#e8e8e8;stroke:#999}.servo-horn{fill:#f4f4f0;stroke:#aaa;stroke-width:.6}
+.neo-pcb{fill:#1b1b1d;stroke:#000}.neo-ring{fill:none;stroke:#1b1b1d;stroke-width:17}.neo-led{stroke:#666;stroke-width:.6}.dht-body{fill:#f2f2ee;stroke:#aaa}.dht-grill{fill:#cfcfc8;stroke:#999;stroke-width:.4}

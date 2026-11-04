@@ -1,0 +1,247 @@
+[
+ [
+  "servo: boots",
+  true,
+  ""
+ ],
+ [
+  "servo: 50 Hz pulse decoded",
+  true,
+  "{'angle': 0, 'us': 527.34375, 'hz': 50, 'target': 0}"
+ ],
+ [
+  "servo: knob ends drive the horn to opposite ends (0/180)",
+  true,
+  "({'angle': 0, 'us': 527.34375, 'hz': 50, 'target': 0}, {'angle': 178.3331088362069, 'us': 2382.8125, 'hz': 50, 'target': 178.3331088362069})"
+ ],
+ [
+  "servo: mid knob ~90 deg (pulse ~1470 us)",
+  true,
+  "{'angle': 81.7291891163793, 'us': 1386.71875}"
+ ],
+ [
+  "servo: s toggles sweep mode",
+  true,
+  ""
+ ],
+ [
+  "servo: horn sweeps in radar mode",
+  true,
+  "[113.93049568965517, 144.2376077586207, 174.5447198275862, 157.4969692887931, 127.18985721982759, 100.67113415948276, 70.36402209051724, 43.84529903017241, 17.326575969827587, 13.538186961206897, 41.95110452586207, 70.36402209051724, 98.77693965517241, 127.18985721982759, 157.4969692887931, 170.7563"
+ ],
+ [
+  "servo: sweep LED lit",
+  true,
+  "{'D25': 0.61}"
+ ],
+ [
+  "servo: no page errors",
+  true,
+  "[]"
+ ],
+ [
+  "neoring: boots",
+  true,
+  ""
+ ],
+ [
+  "neoring: frames arrive, 16 px",
+  true,
+  "{'px': [[0, 0, 145], [14, 0, 145], [76, 0, 145], [145, 0, 93], [145, 0, 20], [145, 0, 0], [145, 5, 0], [145, 48, 0], [134, 145, 0], [37, 145, 0], [2, 145, 0], [0, 145, 1], [0, 145, 27], [0, 145, 112], [0, 61, 145], [0, 9, 145]], 'frames': 45}"
+ ],
+ [
+  "neoring: rainbow has many colours",
+  true,
+  "[[0, 0, 145], [14, 0, 145], [76, 0, 145], [145, 0, 93], [145, 0, 20], [145, 0, 0], [145, 5, 0], [145, 48, 0], [134, 145, 0], [37, 145, 0], [2, 145, 0], [0, 145, 1], [0, 145, 27], [0, 145, 112], [0, 61, 145], [0, 9, 145]]"
+ ],
+ [
+  "neoring: animation moving",
+  true,
+  "(45, 56)"
+ ],
+ [
+  "neoring: no PX control lines leak into Serial",
+  true,
+  "(SPI_FAST_FLASH_BOOT)\nconfigsip: 0, SPIWP:0xee\nclk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00\nmode:DIO, clock div:1\nload:0x3fff0030,len:4640\nload:0x40078000,len:15592\nload:0x40080400,len:3164\nentry 0x4008059c\nNeoPixel ring: M = next effect, knob = brightness\neffect: rainbow\n"
+ ],
+ [
+  "neoring: m -> fire",
+  true,
+  ""
+ ],
+ [
+  "neoring: fire is red/orange (R dominant, no blue)",
+  true,
+  "[[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [8, 0, 0], [47, 0, 0], [116, 0, 0], [145, 94, 0], [145, 145, 145], [145, 94, 0], [116, 0, 0], [47, 0, 0], [8, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]]"
+ ],
+ [
+  "neoring: knob changes brightness",
+  true,
+  "(64, 1935)"
+ ],
+ [
+  "neoring: m -> comet",
+  true,
+  ""
+ ],
+ [
+  "neoring: m -> breathing",
+  true,
+  ""
+ ],
+ [
+  "neoring: no page errors",
+  true,
+  "[]"
+ ],
+ [
+  "lcdclock: boots",
+  true,
+  ""
+ ],
+ [
+  "lcdclock: LCD shows time 09:4x:xx",
+  true,
+  "'    09:41:01    \\nMon  AM  21?C   \\n'"
+ ],
+ [
+  "lcdclock: seconds advance",
+  true,
+  "('    09:41:01    \\nMon  AM  21?C   \\n', '    09:41:03    \\nMon  AM  21?C   \\n')"
+ ],
+ [
+  "lcdclock: degree glyph via 0xDF",
+  true,
+  ""
+ ],
+ [
+  "lcdclock: SET HOURS menu",
+  true,
+  "'    12:41:05    \\nSET HOURS    +  \\n'"
+ ],
+ [
+  "lcdclock: + advanced hours to 12",
+  true,
+  "'    12:41:07    \\nMon  PM  21?C   \\n'"
+ ],
+ [
+  "lcdclock: no page errors",
+  true,
+  "[]"
+ ],
+ [
+  "thermostat: DHT22 read OK",
+  true,
+  "lk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00\nmode:DIO, clock div:1\nload:0x3fff0030,len:4640\nload:0x40078000,len:15592\nload:0x40080400,len:3164\nentry 0x4008059c\nThermostat: Up/Down = set point; drag the DHT22 sliders to change the room\nT=20.5 C  RH=48.0 %  set 22.0  -> HEAT\n"
+ ],
+ [
+  "thermostat: LCD shows 20.5C and 48%RH",
+  true,
+  "' 20.5?C   48%RH \\nSet 22.0  HEAT ~\\n'"
+ ],
+ [
+  "thermostat: heating at 20.5 < 22 (red on, blue off)",
+  true,
+  "{'D25': 0.61, 'D26': 0}"
+ ],
+ [
+  "thermostat: slider change seen by firmware",
+  true,
+  "T=26.3 C  RH=61.5 %  set 22.0  -> COOL\n"
+ ],
+ [
+  "thermostat: cooling at 26.3 (blue on, red off) + LCD COOL",
+  true,
+  "({'D25': 0, 'D26': 0.61}, ' 26.3?C   62%RH \\nSet 22.0  COOL ?\\n')"
+ ],
+ [
+  "thermostat: UP x10 -> set 27.0, heating again (26.3 < 26.5)",
+  true,
+  "' 26.3?C   62%RH \\nSet 27.0  HEAT ~\\n'"
+ ],
+ [
+  "thermostat: negative temperature decoded",
+  true,
+  ""
+ ],
+ [
+  "thermostat: no failed DHT22 reads (incl. during key presses)",
+  true,
+  "change the room\nT=20.5 C  RH=48.0 %  set 22.0  -> HEAT\nT=26.3 C  RH=61.5 %  set 22.0  -> COOL\nset point 22.5\nset point 23.0\nset point 23.5\nset point 24.0\nT=26.3 C  RH=61.5 %  set 24.0  -> COOL\nset point 24.5\nset point 25.0\nset point 25.5\nset point 26.0\nset point 26.5\nset point 27.0\nT=26.3 C  RH=61.5"
+ ],
+ [
+  "thermostat: no page errors",
+  true,
+  "[]"
+ ],
+ [
+  "traffic: boots",
+  true,
+  ""
+ ],
+ [
+  "traffic: cars green + DON'T WALK red at idle",
+  true,
+  "{'D32': 0.61, 'D33': 0, 'D25': 0.61, 'D26': 0, 'D27': 0}"
+ ],
+ [
+  "traffic: WALK button registers",
+  true,
+  ""
+ ],
+ [
+  "traffic: sequence yellow -> all red -> WALK",
+  true,
+  "  pedestrian request accepted - WAIT\n[  4110 ms] cars YELLOW\n[  5613 ms] all red\n[  6613 ms] WALK\n"
+ ],
+ [
+  "traffic: during WALK car red + walk green lit",
+  true,
+  "{'D32': 0, 'D33': 0.61, 'D25': 0, 'D26': 0, 'D27': 0.61}"
+ ],
+ [
+  "traffic: crossing beeper ticks (on and off)",
+  true,
+  "[False, True, True, False, False, False, True, True, False, False, False, True]"
+ ],
+ [
+  "traffic: returns to cars GO",
+  true,
+  ""
+ ],
+ [
+  "traffic: no page errors",
+  true,
+  "[]"
+ ],
+ [
+  "weather: boots + reads BME280",
+  true,
+  "\u2014 OLED weather station: BME280 + graphs (real firmware) \u2014\nReads temperature, humidity and pressure from the BME280 once a second and shows an overview, temperature and pressure history graphs, and a pressure-trend forecast. Key n (PAGE) switches pages. Select the BME280 and drag its sliders to chang"
+ ],
+ [
+  "weather: first reading is sane: 23.5 C / 45 % / 1013 hPa",
+  true,
+  "entry 0x4008059c\nWeather station: key n changes page\nT=23.5 C  RH=45 %  P=1013.2 hPa  -> Steady\n"
+ ],
+ [
+  "weather: OLED overview drawn",
+  true,
+  "{'v': 2069, 'lit': 1134}"
+ ],
+ [
+  "weather: live slider change seen (31 C / 70 % / 1000 hPa, no garbage)",
+  true,
+  "cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00\nmode:DIO, clock div:1\nload:0x3fff0030,len:4640\nload:0x40078000,len:15592\nload:0x40080400,len:3164\nentry 0x4008059c\nWeather station: key n changes page\nT=23.5 C  RH=45 %  P=1013.2 hPa  -> Steady\npage 1\npage 2\nT=31.0 C  RH=70 %  P=1000.0 hPa  -> Storm alert\npage 3\n"
+ ],
+ [
+  "weather: forecast reacts to falling pressure",
+  true,
+  "59c\nWeather station: key n changes page\nT=23.5 C  RH=45 %  P=1013.2 hPa  -> Steady\npage 1\npage 2\nT=31.0 C  RH=70 %  P=1000.0 hPa  -> Storm alert\npage 3\nT=31.0 C  RH=70 %  P=1000.0 hPa  -> Storm alert\n"
+ ],
+ [
+  "weather: no page errors",
+  true,
+  "[]"
+ ]
+]

@@ -1,0 +1,18 @@
+— Bubble spirit level: MPU6050 + OLED (real firmware) —
+Pitch and roll from the MPU6050 accelerometer drive a damped bubble in a bull's-eye vial and a linear vial on the OLED. The green LED lights within 1° of level, the red one beyond 15°. Select the MPU6050 and drag Accel X / Y to tilt it.
+
+[compiled ; starting QEMU]
+[qemu] qemu started
+ets Jul 29 2019 12:21:46
+
+rst:0x1 (POWERON_RESET),boot:0x12 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:1
+load:0x3fff0030,len:4640
+load:0x40078000,len:15592
+load:0x40080400,len:3164
+entry 0x4008059c
+Spirit level: tilt the MPU6050 (Accel X/Y sliders)
+pitch  +0.0  roll  +0.0  LEVEL
+pitch +29.8  roll  +0.0  TILTED

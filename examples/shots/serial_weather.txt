@@ -1,0 +1,22 @@
+— OLED weather station: BME280 + graphs (real firmware) —
+Reads temperature, humidity and pressure from the BME280 once a second and shows an overview, temperature and pressure history graphs, and a pressure-trend forecast. Key n (PAGE) switches pages. Select the BME280 and drag its sliders to change the weather. (The DHT22 has no virtual part yet, so this uses the BME280.)
+
+[compiled ; starting QEMU]
+[qemu] qemu started
+ets Jul 29 2019 12:21:46
+
+rst:0x1 (POWERON_RESET),boot:0x12 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:1
+load:0x3fff0030,len:4640
+load:0x40078000,len:15592
+load:0x40080400,len:3164
+entry 0x4008059c
+Weather station: key n changes page
+T=23.5 C  RH=45 %  P=1013.2 hPa  -> Steady
+page 1
+page 2
+T=31.0 C  RH=70 %  P=1000.0 hPa  -> Storm alert
+page 3
+T=31.0 C  RH=70 %  P=1000.0 hPa  -> Storm alert

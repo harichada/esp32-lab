@@ -1,0 +1,31 @@
+=== qemu stdout/stderr ===
+Adding SPI flash device
+
+=== SERIAL (304 bytes) ===
+ets Jul 29 2019 12:21:46
+
+rst:0x1 (POWERON_RESET),boot:0x12 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:1
+load:0x3fff0030,len:4640
+load:0x40078000,len:15592
+load:0x40080400,len:3164
+entry 0x4008059c
+
+=== GPIO lines: 29, first 15 ===
+X reset
+S 0 0 0 0
+M 96 256
+M 96 1280
+M 96 5376
+M 100 256
+M 100 4352
+M 104 256
+M 104 4352
+M 84 256
+M 88 256
+M 92 256
+M 92 4352
+F 11 5
+S 0 0 2048 0

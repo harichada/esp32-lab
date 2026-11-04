@@ -1,0 +1,867 @@
+diff --git a/hw/gpio/esp32_gpio.c b/hw/gpio/esp32_gpio.c
+index 4fea1f5..11ab055 100644
+--- a/hw/gpio/esp32_gpio.c
++++ b/hw/gpio/esp32_gpio.c
+@@ -1,13 +1,15 @@
+ /*
+- * ESP32 GPIO emulation
+- *
+- * Copyright (c) 2019 Espressif Systems (Shanghai) Co. Ltd.
+- *
+- * This program is free software; you can redistribute it and/or modify
+- * it under the terms of the GNU General Public License version 2 or
+- * (at your option) any later version.
++ * ESP32 GPIO emulation (patched: functional OUT/ENABLE/IN registers + IO_MUX/RTCIO register
++ * storage, bridged to an external circuit simulator over a chardev line protocol).
++ *  QEMU -> host : "S <out> <out1> <en> <en1>\n"  on any change
++ *                 "M <off> <val>\n" IO_MUX write, "R <off> <val>\n" RTCIO write
++ *                 "F <gpio> <sig>\n" GPIO_FUNCn_OUT_SEL change (sig 256 = plain GPIO)
++ *                 "T <ch> ..." RMT transmission (see rmt_start)
++ *  host -> QEMU : "I <in> <in1>\n"  pad input levels
++ *                 "Y 1\n" enable lock-step mode: after every S/M/R line QEMU blocks the vCPU until the
++ *                 host answers with an "I" line (so firmware reading a pin right after driving
++ *                 another one, e.g. matrix scanning, sees the circuit's settled response). "Y 0" disables.
+  */
+-
+ #include "qemu/osdep.h"
+ #include "qemu/log.h"
+ #include "qemu/error-report.h"
+@@ -17,62 +19,336 @@
+ #include "hw/registerfields.h"
+ #include "hw/irq.h"
+ #include "hw/qdev-properties.h"
++#include "hw/qdev-properties-system.h"
++#include "chardev/char-fe.h"
+ #include "hw/gpio/esp32_gpio.h"
+ 
++#define R(off) (s->regs[(off) >> 2])
++enum { OUT = 0x04, OUT_S = 0x08, OUT_C = 0x0c, OUT1 = 0x10, OUT1_S = 0x14, OUT1_C = 0x18,
++       EN = 0x20, EN_S = 0x24, EN_C = 0x28, EN1 = 0x2c, EN1_S = 0x30, EN1_C = 0x34,
++       IN = 0x3c, IN1 = 0x40, STATUS = 0x44, STATUS_S = 0x48, STATUS_C = 0x4c,
++       STATUS1 = 0x50, STATUS1_S = 0x54, STATUS1_C = 0x58, OUTSEL = 0x530 };
++
++static void send_line(Esp32GpioState *s, const char *buf)
++{
++    if (qemu_chr_fe_backend_connected(&s->chr)) {
++        qemu_chr_fe_write_all(&s->chr, (const uint8_t *)buf, strlen(buf));
++    }
++}
++
++static Esp32GpioState *g_bridge;
++void esp32_gpio_bridge_send(const char *line)
++{
++    if (g_bridge) send_line(g_bridge, line);
++}
+ 
++static void handle_line(Esp32GpioState *s, const char *l)
++{
++    unsigned a, b, c;
++    if (sscanf(l, "K %u", &a) == 1) { s->i2c_ack = a; }
++    else if (sscanf(l, "B %u", &a) == 1) { s->i2c_rx = a & 0xff; }
++    else if (sscanf(l, "A %u %u %u", &a, &b, &c) == 3) { if (a < 2 && b < 12) s->adc[a][b] = c & 0xffff; }
++    else if (sscanf(l, "I %u %u", &a, &b) == 2) { s->regs[0x3c >> 2] = a; s->regs[0x40 >> 2] = b; }
++    else if (sscanf(l, "Y %u", &a) == 1) { s->sync = a != 0; }
++    else if (l[0] == 'V' && l[1] == ' ') {   /* SPI MISO bytes, hex */
++        int n = 0; const char *p = l + 2;
++        while (n < 64 && p[0] && p[1]) { unsigned v; if (sscanf(p, "%2x", &v) != 1) break; s->spi_rx[n++] = v; p += 2; }
++        s->spi_rxn = n;
++    }
++    else if (l[0] == 'Z' && l[1] == ' ') { s->spi_csmask = strtoull(l + 2, NULL, 10); }
++}
++
++static void sync_wait(Esp32GpioState *s)
++{
++    char line[320]; int n = 0;
++    if (!s->sync || !qemu_chr_fe_backend_connected(&s->chr)) return;
++    while (1) {
++        uint8_t ch;
++        int r = qemu_chr_fe_read_all(&s->chr, &ch, 1);
++        if (r <= 0) { s->sync = false; return; }
++        if (ch == '\n') {
++            line[n] = 0; handle_line(s, line);
++            if (line[0] == 'I' || !s->sync) return;
++            n = 0;
++        } else if (n < (int)sizeof(line) - 1) {
++            line[n++] = ch;
++        }
++    }
++}
++
++static void send_state(Esp32GpioState *s)
++{
++    char b[96];
++    snprintf(b, sizeof b, "S %u %u %u %u\n", R(OUT), R(OUT1) & 0xff, R(EN), R(EN1) & 0xff);
++    send_line(s, b);
++    sync_wait(s);
++}
+ 
+ static uint64_t esp32_gpio_read(void *opaque, hwaddr addr, unsigned int size)
+ {
+     Esp32GpioState *s = ESP32_GPIO(opaque);
+-    uint64_t r = 0;
+     switch (addr) {
+-    case A_GPIO_STRAP:
+-        r = s->strap_mode;
+-        break;
++    case A_GPIO_STRAP: return s->strap_mode;
++    case OUT_S: case OUT_C: case OUT1_S: case OUT1_C: case EN_S: case EN_C: case EN1_S: case EN1_C:
++        return 0;
++    default:
++        return addr < 0x1000 ? R(addr) : 0;
++    }
++}
+ 
++static void esp32_gpio_write(void *opaque, hwaddr addr, uint64_t value, unsigned int size)
++{
++    Esp32GpioState *s = ESP32_GPIO(opaque);
++    uint32_t v = value, o0 = R(OUT), o1 = R(OUT1), e0 = R(EN), e1 = R(EN1);
++    switch (addr) {
++    case OUT_S: R(OUT) |= v; break;
++    case OUT_C: R(OUT) &= ~v; break;
++    case OUT1_S: R(OUT1) |= v; break;
++    case OUT1_C: R(OUT1) &= ~v; break;
++    case EN_S: R(EN) |= v; break;
++    case EN_C: R(EN) &= ~v; break;
++    case EN1_S: R(EN1) |= v; break;
++    case EN1_C: R(EN1) &= ~v; break;
++    case STATUS_S: R(STATUS) |= v; break;
++    case STATUS_C: R(STATUS) &= ~v; break;
++    case STATUS1_S: R(STATUS1) |= v; break;
++    case STATUS1_C: R(STATUS1) &= ~v; break;
++    case IN: case IN1: case A_GPIO_STRAP: break;      /* read-only: driven by host */
+     default:
++        if (addr < 0x1000) {
++            uint32_t old = R(addr);
++            R(addr) = v;
++            if (addr >= OUTSEL && addr < OUTSEL + 40 * 4 && (old & 0x1ff) != (v & 0x1ff)) {
++                char b[48];
++                snprintf(b, sizeof b, "F %u %u\n", (unsigned)((addr - OUTSEL) >> 2), v & 0x1ff);
++                send_line(s, b);
++            }
++        }
+         break;
+     }
+-    return r;
++    if (o0 != R(OUT) || o1 != R(OUT1) || e0 != R(EN) || e1 != R(EN1)) {
++        send_state(s);
++    }
+ }
+ 
+-static void esp32_gpio_write(void *opaque, hwaddr addr,
+-                       uint64_t value, unsigned int size)
++static uint64_t esp32_iomux_read(void *opaque, hwaddr addr, unsigned int size)
++{
++    Esp32GpioState *s = ESP32_GPIO(opaque);
++    return addr < 0x2000 ? s->iomux[addr >> 2] : 0;
++}
++static void esp32_iomux_write(void *opaque, hwaddr addr, uint64_t value, unsigned int size)
+ {
++    Esp32GpioState *s = ESP32_GPIO(opaque);
++    if (addr >= 0x2000) return;
++    if (s->iomux[addr >> 2] != (uint32_t)value) {
++        char b[48];
++        s->iomux[addr >> 2] = value;
++        snprintf(b, sizeof b, "M %u %u\n", (unsigned)addr, (uint32_t)value);
++        send_line(s, b);
++        sync_wait(s);
++    }
++}
++static uint64_t esp32_rtcio_read(void *opaque, hwaddr addr, unsigned int size)
++{
++    Esp32GpioState *s = ESP32_GPIO(opaque);
++    return addr < 0x400 ? s->rtcio[addr >> 2] : 0;
++}
++static void esp32_rtcio_write(void *opaque, hwaddr addr, uint64_t value, unsigned int size)
++{
++    Esp32GpioState *s = ESP32_GPIO(opaque);
++    if (addr >= 0x400) return;
++    if (s->rtcio[addr >> 2] != (uint32_t)value) {
++        char b[48];
++        s->rtcio[addr >> 2] = value;
++        snprintf(b, sizeof b, "R %u %u\n", (unsigned)addr, (uint32_t)value);
++        send_line(s, b);
++        sync_wait(s);
++    }
++}
++
++static const MemoryRegionOps gpio_ops = {
++    .read = esp32_gpio_read, .write = esp32_gpio_write, .endianness = DEVICE_LITTLE_ENDIAN,
++};
++/* SENS (SAR ADC, RTC controller). MEAS1 = 0x54, MEAS2 = 0x94: data[15:0], done bit16, start bit17,
++ * en_pad ADC1 [30:19], ADC2 [29:19]. The value is requested from the host ("Q unit ch") in sync mode. */
++static void sync_wait(Esp32GpioState *s);
++static uint64_t esp32_sens_read(void *opaque, hwaddr addr, unsigned int size)
++{
++    Esp32GpioState *s = ESP32_GPIO(opaque);
++    return addr < 0x400 ? s->sens[addr >> 2] : 0;
++}
++static void esp32_sens_write(void *opaque, hwaddr addr, uint64_t value, unsigned int size)
++{
++    Esp32GpioState *s = ESP32_GPIO(opaque);
++    if (addr >= 0x400) return;
++    uint32_t v = value;
++    if (addr == 0x54 || addr == 0x94) {
++        int u = addr == 0x94;
++        uint32_t old = s->sens[addr >> 2];
++        if ((v & (1u << 17)) && !(old & (1u << 17))) {
++            uint32_t mask = (v >> 19) & (u ? 0x3ff : 0xfff);
++            int ch = mask ? __builtin_ctz(mask) : 0;
++            char b[48]; snprintf(b, sizeof b, "Q %d %d\n", u, ch); send_line(s, b); sync_wait(s);
++            uint32_t d = s->adc[u][ch] & 0xfff;
++            v = (v & ~0xffffu) | d | (1u << 16);
++        } else if (!(v & (1u << 17))) {
++            v &= ~(1u << 16);
++        } else {
++            v = (v & ~0x1ffffu) | (old & 0x1ffffu);
++        }
++    }
++    s->sens[addr >> 2] = v;
+ }
++static const MemoryRegionOps sens_ops = {
++    .read = esp32_sens_read, .write = esp32_sens_write, .endianness = DEVICE_LITTLE_ENDIAN,
++};
++static const MemoryRegionOps iomux_ops = {
++    .read = esp32_iomux_read, .write = esp32_iomux_write, .endianness = DEVICE_LITTLE_ENDIAN,
++};
++static const MemoryRegionOps rtcio_ops = {
++    .read = esp32_rtcio_read, .write = esp32_rtcio_write, .endianness = DEVICE_LITTLE_ENDIAN,
++};
++
+ 
+-static const MemoryRegionOps uart_ops = {
+-    .read =  esp32_gpio_read,
+-    .write = esp32_gpio_write,
+-    .endianness = DEVICE_LITTLE_ENDIAN,
++/* ---------------- minimal RMT transmitter (esp32-sim patch) ----------------
++ * Enough for ESP-IDF 5 / Arduino 3.x rmtWrite(): on CHnCONF1.tx_start the channel RAM items are parsed,
++ * reported to the host as "T <ch> <tick_ns> <carrier_hi> <carrier_lo> <carrier_en> <hex words...>" and the
++ * TX_END interrupt is raised after the frame's duration in virtual time. No RX, no ping-pong refill. */
++#define RMT_CONF0(n) (0x20 + 8 * (n))
++#define RMT_CONF1(n) (0x24 + 8 * (n))
++#define RMT_INT_RAW 0xa0
++#define RMT_INT_ST  0xa4
++#define RMT_INT_ENA 0xa8
++#define RMT_INT_CLR 0xac
++#define RMT_CARRIER(n) (0xb0 + 4 * (n))
++#define RMTR(off) (s->rmt_regs[(off) >> 2])
++static void rmt_update_irq(Esp32GpioState *s)
++{
++    RMTR(RMT_INT_ST) = RMTR(RMT_INT_RAW) & RMTR(RMT_INT_ENA);
++    qemu_set_irq(s->rmt_irq, RMTR(RMT_INT_ST) != 0);
++}
++typedef struct { Esp32GpioState *s; int ch; } RmtTimerCtx;
++static RmtTimerCtx rmt_ctx[8];
++static void rmt_done(void *opaque)
++{
++    RmtTimerCtx *c = opaque; Esp32GpioState *s = c->s;
++    RMTR(RMT_INT_RAW) |= 1u << (3 * c->ch);        /* chN_tx_end */
++    s->rmt_pending &= ~(1u << c->ch);
++    rmt_update_irq(s);
++}
++static void rmt_start(Esp32GpioState *s, int ch)
++{
++    uint32_t conf0 = RMTR(RMT_CONF0(ch)), conf1 = RMTR(RMT_CONF1(ch));
++    uint32_t div = conf0 & 0xff; if (!div) div = 256;
++    uint32_t mem_size = (conf0 >> 24) & 0xf; if (!mem_size) mem_size = 1;
++    /* ref_always_on (bit17): REF_TICK 1 MHz, else APB 80 MHz */
++    uint64_t tick_ps = (conf1 & (1u << 17)) ? 12500ull * div : 1000000ull * div;   /* ref_always_on: 1 = APB 80 MHz, 0 = REF_TICK 1 MHz */
++    uint64_t total_ps = 0;
++    char *line = g_malloc(64 + 9 * 64 * 8 + 16), *p = line;
++    uint32_t car = RMTR(RMT_CARRIER(ch));
++    p += sprintf(p, "T %d %llu %u %u %u", ch, (unsigned long long)(tick_ps / 1000), car >> 16, car & 0xffff, (conf0 >> 28) & 1);
++    for (uint32_t i = 0; i < 64 * mem_size && ch * 64 + i < 512; i++) {
++        uint32_t w = s->rmt_regs[0x200 + ch * 64 + i];
++        p += sprintf(p, " %08x", w);
++        uint32_t d0 = w & 0x7fff, d1 = (w >> 16) & 0x7fff;
++        total_ps += (uint64_t)(d0 + d1) * tick_ps;
++        if (d0 == 0 || d1 == 0) break;
++    }
++    strcpy(p, "\n");
++    send_line(s, line);
++    g_free(line);
++    s->rmt_pending |= 1u << ch;
++    timer_mod(s->rmt_timer[ch], qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + total_ps / 1000 + 1000);
++}
++static uint64_t esp32_rmt_read(void *opaque, hwaddr addr, unsigned int size)
++{
++    Esp32GpioState *s = ESP32_GPIO(opaque);
++    if (addr >= 0x1000) return 0;
++    if (addr == 0xfc) return 0x17085050;          /* RMT_DATE */
++    if (getenv("ESP32_RMT_TRACE") && addr < 0x800) fprintf(stderr, "rmt r %03x=%08x\n", (unsigned)addr, s->rmt_regs[addr >> 2]);
++    return s->rmt_regs[addr >> 2];
++}
++static void esp32_rmt_write(void *opaque, hwaddr addr, uint64_t value, unsigned int size)
++{
++    Esp32GpioState *s = ESP32_GPIO(opaque);
++    uint32_t v = value;
++    if (addr >= 0x1000) return;
++    if (getenv("ESP32_RMT_TRACE") && addr < 0x800) fprintf(stderr, "rmt w %03x=%08x\n", (unsigned)addr, v);
++    if (addr == RMT_INT_CLR) { RMTR(RMT_INT_RAW) &= ~v; rmt_update_irq(s); return; }
++    if (addr == RMT_INT_ST || addr == RMT_INT_RAW) return;
++    if (addr == RMT_INT_ENA) { RMTR(RMT_INT_ENA) = v; rmt_update_irq(s); return; }
++    if (addr >= 0x24 && addr < 0x64 && ((addr - 0x24) % 8) == 0) {
++        int ch = (addr - 0x24) / 8;
++        RMTR(addr) = v & ~1u;                      /* tx_start is self-clearing */
++        if (v & 1u) rmt_start(s, ch);
++        return;
++    }
++    s->rmt_regs[addr >> 2] = v;
++}
++static const MemoryRegionOps rmt_ops = {
++    .read = esp32_rmt_read, .write = esp32_rmt_write, .endianness = DEVICE_LITTLE_ENDIAN,
+ };
+ 
++static int chr_can_receive(void *opaque) { return 64; }
++static void chr_receive(void *opaque, const uint8_t *buf, int size)
++{
++    Esp32GpioState *s = ESP32_GPIO(opaque);
++    for (int i = 0; i < size; i++) {
++        char ch = buf[i];
++        if (ch == '\n') {
++            s->rxbuf[s->rxlen] = 0;
++            if (s->rxbuf[0] == '?') { send_state(s); } else { handle_line(s, s->rxbuf); }
++            s->rxlen = 0;
++        } else if (s->rxlen < (int)sizeof(s->rxbuf) - 1) {
++            s->rxbuf[s->rxlen++] = ch;
++        }
++    }
++}
++
+ static void esp32_gpio_reset_hold(Object *obj, ResetType type)
+ {
++    Esp32GpioState *s = ESP32_GPIO(obj);
++    uint32_t in = R(IN), in1 = R(IN1);
++    memset(s->regs, 0, sizeof s->regs);
++    memset(s->iomux, 0, sizeof s->iomux);
++    memset(s->rtcio, 0, sizeof s->rtcio);
++    memset(s->rmt_regs, 0, sizeof s->rmt_regs);
++    s->rmt_pending = 0;
++    for (int i = 0; i < 8; i++) if (s->rmt_timer[i]) timer_del(s->rmt_timer[i]);
++    R(IN) = in; R(IN1) = in1;
++    send_line(s, "X reset\n");
++    { bool sy = s->sync; s->sync = false; send_state(s); s->sync = sy; }
+ }
+ 
+ static void esp32_gpio_realize(DeviceState *dev, Error **errp)
+ {
++    Esp32GpioState *s = ESP32_GPIO(dev);
++    qemu_chr_fe_set_handlers(&s->chr, chr_can_receive, chr_receive, NULL, NULL, s, NULL, true);
++    for (int i = 0; i < 8; i++) {
++        rmt_ctx[i].s = s; rmt_ctx[i].ch = i;
++        s->rmt_timer[i] = timer_new_ns(QEMU_CLOCK_VIRTUAL, rmt_done, &rmt_ctx[i]);
++    }
+ }
+ 
+ static void esp32_gpio_init(Object *obj)
+ {
+     Esp32GpioState *s = ESP32_GPIO(obj);
+     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
+-
+-    /* Set the default value for the strap_mode property */
+     object_property_set_int(obj, "strap_mode", ESP32_STRAP_MODE_FLASH_BOOT, &error_fatal);
+-
+-    memory_region_init_io(&s->iomem, obj, &uart_ops, s,
+-                          TYPE_ESP32_GPIO, 0x1000);
++    memory_region_init_io(&s->iomem, obj, &gpio_ops, s, TYPE_ESP32_GPIO, 0x1000);
++    memory_region_init_io(&s->iomux_mem, obj, &iomux_ops, s, "esp32.iomux", 0x2000);
++    memory_region_init_io(&s->rtcio_mem, obj, &rtcio_ops, s, "esp32.rtcio", 0x400);
++    memory_region_init_io(&s->rmt_mem, obj, &rmt_ops, s, "esp32.rmt", 0x1000);
++    memory_region_init_io(&s->sens_mem, obj, &sens_ops, s, "esp32.sens", 0x400);
++    g_bridge = s;
+     sysbus_init_mmio(sbd, &s->iomem);
+     sysbus_init_irq(sbd, &s->irq);
++    sysbus_init_irq(sbd, &s->rmt_irq);
+ }
+ 
+ static Property esp32_gpio_properties[] = {
+-    /* The strap_mode needs to be explicitly set in the instance init, thus, set
+-     * the default value to 0. */
+     DEFINE_PROP_UINT32("strap_mode", Esp32GpioState, strap_mode, 0),
++    DEFINE_PROP_CHR("chardev", Esp32GpioState, chr),
+     DEFINE_PROP_END_OF_LIST(),
+ };
+ 
+@@ -80,24 +356,85 @@ static void esp32_gpio_class_init(ObjectClass *klass, void *data)
+ {
+     DeviceClass *dc = DEVICE_CLASS(klass);
+     ResettableClass *rc = RESETTABLE_CLASS(klass);
+-
+     rc->phases.hold = esp32_gpio_reset_hold;
+     dc->realize = esp32_gpio_realize;
+     device_class_set_props(dc, esp32_gpio_properties);
+ }
+ 
+-static const TypeInfo esp32_gpio_info = {
+-    .name = TYPE_ESP32_GPIO,
+-    .parent = TYPE_SYS_BUS_DEVICE,
+-    .instance_size = sizeof(Esp32GpioState),
+-    .instance_init = esp32_gpio_init,
+-    .class_init = esp32_gpio_class_init,
+-    .class_size = sizeof(Esp32GpioClass),
++/* ---- I2C bridge: a slave on each common sensor/display address forwards the bus traffic to the simulator page,
++ * which models the device (SSD1306, BME280, MPU6050, ...). Lines: "J S <bus> <addr> <r>" start (reply "K 0" = ACK),
++ * "J W <byte>", "J R" (reply "B <byte>"), "J P" stop. Needs lock-step mode; without a page every address NACKs. */
++#include "hw/i2c/i2c.h"
++#define TYPE_ESP32_SIM_I2C "esp32.sim-i2c"
++OBJECT_DECLARE_SIMPLE_TYPE(SimI2CState, ESP32_SIM_I2C)
++struct SimI2CState { I2CSlave parent; uint32_t bus; };
++
++static int sim_i2c_event(I2CSlave *i2c, enum i2c_event ev)
++{
++    SimI2CState *d = ESP32_SIM_I2C(i2c); Esp32GpioState *s = g_bridge; char b[64];
++    if (!s || !s->sync) return ev == I2C_START_SEND || ev == I2C_START_RECV ? -1 : 0;
++    switch (ev) {
++    case I2C_START_SEND: case I2C_START_RECV:
++        s->i2c_ack = 1;
++        snprintf(b, sizeof b, "J S %u %u %d\n", d->bus, i2c->address, ev == I2C_START_RECV); send_line(s, b); sync_wait(s);
++        return s->i2c_ack ? -1 : 0;
++    case I2C_FINISH: send_line(s, "J P\n"); return 0;
++    default: return 0;
++    }
++}
++static int sim_i2c_send(I2CSlave *i2c, uint8_t data)
++{
++    char b[32]; if (!g_bridge) return 1;
++    snprintf(b, sizeof b, "J W %u\n", data); send_line(g_bridge, b); return 0;
++}
++static uint8_t sim_i2c_recv(I2CSlave *i2c)
++{
++    Esp32GpioState *s = g_bridge; if (!s) return 0xff;
++    s->i2c_rx = 0xff; send_line(s, "J R\n"); sync_wait(s); return s->i2c_rx;
++}
++static void sim_i2c_class_init(ObjectClass *klass, void *data)
++{
++    I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
++    k->event = sim_i2c_event; k->recv = sim_i2c_recv; k->send = sim_i2c_send;
++}
++static const TypeInfo sim_i2c_info = {
++    .name = TYPE_ESP32_SIM_I2C, .parent = TYPE_I2C_SLAVE, .instance_size = sizeof(SimI2CState), .class_init = sim_i2c_class_init,
+ };
++void esp32_sim_i2c_attach(I2CBus *bus, unsigned busno)
++{
++    static const uint8_t addrs[] = { 0x3c, 0x3d, 0x76, 0x77, 0x68, 0x69, 0x27, 0x3f, 0x23, 0x40, 0x44, 0x5c, 0x29, 0x1e, 0x0d, 0x53, 0x57, 0x50, 0x20, 0x21 };
++    for (unsigned i = 0; i < sizeof addrs; i++) {
++        I2CSlave *sl = i2c_slave_new(TYPE_ESP32_SIM_I2C, addrs[i]);
++        ESP32_SIM_I2C(sl)->bus = busno;
++        i2c_slave_realize_and_unref(sl, bus, &error_fatal);
++    }
++}
+ 
+-static void esp32_gpio_register_types(void)
++/* esp32-sim SPI bridge: every SPI2/SPI3 user transaction -> "U bus need_rx hexbytes". If a CS pin listed by the page
++ * ("Z mask": GPIOs that are chip-selects of parts which drive MISO) is driven low, the vCPU waits for "V hexbytes". */
++void esp32_sim_spi_xfer(int bus, uint8_t *buf, int n, int rx_off, int rx_n)
+ {
+-    type_register_static(&esp32_gpio_info);
++    Esp32GpioState *s = g_bridge; char line[16 + 2 * 80]; int k;
++    if (!s || n <= 0) { if (rx_n > 0) memset(buf + rx_off, 0xff, rx_n); return; }
++    uint64_t out = (uint64_t)R(OUT) | ((uint64_t)(R(OUT1) & 0xff) << 32), en = (uint64_t)R(EN) | ((uint64_t)(R(EN1) & 0xff) << 32);
++    int need = rx_n > 0 && s->sync && (s->spi_csmask & en & ~out) != 0;
++    k = snprintf(line, sizeof line, "U %d %d ", bus, need);
++    for (int i = 0; i < n && i < 80; i++) k += snprintf(line + k, sizeof line - k, "%02x", buf[i]);
++    line[k++] = '\n'; line[k] = 0;
++    send_line(s, line);
++    if (rx_n > 0) {
++        memset(buf + rx_off, 0xff, rx_n);
++        if (need) {
++            s->spi_rxn = 0; sync_wait(s);
++            for (int i = 0; i < rx_n && rx_off + i < s->spi_rxn; i++) buf[rx_off + i] = s->spi_rx[rx_off + i];
++        }
++    }
+ }
+ 
++static const TypeInfo esp32_gpio_info = {
++    .name = TYPE_ESP32_GPIO, .parent = TYPE_SYS_BUS_DEVICE,
++    .instance_size = sizeof(Esp32GpioState), .instance_init = esp32_gpio_init,
++    .class_init = esp32_gpio_class_init, .class_size = sizeof(Esp32GpioClass),
++};
++static void esp32_gpio_register_types(void) { type_register_static(&esp32_gpio_info); type_register_static(&sim_i2c_info); }
+ type_init(esp32_gpio_register_types)
+diff --git a/hw/i2c/esp32_i2c.c b/hw/i2c/esp32_i2c.c
+index 5f4022f..cf05e9b 100644
+--- a/hw/i2c/esp32_i2c.c
++++ b/hw/i2c/esp32_i2c.c
+@@ -174,6 +174,7 @@ static void esp32_i2c_write(void * opaque, hwaddr addr, uint64_t value, unsigned
+ 
+ static void esp32_i2c_do_transaction(Esp32I2CState * s)
+ {
++    if (getenv("ESP32_I2C_TRACE")) { fprintf(stderr, "i2c txn:"); for (int k = 0; k < ESP32_I2C_CMD_COUNT; k++) fprintf(stderr, " %08x", s->cmd_reg[k]); fprintf(stderr, " txfifo=%u\n", fifo8_num_used(&s->tx_fifo)); }
+     bool stop_or_end = false;
+     for (int i_cmd = 0; i_cmd < ESP32_I2C_CMD_COUNT && !stop_or_end; ++i_cmd) {
+         uint32_t cmd = s->cmd_reg[i_cmd];
+@@ -190,6 +191,7 @@ static void esp32_i2c_do_transaction(Esp32I2CState * s)
+                     uint8_t data = fifo8_pop(&s->tx_fifo);
+                     uint8_t addr = data >> 1;
+                     uint8_t is_read = data & 0x1;
++                    if (getenv("ESP32_I2C_TRACE")) fprintf(stderr, "i2c start addr %02x r%d\n", addr, is_read);
+                     if (i2c_start_transfer(s->bus, addr, is_read) != 0) {
+                         /* NACK */
+                         if (FIELD_EX32(cmd, I2C_CMD, ACK_CHECK_EN)
+diff --git a/hw/misc/esp32_dport.c b/hw/misc/esp32_dport.c
+index 1bb2435..247ec18 100644
+--- a/hw/misc/esp32_dport.c
++++ b/hw/misc/esp32_dport.c
+@@ -282,17 +282,25 @@ static void esp32_cache_state_update(Esp32CacheState* cs)
+ 
+     bool drom0_enabled = cache_enabled &&
+         FIELD_EX32(cs->cache_ctrl1_reg, DPORT_PRO_CACHE_CTRL1, MASK_DROM0) == 0;
+-    if (!cs->drom0.mem.enabled && drom0_enabled) {
++    /* esp32-sim patch: keep a region mapped once it has been enabled. Under TCG the other core is not
++     * always parked in IRAM before the cache is disabled for a flash op, which made busy loops running
++     * from flash randomly trip the "Cache disabled but cached memory region accessed" trap. Flash content
++     * is always coherent in QEMU, so leaving the mapping in place is safe; data is re-synced on re-enable. */
++    if (!cs->drom0_logical && drom0_enabled) {
+         esp32_cache_data_sync(&cs->drom0);
+     }
+-    memory_region_set_enabled(&cs->drom0.mem, drom0_enabled);
++    cs->drom0_logical = drom0_enabled;
++    cs->drom0_ever |= drom0_enabled;
++    memory_region_set_enabled(&cs->drom0.mem, drom0_enabled || (cs->drom0_ever && !getenv("ESP32_STRICT_CACHE")));
+ 
+     bool iram0_enabled = cache_enabled &&
+         FIELD_EX32(cs->cache_ctrl1_reg, DPORT_PRO_CACHE_CTRL1, MASK_IRAM0) == 0;
+-    if (!cs->iram0.mem.enabled && iram0_enabled) {
++    if (!cs->iram0_logical && iram0_enabled) {
+         esp32_cache_data_sync(&cs->iram0);
+     }
+-    memory_region_set_enabled(&cs->iram0.mem, iram0_enabled);
++    cs->iram0_logical = iram0_enabled;
++    cs->iram0_ever |= iram0_enabled;
++    memory_region_set_enabled(&cs->iram0.mem, iram0_enabled || (cs->iram0_ever && !getenv("ESP32_STRICT_CACHE")));
+ 
+     if (cs->dport->has_psram) {
+         bool dram1_enabled = cache_enabled &&
+@@ -313,6 +321,7 @@ static void esp32_cache_reset(Esp32CacheState *cs)
+ {
+     esp32_cache_region_reset(&cs->drom0);
+     esp32_cache_region_reset(&cs->iram0);
++    cs->drom0_logical = cs->drom0_ever = cs->iram0_logical = cs->iram0_ever = false;
+ }
+ 
+ static uint64_t esp32_cache_ill_read(void *opaque, hwaddr addr, unsigned int size)
+@@ -322,6 +331,7 @@ static uint64_t esp32_cache_ill_read(void *opaque, hwaddr addr, unsigned int siz
+     uint32_t result;
+     memcpy(&result, ((uint8_t*) ill_data) + (addr % 4), size);
+     if (crs->illegal_access_trap_en) {
++        if (getenv("ESP32_CACHE_TRACE")) fprintf(stderr, "cache-ill read core%d type%d base=%x addr=%x mem_en=%d\n", crs->cache->core_id, crs->type, (unsigned)crs->base, (unsigned)addr, crs->mem.enabled);
+         crs->illegal_access_status = true;
+         qemu_irq_raise(crs->cache->dport->cache_ill_irq);
+     }
+diff --git a/hw/misc/esp32_ledc.c b/hw/misc/esp32_ledc.c
+index 9cebea9..fe8333e 100644
+--- a/hw/misc/esp32_ledc.c
++++ b/hw/misc/esp32_ledc.c
+@@ -3,9 +3,61 @@
+ #include "qemu/log.h"
+ #include "qapi/error.h"
+ #include "hw/misc/esp32_ledc.h"
++#include "hw/gpio/esp32_gpio.h"
++#include "qemu/timer.h"
++#include "hw/irq.h"
+ 
+ #define ESP32_LEDC_REGS_SIZE (A_LEDC_CONF_REG + 4)
+ 
++static int ledc_tmr(Esp32LEDCState *s, int ch) { return (s->channel_conf0_reg[ch] & 3) + (ch < 8 ? 0 : 4); }
++static void ledc_emit(Esp32LEDCState *s, int ch, bool force)
++{
++    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
++    if (!force && now - s->last_emit_ns[ch] < 5000000) return;
++    s->last_emit_ns[ch] = now;
++    uint32_t tc = s->timer_conf_reg[ledc_tmr(s, ch)];
++    char b[96];
++    snprintf(b, sizeof b, "P %d %u %u %u\n", ch, s->duty[ch], tc & 0x1f, tc);
++    esp32_gpio_bridge_send(b);
++}
++static void ledc_update_irq(Esp32LEDCState *s) { qemu_set_irq(s->irq, (s->int_raw & s->int_ena) != 0); }
++static int64_t ledc_period_ns(Esp32LEDCState *s, int ch)
++{
++    uint32_t tc = s->timer_conf_reg[ledc_tmr(s, ch)], res = tc & 0x1f, div = (tc >> 5) & 0x3ffff, b25 = (tc >> 25) & 1;
++    double clk = ch < 8 ? (b25 ? 80e6 : 1e6) : (b25 ? 1e6 : 80e6);
++    if (!div || !res) return 1000000;
++    double f = clk * 256.0 / div / (double)(1u << res);
++    return f > 0 ? (int64_t)(1e9 / f) : 1000000;
++}
++static void ledc_fade_end(Esp32LEDCState *s, int ch)
++{
++    ledc_emit(s, ch, true);
++    s->int_raw |= 1u << (8 + ch); ledc_update_irq(s);
++}
++static void ledc_fade_tick(void *opaque)
++{
++    Esp32LEDCState *s = ((Esp32LEDCState **)opaque)[0];
++    int ch = (int)(intptr_t)((void **)opaque)[1];
++    uint32_t res = s->timer_conf_reg[ledc_tmr(s, ch)] & 0x1f, max = res ? (1u << res) : 0xfffff;
++    if (s->fade_inc[ch]) s->duty[ch] = MIN(max, s->duty[ch] + s->fade_scale[ch]);
++    else s->duty[ch] = s->duty[ch] > s->fade_scale[ch] ? s->duty[ch] - s->fade_scale[ch] : 0;
++    if (--s->fade_left[ch] == 0) { ledc_fade_end(s, ch); return; }
++    ledc_emit(s, ch, false);
++    timer_mod_ns(s->fade_timer[ch], qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->fade_step_ns[ch]);
++}
++static void *ledc_tick_ctx[ESP32_LEDC_CHANNEL_CNT][2];
++static void ledc_conf1_write(Esp32LEDCState *s, int ch, uint32_t v)
++{
++    if (!(v & (1u << 31))) return;          /* duty_start */
++    uint32_t num = (v >> 20) & 0x3ff, cycle = (v >> 10) & 0x3ff, scale = v & 0x3ff;
++    timer_del(s->fade_timer[ch]);
++    if (!scale || !num) { ledc_fade_end(s, ch); return; }
++    s->fade_left[ch] = num; s->fade_scale[ch] = scale; s->fade_inc[ch] = (v >> 30) & 1;
++    s->fade_step_ns[ch] = ledc_period_ns(s, ch) * (cycle ? cycle : 1);
++    ledc_emit(s, ch, true);
++    timer_mod_ns(s->fade_timer[ch], qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->fade_step_ns[ch]);
++}
++
+ static uint64_t esp32_ledc_read(void *opaque, hwaddr addr, unsigned int size)
+ {
+     Esp32LEDCState *s = ESP32_LEDC(opaque);
+@@ -33,7 +85,17 @@ static uint64_t esp32_ledc_read(void *opaque, hwaddr addr, unsigned int size)
+     case A_LEDC_LSCH7_CONF0_REG:
+         r = s->channel_conf0_reg[(addr - A_LEDC_HSCH0_CONF0_REG) / 0x14];
+         break;
++    case A_LEDC_INT_RAW_REG: r = s->int_raw; break;
++    case A_LEDC_INT_ST_REG: r = s->int_raw & s->int_ena; break;
++    case A_LEDC_INT_ENA_REG: r = s->int_ena; break;
++    default:
++        if (addr < 0x140 && (addr % 0x14) == 0x10) r = s->duty[addr / 0x14] << 4;            /* DUTY_R */
++        else if (addr < 0x140 && (addr % 0x14) == 0x08) r = s->duty[addr / 0x14] << 4;       /* DUTY */
++        else if (addr < 0x140 && (addr % 0x14) == 0x0c) r = s->conf1[addr / 0x14] & 0x7fffffff;  /* CONF1 */
++        else if (addr < 0x140 && (addr % 0x14) == 0x04) r = s->hpoint[addr / 0x14];
++        break;
+     }
++    if (getenv("ESP32_LEDC_TRACE")) fprintf(stderr, "ledc r %03x=%08x\n", (unsigned)addr, (unsigned)r);
+     return r;
+ }
+ 
+@@ -55,6 +117,7 @@ static void esp32_ledc_write(void *opaque, hwaddr addr,
+                             uint64_t value, unsigned int size)
+ {
+     Esp32LEDCState *s = ESP32_LEDC(opaque);
++    if (getenv("ESP32_LEDC_TRACE")) fprintf(stderr, "ledc w %03x=%08x\n", (unsigned)addr, (unsigned)value);
+     switch (addr) {
+     case A_LEDC_HSTIMER0_CONF_REG ... A_LEDC_LSTIMER3_CONF_REG:
+         /* get duty resolution from timer config */
+@@ -100,6 +163,13 @@ static void esp32_ledc_write(void *opaque, hwaddr addr,
+     case A_LEDC_LSCH6_DUTY_REG:
+     case A_LEDC_LSCH7_DUTY_REG:
+         led_set_intensity(&s->led[(addr - A_LEDC_HSCH0_DUTY_REG) / 0x14], esp32_ledc_get_percent(s, value, addr));
++        s->duty[(addr - A_LEDC_HSCH0_DUTY_REG) / 0x14] = ((uint32_t)value >> 4) & 0xfffff;
++        break;
++    case A_LEDC_INT_ENA_REG: s->int_ena = value; ledc_update_irq(s); break;
++    case A_LEDC_INT_CLR_REG: s->int_raw &= ~(uint32_t)value; ledc_update_irq(s); break;
++    default:
++        if (addr < 0x140 && (addr % 0x14) == 0x0c) { s->conf1[addr / 0x14] = value; ledc_conf1_write(s, addr / 0x14, value); }
++        else if (addr < 0x140 && (addr % 0x14) == 0x04) s->hpoint[addr / 0x14] = value;
+         break;
+     }
+ 
+@@ -116,6 +186,8 @@ static void esp32_ledc_realize(DeviceState *dev, Error **errp)
+     Esp32LEDCState *s = ESP32_LEDC(dev);
+     for (int i = 0; i < ESP32_LEDC_CHANNEL_CNT; i++) {
+         qdev_realize(DEVICE(&s->led[i]), NULL, &error_fatal);
++        ledc_tick_ctx[i][0] = s; ledc_tick_ctx[i][1] = (void *)(intptr_t)i;
++        s->fade_timer[i] = timer_new_ns(QEMU_CLOCK_VIRTUAL, ledc_fade_tick, ledc_tick_ctx[i]);
+     }
+ }
+ 
+@@ -126,6 +198,7 @@ static void esp32_ledc_init(Object *obj)
+     memory_region_init_io(&s->iomem, obj, &esp32_ledc_ops, s,
+                           TYPE_ESP32_LEDC, ESP32_LEDC_REGS_SIZE);
+     sysbus_init_mmio(sbd, &s->iomem);
++    sysbus_init_irq(sbd, &s->irq);
+     for (int i = 0; i < ESP32_LEDC_CHANNEL_CNT; i++) {
+         object_initialize_child(obj, g_strdup_printf("led%d", i + 1), &s->led[i], TYPE_LED);
+         s->led[i].color = (char *)"blue";
+diff --git a/hw/ssi/esp32_spi.c b/hw/ssi/esp32_spi.c
+index f47bfca..caacf98 100644
+--- a/hw/ssi/esp32_spi.c
++++ b/hw/ssi/esp32_spi.c
+@@ -19,6 +19,7 @@
+ #include "hw/qdev-properties.h"
+ #include "hw/ssi/ssi.h"
+ #include "hw/ssi/esp32_spi.h"
++#include "hw/gpio/esp32_gpio.h"
+ #include "hw/misc/esp32_flash_enc.h"
+ 
+ 
+@@ -176,6 +177,18 @@ static void esp32_spi_cs_set(Esp32SpiState *s, int value)
+ 
+ static void esp32_spi_transaction(Esp32SpiState *s, Esp32SpiTransaction *t)
+ {
++    if (s->sim_bus >= 0) {
++        uint8_t b[80]; int n = 0, dn = MAX(t->data_tx_bytes, t->data_rx_bytes);
++        for (int i = 0; i < t->cmd_bytes && i < 4; i++) b[n++] = ((uint8_t *)&t->cmd)[i];
++        for (int i = 0; i < t->addr_bytes && i < 4; i++) b[n++] = ((uint8_t *)&t->addr)[i];
++        int off = n; if (dn > 64) dn = 64;
++        if (dn) memcpy(b + n, t->data, dn);
++        if (dn > t->data_tx_bytes) memset(b + n + t->data_tx_bytes, 0xff, dn - t->data_tx_bytes);
++        n += dn;
++        esp32_sim_spi_xfer(s->sim_bus, b, n, off, t->data_rx_bytes ? dn : 0);
++        if (t->data_rx_bytes) memcpy(t->data, b + off, MIN(dn, t->data_rx_bytes));
++        return;
++    }
+     esp32_spi_cs_set(s, 0);
+     esp32_spi_txrx_buffer(s, &t->cmd, t->cmd_bytes, 0);
+     esp32_spi_txrx_buffer(s, &t->addr, t->addr_bytes, 0);
+@@ -275,7 +288,7 @@ static void esp32_spi_do_command(Esp32SpiState* s, uint32_t cmd_reg)
+ 
+     case R_SPI_CMD_USR_MASK:
+         maybe_encrypt_data(s);
+-        if (FIELD_EX32(s->user_reg, SPI_USER, COMMAND) || FIELD_EX32(s->user2_reg, SPI_USER2, COMMAND_BITLEN)) {
++        if (FIELD_EX32(s->user_reg, SPI_USER, COMMAND) || (s->sim_bus < 0 && FIELD_EX32(s->user2_reg, SPI_USER2, COMMAND_BITLEN))) {
+             t.cmd = FIELD_EX32(s->user2_reg, SPI_USER2, COMMAND_VALUE);
+             t.cmd_bytes = bitlen_to_bytes(FIELD_EX32(s->user2_reg, SPI_USER2, COMMAND_BITLEN));
+         } else {
+@@ -337,6 +350,7 @@ static void esp32_spi_init(Object *obj)
+ }
+ 
+ static Property esp32_spi_properties[] = {
++    DEFINE_PROP_INT32("sim-bus", Esp32SpiState, sim_bus, -1),
+     DEFINE_PROP_END_OF_LIST(),
+ };
+ 
+diff --git a/hw/xtensa/esp32.c b/hw/xtensa/esp32.c
+index e000470..3bc55e7 100644
+--- a/hw/xtensa/esp32.c
++++ b/hw/xtensa/esp32.c
+@@ -397,6 +397,7 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
+ 
+     qdev_realize(DEVICE(&s->ledc), &s->periph_bus, &error_fatal);
+     esp32_soc_add_periph_device(sys_mem, &s->ledc, DR_REG_LEDC_BASE);
++    sysbus_connect_irq(SYS_BUS_DEVICE(&s->ledc), 0, qdev_get_gpio_in(intmatrix_dev, ETS_LEDC_INTR_SOURCE));
+ 
+     qdev_realize(DEVICE(&s->rtc_cntl), &s->rtc_bus, &error_fatal);
+     esp32_soc_add_periph_device(sys_mem, &s->rtc_cntl, DR_REG_RTCCNTL_BASE);
+@@ -414,6 +415,7 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
+ 
+     qdev_realize(DEVICE(&s->gpio), &s->periph_bus, &error_fatal);
+     esp32_soc_add_periph_device(sys_mem, &s->gpio, DR_REG_GPIO_BASE);
++    sysbus_connect_irq(SYS_BUS_DEVICE(&s->gpio), 1, qdev_get_gpio_in(intmatrix_dev, ETS_RMT_INTR_SOURCE));
+ 
+     for (int i = 0; i < ESP32_UART_COUNT; ++i) {
+         const hwaddr uart_base[] = {DR_REG_UART_BASE, DR_REG_UART1_BASE, DR_REG_UART2_BASE};
+@@ -458,6 +460,7 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
+         const hwaddr spi_base[] = {
+             DR_REG_SPI0_BASE, DR_REG_SPI1_BASE, DR_REG_SPI2_BASE, DR_REG_SPI3_BASE
+         };
++        if (i >= 2) qdev_prop_set_int32(DEVICE(&s->spi[i]), "sim-bus", i);
+         qdev_realize(DEVICE(&s->spi[i]), &s->periph_bus, &error_fatal);
+ 
+         esp32_soc_add_periph_device(sys_mem, &s->spi[i], spi_base[i]);
+@@ -517,16 +520,16 @@ static void esp32_soc_realize(DeviceState *dev, Error **errp)
+     memory_region_add_subregion_overlap(sys_mem, esp32_memmap[ESP32_MEMREGION_FRAMEBUF].base, &s->rgb.vram, 0);
+ 
+     esp32_soc_add_unimp_device(sys_mem, "esp32.analog", DR_REG_ANA_BASE, 0x1000);
+-    esp32_soc_add_unimp_device(sys_mem, "esp32.rtcio", DR_REG_RTCIO_BASE, 0x400);
+-    esp32_soc_add_unimp_device(sys_mem, "esp32.rtcio", DR_REG_SENS_BASE, 0x400);
+-    esp32_soc_add_unimp_device(sys_mem, "esp32.iomux", DR_REG_IO_MUX_BASE, 0x2000);
++    memory_region_add_subregion_overlap(sys_mem, DR_REG_RTCIO_BASE, &s->gpio.rtcio_mem, 0);
++    memory_region_add_subregion_overlap(sys_mem, DR_REG_SENS_BASE, &s->gpio.sens_mem, 0);
++    memory_region_add_subregion_overlap(sys_mem, DR_REG_IO_MUX_BASE, &s->gpio.iomux_mem, 0);
+     esp32_soc_add_unimp_device(sys_mem, "esp32.hinf", DR_REG_HINF_BASE, 0x1000);
+     esp32_soc_add_unimp_device(sys_mem, "esp32.slc", DR_REG_SLC_BASE, 0x1000);
+     esp32_soc_add_unimp_device(sys_mem, "esp32.slchost", DR_REG_SLCHOST_BASE, 0x1000);
+     esp32_soc_add_unimp_device(sys_mem, "esp32.apbctrl", DR_REG_APB_CTRL_BASE, 0x1000);
+     esp32_soc_add_unimp_device(sys_mem, "esp32.i2s0", DR_REG_I2S_BASE, 0x1000);
+     esp32_soc_add_unimp_device(sys_mem, "esp32.i2s1", DR_REG_I2S1_BASE, 0x1000);
+-    esp32_soc_add_unimp_device(sys_mem, "esp32.rmt", DR_REG_RMT_BASE, 0x1000);
++    memory_region_add_subregion_overlap(sys_mem, DR_REG_RMT_BASE, &s->gpio.rmt_mem, 0);
+     esp32_soc_add_unimp_device(sys_mem, "esp32.pcnt", DR_REG_PCNT_BASE, 0x1000);
+ 
+     /* Emulation of a fake register used to mark that the chip is run via QEMU */
+@@ -752,6 +755,8 @@ static void esp32_machine_init_i2c(Esp32SocState *s)
+     I2CBus* i2c_bus = I2C_BUS(qdev_get_child_bus(i2c_master, "i2c"));
+     I2CSlave* tmp105 = i2c_slave_create_simple(i2c_bus, "tmp105", 0x48);
+     object_property_set_int(OBJECT(tmp105), "temperature", 25 * 1000, &error_fatal);
++    esp32_sim_i2c_attach(i2c_bus, 0);
++    esp32_sim_i2c_attach(I2C_BUS(qdev_get_child_bus(DEVICE(&s->i2c[1]), "i2c")), 1);
+ }
+ 
+ static void esp32_machine_init_openeth(Esp32SocState *ss)
+diff --git a/include/hw/gpio/esp32_gpio.h b/include/hw/gpio/esp32_gpio.h
+index 163b41a..4ee3a3d 100644
+--- a/include/hw/gpio/esp32_gpio.h
++++ b/include/hw/gpio/esp32_gpio.h
+@@ -3,6 +3,8 @@
+ #include "hw/sysbus.h"
+ #include "hw/hw.h"
+ #include "hw/registerfields.h"
++#include "chardev/char-fe.h"
++#include "qemu/timer.h"
+ 
+ #define TYPE_ESP32_GPIO "esp32.gpio"
+ #define ESP32_GPIO(obj)             OBJECT_CHECK(Esp32GpioState, (obj), TYPE_ESP32_GPIO)
+@@ -20,8 +22,32 @@ typedef struct Esp32GpioState {
+     MemoryRegion iomem;
+     qemu_irq irq;
+     uint32_t strap_mode;
++    MemoryRegion iomux_mem, rtcio_mem;
++    CharBackend chr;
++    uint32_t regs[0x400];
++    uint32_t iomux[0x800];
++    uint32_t rtcio[0x100];
++    char rxbuf[256];
++    int rxlen;
++    bool sync;
++    /* minimal RMT (TX only) — esp32-sim patch */
++    MemoryRegion rmt_mem;
++    MemoryRegion sens_mem;
++    uint32_t sens[0x100];
++    int i2c_ack; int i2c_rx;
++    uint8_t spi_rx[64]; int spi_rxn; uint64_t spi_csmask;
++    uint16_t adc[2][12];
++    qemu_irq rmt_irq;
++    uint32_t rmt_regs[0x400];          /* 0x000..0x7ff regs, 0x800..0xfff RAM (word index) */
++    QEMUTimer *rmt_timer[8];
++    uint32_t rmt_pending;
+ } Esp32GpioState;
+ 
+ typedef struct Esp32GpioClass {
+     SysBusDeviceClass parent_class;
+ } Esp32GpioClass;
++void esp32_gpio_bridge_send(const char *line);
++typedef struct I2CBus I2CBus;
++void esp32_sim_i2c_attach(I2CBus *bus, unsigned busno);
++void esp32_sim_spi_xfer(int bus, uint8_t *buf, int n, int rx_off, int rx_n);
++
+diff --git a/include/hw/misc/esp32_dport.h b/include/hw/misc/esp32_dport.h
+index 3dfc0ab..24b1b59 100644
+--- a/include/hw/misc/esp32_dport.h
++++ b/include/hw/misc/esp32_dport.h
+@@ -49,6 +49,7 @@ typedef struct Esp32CacheState {
+     Esp32CacheRegionState iram0;
+     Esp32CacheRegionState drom0;
+     Esp32CacheRegionState dram1;  /* PSRAM */
++    bool drom0_logical, drom0_ever, iram0_logical, iram0_ever;  /* esp32-sim patch */
+ } Esp32CacheState;
+ 
+ typedef struct Esp32DportState {
+diff --git a/include/hw/misc/esp32_ledc.h b/include/hw/misc/esp32_ledc.h
+index 818b984..8a8850d 100644
+--- a/include/hw/misc/esp32_ledc.h
++++ b/include/hw/misc/esp32_ledc.h
+@@ -17,6 +17,14 @@ typedef struct Esp32LEDCState {
+     uint32_t timer_conf_reg[ESP32_LEDC_TIMER_CNT];
+     uint32_t channel_conf0_reg[ESP32_LEDC_CHANNEL_CNT];
+     LEDState led[ESP32_LEDC_CHANNEL_CNT];
++    /* sim bridge: duty + hardware fade engine + duty_chng_end interrupts */
++    uint32_t duty[ESP32_LEDC_CHANNEL_CNT];      /* integer duty */
++    uint32_t fade_left[ESP32_LEDC_CHANNEL_CNT], fade_scale[ESP32_LEDC_CHANNEL_CNT], fade_inc[ESP32_LEDC_CHANNEL_CNT];
++    int64_t fade_step_ns[ESP32_LEDC_CHANNEL_CNT], last_emit_ns[ESP32_LEDC_CHANNEL_CNT];
++    QEMUTimer *fade_timer[ESP32_LEDC_CHANNEL_CNT];
++    uint32_t int_raw, int_ena;
++    uint32_t conf1[ESP32_LEDC_CHANNEL_CNT], hpoint[ESP32_LEDC_CHANNEL_CNT];
++    qemu_irq irq;
+ } Esp32LEDCState;
+ 
+ REG32(LEDC_CONF_REG, 0x190)
+diff --git a/include/hw/ssi/esp32_spi.h b/include/hw/ssi/esp32_spi.h
+index dcf9bc8..6bd17b7 100644
+--- a/include/hw/ssi/esp32_spi.h
++++ b/include/hw/ssi/esp32_spi.h
+@@ -31,6 +31,7 @@ typedef struct Esp32SpiState {
+     uint32_t miso_dlen_reg;
+     uint32_t pin_reg;
+     uint32_t data_reg[ESP32_SPI_BUF_WORDS];
++    int32_t sim_bus; /* esp32-sim: >=0 bridges this controller's transactions to the page */
+ } Esp32SpiState;
+ 
+ 

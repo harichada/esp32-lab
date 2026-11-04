@@ -1,0 +1,94 @@
+/* Mobile-first shell. Active only when <html class="m"> (APK user agent or viewport < 768px); desktop untouched. */
+html.m{--mbar:56px;--mtabs:64px;--sat:env(safe-area-inset-top,0px);--sab:env(safe-area-inset-bottom,0px);--sal:env(safe-area-inset-left,0px);--sar:env(safe-area-inset-right,0px);--m-surf:#141a22;--m-surf2:#1b2330;--m-on:#e8eef6;--m-on2:#9fb0c3;--m-acc:#22d3ee;--m-line:#273142}
+html.m,html.m body{height:100%;overflow:hidden;overscroll-behavior:none;-webkit-tap-highlight-color:transparent}
+html.m body{font-size:15px}
+html.m header#top,html.m #palette,html.m #side,html.m #sideResizer,html.m #dockResizer,html.m .reopen,html.m .canvas-tools,html.m .zoom-tools,html.m #minimap,html.m .hint,html.m #projBanner,html.m #tabs,html.m .tip{display:none!important}
+html.m #main{display:block!important;position:fixed;left:0;right:0;top:calc(var(--mbar) + var(--sat));bottom:calc(var(--mtabs) + var(--sab));height:auto!important}
+html.m #center{height:100%}
+html.m #stageWrap{position:absolute;inset:0;min-height:0}
+html.m #dock{position:fixed;left:0;right:0;top:calc(var(--mbar) + var(--sat));bottom:calc(var(--mtabs) + var(--sab));height:auto!important;display:none!important;background:var(--l1);z-index:20}
+html.m body[data-mv=code] #dock,html.m body[data-mv=serial] #dock{display:flex!important}
+html.m body[data-mv=code] #stageWrap,html.m body[data-mv=serial] #stageWrap{visibility:hidden}
+html.m #dock .tab{flex:1;min-height:0}
+html.m .codebar{flex-wrap:wrap;padding:6px 8px;gap:6px}.m .codebar .fld{font-size:13px}
+html.m #code,html.m #codeHl,html.m .gutter{font-size:13.5px!important}
+html.m .termbar{flex-wrap:wrap;padding:6px 8px;gap:6px}html.m #serialIn{flex:1 1 100%;height:40px;font-size:15px}
+html.m .term{font-size:13px}
+html.m .warnbox{top:8px;left:8px;max-width:calc(100% - 16px);font-size:12.5px}
+/* dock as a sheet (build log, network, devices, scope, about) */
+html.m body.dsheet #dock{display:flex!important;top:auto;height:72%!important;border-radius:20px 20px 0 0;box-shadow:0 -8px 30px #000a;z-index:48;padding-top:28px;bottom:0;padding-bottom:var(--sab)}
+html.m body.dsheet #dock::before{content:'';position:absolute;top:10px;left:50%;width:36px;height:4px;margin-left:-18px;border-radius:2px;background:#4b5868}
+html.m .dock-close{position:absolute;top:2px;right:8px;z-index:2}
+html.m body:not(.dsheet) .dock-close{display:none}
+/* app bar */
+.m-bar{position:fixed;top:0;left:0;right:0;height:calc(var(--mbar) + var(--sat));padding:var(--sat) calc(4px + var(--sar)) 0 calc(4px + var(--sal));display:flex;align-items:center;gap:4px;background:var(--m-surf);border-bottom:1px solid var(--m-line);z-index:40}
+.m-ib{width:48px;height:48px;border-radius:24px;display:grid;place-items:center;background:none;border:0;color:var(--m-on);padding:0;flex:none}.m-ib:active{background:#ffffff14}.m-ib svg{width:24px;height:24px}
+.m-title{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;line-height:1.15}
+.m-title b{font-size:17px;font-weight:600;color:var(--m-on);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.m-sub{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--m-on2);white-space:nowrap;overflow:hidden}
+.m-chip{display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 9px;border-radius:11px;font-size:11.5px;font-weight:600;border:1px solid var(--m-line);color:var(--m-on2);background:none}
+.m-chip.ex{color:#fbbf24;border-color:#fbbf2466}.m-chip.mine{color:#34d399;border-color:#34d39955}
+.m-chip.act{background:#fbbf241f}
+.m-dot{width:8px;height:8px;border-radius:4px;background:#64748b;flex:none}.m-dot.run{background:#34d399;box-shadow:0 0 8px #34d399}.m-dot.busy{background:#fbbf24}.m-dot.err{background:#f87171}
+/* bottom tabs */
+.m-tabs{position:fixed;left:0;right:0;bottom:0;height:calc(var(--mtabs) + var(--sab));padding:0 var(--sar) var(--sab) var(--sal);display:flex;background:var(--m-surf);border-top:1px solid var(--m-line);z-index:40}
+.m-tabs button{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;background:none;border:0;border-radius:0;color:var(--m-on2);font-size:12px;font-weight:600;height:100%;padding:0}
+.m-tabs button i{display:grid;place-items:center;width:56px;height:30px;border-radius:15px;transition:background .15s}.m-tabs button svg{width:22px;height:22px}
+.m-tabs button.on{color:var(--m-on)}.m-tabs button.on i{background:#22d3ee2e;color:var(--m-acc)}
+/* FAB */
+.m-fab{position:fixed;right:calc(16px + var(--sar));bottom:calc(var(--mtabs) + var(--sab) + 16px);height:56px;min-width:56px;padding:0 20px 0 16px;border-radius:16px;border:0;display:flex;align-items:center;gap:8px;background:var(--m-acc);color:#03141a;font-weight:700;font-size:15px;box-shadow:0 6px 18px #0009;z-index:35}
+.m-fab svg{width:22px;height:22px}body.running .m-fab{background:#f87171;color:#1a0505}body.busy .m-fab{background:#fbbf24}
+body.busy .m-fab svg{animation:mspin 1s linear infinite}@keyframes mspin{to{transform:rotate(360deg)}}
+body:not([data-mv=circuit]) .m-fab{bottom:calc(var(--mtabs) + var(--sab) + 72px)}
+/* floating circuit controls */
+.m-cv{position:absolute;left:calc(12px + var(--sal));bottom:16px;display:flex;flex-direction:column;gap:8px;z-index:6}
+.m-cv button{width:48px;height:48px;border-radius:14px;background:var(--m-surf2);border:1px solid var(--m-line);color:var(--m-on);display:grid;place-items:center;padding:0;box-shadow:0 3px 10px #0007}.m-cv svg{width:22px;height:22px}
+.m-zoom{position:absolute;left:50%;top:10px;transform:translateX(-50%);background:#000a;color:#fff;font-size:12px;padding:3px 10px;border-radius:10px;z-index:6;opacity:0;transition:opacity .3s;pointer-events:none}.m-zoom.on{opacity:1}
+.m-wiring{position:absolute;left:12px;right:12px;top:10px;display:none;align-items:center;gap:8px;background:var(--m-surf2);border:1px solid var(--m-acc);color:var(--m-on);border-radius:14px;padding:6px 6px 6px 14px;font-size:13.5px;z-index:7;box-shadow:0 4px 14px #0008}
+.m-wiring.on{display:flex}.m-wiring span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.m-wiring button{height:36px;border-radius:18px;padding:0 14px;font-weight:600}
+/* toast */
+.m-toast{position:fixed;left:50%;bottom:calc(var(--mtabs) + var(--sab) + 88px);transform:translate(-50%,20px);max-width:calc(100% - 32px);background:#e8eef6;color:#0b1118;font-size:14px;padding:12px 16px;border-radius:12px;z-index:60;opacity:0;transition:opacity .2s,transform .2s;pointer-events:none;box-shadow:0 6px 20px #000a}
+.m-toast.on{opacity:1;transform:translate(-50%,0)}
+html.m .toast{bottom:auto;top:calc(var(--mbar) + var(--sat) + 10px);max-width:calc(100% - 32px);font-size:14px}
+/* sheets */
+.m-scrim{position:fixed;inset:0;background:#0008;z-index:45;opacity:0;pointer-events:none;transition:opacity .2s}.m-scrim.on{opacity:1;pointer-events:auto}
+.m-sheet{position:fixed;left:0;right:0;bottom:0;max-height:82%;display:flex;flex-direction:column;background:var(--m-surf);border-radius:24px 24px 0 0;z-index:50;transform:translateY(105%);transition:transform .22s cubic-bezier(.2,.8,.2,1);padding-bottom:var(--sab);box-shadow:0 -10px 30px #000b}
+.m-sheet.on{transform:none}.m-sheet.tall{height:82%}
+.m-sheet .grab{width:36px;height:4px;border-radius:2px;background:#4b5868;margin:10px auto 4px;flex:none}
+.m-sh-h{display:flex;align-items:center;gap:8px;padding:4px 12px 8px 20px;flex:none}.m-sh-h h3{flex:1;margin:0;font-size:18px;font-weight:600;color:var(--m-on)}
+.m-sh-b{overflow:auto;padding:0 16px 16px;flex:1;min-height:0;-webkit-overflow-scrolling:touch}
+.m-act{display:flex;gap:8px;padding:0 16px 10px;flex-wrap:wrap;flex:none}
+.m-act button{height:40px;border-radius:20px;padding:0 16px;display:inline-flex;align-items:center;gap:6px;font-size:14px;background:var(--m-surf2);border:1px solid var(--m-line);color:var(--m-on)}.m-act button svg{width:18px;height:18px}
+.m-act button.danger{color:#fca5a5;border-color:#f8717155}
+.m-colors{display:flex;gap:10px;padding:2px 16px 12px;flex-wrap:wrap}.m-colors span{width:34px;height:34px;border-radius:17px;border:2px solid #0006;box-shadow:0 0 0 1px #fff3}.m-colors span.on{box-shadow:0 0 0 3px var(--m-acc)}
+.m-sh-b #insp{font-size:14px}.m-sh-b #insp input,.m-sh-b #insp select{min-height:38px;font-size:15px}.m-sh-b #insp input[type=range]{height:32px}
+/* parts sheet */
+.m-sh-b .pal-search{padding:0 0 8px;position:sticky;top:0;background:var(--m-surf);z-index:2}.m-sh-b .pal-search input{height:44px;font-size:16px;border-radius:22px;padding-left:40px}.m-sh-b .pal-search .ic{left:14px}
+.m-cats{display:flex;gap:8px;overflow-x:auto;padding:0 16px 10px;flex:none;scrollbar-width:none}.m-cats::-webkit-scrollbar{display:none}
+.m-cats button{flex:none;height:34px;border-radius:17px;padding:0 14px;font-size:13px;background:var(--m-surf2);border:1px solid var(--m-line);color:var(--m-on2)}.m-cats button.on{background:#22d3ee26;color:var(--m-acc);border-color:#22d3ee66}
+.m-sh-b #palList{padding:0;overflow:visible}
+.m-sh-b .pgrid{grid-template-columns:repeat(3,1fr);gap:10px}.m-sh-b .pgrid.closed{display:grid}
+.m-sh-b .pcat{font-size:12px;margin:14px 2px 8px;pointer-events:none}.m-sh-b .pcat::after{display:none}
+.m-sh-b .pitem{padding:10px 4px 8px;min-height:96px;border-radius:14px;background:var(--m-surf2)}.m-sh-b .pitem svg{height:56px}.m-sh-b .pitem span{font-size:12px;white-space:normal;line-height:1.2;max-height:2.4em}
+/* drawer */
+.m-drawer{position:fixed;top:0;bottom:0;left:0;width:min(320px,86%);background:var(--m-surf);z-index:50;transform:translateX(-102%);transition:transform .22s cubic-bezier(.2,.8,.2,1);display:flex;flex-direction:column;padding:calc(12px + var(--sat)) 0 var(--sab);border-radius:0 20px 20px 0;box-shadow:8px 0 30px #000b}
+.m-drawer.on{transform:none}
+.m-drawer h4{margin:16px 24px 6px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--m-on2)}
+.m-drawer .m-brand{display:flex;align-items:center;gap:10px;padding:8px 24px 8px;font-weight:700;font-size:18px;color:var(--m-on)}
+.m-list{overflow:auto;flex:1}
+.m-li{display:flex;align-items:center;gap:14px;width:calc(100% - 24px);margin:0 12px;height:52px;padding:0 14px;border-radius:26px;background:none;border:0;color:var(--m-on);font-size:15px;text-align:left;justify-content:flex-start}
+.m-li:active,.m-li.on{background:#22d3ee22}.m-li svg{width:22px;height:22px;flex:none;color:var(--m-on2)}.m-li span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* overflow menu */
+.m-menu{position:fixed;top:calc(var(--sat) + 52px);right:calc(8px + var(--sar));min-width:220px;max-height:70%;overflow:auto;background:var(--m-surf2);border:1px solid var(--m-line);border-radius:14px;z-index:55;padding:6px 0;box-shadow:0 10px 30px #000c;display:none}
+.m-menu.on{display:block}.m-menu button{display:flex;align-items:center;gap:12px;width:100%;height:48px;padding:0 16px;background:none;border:0;border-radius:0;color:var(--m-on);font-size:15px;justify-content:flex-start}.m-menu button:active{background:#ffffff12}.m-menu svg{width:20px;height:20px;color:var(--m-on2)}
+.m-menu hr{border:0;border-top:1px solid var(--m-line);margin:6px 0}
+/* circuit rendering: high contrast, big touch targets */
+html.m .part.sel>*:first-child{filter:drop-shadow(0 0 4px #22d3ee) drop-shadow(0 0 2px #22d3ee)}
+html.m .part.lift>*:first-child{filter:drop-shadow(0 6px 6px #000c) drop-shadow(0 0 3px #22d3ee)}
+html.m .w-hit{stroke-width:18px!important}
+html.m .pin{stroke-width:.8}
+html.m .hl-pin{r:7}
+html.m .plbl{font-size:9px;fill:#e6eef8;paint-order:stroke;stroke:#0b1118;stroke-width:2.2px}
+html.m .modal{z-index:70}
+/* v5: the part sheet has its own Rotate / Duplicate / Delete bar; hide the desktop inspector's duplicate buttons */
+#mInsp #iRot, #mInsp #iDel { display: none !important; }

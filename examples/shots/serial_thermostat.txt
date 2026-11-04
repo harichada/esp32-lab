@@ -1,0 +1,32 @@
+— DHT22 thermostat (LCD + heater/fan) —
+A DHT22 (GPIO27) read with the Adafruit DHT library every 2 s; the 16×2 LCD shows temperature, humidity and the set point. UP/DOWN arrows change the set point; the red HEAT LED runs below it and the blue FAN LED above it (0.5 °C hysteresis). Select the DHT22 and drag its temperature slider to watch the thermostat react.
+
+[compiled ; starting QEMU]
+[qemu] qemu started
+ets Jul 29 2019 12:21:46
+
+rst:0x1 (POWERON_RESET),boot:0x12 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:1
+load:0x3fff0030,len:4640
+load:0x40078000,len:15592
+load:0x40080400,len:3164
+entry 0x4008059c
+Thermostat: Up/Down = set point; drag the DHT22 sliders to change the room
+T=20.5 C  RH=48.0 %  set 22.0  -> HEAT
+T=26.3 C  RH=61.5 %  set 22.0  -> COOL
+set point 22.5
+set point 23.0
+set point 23.5
+set point 24.0
+T=26.3 C  RH=61.5 %  set 24.0  -> COOL
+set point 24.5
+set point 25.0
+set point 25.5
+set point 26.0
+set point 26.5
+set point 27.0
+T=26.3 C  RH=61.5 %  set 27.0  -> HEAT
+T=26.3 C  RH=61.5 %  set 27.0  -> HEAT
+T=-5.2 C  RH=61.5 %  set 27.0  -> HEAT

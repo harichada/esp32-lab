@@ -1,0 +1,18 @@
+— Snake game on the OLED (real firmware) —
+Classic Snake on the 128×64 OLED. Steer with the arrow keys (four buttons on GPIO13/14/27/26), eat the food to grow, and do not hit the walls or yourself. It speeds up as you score; the buzzer beeps on every bite and the high score is kept until reset.
+
+[compiled ; starting QEMU]
+[qemu] qemu started
+ets Jul 29 2019 12:21:46
+
+rst:0x1 (POWERON_RESET),boot:0x12 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:1
+load:0x3fff0030,len:4640
+load:0x40078000,len:15592
+load:0x40080400,len:3164
+entry 0x4008059c
+new game - arrow keys to steer
+crash! score 0 (high score 0)
+new game - arrow keys to steer

@@ -1,0 +1,4 @@
+1229a1230
+>   if slirp_dep.found()
+1232a1234
+>   endif

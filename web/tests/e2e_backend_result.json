@@ -1,0 +1,82 @@
+[
+ {
+  "name": "Blink: GPIO2 configured as output",
+  "pass": true,
+  "detail": ""
+ },
+ {
+  "name": "Blink: GPIO2 toggles >=5 times in 9 s",
+  "pass": true,
+  "detail": "7 edges"
+ },
+ {
+  "name": "Blink: half-period \u2248 1000 ms (\u00b115%)",
+  "pass": true,
+  "detail": "periods 1128, 1103, 1104, 1097, 1109, 1126"
+ },
+ {
+  "name": "Button: LED pin 13 follows button (3 presses, 3 releases)",
+  "pass": true,
+  "detail": "latencies ms: [1, 1, 1, 1, 1, 1]"
+ },
+ {
+  "name": "Button: latency < 100 ms",
+  "pass": true,
+  "detail": ""
+ },
+ {
+  "name": "Remote: HTTP carried by real lwIP TCP (open_eth + slirp)",
+  "pass": true,
+  "detail": "4 TCP requests"
+ },
+ {
+  "name": "Remote: analogReadMilliVolts(VBAT) via calibrated SAR ADC (1.90 V pin x2 divider = 3.80 V)",
+  "pass": true,
+  "detail": "VBAT ~ 3.80 V"
+ },
+ {
+  "name": "Remote: SonyOn -> IR SIRC 0x750 x3 printed",
+  "pass": true,
+  "detail": ""
+ },
+ {
+  "name": "Remote: SonyOn -> POST /sony/system body matches native test",
+  "pass": true,
+  "detail": ""
+ },
+ {
+  "name": "Remote: Vol+ -> IRCC SOAP body + SOAPACTION match native test",
+  "pass": true,
+  "detail": ""
+ },
+ {
+  "name": "Remote: Mode -> \"Mode: Roku\" then Up -> Roku ECP /keypress/Up",
+  "pass": true,
+  "detail": ""
+ },
+ {
+  "name": "Remote: Mode again -> TV, Up -> IRCC Up code",
+  "pass": true,
+  "detail": ""
+ },
+ {
+  "name": "Remote: Mode LED (GPIO2) went HIGH in Roku mode",
+  "pass": true,
+  "detail": ""
+ },
+ {
+  "name": "Remote: RMT frames emitted for IR (3 per Sony ON)",
+  "pass": true,
+  "detail": "3 frames; first marks(us)=[2400, 600, 1200, 1200, 1200, 600, 1200, 600, 1200, 600, 600, 600, 600]"
+ },
+ {
+  "name": "Remote: RMT frame decodes to SIRC 0x750 (header 2400us, 12 bits)",
+  "pass": true,
+  "detail": "011101010000"
+ },
+ {
+  "name": "Remote: 40 kHz carrier configured on RMT",
+  "pass": true,
+  "detail": "hi=660 lo=1340"
+ }
+]

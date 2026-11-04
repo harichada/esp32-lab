@@ -1,0 +1,26 @@
+— Morse code transceiver (Serial ↔ LED/buzzer, real firmware) —
+TX: type a message in the Serial tab and press Enter; it is keyed out at 15 WPM on the LED and buzzer and echoed as dots and dashes. RX: tap the KEY (m) - short for dot, long for dash - and letters and words are decoded to Serial. It sends SOS at boot.
+
+[compiled (cached); starting QEMU]
+[qemu] qemu started
+ets Jul 29 2019 12:21:46
+
+rst:0x1 (POWERON_RESET),boot:0x12 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:1
+load:0x3fff0030,len:4640
+load:0x40078000,len:15592
+load:0x40080400,len:3164
+entry 0x4008059c
+Morse transceiver: type a message + Enter to send; tap key m to receive
+TX "SOS"
+   ... --- ... 
+TX done
+» HI
+TX "HI"
+   .... .. 
+TX done
+RX ... -> S
+RX --- -> O
+RX rxWord: SO
