@@ -1,11 +1,11 @@
 /* WebGL 3D circuit view — product-render polish. 2D SVG remains the editor.
  * Scale: 2D G=10 = 0.1" = 2.54 mm → 1 SVG unit = 0.254 mm. Soft-GL safe. */
 (function (root) {
-  const WIRE_HEX = { green: 0x2ecc71, red: 0xe74c3c, black: 0x1c1c1e, blue: 0x3498db, yellow: 0xf1c40f, orange: 0xe67e22, white: 0xecf0f1, purple: 0x9b59b6, gray: 0x7f8c8d, brown: 0x6d4c41 };
+  const WIRE_HEX = { green: 0x2ecc71, red: 0xe74c3c, black: 0x2b2b30, blue: 0x3498db, yellow: 0xf1c40f, orange: 0xe67e22, white: 0xecf0f1, purple: 0x9b59b6, gray: 0x7f8c8d, brown: 0x6d4c41 };
   const BANDC = [0x111111, 0x6d4c41, 0xe53935, 0xfb8c00, 0xfdd835, 0x43a047, 0x1e88e5, 0x8e24aa, 0x9e9e9e, 0xfafafa];
   const LEDCOL = { red: 0xff1744, green: 0x00e676, blue: 0x2979ff, yellow: 0xffea00, white: 0xf5f7ff, orange: 0xff9100, ir: 0xb388ff };
   const MM = 1 / 0.254;
-  const WIRE_R = 0.28 * MM; // ~0.7 mm OD insulation (AWG22-ish jumper)
+  const WIRE_R = 0.5 * MM; // 1.0 mm OD — chunkier than AWG22 so jumpers read at framed distance (was 0.7 mm → ~2 px)
   const RM = () => root.matchMedia && root.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   function loadScript(src) {
@@ -165,8 +165,11 @@
       this.renderer.setPixelRatio(this.dpr);
       this.renderer.setSize(w, h, false);
       this.renderer.outputEncoding = THREE.sRGBEncoding;
-      this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      this.renderer.toneMappingExposure = 1.28;
+      // Colours: all hex colours here are authored in sRGB. three r134 treats Color(hex) as linear, so with
+      // sRGB output every colour was gamma-lifted twice → pastel/grey parts. We linearize them (_linearize)
+      // and drop ACES (it further desaturated) in favour of plain output.
+      this.renderer.toneMapping = THREE.NoToneMapping;
+      this.renderer.toneMappingExposure = 1.0;
       this.renderer.shadowMap.enabled = true;
       this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
       this.renderer.physicallyCorrectLights = false;
@@ -201,9 +204,9 @@
       this._makeStudio();
 
       // Lights
-      this.scene.add(new THREE.AmbientLight(0xb0b8c8, this.softGL ? 0.72 : 0.38));
-      const hemi = new THREE.HemisphereLight(0xdde6f5, 0x1a1410, this.softGL ? 0.75 : 0.45); this.scene.add(hemi);
-      const key = new THREE.DirectionalLight(0xfff4e6, this.softGL ? 1.55 : 1.9);
+      this.scene.add(new THREE.AmbientLight(0xb0b8c8, this.softGL ? 0.62 : 0.38));
+      const hemi = new THREE.HemisphereLight(0xdde6f5, 0x1a1410, this.softGL ? 0.6 : 0.45); this.scene.add(hemi);
+      const key = new THREE.DirectionalLight(0xfff4e6, this.softGL ? 1.35 : 1.9);
       key.position.set(180, 320, 140);
       if (!this.softGL) {
         key.castShadow = true;
@@ -244,13 +247,45 @@
         }
       }
 
+      this._linearize(this.scene);
       this.root = new THREE.Group(); this.scene.add(this.root);
       this.pulseRoot = new THREE.Group(); this.scene.add(this.pulseRoot);
       this.ready = true;
       this._onResize = () => this.resize();
       root.addEventListener('resize', this._onResize);
-      this.canvas.addEventListener('pointerdown', (e) => { this._ptr = { x: e.clientX, y: e.clientY, t: performance.now() }; });
+      // Interactive parts (buttons, switches, pots) get the pointer before the orbit camera does.
+      // Capture-phase listeners on the canvas run before Orbit's own (bubble) listeners.
+      this.canvas.addEventListener('pointerdown', (e) => {
+        this._ptr = { x: e.clientX, y: e.clientY, t: performance.now() };
+        if (e.button !== 0 || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey || !this.hooks.onPartDown) return;
+        const hit = this._hitPart(e);
+        if (!hit || hit.part.type === 'breadboard') return;
+        let kind = false; try { kind = this.hooks.onPartDown(hit.id, e); } catch (err) { console.error(err); }
+        if (!kind) return;
+        this._act = { kind, id: hit.id, x: e.clientX, y: e.clientY, pid: e.pointerId };
+        e.stopImmediatePropagation(); e.preventDefault();
+        try { this.canvas.setPointerCapture(e.pointerId); } catch (_) {}
+      }, true);
+      this.canvas.addEventListener('pointermove', (e) => {
+        if (!this._act) return;
+        e.stopImmediatePropagation();
+        if (this.hooks.onPartMove) try { this.hooks.onPartMove(this._act.id, this._act.kind, e.clientX - this._act.x, e.clientY - this._act.y); } catch (err) { console.error(err); }
+      }, true);
+      const actEnd = (e) => {
+        if (!this._act) return;
+        const a = this._act; this._act = null; this._ptr = null;
+        e.stopImmediatePropagation();
+        if (this.hooks.onPartUp) try { this.hooks.onPartUp(a.id, a.kind); } catch (err) { console.error(err); }
+      };
+      this.canvas.addEventListener('pointerup', actEnd, true);
+      this.canvas.addEventListener('pointercancel', actEnd, true);
       this.canvas.addEventListener('pointerup', (e) => this._onPick(e));
+      // Double-click focuses the camera on a part (single clicks never move the camera)
+      this.canvas.addEventListener('dblclick', (e) => {
+        const hit = this._hitPart(e); if (!hit || hit.part.type === 'breadboard') return;
+        const world = new root.THREE.Vector3(); new root.THREE.Box3().setFromObject(hit.rec.mesh).getCenter(world);
+        this.orbit.flyTo(world, Math.max(100, this.orbit.sph.r * 0.55));
+      });
       this._last = performance.now();
       this._loop();
     }
@@ -328,7 +363,23 @@
       this._virtualBB = false;
     }
     _mat(opts) {
-      return new THREE.MeshStandardMaterial(Object.assign({ metalness: 0.18, roughness: 0.48, envMapIntensity: this.softGL ? 0.15 : 0.85 }, opts));
+      const m = new THREE.MeshStandardMaterial(Object.assign({ metalness: 0.18, roughness: 0.48, envMapIntensity: this.softGL ? 0.15 : 0.85 }, opts));
+      // no environment map on the safe path: metals would render near-black/grey, so cap metalness
+      if (this.softGL) m.metalness = Math.min(m.metalness, 0.3);
+      return m;
+    }
+    // Convert sRGB-authored material/light colours to linear once (textures already carry sRGBEncoding).
+    _linearize(obj) {
+      obj.traverse((o) => {
+        if (o.isLight && o.color && !o.userData.lin) { o.color.convertSRGBToLinear(); if (o.groundColor) o.groundColor.convertSRGBToLinear(); o.userData.lin = true; }
+        const ms = o.material ? (Array.isArray(o.material) ? o.material : [o.material]) : [];
+        for (const m of ms) {
+          if (!m || m.userData.lin) continue; m.userData.lin = true;
+          if (m.color) m.color.convertSRGBToLinear();
+          if (m.emissive) m.emissive.convertSRGBToLinear();
+          m.needsUpdate = true;
+        }
+      });
     }
     _shadowDisc(rad) {
       const THREE = root.THREE;
@@ -376,6 +427,16 @@
           } catch (_) { mesh.add(this._shadowDisc(10)); }
         }
       }
+      this._partBoxes = []; this._pinOwners = new Map();
+      for (const [id, rec] of this.parts) {
+        if (rec.part.type === 'breadboard') continue;
+        try {
+          rec.mesh.updateMatrixWorld(true); const bb = this._solidBox(rec.mesh);
+          if (bb && !bb.isEmpty()) this._partBoxes.push({ id, box: bb, pinTop: rec.mesh.userData.pinTop != null ? rec.mesh.userData.pinTop : null });
+          const d = root.Parts.T[rec.part.type];
+          for (const pin of (d && d.pins ? d.pins(rec.part) : [])) { const q = root.Parts.pinWorld(rec.part, pin); this._pinOwners.set(Math.round(q.x) + ',' + Math.round(q.y), id); }
+        } catch (_) {}
+      }
       for (const w of this.proj.wires) {
         const tube = this._makeWire(w, hasBB);
         if (tube) { gWires.add(tube.group); this.wires.set(w.id, tube); box.expandByObject(tube.group); }
@@ -395,6 +456,7 @@
         // also expand by virtual board lightly so floor shows
         this.orbit.frameBox(use, 40);
       }
+      this._linearize(this.root);
       this._updateLive();
     }
 
@@ -430,7 +492,7 @@
       // Top face with breadboard texture (UV correct)
       const top = new THREE.Mesh(
         new THREE.PlaneGeometry(W - 0.5, D - 0.5),
-        this._mat({ map: tex, color: 0xffffff, roughness: 0.68, metalness: 0.04 })
+        this._mat({ map: tex, color: 0xf7f1e3, roughness: 0.68, metalness: 0.04 })
       );
       top.rotation.x = -Math.PI / 2; top.position.set(minX + W / 2, 0.05, minZ + D / 2); top.receiveShadow = true; g.add(top);
       // denser recessed holes
@@ -487,7 +549,7 @@
       const tex = this._bbTexture(cols);
       const body = new THREE.Mesh(new THREE.BoxGeometry(W + 4, H, D + 8), this._mat({ color: 0xe0d8c8, roughness: 0.75, metalness: 0.04 }));
       body.position.set(W / 2 - 5, -H / 2, D / 2 - 10); body.castShadow = true; body.receiveShadow = true; g.add(body);
-      const top = new THREE.Mesh(new THREE.PlaneGeometry(W + 3.5, D + 7.5), this._mat({ map: tex, color: 0xffffff, roughness: 0.68, metalness: 0.04 }));
+      const top = new THREE.Mesh(new THREE.PlaneGeometry(W + 3.5, D + 7.5), this._mat({ map: tex, color: 0xf7f1e3, roughness: 0.68, metalness: 0.04 }));
       top.rotation.x = -Math.PI / 2; top.position.set(W / 2 - 5, 0.05, D / 2 - 10); top.receiveShadow = true; g.add(top);
       const lip = new THREE.Mesh(new THREE.BoxGeometry(W + 4.4, 0.45, D + 8.4), this._mat({ color: 0xd9d2c3, roughness: 0.65 }));
       lip.position.set(W / 2 - 5, 0.28, D / 2 - 10); g.add(lip);
@@ -593,6 +655,7 @@
           pin.position.set(i * 10, 4.2, z); g.add(pin);
         }
       }
+      g.userData.pinTop = 9.0;   // header pin tops: jumpers land here
       return g;
     }
 
@@ -831,51 +894,75 @@
     }
 
     /* ---- tidy Manhattan / jumper wires ---- */
+    // Height of the tallest non-breadboard part covering (x,z) — wires must clear it / land on it.
+    // Parts that own a pin are skipped (a wire plugs in next to an LED/resistor lead, not on top of it),
+    // except boards with a header (pinTop) where the wire lands on the header pin.
+    _heightAt(x, z, pad, skip) {
+      let h = 0;
+      for (const e of (this._partBoxes || [])) {
+        if (skip && skip.has(e.id) && e.pinTop == null) continue;
+        const b = e.box;
+        if (x >= b.min.x - pad && x <= b.max.x + pad && z >= b.min.z - pad && z <= b.max.z + pad) h = Math.max(h, b.max.y);
+      }
+      return h;
+    }
+    _heightAlong(A, B, skip) {
+      let h = 0;
+      for (let i = 0; i <= 24; i++) { const t = i / 24; h = Math.max(h, this._heightAt(A.x + (B.x - A.x) * t, A.z + (B.z - A.z) * t, 2, skip)); }
+      return h;
+    }
+    _endY(x, z, base) {
+      const own = (this._pinOwners && this._pinOwners.get(Math.round(x) + ',' + Math.round(z))) || null;
+      let h = this._heightAt(x, z, 0.5, own ? new Set([own]) : null);
+      if (own) { const e = this._partBoxes.find((q) => q.id === own); if (e && e.pinTop != null) h = Math.max(h, e.pinTop); }
+      return { y: Math.max(base, h ? h + WIRE_R * 0.6 : base), own };
+    }
     _makeWire(w, onBoard) {
       const THREE = root.THREE;
       const a = w.a, b = w.b;
       if (!a || !b) return null;
-      const boardTop = 1.8;
-      const A = new THREE.Vector3(a.x, boardTop, a.y);
-      const B = new THREE.Vector3(b.x, boardTop, b.y);
+      const boardTop = WIRE_R + 0.4;
+      // Endpoints: on the board surface, or on top of a part that covers the pin (ESP32 headers, modules)
+      const ea = this._endY(a.x, a.y, boardTop), eb = this._endY(b.x, b.y, boardTop);
+      const ya = ea.y, yb = eb.y, skip = new Set([ea.own, eb.own].filter(Boolean));
+      const A = new THREE.Vector3(a.x, ya, a.y);
+      const B = new THREE.Vector3(b.x, yb, b.y);
       const dx = B.x - A.x, dz = B.z - A.z;
       const dist = Math.hypot(dx, dz);
+      const via = (w.pts || []).filter((q) => q && isFinite(q.x) && isFinite(q.y));
+      // clear anything the run passes over
+      let clear = 0; { let prev = A; for (const q of [...via.map((q) => new THREE.Vector3(q.x, 0, q.y)), B]) { clear = Math.max(clear, this._heightAlong(prev, q, skip)); prev = q; } }
       let pts;
       if (onBoard && dist > 8) {
-        // 90° jumper aesthetic: rise → run → drop, with optional mid bend
-        const rise = boardTop + Math.min(7, 2.5 + dist * 0.02);
-        const p0 = A.clone(); p0.y = boardTop + 0.4;
-        const p1 = A.clone(); p1.y = rise;
-        let mid;
-        if (Math.abs(dx) > 4 && Math.abs(dz) > 4) {
-          // prefer longer axis first
-          if (Math.abs(dx) >= Math.abs(dz)) {
-            mid = new THREE.Vector3(B.x, rise, A.z);
-          } else {
-            mid = new THREE.Vector3(A.x, rise, B.z);
-          }
-        } else {
-          mid = A.clone().lerp(B, 0.5); mid.y = rise;
-        }
-        const p2 = B.clone(); p2.y = rise;
-        const p3 = B.clone(); p3.y = boardTop + 0.4;
-        pts = Math.abs(dx) > 4 && Math.abs(dz) > 4 ? [p0, p1, mid, p2, p3] : [p0, p1, p2, p3];
+        const rise = Math.max(boardTop + Math.min(7, 2.5 + dist * 0.02), clear + WIRE_R * 2 + 1.5, ya + 2, yb + 2);
+        const p0 = A.clone(); const p1 = A.clone(); p1.y = rise;
+        let mids;
+        if (via.length) mids = via.map((q) => new THREE.Vector3(q.x, rise, q.y));
+        else if (Math.abs(dx) > 4 && Math.abs(dz) > 4) mids = [Math.abs(dx) >= Math.abs(dz) ? new THREE.Vector3(B.x, rise, A.z) : new THREE.Vector3(A.x, rise, B.z)];
+        else mids = [];
+        const p2 = B.clone(); p2.y = rise; const p3 = B.clone();
+        pts = [p0, p1, ...mids, p2, p3];
       } else {
         const mid = A.clone().lerp(B, 0.5);
-        mid.y = boardTop + 1.5 + Math.min(6, dist * 0.04);
-        pts = [A.clone().setY(boardTop + 0.4), mid, B.clone().setY(boardTop + 0.4)];
+        mid.y = Math.max(Math.max(ya, yb) + 1.5 + Math.min(6, dist * 0.04), clear + WIRE_R * 2 + 1);
+        pts = [A, mid, B];
       }
+      // drop consecutive duplicates (CatmullRom NaNs on zero-length segments)
+      pts = pts.filter((q, i) => i === 0 || q.distanceTo(pts[i - 1]) > 0.05);
+      if (pts.length < 2) return null;
       const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.15);
-      const radial = this.dpr < 1.6 ? 5 : 6;
+      const radial = 8;
       const segs = Math.max(12, Math.floor(curve.getLength() / 4));
       const col = WIRE_HEX[w.color] || 0x2ecc71;
       const core = new THREE.Mesh(new THREE.TubeGeometry(curve, segs, WIRE_R * 0.45, radial, false), this._mat({ color: 0xb8bcc2, metalness: 0.85, roughness: 0.28 }));
       const ins = new THREE.Mesh(new THREE.TubeGeometry(curve, segs, WIRE_R, radial, false), this._mat({
         color: col, metalness: 0.06, roughness: 0.42,
-        emissive: col, emissiveIntensity: this.softGL ? 0.1 : 0.02
+        emissive: col, emissiveIntensity: this.softGL ? 0.22 : 0.08
       }));
       ins.castShadow = true;
-      const group = new THREE.Group(); group.add(core); group.add(ins);
+      // 1-px colored centre line: keeps every wire visible even when zoomed far out
+      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(curve.getPoints(Math.max(16, segs))), new THREE.LineBasicMaterial({ color: col }));
+      const group = new THREE.Group(); group.add(core); group.add(ins); group.add(line);
       group.userData.wid = w.id; group.userData.curve = curve; group.userData.color = col;
       return { group, curve, color: col, id: w.id };
     }
@@ -888,12 +975,13 @@
       }
       this.pulses = [];
       for (const [id, w] of this.wires) {
-        const geo = new THREE.SphereGeometry(0.32 * MM, 8, 6);
+        const geo = new THREE.SphereGeometry(WIRE_R * 1.45, 10, 8);
         const mat = this._mat({ color: 0xffffff, emissive: 0xe6fdff, emissiveIntensity: 2.2, transparent: true, opacity: 0, roughness: 0.2 });
         const mesh = new THREE.Mesh(geo, mat);
         this.pulseRoot.add(mesh);
         this.pulses.push({ id, mesh, mat, t: Math.random(), curve: w.curve });
       }
+      this._linearize(this.pulseRoot);
     }
 
     _updateLive() {
@@ -968,13 +1056,26 @@
         p.mesh.position.copy(pos);
         p.mat.opacity = Math.min(0.95, 0.35 + Math.log10(mag * 1e6 + 1) * 0.2);
         p.mat.emissiveIntensity = 1.5 + Math.min(2, mag * 80);
-        const s = 0.32 * MM * (1 + Math.min(1.2, mag * 35));
-        p.mesh.scale.setScalar(s / (0.32 * MM));
+        p.mesh.scale.setScalar(1 + Math.min(1.2, mag * 35));
       }
     }
 
+    _hitPart(e) {
+      const THREE = root.THREE; if (!THREE || !this.camera) return null;
+      const rect = this.canvas.getBoundingClientRect();
+      const mouse = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+      const ray = new THREE.Raycaster(); ray.setFromCamera(mouse, this.camera);
+      const hits = ray.intersectObjects([...this.parts.values()].map((x) => x.mesh), true);
+      for (const h of hits) {
+        if (h.object.isSprite) continue;
+        let o = h.object;
+        while (o) { for (const [id, rec] of this.parts) if (rec.mesh === o) return { id, rec, part: rec.part, point: h.point }; o = o.parent; }
+      }
+      return null;
+    }
     _onPick(e) {
-      if (this._ptr && performance.now() - this._ptr.t > 400) return;
+      if (!this._ptr || performance.now() - this._ptr.t > 400) return;
+      if (Math.hypot(e.clientX - this._ptr.x, e.clientY - this._ptr.y) > 5) return;   // that was an orbit drag
       const THREE = root.THREE;
       const rect = this.canvas.getBoundingClientRect();
       const mouse = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
@@ -995,8 +1096,8 @@
         for (const [id, rec] of this.parts) {
           let found = false; rec.mesh.traverse((c) => { if (c === hits[0].object) found = true; });
           if (found) {
-            const world = new THREE.Vector3(); rec.mesh.getWorldPosition(world);
-            this.orbit.flyTo(world, Math.max(100, this.orbit.sph.r * 0.55));
+            // select only — no camera move on a single click (that read as "click zooms the canvas")
+            if (rec.part.type === 'breadboard') return;
             if (this.hooks.onPart) this.hooks.onPart(id, e);
             return;
           }
@@ -1037,6 +1138,17 @@
       setTimeout(() => { this._failed = false; }, 1500);
     }
     // Resolves {ok} after a couple of real frames: fails on lost context, no frames, or an all-white frame.
+    // Box of solid meshes only (skips glow sprites, lights, shadow discs)
+    _solidBox(obj) {
+      const THREE = root.THREE, box = new THREE.Box3(), tmp = new THREE.Box3();
+      obj.traverse((c) => {
+        if (!c.isMesh || c.isSprite || !c.geometry || !c.visible) return;
+        if (c.material && c.material.transparent && c.material.depthWrite === false) return;
+        if (!c.geometry.boundingBox) c.geometry.computeBoundingBox();
+        tmp.copy(c.geometry.boundingBox).applyMatrix4(c.matrixWorld); box.union(tmp);
+      });
+      return box;
+    }
     _cameraInsideBoard() {
       const THREE = root.THREE; if (!THREE || !this.camera) return false;
       const cp = this.camera.position;

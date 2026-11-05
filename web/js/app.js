@@ -822,14 +822,14 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
 
   // ---------------- 2D / 3D view ----------------
-  let viewMode = '2d', view3dLoading = null;
+  let viewMode = '2d', view3dLoading = null, knob3d = null;
   async function ensureView3d() {
     if (app.view3d) return app.view3d;
     if (view3dLoading) return view3dLoading;
     view3dLoading = (async () => {
       if (!window.loadView3D) {
         await new Promise((res, rej) => {
-          const s = document.createElement('script'); s.src = 'js/view3d.js?v=40'; s.async = true;
+          const s = document.createElement('script'); s.src = 'js/view3d.js?v=42'; s.async = true;
           s.onload = res; s.onerror = () => rej(new Error('view3d load failed')); document.head.appendChild(s);
         });
       }
@@ -840,6 +840,25 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
           hover({ wire: w, ev });
         },
         onPart: (id) => { app.editor.select({ part: id }); },
+        // 3D part interaction mirrors the 2D editor: buttons press while running, click-parts toggle, pots turn by drag
+        onPartDown: (id) => {
+          const p = app.proj.parts.find((q) => q.id === id); if (!p) return false;
+          const d = P.T[p.type] || {}, H = app.editor.hooks;
+          if (d.wheel) { app.editor.select({ part: id }); knob3d = { p, pos0: +p.props.pos || 0 }; return 'knob'; }
+          if (H.running() && d.interactive && !d.keyAt) { H.press(p, true); return 'press'; }
+          if (H.running() && d.click) { if (d.click(p)) { app.editor.render(); H.changed(false); } return 'click'; }
+          return false;
+        },
+        onPartMove: (id, kind, dx, dy) => {
+          if (kind !== 'knob' || !knob3d) return;
+          knob3d.p.props.pos = Math.min(1, Math.max(0, knob3d.pos0 + (dx - dy) / 150));
+          app.editor.hooks.changed(false); app.editor.refreshDynamic(); app.editor.hooks.selected(app.editor.sel);
+        },
+        onPartUp: (id, kind) => {
+          const p = app.proj.parts.find((q) => q.id === id);
+          if (kind === 'press' && p) app.editor.hooks.press(p, false);
+          if (kind === 'knob') knob3d = null;
+        },
         onFail: (e) => view3dFail(e),
       });
       app.view3d = v; if (app.proj) v.setProject(app.proj); return v;
