@@ -186,3 +186,21 @@ body.reconnecting #status{border-color:var(--warn);box-shadow:0 0 0 3px rgba(251
 .espp{cursor:crosshair}
 
 #legalFoot{height:22px;line-height:22px;font-size:11px;padding:0 10px;color:var(--muted,#888);border-top:1px solid var(--line,rgba(127,127,127,.2));display:flex;gap:12px;justify-content:space-between;overflow:hidden;white-space:nowrap}#legalFoot span{overflow:hidden;text-overflow:ellipsis}#legalFoot a{color:inherit;text-decoration:underline;flex:none}
+
+/* ---- 3D view ---- */
+.view-toggle{display:inline-flex;border:1px solid var(--line);border-radius:var(--r2);overflow:hidden;background:var(--l2)}
+.view-toggle .seg{appearance:none;border:0;background:transparent;color:var(--txt2);height:28px;padding:0 10px;display:inline-flex;align-items:center;gap:5px;cursor:pointer;font:600 11.5px/1 var(--sans);letter-spacing:.04em}
+.view-toggle .seg .ic{width:14px;height:14px}
+.view-toggle .seg.on{background:linear-gradient(180deg,rgba(34,211,238,.18),rgba(34,211,238,.06));color:var(--acc);box-shadow:inset 0 0 0 1px rgba(34,211,238,.35)}
+.view-toggle .seg:hover{color:var(--txt)}
+#stageWrap > canvas.stage3d,#stage3d{position:absolute;inset:0;width:100%;height:100%;display:none;z-index:3;border:0;outline:none;touch-action:none;background:#07090d}
+#stageWrap > canvas.stage3d.on,#stage3d.on{display:block!important}
+body.view3d #stage{visibility:hidden;pointer-events:none}
+body.view3d .hint{opacity:0}
+body.view3d #minimap{display:none}
+body.view3d .canvas-tools .tgl:has(#cbOrtho),body.view3d #selWireColor,body.view3d #bRot,body.view3d #bDel{opacity:.35;pointer-events:none}
+#stage.flow.live .wire .w-flow{opacity:var(--wo,.55);animation-duration:var(--wd,.9s);animation-direction:var(--wdir,normal)}
+@media (prefers-reduced-motion:reduce){
+  #stage.flow.live .w-flow{animation:none!important;opacity:.35}
+  body.view3d #stage3d{/* still render, orbit idle disabled in JS */}
+}

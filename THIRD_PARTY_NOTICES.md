@@ -35,6 +35,7 @@ The diagram.json importer reads a third-party file format for interoperability o
 | Adafruit NeoPixel | – | LGPL-3.0 | https://github.com/adafruit/Adafruit_NeoPixel | https://github.com/adafruit/Adafruit_NeoPixel/blob/master/COPYING |
 | ESP32Servo | 3.2.1 | LGPL-2.1 | https://github.com/madhephaestus/ESP32Servo | https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt |
 | Keypad | 3.1.1 | GPL-3.0 | https://github.com/Chris--A/Keypad | https://www.gnu.org/licenses/gpl-3.0.txt |
+| three.js (WebGL 3D view) | 0.134.0 (vendored `web/vendor/three.min.js` + UMD bloom helpers) | MIT | https://github.com/mrdoob/three.js | https://github.com/mrdoob/three.js/blob/r134/LICENSE |
 | LiquidCrystal_PCF8574 (replaces LiquidCrystal_I2C) | 2.3.0 | BSD-3-Clause, © Matthias Hertel | https://github.com/mathertel/LiquidCrystal_PCF8574 | https://github.com/mathertel/LiquidCrystal_PCF8574/blob/master/LICENSE |
 
 Adafruit's names and SSD1306 splash logo appear only as part of their libraries, not as branding.

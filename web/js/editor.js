@@ -237,8 +237,10 @@
         return;
       }
       const pin = this.pinAtEvent(ev); const partEl = ev.target.closest && ev.target.closest('.part');
-      const hk = pin ? pin.pos.x + ',' + pin.pos.y : ''; if (hk !== this.hoverPin) { this.hoverPin = hk; this.highlight(pin); }
+      const wEl = !pin && ev.target.closest && ev.target.closest('.wire');
+      const hk = pin ? pin.pos.x + ',' + pin.pos.y : (wEl ? 'w:' + wEl.dataset.wid : ''); if (hk !== this.hoverPin) { this.hoverPin = hk; this.highlight(pin); }
       this.svg.classList.toggle('on-pin', !!pin);
+      if (wEl) { const wire = this.wire(wEl.dataset.wid); this.hooks.hover({ ev, wire, world: w }); return; }
       this.hooks.hover({ ev, pin, part: pin ? pin.part : partEl ? this.part(partEl.dataset.id) : null, world: w, label: pin ? this.pinLabel(pin) : '' });
     }
     _up(ev) {

@@ -220,7 +220,107 @@
     analogRead(p, g) { const v = this.pinVoltageGpio(p, g); return mvToRaw(v * 1000, g >= 32 ? 1 : 2); }
     analogMilliVolts(p, g) { const raw = this.analogRead(p, g); return raw <= 0 ? 0 : idfRawToMv(raw, g >= 32 ? 1 : 2); }
     pinVoltageGpio(p, g) { const rt = this.espRuntime(p); return (rt.pinV && rt.pinV[g]) || 0; }
-    resetState() { this.state = {}; this._capV = new Map(); this.t = 0; this.scope = { 1: [], 2: [], 3: [], 4: [] }; for (const r of this.esp.values()) r.reset(); this.dirty = true; }
+    // Per-wire current from KCL on wires + breadboard strips. Discrete mains are known
+    // branch currents (injections at their pin pads); ESP rails/GPIO are included so drive current balances.
+    wireFlow() {
+      if (this.topoDirty) this.topology();
+      if (this.needsRebuild()) this.build();
+      const C = this.circuit, out = {};
+      if (!C || !this.project) return out;
+      for (const w of this.project.wires) out[w.id] = { i: 0, v: this.nodeVoltage(this.netAt(w.a.x, w.a.y)) };
+      const inj = new Map();
+      const addInj = (k, i) => { if (!k || !isFinite(i) || Math.abs(i) < 1e-15) return; inj.set(k, (inj.get(k) || 0) + i); };
+      const pinKeysForNode = (p, d, n) => {
+        const a = []; for (const pin of d.pins(p)) { if (this.pinNet.get(p.id + ':' + pin.name) === n) a.push(key(P.pinWorld(p, pin).x, P.pinWorld(p, pin).y)); } return a;
+      };
+      for (const e of C.el) {
+        const pid = this.owner.get(e); if (!pid) continue;
+        const p = this.project.parts.find((q) => q.id === pid); if (!p) continue;
+        const d = P.T[p.type]; if (!d) continue;
+        // ESP internal Thevenin (V/I/G/R) is not a physical wire current — only discrete mains
+        if (p.type === 'esp32') continue;
+        let I = C.current(e); if (I && typeof I === 'object') I = I.ic || 0;
+        if (!isFinite(I) || Math.abs(I) < 1e-15) continue;
+        const terms = [];
+        if (e.kind === 'Q') terms.push([e.c, -I], [e.e, I]);
+        else if (e.kind === 'M' || e.kind === 'PT') terms.push([e.d || e.c, -I], [e.s || e.e, I]);
+        else if (e.kind === 'OA' || e.kind === 'LDO') continue;
+        else if (e.a !== undefined) { const b = e.k !== undefined ? e.k : e.b; terms.push([e.a, -I]); if (b !== undefined) terms.push([b, I]); }
+        for (const [n, ii] of terms) {
+          const ks = pinKeysForNode(p, d, n); if (!ks.length) continue;
+          const share = ii / ks.length; for (const k of ks) addInj(k, share);
+        }
+      }
+      const nodes = new Set(), edges = [], adj = new Map();
+      const ensure = (k) => { if (!adj.has(k)) adj.set(k, []); nodes.add(k); };
+      const link = (a, b, wid, real) => {
+        if (!a || !b || a === b) return; ensure(a); ensure(b);
+        const ei = edges.length; edges.push({ a, b, wid, real: !!real });
+        adj.get(a).push({ to: b, ei }); adj.get(b).push({ to: a, ei });
+      };
+      for (const w of this.project.wires) {
+        const pts = [w.a, ...(w.pts || []), w.b];
+        for (let i = 0; i < pts.length - 1; i++) link(key(pts[i].x, pts[i].y), key(pts[i + 1].x, pts[i + 1].y), w.id, true);
+      }
+      // breadboard metal strips / rails as virtual edges (not reported)
+      for (const p of this.project.parts) {
+        if (p.type !== 'breadboard') continue;
+        const d = P.T.breadboard; if (!d || !d.groups) continue;
+        for (const g of d.groups(p)) {
+          const pts = [];
+          for (const name of g) { const pin = d.pins(p).find((q) => q.name === name); if (pin) pts.push(key(P.pinWorld(p, pin).x, P.pinWorld(p, pin).y)); }
+          for (let i = 1; i < pts.length; i++) link(pts[i - 1], pts[i], null, false);
+        }
+      }
+      // ensure injection pads exist as nodes
+      for (const k of inj.keys()) ensure(k);
+      // sink residual on each connected component at a ground / ESP GND pin so return-path wires carry current
+      const gndPads = new Set();
+      for (const p of this.project.parts) {
+        const d = P.T[p.type]; if (!d) continue;
+        if (p.type === 'ground' || p.type === 'vcc33' || p.type === 'vcc5' || p.type === 'battery' || p.type === 'battery9v') {
+          for (const pin of d.pins(p)) if (/GND|^-$/i.test(pin.name)) gndPads.add(key(P.pinWorld(p, pin).x, P.pinWorld(p, pin).y));
+        }
+        if (p.type === 'esp32') for (const pin of d.pins(p)) if (/^GND/i.test(pin.name)) gndPads.add(key(P.pinWorld(p, pin).x, P.pinWorld(p, pin).y));
+      }
+      {
+        const seen = new Set();
+        const walk = (u, acc) => { seen.add(u); acc.nodes.push(u); for (const { to, ei } of adj.get(u) || []) if (!seen.has(to)) walk(to, acc); };
+        for (const n of nodes) {
+          if (seen.has(n)) continue;
+          const acc = { nodes: [] }; walk(n, acc);
+          let sum = 0; for (const u of acc.nodes) sum += inj.get(u) || 0;
+          if (Math.abs(sum) < 1e-15) continue;
+          const sink = acc.nodes.find((u) => gndPads.has(u)) || acc.nodes.find((u) => (inj.get(u) || 0) === 0) || acc.nodes[0];
+          addInj(sink, -sum); ensure(sink);
+        }
+      }
+      const visited = new Set(), wireI = {};
+      const dfs = (u, pe) => {
+        visited.add(u);
+        let sum = inj.get(u) || 0;
+        for (const { to, ei } of adj.get(u) || []) {
+          if (ei === pe || visited.has(to)) continue;
+          sum += dfs(to, ei);
+        }
+        if (pe !== undefined) {
+          const e = edges[pe];
+          if (e.real && e.wid) {
+            const iab = (e.a === u) ? sum : -sum;
+            if (wireI[e.wid] === undefined) wireI[e.wid] = iab;
+          }
+        }
+        return sum;
+      };
+      for (const n of nodes) if (!visited.has(n)) dfs(n, undefined);
+      for (const w of this.project.wires) {
+        const i = wireI[w.id] || 0;
+        out[w.id] = { i, v: this.nodeVoltage(this.netAt(w.a.x, w.a.y)) };
+      }
+      this._wireFlow = out;
+      return out;
+    }
+    resetState() { this.state = {}; this._capV = new Map(); this.t = 0; this.scope = { 1: [], 2: [], 3: [], 4: [] }; for (const r of this.esp.values()) r.reset(); this.dirty = true; this._wireFlow = null; }
   }
 
   const api = { Sim, EspRuntime, IOMUX_OFF, RTC_PULL, SIG_RMT0, idfRawToMv, mvToRaw };

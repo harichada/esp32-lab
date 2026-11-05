@@ -24,6 +24,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     serialAppend(`— ${app.proj.name || 'project'} —\n${app.proj.notes ? app.proj.notes + '\n' : ''}`);
     app.devDirty = true; setStatus('idle', 'idle'); renderBanner();
     if (window.Bom) Bom.render(document.getElementById('bomView'), app.proj);
+    if (app.view3d) app.view3d.setProject(app.proj);
   }
   async function loadExample(k) {
     const ex = Examples.EX[k](); ex.example = k;
@@ -529,8 +530,25 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (frame % 6 === 3) renderTfts();
     if (frame % 30 === 0) spiCfg();
     app.editor.refreshDynamic();
+    if (frame % 2 === 0) updateWireFlow();
+    if (app.view3d && app.view3d.active && frame % 2 === 0) app.view3d.sync(app.sim, app.sim._wireFlow || {});
     if (frame % 6 === 0) updatePanels();
     requestAnimationFrame(tick);
+  }
+  function updateWireFlow() {
+    if (!app.sim || !app.proj) return;
+    const flow = app.sim.wireFlow();
+    const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    for (const w of app.proj.wires) {
+      const el = app.editor.lWires && app.editor.lWires.querySelector(`[data-wid="${w.id}"]`); if (!el) continue;
+      const f = flow[w.id] || { i: 0 }; const mag = Math.abs(f.i || 0);
+      if (mag < 1e-6 || reduced) { el.style.setProperty('--wo', '0'); continue; }
+      const dur = Math.max(0.25, Math.min(3.2, 0.55 / Math.sqrt(mag * 500 + 0.02)));
+      const op = Math.min(0.95, 0.22 + Math.log10(mag * 1e6 + 1) * 0.16);
+      el.style.setProperty('--wd', dur + 's');
+      el.style.setProperty('--wo', String(op));
+      el.style.setProperty('--wdir', f.i >= 0 ? 'normal' : 'reverse');
+    }
   }
   function updatePanels() {
     const r = app.run; $('#stTime').textContent = r ? ` · ${(r.kind === 'js' ? r.sketch.now : (performance.now() - (r.tq || r.t0)) / 1000).toFixed(1)} s` : '';
@@ -578,7 +596,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
   function updateReadouts() {
     const sel = app.editor.sel, ro = $('#ro'); if (!sel || !ro) return;
-    if (sel.wire) { const w = app.proj.wires.find((q) => q.id === sel.wire); if (w) ro.textContent = `Net voltage: ${P.fmt(app.sim.nodeVoltage(app.sim.netAt(w.a.x, w.a.y)), 'V')}`; return; }
+    if (sel.wire) { const w = app.proj.wires.find((q) => q.id === sel.wire); if (w) { const f = (app.sim._wireFlow || {})[w.id] || { i: 0, v: app.sim.nodeVoltage(app.sim.netAt(w.a.x, w.a.y)) }; ro.textContent = `V ${P.fmt(f.v, 'V')} · I ${P.fmt(f.i, 'A')}`; } return; }
     const p = app.editor.part(sel.part); if (!p) return;
     ro.textContent = app.sim.readout(p) || '';
     const d = P.T[p.type]; if (p.type === 'breadboard') return;
@@ -591,13 +609,16 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
   // ---------------- hover tooltip ----------------
   function hover(h) {
-    const tip = $('#tip'); if (!h || (!h.pin && !h.part)) { tip.hidden = true; return; }
+    const tip = $('#tip'); if (!h || (!h.pin && !h.part && !h.wire)) { tip.hidden = true; return; }
     let t = '';
-    if (h.pin) {
+    if (h.wire) {
+      const flow = (app.sim._wireFlow || app.sim.wireFlow && app.sim.wireFlow() || {})[h.wire.id] || { i: 0, v: app.sim.nodeVoltage(app.sim.netAt(h.wire.a.x, h.wire.a.y)) };
+      t = `<b>Wire ${P.esc(h.wire.id)}</b> · ${P.esc(h.wire.color || '')}<br>V <b>${P.fmt(flow.v, 'V')}</b> · I <b>${P.fmt(flow.i, 'A')}</b>`;
+    } else if (h.pin) {
       const net = app.sim.netAt(h.pin.pos.x, h.pin.pos.y), v = app.sim.nodeVoltage(net);
       const info = h.part.type === 'esp32' ? P.T.esp32.info(h.pin.pin.name) : '';
       t = `<b>${P.esc(h.label || (h.part.id + '.' + h.pin.pin.name))}</b>${info ? ' · ' + P.esc(info) : ''}<br>${net < 0 ? 'unconnected' : net === 0 ? 'GND (0 V)' : 'node ' + net + ': <b>' + P.fmt(v, 'V') + '</b>'}`;
-    } else if (h.part.type !== 'breadboard') {
+    } else if (h.part && h.part.type !== 'breadboard') {
       const r = app.sim.readout(h.part); t = `<b>${P.esc(h.part.id)}</b> ${P.esc(P.T[h.part.type].label)}${r ? '<br>' + P.esc(r) : ''}`;
     }
     if (!t) { tip.hidden = true; return; }
@@ -748,7 +769,8 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     $('#bRestart').onclick = () => { stopRun(); startRun(); };
     $('#cbFlow').checked = localStorage.getItem('esp32lab.flow') !== '0'; $('#stage').classList.toggle('flow', $('#cbFlow').checked);
     $('#cbFlow').onchange = (e) => { $('#stage').classList.toggle('flow', e.target.checked); localStorage.setItem('esp32lab.flow', e.target.checked ? '1' : '0'); };
-    app.cmd = { run: startRun, stop: stopRun, restart: () => { stopRun(); startRun(); }, save, projects: projectsDialog, loadExample, makeCopy: () => makeCopy(false), toast, download };
+    setupViewToggle();
+    app.cmd = { run: startRun, stop: stopRun, restart: () => { stopRun(); startRun(); }, save, projects: projectsDialog, loadExample, makeCopy: () => makeCopy(false), toast, download, view3d: () => setViewMode('3d'), view2d: () => setViewMode('2d') };
     $('#cbOrtho').checked = localStorage.getItem('esp32lab.ortho') !== '0'; app.editor.ortho = $('#cbOrtho').checked; $('#cbOrtho').onchange = (e) => { app.editor.ortho = e.target.checked; localStorage.setItem('esp32lab.ortho', e.target.checked ? '1' : '0'); };
     app.editor.setHint();
     $('#code').addEventListener('keydown', (e) => { if (e.key === 'Tab') { e.preventDefault(); const t = e.target, s = t.selectionStart; t.setRangeText('  ', s, t.selectionEnd, 'end'); syncCode(); } });
@@ -794,6 +816,51 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (new URLSearchParams(location.search).get('resume') !== '0') setTimeout(() => app.resumeSavedRun(), 300);
     if (new URLSearchParams(location.search).get('tab')) document.querySelector(`[data-tab=${new URLSearchParams(location.search).get('tab')}]`).click();
   }
+
+  // ---------------- 2D / 3D view ----------------
+  let viewMode = '2d', view3dLoading = null;
+  async function ensureView3d() {
+    if (app.view3d) return app.view3d;
+    if (view3dLoading) return view3dLoading;
+    view3dLoading = (async () => {
+      if (!window.loadView3D) {
+        await new Promise((res, rej) => {
+          const s = document.createElement('script'); s.src = 'js/view3d.js?v=3'; s.async = true;
+          s.onload = res; s.onerror = () => rej(new Error('view3d load failed')); document.head.appendChild(s);
+        });
+      }
+      const v = await window.loadView3D($('#stageWrap'), {
+        onWire: (id, f, ev) => {
+          const w = app.proj.wires.find((q) => q.id === id); if (!w) return;
+          app.editor.select({ wire: id });
+          hover({ wire: w, ev });
+        },
+        onPart: (id) => { app.editor.select({ part: id }); },
+      });
+      app.view3d = v; if (app.proj) v.setProject(app.proj); return v;
+    })();
+    try { return await view3dLoading; } finally { view3dLoading = null; }
+  }
+  async function setViewMode(mode) {
+    viewMode = mode === '3d' ? '3d' : '2d';
+    document.body.classList.toggle('view3d', viewMode === '3d');
+    const b2 = $('#bView2d'), b3 = $('#bView3d');
+    if (b2) b2.classList.toggle('on', viewMode === '2d');
+    if (b3) b3.classList.toggle('on', viewMode === '3d');
+    localStorage.setItem('esp32lab.view', viewMode);
+    if (viewMode === '3d') {
+      try {
+        const v = await ensureView3d(); v.setActive(true); v.sync(app.sim, app.sim && app.sim.wireFlow());
+        toast('3D view — drag orbit · pinch/wheel zoom · two-finger pan');
+      } catch (e) { console.error(e); toast('3D view failed to load (WebGL?)', true); setViewMode('2d'); }
+    } else if (app.view3d) { app.view3d.setActive(false); }
+  }
+  function setupViewToggle() {
+    const b2 = $('#bView2d'), b3 = $('#bView3d'); if (!b2 || !b3) return;
+    b2.onclick = () => setViewMode('2d'); b3.onclick = () => setViewMode('3d');
+    if (localStorage.getItem('esp32lab.view') === '3d') setTimeout(() => setViewMode('3d'), 0);
+  }
+
   window.addEventListener('DOMContentLoaded', init);
 })();
 
