@@ -5,6 +5,7 @@
   const BANDC = [0x111111, 0x6d4c41, 0xe53935, 0xfb8c00, 0xfdd835, 0x43a047, 0x1e88e5, 0x8e24aa, 0x9e9e9e, 0xfafafa];
   const LEDCOL = { red: 0xff1744, green: 0x00e676, blue: 0x2979ff, yellow: 0xffea00, white: 0xf5f7ff, orange: 0xff9100, ir: 0xb388ff };
   const MM = 1 / 0.254;
+  const GND_HEX = 0x22c55e;   // ground marker green (posts, rings, symbols)
   const WIRE_R = 0.5 * MM; // 1.0 mm OD — chunkier than AWG22 so jumpers read at framed distance (was 0.7 mm → ~2 px)
   const RM = () => root.matchMedia && root.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -427,14 +428,17 @@
           } catch (_) { mesh.add(this._shadowDisc(10)); }
         }
       }
-      this._partBoxes = []; this._pinOwners = new Map();
+      this._partBoxes = []; this._pinOwners = new Map(); this._pinNames = new Map();
+      for (const [, rec] of this.parts) if (rec.part.type === 'breadboard') {
+        try { for (const pin of root.Parts.T.breadboard.pins(rec.part)) { const q = root.Parts.pinWorld(rec.part, pin); this._pinNames.set(Math.round(q.x) + ',' + Math.round(q.y), pin.name); } } catch (_) {}
+      }
       for (const [id, rec] of this.parts) {
         if (rec.part.type === 'breadboard') continue;
         try {
           rec.mesh.updateMatrixWorld(true); const bb = this._solidBox(rec.mesh);
           if (bb && !bb.isEmpty()) this._partBoxes.push({ id, box: bb, pinTop: rec.mesh.userData.pinTop != null ? rec.mesh.userData.pinTop : null });
           const d = root.Parts.T[rec.part.type];
-          for (const pin of (d && d.pins ? d.pins(rec.part) : [])) { const q = root.Parts.pinWorld(rec.part, pin); this._pinOwners.set(Math.round(q.x) + ',' + Math.round(q.y), id); }
+          for (const pin of (d && d.pins ? d.pins(rec.part) : [])) { const q = root.Parts.pinWorld(rec.part, pin), kk = Math.round(q.x) + ',' + Math.round(q.y); this._pinOwners.set(kk, id); this._pinNames.set(kk, pin.name); }
         } catch (_) {}
       }
       for (const w of this.proj.wires) {
@@ -546,13 +550,13 @@
       const THREE = root.THREE, cols = p.props.cols || 63;
       const W = cols * 10 + 10, D = 200, H = 9.5 * MM;
       const g = new THREE.Group();
-      const tex = this._bbTexture(cols);
-      const body = new THREE.Mesh(new THREE.BoxGeometry(W + 4, H, D + 8), this._mat({ color: 0xe0d8c8, roughness: 0.75, metalness: 0.04 }));
-      body.position.set(W / 2 - 5, -H / 2, D / 2 - 10); body.castShadow = true; body.receiveShadow = true; g.add(body);
-      const top = new THREE.Mesh(new THREE.PlaneGeometry(W + 3.5, D + 7.5), this._mat({ map: tex, color: 0xf7f1e3, roughness: 0.68, metalness: 0.04 }));
-      top.rotation.x = -Math.PI / 2; top.position.set(W / 2 - 5, 0.05, D / 2 - 10); top.receiveShadow = true; g.add(top);
-      const lip = new THREE.Mesh(new THREE.BoxGeometry(W + 4.4, 0.45, D + 8.4), this._mat({ color: 0xd9d2c3, roughness: 0.65 }));
-      lip.position.set(W / 2 - 5, 0.28, D / 2 - 10); g.add(lip);
+      const tex = this._bbTexture2D(cols);
+      // 2D body spans x −6…W−4, y −14…208 (222 deep); match it exactly so texture rails sit on the real rail holes
+      const BW = W + 2, BD = 222, cx = W / 2 - 5, cz = 97;
+      const body = new THREE.Mesh(new THREE.BoxGeometry(BW, H, BD), this._mat({ color: 0xe0d8c8, roughness: 0.75, metalness: 0.04 }));
+      body.position.set(cx, -H / 2, cz); body.castShadow = true; body.receiveShadow = true; g.add(body);
+      const top = new THREE.Mesh(new THREE.PlaneGeometry(BW, BD), this._mat({ map: tex, color: 0xffffff, roughness: 0.68, metalness: 0.04 }));
+      top.rotation.x = -Math.PI / 2; top.position.set(cx, 0.05, cz); top.receiveShadow = true; g.add(top);
       const holes = d.pins(p);
       const holeGeo = new THREE.CylinderGeometry(1.15, 1.25, 1.4, 8);
       const holeMat = this._mat({ color: 0x1a1a1c, metalness: 0.55, roughness: 0.35 });
@@ -647,12 +651,19 @@
       // Header pins (2×15)
       const pinMat = this._mat({ color: 0xd0d4da, metalness: 0.9, roughness: 0.22 });
       const plastic = this._mat({ color: 0x1a1a1e, roughness: 0.7 });
-      for (const z of [2, 88]) {
+      const gndPin = this._mat({ color: GND_HEX, metalness: 0.3, roughness: 0.35, emissive: GND_HEX, emissiveIntensity: 0.25 });
+      for (const z of [0, 90]) {   // same rows as the 2D pins (y=0 / y=90)
         const bar = new THREE.Mesh(new THREE.BoxGeometry(148, 2.2, 2.4), plastic);
         bar.position.set(70, -0.3, z); g.add(bar);
         for (let i = 0; i < 15; i++) {
-          const pin = new THREE.Mesh(new THREE.BoxGeometry(0.9, 9.5, 0.9), pinMat);
+          const isG = i === 1;   // GND.2 (top row) / GND.1 (bottom row)
+          const pin = new THREE.Mesh(new THREE.BoxGeometry(isG ? 1.4 : 0.9, 9.5, isG ? 1.4 : 0.9), isG ? gndPin : pinMat);
           pin.position.set(i * 10, 4.2, z); g.add(pin);
+          if (isG) {
+            const collar = new THREE.Mesh(new THREE.BoxGeometry(4.2, 1.2, 4.2), gndPin);
+            collar.position.set(i * 10, 9.6, z); g.add(collar);
+            const tag = this._labelSprite('GND', '#04130b', '#3ddc84'); tag.position.set(i * 10, 15, z + (z ? 6 : -6)); g.add(tag);
+          }
         }
       }
       g.userData.pinTop = 9.0;   // header pin tops: jumpers land here
@@ -867,6 +878,87 @@
       horn.position.set(10, 10 + 12 * MM, -6); g.add(horn); g.userData.horn = horn;
       this.servos.push({ part: p, horn }); return g;
     }
+    _labelSprite(text, bg, fg) {
+      const THREE = root.THREE;
+      const c = document.createElement('canvas'); c.width = 128; c.height = 48;
+      const g = c.getContext('2d');
+      g.fillStyle = bg; g.beginPath(); if (g.roundRect) g.roundRect(2, 2, 124, 44, 10); else g.rect(2, 2, 124, 44); g.fill();
+      g.strokeStyle = fg; g.lineWidth = 3; g.stroke();
+      g.fillStyle = fg; g.font = 'bold 28px ui-monospace,monospace'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(text, 64, 26);
+      const tex = new THREE.CanvasTexture(c); tex.encoding = THREE.sRGBEncoding;
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthWrite: false, transparent: true }));
+      sp.scale.set(17, 6.4, 1); sp.renderOrder = 6; sp.userData.label = true;
+      return sp;
+    }
+    // 2D ground symbol (⏚) as a 3D marker: black post + three green bars + GND tag
+    _makeGround(p) {
+      const THREE = root.THREE, g = new THREE.Group();
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.1, 8, 12), this._mat({ color: 0x15171a, metalness: 0.3, roughness: 0.4 }));
+      post.position.set(0, 4, 0); g.add(post);
+      const bm = this._mat({ color: GND_HEX, metalness: 0.2, roughness: 0.35, emissive: GND_HEX, emissiveIntensity: 0.3 });
+      [[16, 8.6], [10, 10.4], [4, 12.2]].forEach(([w, y]) => { const b = new THREE.Mesh(new THREE.BoxGeometry(w, 1.4, 3), bm); b.position.set(0, y, 0); b.castShadow = true; g.add(b); });
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(2.6, 0.6, 8, 20), bm); ring.rotation.x = Math.PI / 2; ring.position.set(0, 0.5, 0); g.add(ring);
+      const tag = this._labelSprite('GND', '#04130b', '#3ddc84'); tag.position.set(0, 18, 0); g.add(tag);
+      g.userData.pinTop = 7.5;   // wires land on the post top
+      return g;
+    }
+    // vcc33 / vcc5 supply: compact module with a red + post and a green GND post (2D pins: + at 0, GND at 20)
+    _makeSupply(p, t) {
+      const THREE = root.THREE, g = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.BoxGeometry(30, 8, 14), this._mat({ color: 0x7f1d1d, roughness: 0.45, metalness: 0.1 }));
+      body.position.set(10, 4, -12); body.castShadow = true; g.add(body);
+      const tag = this._labelSprite(t === 'vcc5' ? '5V' : '3V3', '#2a0707', '#ff8a80'); tag.position.set(10, 13, -12); g.add(tag);
+      const mk = (x, col) => { const m = this._mat({ color: col, metalness: 0.3, roughness: 0.35, emissive: col, emissiveIntensity: 0.25 });
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(1.4, 1.4, 7, 12), m); post.position.set(x, 3.5, 0); g.add(post);
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(2.6, 0.6, 8, 20), m); ring.rotation.x = Math.PI / 2; ring.position.set(x, 0.5, 0); g.add(ring); };
+      mk(0, 0xef4444); mk(20, GND_HEX);
+      const gt = this._labelSprite('GND', '#04130b', '#3ddc84'); gt.position.set(20, 11, 3); g.add(gt);
+      g.userData.pinTop = 7;
+      return g;
+    }
+    // Breadboard top drawn in the exact 2D coordinates (x −6…W−4, y −14…208) so rails/holes line up with pins
+    _bbTexture2D(cols) {
+      const THREE = root.THREE, W = cols * 10 + 10, k = 3;
+      const c = document.createElement('canvas'); c.width = Math.round((W + 2) * k); c.height = 222 * k;
+      const g = c.getContext('2d');
+      const X = (x) => (x + 6) * k, Y = (y) => (y + 14) * k;
+      g.fillStyle = '#f1ebdd'; g.fillRect(0, 0, c.width, c.height);
+      g.fillStyle = '#e4dccb'; g.fillRect(0, Y(-14), c.width, 38 * k); g.fillRect(0, Y(170), c.width, 38 * k);
+      g.fillStyle = '#d6cdb9'; g.fillRect(0, Y(91), c.width, 12 * k);
+      const rail = (y, col) => { g.fillStyle = col; g.fillRect(X(4), Y(y - 0.6), (W - 12) * k, 2.8 * k); };
+      rail(-9.6, '#1d4ed8'); rail(17.4, '#dc2626'); rail(171.4, '#dc2626'); rail(197.4, '#1d4ed8');
+      g.font = 'bold ' + (11 * k) + 'px ui-sans-serif,system-ui,sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+      for (const x of [-1, W - 4]) { g.fillStyle = '#1d4ed8'; g.fillText('−', X(x), Y(0)); g.fillText('−', X(x), Y(190)); g.fillStyle = '#dc2626'; g.fillText('+', X(x), Y(10)); g.fillText('+', X(x), Y(180)); }
+      for (const h of root.Parts.T.breadboard.pins({ props: { cols } })) {
+        const neg = /^(tn|bn)/.test(h.name);
+        g.fillStyle = neg ? 'rgba(29,78,216,0.22)' : 'rgba(0,0,0,0.14)'; g.fillRect(X(h.x - 3.4), Y(h.y - 3.4), 6.8 * k, 6.8 * k);
+        g.fillStyle = '#26262b'; g.fillRect(X(h.x - 2.2), Y(h.y - 2.2), 4.4 * k, 4.4 * k);
+      }
+      g.fillStyle = 'rgba(40,40,45,0.6)'; g.font = 'bold ' + (7 * k) + 'px ui-sans-serif,system-ui,sans-serif';
+      for (let col = 1; col <= cols; col++) if (col === 1 || col % 5 === 0) { const x = 10 + (col - 1) * 10; g.fillText(String(col), X(x), Y(29)); g.fillText(String(col), X(x), Y(164)); }
+      const rows = { a: 40, b: 50, c: 60, d: 70, e: 80, f: 110, g: 120, h: 130, i: 140, j: 150 };
+      for (const r in rows) { g.fillText(r, X(1), Y(rows[r])); g.fillText(r, X(W - 4), Y(rows[r])); }
+      const tex = new THREE.CanvasTexture(c); tex.anisotropy = 8; tex.encoding = THREE.sRGBEncoding;
+      return tex;
+    }
+    // Jumper contact: metal pin into the hole + collar; ground contacts get a green ring
+    _contact(pos, col, isGnd) {
+      const THREE = root.THREE, g = new THREE.Group();
+      const pin = new THREE.Mesh(new THREE.CylinderGeometry(0.35 * MM, 0.35 * MM, 3.2, 8), this._mat({ color: 0xd8dce2, metalness: 0.3, roughness: 0.25 }));
+      pin.position.set(pos.x, pos.y - 1.2, pos.z); g.add(pin);
+      const collar = new THREE.Mesh(new THREE.CylinderGeometry(WIRE_R * 1.15, WIRE_R * 1.15, 2.4, 12), this._mat({ color: col, roughness: 0.45 }));
+      collar.position.set(pos.x, pos.y + 0.6, pos.z); g.add(collar);
+      if (isGnd) {
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(WIRE_R * 2.2, 0.45, 8, 20), this._mat({ color: GND_HEX, emissive: GND_HEX, emissiveIntensity: 0.35, roughness: 0.35 }));
+        ring.rotation.x = Math.PI / 2; ring.position.set(pos.x, Math.max(0.6, pos.y - WIRE_R), pos.z); g.add(ring);
+      }
+      return g;
+    }
+    _isGndPoint(x, z) {
+      const k = Math.round(x) + ',' + Math.round(z);
+      const n = this._pinNames && this._pinNames.get(k);
+      return !!n && (/GND|^-$/i.test(n) || /^(tn|bn)\d+$/.test(n));
+    }
     _makeCard(p, d) {
       const THREE = root.THREE, g = new THREE.Group();
       const sz = d.size ? d.size(p) : { w: 30, h: 20 };
@@ -889,7 +981,9 @@
       if (/lcd|oled|tft|ssd1306|sh110|display/i.test(t)) return this._makeDisplay(p, d);
       if (t === 'motor' || t === 'dcmotor') return this._makeMotor(p);
       if (t === 'servo') return this._makeServo(p);
-      if (t === 'battery' || t === 'battery9v' || t === 'coin' || t === 'vcc33' || t === 'vcc5') return this._makeBatteryFixed(p, t);
+      if (t === 'ground') return this._makeGround(p);
+      if (t === 'vcc33' || t === 'vcc5') return this._makeSupply(p, t);
+      if (t === 'battery' || t === 'battery9v' || t === 'coin') return this._makeBatteryFixed(p, t);
       return this._makeCard(p, d);
     }
 
@@ -963,6 +1057,9 @@
       // 1-px colored centre line: keeps every wire visible even when zoomed far out
       const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(curve.getPoints(Math.max(16, segs))), new THREE.LineBasicMaterial({ color: col }));
       const group = new THREE.Group(); group.add(core); group.add(ins); group.add(line);
+      const gA = this._isGndPoint(a.x, a.y), gB = this._isGndPoint(b.x, b.y);
+      group.add(this._contact(pts[0], col, gA)); group.add(this._contact(pts[pts.length - 1], col, gB));
+      group.userData.gnd = gA || gB;
       group.userData.wid = w.id; group.userData.curve = curve; group.userData.color = col;
       return { group, curve, color: col, id: w.id };
     }
