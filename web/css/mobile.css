@@ -220,3 +220,23 @@ body.m .hint{font-family:var(--mono);font-size:11px;letter-spacing:.06em;border-
 body.m .projbanner #bCopy{background:rgba(34,211,238,.1);color:var(--acc);border:1px solid var(--hud);box-shadow:0 0 18px rgba(34,211,238,.18);border-radius:6px;font-family:var(--mono);font-size:12px;letter-spacing:.12em;text-transform:uppercase}
 body.m #mSel{border-radius:8px;background:rgba(4,8,14,.82);border-color:var(--hudl)}
 body.m #mCount:not(.on),body.m #mFlash:not(.on){display:none!important}
+
+/* ---- fix pass: explicit parts sheet size, flat carousel track, persistent +PARTS ---- */
+body.m #palette{height:min(470px,calc(100vh - var(--mTop) - 40px));height:min(470px,calc(100dvh - var(--mTop) - 40px))}
+body.m #palList{display:none!important}
+body.m #mTrack.m-only{display:flex!important;flex:1 1 auto;overflow-x:auto;overflow-y:hidden;scroll-snap-type:x mandatory;gap:6px;padding:18px calc(50% - 70px) 26px;-webkit-overflow-scrolling:touch;scrollbar-width:none;align-items:center;min-height:212px;touch-action:pan-x}
+#mTrack::-webkit-scrollbar{display:none}
+body.m #mTrack .pitem.m-off,body.m #mTrack .pitem[hidden]{display:none!important}
+body.m #mTrack.m-empty::before{content:'NO PARTS MATCH';margin:auto;font:600 12px var(--mono);letter-spacing:.2em;color:var(--mut)}
+body.m #mTrack .pitem{position:relative;overflow:visible;flex:0 0 140px;height:168px;scroll-snap-align:center;transition:opacity .15s,border-color .2s,box-shadow .2s;background:linear-gradient(180deg,rgba(34,211,238,.07),rgba(4,8,14,.9));border:1px solid var(--hudl);border-radius:6px;justify-content:center;will-change:transform;padding:12px 6px}
+body.m #mTrack .pitem svg{height:86px;width:100%}
+body.m #mTrack .pitem span{font-family:var(--mono);font-size:11.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--txt);text-align:center}
+body.m #mTrack .pitem.m-focus{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc),0 0 34px rgba(34,211,238,.35),inset 0 0 24px rgba(34,211,238,.12)}
+body.m #mTrack .pitem.m-focus::after{content:'TAP TO DEPLOY';position:absolute;bottom:-18px;font:600 9.5px var(--mono);letter-spacing:.2em;color:var(--acc)}
+#mParts{position:absolute;right:max(12px,env(safe-area-inset-right));top:36px;z-index:7;height:44px;padding:0 16px 0 12px;gap:6px;border-radius:6px;background:rgba(34,211,238,.12);border:1px solid var(--hud);color:var(--acc);font:700 12px var(--mono);letter-spacing:.16em;box-shadow:0 0 22px rgba(34,211,238,.25);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+body.m #mParts.m-only{display:inline-flex!important}#mParts .ic{width:18px;height:18px}
+body.m.m-wiring #mParts{opacity:0;pointer-events:none}
+/* landscape phones: short viewport */
+@media (max-height:520px){body.m{--mTop:calc(44px + env(safe-area-inset-top))}body.m #palette{height:calc(100vh - var(--mTop) - 8px);height:calc(100dvh - var(--mTop) - 8px)}body.m #mTrack.m-only{min-height:180px;padding-top:8px}body.m #mTrack .pitem{height:140px}
+  body.m .m-sheet{padding-bottom:12px;padding-right:110px}body.m #mDial{left:auto;right:calc(52px + max(16px,env(safe-area-inset-right)));bottom:auto;top:50%}body.m #mHub{top:-38px}
+  body.m #mIgnite{bottom:calc(10px + env(safe-area-inset-bottom))}body.m .canvas-tools,body.m .zoom-tools{bottom:12px}body.m .zoom-tools{right:110px}body.m .hint{display:none}body.m #mSel{bottom:70px}}

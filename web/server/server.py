@@ -72,6 +72,11 @@ async def gate(request: Request, call_next):
     if request.method == 'POST' and int(request.headers.get('content-length') or 0) > MAX_BODY:
         return PlainTextResponse('request too large', 413)
     resp = await call_next(request)
+    pth = request.url.path
+    if pth == '/' or pth.endswith('.html'):
+        resp.headers['Cache-Control'] = 'no-cache, must-revalidate'   # always revalidate the page so new ?v= asset URLs are picked up
+    elif pth.startswith(('/js/', '/css/')):
+        resp.headers['Cache-Control'] = 'public, max-age=31536000, immutable' if request.query_params.get('v') else 'no-cache'
     if TOKEN and request.query_params.get('t') == TOKEN:
         resp.set_cookie('simtok', TOKEN, httponly=True, samesite='lax', secure=True, max_age=86400 * 7)
     return resp

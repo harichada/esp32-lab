@@ -1,7 +1,7 @@
 /* Mobile shell (<=820px): full-screen canvas, slim top bar, bottom tab bar, bottom sheets, touch gestures.
    Everything here is gated on body.m, which is only set while the viewport is <=820px; desktop is untouched. */
 (function () {
-  const MQ = window.matchMedia('(max-width: 820px)');
+  const MQ = window.matchMedia('(max-width: 820px), (pointer: coarse) and (max-height: 520px)');   // phones in portrait, and phones in landscape
   const $ = (s, r) => (r || document).querySelector(s), $$ = (s, r) => [...(r || document).querySelectorAll(s)];
   const ic = (id) => `<svg class="ic"><use href="#${id}"/></svg>`;
   const ICONS = '<svg width="0" height="0" style="position:absolute" aria-hidden="true">' +
@@ -64,6 +64,8 @@
     $('#mScrim').onclick = () => { if (dialOpen) openDial(false); setSheet(null); };
     $('#mMenu').onclick = () => setSheet(sheet === 'more' ? null : 'more');
     ignition();
+    $('#stageWrap').insertAdjacentHTML('beforeend', `<button id="mParts" class="m-only" aria-label="Add parts">${ic('i-plus')}<span>PARTS</span></button>`);
+    $('#mParts').onclick = () => { haptic(6); setSheet(sheet === 'parts' ? null : 'parts'); setTimeout(() => window.Mobile_orbit && window.Mobile_orbit(), 350); };
     telemetry();
     // sheets: parts (palette), code/serial/other (dock), inspector (side), more (new)
     const pal = $('#palette'); pal.classList.add('m-sheet'); sheetHead(pal, 'Parts');
@@ -71,17 +73,20 @@
     const cats = $$('.pcat', pal).map((c) => c.dataset.cat);
     chips.innerHTML = ['All', ...cats].map((c, i) => `<button class="m-chip${i ? '' : ' on'}" data-c="${c}">${c}</button>`).join('');
     $('.pal-search', pal).after(chips);
-    chips.onclick = (e) => { const b = e.target.closest('.m-chip'); if (!b) return; $$('.m-chip', chips).forEach((x) => x.classList.toggle('on', x === b)); filterCat(b.dataset.c); $('#palList').scrollLeft = 0; requestAnimationFrame(() => window.Mobile_orbit()); b.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' }); };
-    function filterCat(c) { $$('.pcat', pal).forEach((h) => { const on = c === 'All' || h.dataset.cat === c; h.classList.toggle('m-off', !on); h.nextElementSibling.classList.toggle('m-off', !on); if (on) { h.classList.remove('closed'); h.nextElementSibling.classList.remove('closed'); } }); }
+    chips.onclick = (e) => { const b = e.target.closest('.m-chip'); if (!b) return; $$('.m-chip', chips).forEach((x) => x.classList.toggle('on', x === b)); filterCat(b.dataset.c); track.scrollLeft = 0; requestAnimationFrame(() => window.Mobile_orbit()); b.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' }); };
+    function filterCat(c) { $$('.pitem', track).forEach((it) => it.classList.toggle('m-off', c !== 'All' && it.dataset.cat !== c)); $$('.pcat', pal).forEach((h) => { const on = c === 'All' || h.dataset.cat === c; h.classList.toggle('m-off', !on); h.nextElementSibling.classList.toggle('m-off', !on); if (on) { h.classList.remove('closed'); h.nextElementSibling.classList.remove('closed'); } }); }
     $('#palSearch').setAttribute('enterkeyhint', 'search');
     const pl = $('#palList'); let cr = 0;
-    const orbit = () => { cr = 0; if (!document.body.classList.contains('m') || sheet !== 'parts') return; const r = pl.getBoundingClientRect(), cx = r.left + r.width / 2;
-      for (const it of pl.querySelectorAll('.pitem')) { if (it.offsetParent === null) continue; const b = it.getBoundingClientRect(); const d = Math.max(-1.6, Math.min(1.6, (b.left + b.width / 2 - cx) / (r.width / 2)));
+    const track = document.createElement('div'); track.id = 'mTrack'; track.className = 'm-only'; pl.before(track);
+    $$('.pgrid', pl).forEach((g) => [...g.children].forEach((it) => { it.dataset.cat = g.dataset.cat; }));
+    window.Mobile_track = (on) => { if (on) $$('.pitem', pl).forEach((it) => track.appendChild(it)); else { $$('.pitem', track).forEach((it) => { const g = pl.querySelector(`.pgrid[data-cat="${CSS.escape(it.dataset.cat)}"]`); if (g) g.appendChild(it); it.style.transform = ''; it.style.opacity = ''; }); } };
+    const orbit = () => { cr = 0; if (!document.body.classList.contains('m') || sheet !== 'parts') return; const r = track.getBoundingClientRect(), cx = r.left + r.width / 2;
+      for (const it of track.querySelectorAll('.pitem')) { if (it.offsetParent === null) continue; const b = it.getBoundingClientRect(); const d = Math.max(-1.6, Math.min(1.6, (b.left + b.width / 2 - cx) / (r.width / 2)));
         it.style.transform = RM.matches ? '' : `perspective(700px) translateZ(${(-Math.abs(d) * 70).toFixed(1)}px) rotateY(${(-d * 32).toFixed(1)}deg)`; it.style.opacity = (1 - Math.min(0.65, Math.abs(d) * 0.4)).toFixed(2); it.classList.toggle('m-focus', Math.abs(d) < 0.22); } };
-    pl.addEventListener('scroll', () => { if (!cr) cr = requestAnimationFrame(orbit); }, { passive: true });
+    track.addEventListener('scroll', () => { if (!cr) cr = requestAnimationFrame(orbit); }, { passive: true });
     window.Mobile_orbit = () => requestAnimationFrame(orbit);
-    $('#palSearch').addEventListener('input', () => { pl.scrollLeft = 0; requestAnimationFrame(orbit); });
-    $('#palList').addEventListener('click', (e) => { if (!document.body.classList.contains('m')) return; const it = e.target.closest('.pitem'); if (!it) return; setSheet(null); app.cmd.toast('Added ' + it.querySelector('span').textContent + ' · drag to place'); }, true);
+    $('#palSearch').addEventListener('input', () => { track.scrollLeft = 0; const any = $$('.pitem', track).some((x) => !x.hidden && !x.classList.contains('m-off')); track.classList.toggle('m-empty', !any); requestAnimationFrame(orbit); });
+    track.addEventListener('click', (e) => { const it = e.target.closest('.pitem'); if (!it) return; setSheet(null); app.cmd.toast('Added ' + it.querySelector('span').textContent + ' · drag to place'); }, true);
     const dock = $('#dock'); dock.classList.add('m-sheet'); sheetHead(dock, 'Code');
     const side = $('#side'); side.classList.add('m-sheet'); sheetHead(side, 'Properties');
     // symbol bar for the code editor
@@ -197,7 +202,7 @@
       if (pts.size === 2) {
         e.stopPropagation(); clearTimeout(lp && lp.t); lp = null;
         if (ed.mode && ed.mode.k === 'drag' && ed.mode.moved) { ed.mode.p.x = ed.mode.ox; ed.mode.p.y = ed.mode.oy; ed.undoS.pop(); ed.render(); }
-        if (!(ed.mode && ed.mode.k === 'wire')) ed.mode = null;
+        if (ed.mode && ed.mode.k === 'wire' && Date.now() - (ed.mode.t0 || 0) < 400) ed.cancelWire(); else if (!(ed.mode && ed.mode.k === 'wire')) ed.mode = null;
         const m = mid(), r = st.getBoundingClientRect(); g = { m, s: ed.view.s, wx: ed.view.x + (m.x - r.left) / ed.view.s, wy: ed.view.y + (m.y - r.top) / ed.view.s };
       }
     }, true);
@@ -236,7 +241,7 @@
   function apply() {
     const m = MQ.matches; document.body.classList.toggle('m', m);
     if (m && !built && window.app && window.app.editor) build();
-    if (built) relocate(m);
+    if (built) { relocate(m); window.Mobile_track && window.Mobile_track(m); }
     if (!m) setSheet(null); setTimeout(() => window.app && window.app.editor && window.app.editor.applyView(), 50);
     if (window.app && window.app.editor) window.app.editor.setHint();
   }
