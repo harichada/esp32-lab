@@ -247,3 +247,17 @@ body.m .view-toggle .seg{height:36px;padding:0 12px;font-size:12.5px}
 body.m #stage3d.on{z-index:4}
 body.m.view3d #mParts{opacity:.3;pointer-events:none}
 body.m.view3d .hint{display:none}
+/* oscilloscope HUD sheet (full-screen) */
+body.m[data-msheet=scope] #mScope{transform:none;visibility:visible;transition:transform .32s cubic-bezier(.2,.85,.25,1),visibility 0s;top:var(--mTop);bottom:0;max-height:none;border-radius:0;padding-bottom:0}
+body.m #mScope .m-sh-h{padding-top:2px}body.m #mScope .m-grab{display:none}body.m #mScope .m-sh-row{min-height:38px}
+.m-sc-tag{font:700 9.5px var(--mono);letter-spacing:.18em;color:#6dff8a;padding:3px 7px;border:1px solid rgba(109,255,138,.4);text-shadow:0 0 8px rgba(109,255,138,.6)}
+body.m #mScope .inst{flex:1;min-height:0;overflow:auto}
+body.m #mScope .inst-brand i,body.m #mScope .inst-sr{display:none}
+body.m #mScope .inst-top{gap:4px;padding:4px 6px;overflow-x:auto;flex-wrap:nowrap}body.m #mScope .ib{height:32px;flex:none}
+body.m #mScope .inst-body{flex-direction:column;flex:none}
+body.m #mScope .inst-screen{height:44vh;flex:none;padding:4px}
+body.m #mScope .inst-side{width:auto;padding:0 6px;flex-direction:row;overflow-x:auto;flex:none}body.m #mScope .isec{min-width:200px}body.m #mScope .isec.grow{min-width:260px;max-height:150px}
+body.m #mScope .inst-ch{grid-template-columns:repeat(2,1fr);padding:6px}
+body.m #mScope .ich button,body.m #mScope .ich-r select{height:28px}
+body.m .telstrip{left:6px;right:6px;bottom:auto;top:calc(var(--mTop) + 28px);max-width:none;padding:3px 4px;overflow-x:auto}
+body.m .tel-i canvas{width:84px;height:22px}body.m .tel-h{display:none}body.m .tel-l{min-width:60px}

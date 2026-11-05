@@ -19,7 +19,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     $('#selMode').value = app.proj.mode; $('#inDefines').value = app.proj.defines.join(','); renderFileTabs(); loadCode(); modeNote();
     $('#cbDiodes').checked = !app.proj.parts.some((q) => q.type === 'diode' && q.props.bypass);
     const hasDev = !!app.proj.devices; document.querySelector('[data-tab=dev]').style.display = hasDev ? '' : 'none';
-    if (app.proj.scope && app.proj.scope.div) $('#selTdiv').value = String(app.proj.scope.div);
+    if (window.Instruments) Instruments.setProject(app.proj, app.sim);
     serialClear(); app.irFrames = [];
     serialAppend(`— ${app.proj.name || 'project'} —\n${app.proj.notes ? app.proj.notes + '\n' : ''}`);
     app.devDirty = true; setStatus('idle', 'idle'); renderBanner();
@@ -556,7 +556,6 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     $('#warnList').innerHTML = w.length ? w.map((x) => `<div class="w">⚠ ${x.id ? '<b>' + x.id + '</b>: ' : ''}${P.esc(x.msg)}</div>`).join('') : 'none';
     const box = $('#warnBox'); box.hidden = !w.length; box.innerHTML = w.slice(0, 4).map((x) => `⚠ ${x.id || ''} ${P.esc(x.msg)}`).join('<br>');
     for (const [id, g] of app.editor.partEls) g.classList.toggle('warn', w.some((x) => x.id === id));
-    if ($('#tab-scope').classList.contains('on')) drawScope();
     if (!document.body.classList.contains('c-side')) updateReadouts();
     if (app.devDirty || frame % 30 === 0) { if ($('#tab-dev').classList.contains('on')) renderDevices(); }
   }
@@ -566,7 +565,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (!sel) { el.innerHTML = '<p class="muted">Select a part or wire.</p>'; return; }
     if (sel.wire) {
       const w = app.proj.wires.find((q) => q.id === sel.wire); if (!w) return;
-      el.innerHTML = `<h3>Wire ${w.id}</h3><div class="row wrap">${Object.keys(window.WIRE_COLORS).map((c) => `<button class="sw ${w.color === c ? 'on' : ''}" data-col="${c}" style="background:${window.WIRE_COLORS[c]}" title="${c}"></button>`).join('')}</div><p id="ro" class="ro"></p><button id="iDel">Delete wire</button>`;
+      el.innerHTML = `<h3>Wire ${w.id}</h3><div class="row wrap">${Object.keys(window.WIRE_COLORS).map((c) => `<button class="sw ${w.color === c ? 'on' : ''}" data-col="${c}" style="background:${window.WIRE_COLORS[c]}" title="${c}"></button>`).join('')}</div><p id="ro" class="ro"></p><div class="row probe-row"><button class="probe-b" data-probe='${JSON.stringify({ kind: 'wire', wire: w.id })}'>⌁ Probe on scope</button><button class="probe-b" data-watch='${JSON.stringify({ kind: 'wire', wire: w.id })}'>📌 Telemetry</button></div><button id="iDel">Delete wire</button>`;
       el.querySelectorAll('[data-col]').forEach((b) => b.onclick = () => { app.editor.setWireColor(b.dataset.col); renderInspector(sel); });
       $('#iDel').onclick = () => app.editor.deleteSel(); return;
     }
@@ -604,7 +603,8 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     $('#pinTable').innerHTML = '<table class="pins">' + d.pins(p).map((q) => {
       const v = app.sim.pinVoltage(p, q.name); let extra = '';
       if (rt) { const g = P.espGpio(q.name); if (g >= 0) { const s = rt.pins[g]; extra = `<td>${s.out ? (s.pwm !== undefined ? 'PWM ' + Math.round(s.pwm * 100) + '%' : 'OUT ' + s.level) : 'IN' + (s.pu ? '↑' : '') + (s.pd ? '↓' : '')}</td><td class="muted">${P.esc(d.info(q.name))}</td>`; } else extra = '<td></td><td></td>'; }
-      return `<tr><td>${P.esc(q.name)}</td><td>${P.fmt(v, 'V')}</td>${extra}</tr>`;
+      const pj = P.esc(JSON.stringify({ kind: 'pin', part: p.id, pin: q.name, label: p.id + '.' + q.name }));
+      return `<tr><td>${P.esc(q.name)}</td><td>${P.fmt(v, 'V')}</td>${extra}<td class="pacts"><button class="pa" title="Probe on scope" data-probe="${pj}">⌁</button><button class="pa" title="Pin to telemetry strip" data-watch="${pj}">📌</button></td></tr>`;
     }).join('') + '</table>';
   }
   // ---------------- hover tooltip ----------------
@@ -783,7 +783,11 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     $('#netFilter').oninput = (e) => { app.netlog.filter = e.target.value; app.netlog.dirty = true; app.netlog.render(); };
     $('#bNetClr').onclick = () => app.netlog.clear();
     $('#bNetCopy').onclick = async () => { const t = app.netlog.text(); try { await navigator.clipboard.writeText(t); toast('Network log copied (' + t.split('\n').length + ' lines)'); } catch (e) { const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); toast('Network log copied'); } };
-    $('#selTdiv').onchange = drawScope; $('#selVdiv').onchange = drawScope; $('#bScopeFreeze').onclick = (e) => { app.scopeFrozen = !app.scopeFrozen; e.target.textContent = app.scopeFrozen ? 'Run' : 'Freeze'; };
+    if (window.Instruments) { Instruments.mount($('#tab-scope'), { app, toast }); Instruments.renderStrip(true); }
+    $('#insp').addEventListener('click', (e) => {   // Inspector → probe / pin-to-telemetry buttons
+      const b = e.target.closest('[data-probe],[data-watch]'); if (!b || !window.Instruments) return; const pr = JSON.parse(b.dataset.probe || b.dataset.watch);
+      if (b.dataset.watch) Instruments.watchProbe(pr); else { Instruments.probe(pr); if (document.body.classList.contains('m') && window.Mobile) Mobile.setSheet('scope'); else { const t = document.querySelector('#tabs [data-tab=scope]'); if (t && !t.classList.contains('on')) t.click(); } }
+    });
     $('#inPsk').onchange = (e) => { app.world.tv.psk = e.target.value; app.devDirty = true; };
     $('#cbStandby').onchange = (e) => { app.world.tv.networkStandby = e.target.checked; app.devDirty = true; };
     $('#cbWifi').onchange = (e) => { app.world.wifiUp = e.target.checked; };

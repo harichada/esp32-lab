@@ -1,0 +1,107 @@
+[
+ {
+  "name": "armed PROBE + click on 555 OUT pin assigns CH1 (no wire started)",
+  "ok": true,
+  "info": "{'k': 1, 'on': True, 'n': 440, 'label': 'U1 NE555 timer \u00b7 pin OUT', 'last': 8.817076683044434, 'vdiv': 1}"
+ },
+ {
+  "name": "Inspector \u2301 on LED anode assigns CH2",
+  "ok": true,
+  "info": "{'k': 2, 'on': True, 'n': 441, 'label': 'LED1.A', 'last': 1.8842591047286987, 'vdiv': 1}"
+ },
+ {
+  "name": "CH1 555 OUT is a square wave (Vpp > 6 V, 1\u20132.2 Hz)",
+  "ok": true,
+  "info": "{'max': 8.81714916229248, 'min': 0, 'pp': 8.81714916229248, 'avg': 4.412908301287489, 'rms': 6.237713655845695, 'f': 1.5018596556289174, 'duty': 0.5000949705386192, 'n': 4048}"
+ },
+ {
+  "name": "CH2 LED anode swings ~0 \u2194 ~2 V in step with OUT",
+  "ok": true,
+  "info": "{'max': 1.884259581565857, 'min': 0, 'pp': 1.884259581565857, 'avg': 0.9430605895787831, 'rms': 1.3330306265725052, 'f': 1.5018596556289174, 'duty': 0.5000949705386192, 'n': 4048}"
+ },
+ {
+  "name": "trigger locks (TRIG'D)",
+  "ok": true,
+  "info": "TRIG'D"
+ },
+ {
+  "name": "telemetry strip shows 3 sparklines",
+  "ok": true,
+  "info": ""
+ },
+ {
+  "name": "cursor readout shows \u0394T, 1/\u0394T, \u0394V",
+  "ok": true,
+  "info": "\u0394T 640 ms 1/\u0394T 1.56 Hz A\u00b7CH2 1.88 V B\u00b7CH2 1.88 V \u0394V 0.00 V"
+ },
+ {
+  "name": "scope canvas has glowing CH1 trace pixels",
+  "ok": true,
+  "info": "1087"
+ },
+ {
+  "name": "render loop sustains frames (headless, software GL)",
+  "ok": true,
+  "info": "60 fps"
+ },
+ {
+  "name": "CSV export has header + samples",
+  "ok": true,
+  "info": "4049 rows \u00b7 time_s,CH1 U1 NE555 timer \u00b7 pin OUT (V),CH2 LED1.A (V)"
+ },
+ {
+  "name": "RUN/STOP freezes and resumes",
+  "ok": true,
+  "info": ""
+ },
+ {
+  "name": "no page errors (555)",
+  "ok": true,
+  "info": "[]"
+ },
+ {
+  "name": "LCD example runs (QEMU) and LCD has content",
+  "ok": true,
+  "info": "[\"i2cN\",\"i2cInfo\",\"img\",\"bl\"]"
+ },
+ {
+  "name": "no page errors (LCD)",
+  "ok": true,
+  "info": "[]"
+ },
+ {
+  "name": "Blink (real firmware): GPIO2 probe shows 0\u21943.3 V square wave ~0.5 Hz",
+  "ok": true,
+  "info": "{'max': 3.0745413303375244, 'min': 0, 'pp': 3.0745413303375244, 'avg': 1.5372706651687622, 'rms': 2.1740290237199686, 'f': 0.4838865769877512, 'duty': 0.5000483886476036, 'n': 300}"
+ },
+ {
+  "name": "logic analyzer lane GPIO2 captured edges",
+  "ok": true,
+  "info": "{'gpio': 2, 'n': 7}"
+ },
+ {
+  "name": "no page errors (Blink)",
+  "ok": true,
+  "info": "[]"
+ },
+ {
+  "name": "phone: dial \u2192 Scope opens full-screen HUD sheet with live canvas",
+  "ok": true,
+  "info": "{'w': 380, 'h': 363.359375, 'inSheet': True, 'sheet': 'scope'}"
+ },
+ {
+  "name": "phone: closing sheet returns instrument to its desktop home",
+  "ok": true,
+  "info": ""
+ },
+ {
+  "name": "phone: telemetry ticker shows the pinned signal",
+  "ok": true,
+  "info": "SYSRUNNING (CIRCUIT \u2014 NO ESP32, NO COMPILE)\nT+ \u00b7 8.4 s\nI14.8mA\nLIT1\n\u25c9 U1.OUT8.82 V\nPARTS7\nTRACES19"
+ },
+ {
+  "name": "no page errors (phone)",
+  "ok": true,
+  "info": "[]"
+ }
+]

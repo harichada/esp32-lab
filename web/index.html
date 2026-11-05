@@ -8,8 +8,8 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>ESP32 Circuit Lab — real-firmware ESP32 + electronics simulator</title>
 <link rel="stylesheet" href="css/app.css?v=21">
-<link rel="stylesheet" href="css/theme.css?v=27">
-<link rel="stylesheet" href="css/mobile.css?v=6">
+<link rel="stylesheet" href="css/theme.css?v=28">
+<link rel="stylesheet" href="css/mobile.css?v=7">
 <script>try{const t=localStorage.getItem('esp32lab.theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
 </head>
 <body>
@@ -63,6 +63,7 @@
       <div id="projBanner" class="projbanner"></div>
       <div id="tip" class="tip" hidden></div>
       <div id="warnBox" class="warnbox" hidden></div>
+      <div id="telStrip" class="telstrip" hidden></div>
       <div class="canvas-tools">
         <button id="bUndo" class="iconbtn" title="Undo (Ctrl+Z)"><svg class="ic"><use href="#i-undo"/></svg></button><button id="bRedo" class="iconbtn" title="Redo (Ctrl+Y)"><svg class="ic"><use href="#i-redo"/></svg></button>
         <span class="vsep"></span><button id="bRot" class="iconbtn" title="Rotate selection (R)"><svg class="ic"><use href="#i-rotate"/></svg></button><button id="bDel" class="iconbtn" title="Delete selection (Del)"><svg class="ic"><use href="#i-trash"/></svg></button>
@@ -105,11 +106,7 @@
         <div id="netPanel" class="term"></div>
         <p class="muted small">WiFi/DHCP/DNS/TCP/HTTP/UDP seen by the simulator's network bridge for the emulated ESP32, plus virtual-device reactions (DEV) and firmware <code>[net]</code> lines (FW). Times: your clock, +s since QEMU start.</p>
       </div>
-      <div class="tab" id="tab-scope">
-      <canvas id="scope" width="560" height="260"></canvas>
-      <div class="row"><label>Time/div <select id="selTdiv"><option>0.001</option><option>0.01</option><option>0.1</option><option selected>0.5</option><option>1</option></select> s</label><label>V/div <select id="selVdiv"><option>0.5</option><option selected>1</option><option>2</option></select></label><button id="bScopeFreeze">Freeze</button></div>
-      <p class="muted">Place “Oscilloscope probe” parts (CH1–CH4) on nets. Transient analysis (backward Euler, h ≤ 0.5 ms) runs whenever capacitors or probes exist.</p>
-    </div>
+      <div class="tab" id="tab-scope"></div>
     <div class="tab" id="tab-dev">
       <div id="devView"></div>
       <div class="row wrap">
@@ -145,7 +142,8 @@
 <script src="js/solver.js"></script>
 <script src="js/parts.js?v=23"></script>
 <script src="js/parts-art.js?v=2"></script>
-<script src="js/sim.js?v=4"></script>
+<script src="js/scope.js?v=1"></script>
+<script src="js/sim.js?v=5"></script>
 <script src="js/remote_logic.js"></script>
 <script src="js/devices.js?v=3"></script>
 <script src="js/netlog.js?v=3"></script>
@@ -171,8 +169,8 @@
 <script src="js/editor.js?v=23"></script>
 <script src="js/codeview.js?v=20"></script>
 <script src="js/ui.js?v=21"></script>
-<script src="js/app.js?v=35"></script>
-<script src="js/mobile.js?v=6"></script>
+<script src="js/app.js?v=36"></script>
+<script src="js/mobile.js?v=7"></script>
 <footer id="legalFoot"><span>Simulator for ESP32 &middot; &copy; 2026 Hari Kishore Chada. Not affiliated with or endorsed by Espressif Systems, Arduino SA, or Wokwi. ESP32, Arduino and Wokwi are trademarks of their respective owners.</span> <a href="notices.html" target="_blank" rel="noopener">Open-source notices</a></footer>
 </body>
 </html>

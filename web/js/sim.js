@@ -161,7 +161,10 @@
       if (this.needsRebuild()) this.build();
       const C = this.circuit;
       if (!this.hasDynamics()) { C.solve(1, false); C._h = dt; this.t += dt; this._after(dt); return; }
-      let h = this.h, steps = Math.min(maxSteps, Math.max(1, Math.ceil(dt / h))); h = dt / steps;
+      let h = this.h;
+      const hw = root.Instruments && root.Instruments.wantStep ? root.Instruments.wantStep() : h;   // scope on a fast timebase asks for a finer step (slow-motion if the budget runs out)
+      if (hw < h) { h = hw; dt = Math.min(dt, maxSteps * h); this.slowmo = dt / h >= maxSteps; } else this.slowmo = false;
+      let steps = Math.min(maxSteps, Math.max(1, Math.ceil(dt / h))); h = dt / steps;
       for (let i = 0; i < steps; i++) {
         if (this.needsRebuild()) this.build();
         const c = this.circuit; c._h = h; c.step(h); this.t += h;
@@ -179,6 +182,7 @@
       this._after(0, true);
     }
     _sample() {
+      if (root.Instruments && root.Instruments.sample) root.Instruments.sample(this);
       for (const ch in this.probes) { const a = this.scope[ch]; a.push([this.t, this.circuit.v(this.probes[ch])]); if (a.length > 20000) a.splice(0, a.length - 16000); }
     }
     _after(dt, quiet) {

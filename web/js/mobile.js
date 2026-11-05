@@ -10,6 +10,7 @@
     '<symbol id="m-parts" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5"/><path d="M17.25 14v6.5M14 17.25h6.5"/></symbol>' +
     '<symbol id="m-serial" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="16" rx="2.5"/><path d="M6.5 9l3 3-3 3M12 15h5"/></symbol>' +
     '<symbol id="m-more" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></symbol>' +
+    '<symbol id="m-scope" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="19" height="16" rx="2"/><path d="M5 14h3l2-6 3 9 2-5h4"/></symbol>' +
     '<symbol id="m-sliders" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol>' +
     '</svg>';
   let built = false, app, ed, sheet = null;
@@ -17,7 +18,9 @@
   function setSheet(name) {
     sheet = name || null; document.body.dataset.msheet = sheet || '';
     $$('.m-tab').forEach((b) => b.classList.toggle('on', b.dataset.m === (sheet === 'dock' ? 'more' : sheet || 'circuit')));
-    const cur = { code: ['m-code', 'CODE'], parts: ['m-parts', 'PARTS'], serial: ['m-serial', 'SERIAL'], insp: ['m-sliders', 'INSPECT'], more: ['m-more', 'MORE'], dock: ['m-more', 'PANEL'] }[sheet] || ['m-circuit', 'CIRCUIT'];
+    const si = $('#scopeInst'), ms = $('#mScope');
+    if (si && ms) { if (sheet === 'scope') { if (si.parentNode !== ms) ms.appendChild(si); } else if (si.parentNode === ms) $('#tab-scope').appendChild(si); }
+    const cur = { scope: ['m-scope', 'SCOPE'], code: ['m-code', 'CODE'], parts: ['m-parts', 'PARTS'], serial: ['m-serial', 'SERIAL'], insp: ['m-sliders', 'INSPECT'], more: ['m-more', 'MORE'], dock: ['m-more', 'PANEL'] }[sheet] || ['m-circuit', 'CIRCUIT'];
     const hub = $('#mHub'); if (hub) { hub.querySelector('use').setAttribute('href', '#' + cur[0]); hub.querySelector('.m-hub-t').textContent = cur[1]; }
     if (sheet === 'code') dockTab('code'); else if (sheet === 'serial') dockTab('serial');
     if (sheet === 'parts' && window.Mobile_orbit) setTimeout(window.Mobile_orbit, 30);
@@ -50,7 +53,7 @@
     top.insertAdjacentHTML('beforeend', `<button id="mMenu" class="iconbtn m-only" aria-label="More">${ic('m-more')}</button>`);
     $('#mMenu').onclick = () => setSheet(sheet === 'more' ? null : 'more');
     // orbital command dial (bottom centre) + ignition (bottom right) + telemetry ticker
-    const modes = [['circuit', 'Circuit', 'm-circuit'], ['code', 'Code', 'm-code'], ['parts', 'Parts', 'm-parts'], ['serial', 'Serial', 'm-serial'], ['insp', 'Inspect', 'm-sliders'], ['more', 'More', 'm-more']];
+    const modes = [['circuit', 'Circuit', 'm-circuit'], ['code', 'Code', 'm-code'], ['parts', 'Parts', 'm-parts'], ['serial', 'Serial', 'm-serial'], ['insp', 'Inspect', 'm-sliders'], ['scope', 'Scope', 'm-scope'], ['more', 'More', 'm-more']];
     document.body.insertAdjacentHTML('beforeend', `<div id="mScrim" class="m-only"></div>
       <nav id="mDial" class="m-only" aria-label="Mode dial"><div class="m-orbit">${modes.map(([k, n, i], j) => `<button class="m-tab" data-m="${k}" style="--j:${j}" aria-label="${n}">${ic(i)}<span>${n}</span></button>`).join('')}</div>
         <button id="mHub" aria-label="Open mode dial"><svg class="m-ring" viewBox="0 0 80 80"><circle cx="40" cy="40" r="36"/><circle cx="40" cy="40" r="30" class="m-ring2"/></svg><span class="m-hub-i">${ic('m-circuit')}</span><span class="m-hub-t">CIRCUIT</span></button></nav>
@@ -114,7 +117,11 @@
       <div class="m-grp"><div class="m-lbl">Feedback</div><div class="m-wire"><label class="m-sw"><input type="checkbox" id="mHap"><span>Haptics</span></label><label class="m-sw"><input type="checkbox" id="mSnd"><span>Sound effects</span></label></div></div>
       <div class="m-legal"><span id="mConn" class="conn"><i></i><span>backend</span></span><a href="notices.html" target="_blank" rel="noopener">Open-source notices</a><small>Simulator for ESP32 · © 2026 Hari Kishore Chada. Not affiliated with Espressif, Arduino or Wokwi.</small></div></div>`;
     document.body.appendChild(more); sheetHead(more, 'More');
+    // full-screen oscilloscope HUD sheet (the instrument DOM moves here while open)
+    const msc = document.createElement('section'); msc.id = 'mScope'; msc.className = 'panel m-sheet m-only'; document.body.appendChild(msc); sheetHead(msc, 'Oscilloscope', '<span class="m-sc-tag">MSO-4 · LIVE</span>');
+    if (window.Instruments) { Instruments.onArm = () => { if (document.body.classList.contains('m') && sheet === 'scope') { setSheet(null); app.cmd.toast('Tap a pin or wire to probe'); } }; Instruments.onProbed = () => { if (document.body.classList.contains('m')) setSheet('scope'); }; }
     more.onclick = (e) => { const b = e.target.closest('[data-a],[data-d]'); if (!b) return; const a = b.dataset.a;
+      if (b.dataset.d === 'scope') { setSheet('scope'); return; }
       if (b.dataset.d) { openDock(b.dataset.d); return; }
       if (a === 'projects') { setSheet(null); app.cmd.projects(); } else if (a === 'save') { app.cmd.save(); } else if (a === 'download') app.cmd.download();
       else if (a === 'import') $('#fileIn').click(); else if (a === 'restart') { setSheet(null); app.cmd.restart(); } else if (a === 'reset') $('#bReset').click();
@@ -181,7 +188,7 @@
       const esp = app.proj.parts.find((q) => q.type === 'esp32');
       if (esp && app.run) { try { for (const pin of window.Parts.T.esp32.pins(esp)) if (/^D\d+$/.test(pin.name) && app.sim.pinVoltage(esp, pin.name) > 2) hi.push(pin.name.slice(1)); } catch (e) { /* */ } }
       const st = ($('#stText') || {}).textContent || '', tm = ($('#stTime') || {}).textContent || '';
-      el.innerHTML = [['SYS', st.toUpperCase()], tm && ['T+', tm], ['I', f(I, 'A')], ['LIT', lit], hi.length && ['GPIO↑', hi.slice(0, 6).join(',')], ['PARTS', app.proj.parts.length], ['TRACES', app.proj.wires.length], burned && ['BURN', burned]].filter(Boolean).map(([k, v]) => `<span><b>${k}</b>${window.Parts.esc(String(v))}</span>`).join('');
+      el.innerHTML = [['SYS', st.toUpperCase()], tm && ['T+', tm], ['I', f(I, 'A')], ['LIT', lit], hi.length && ['GPIO↑', hi.slice(0, 6).join(',')], ...(window.Instruments ? Instruments.tickerItems().map(([k, v]) => ['◉ ' + k, v]) : []), ['PARTS', app.proj.parts.length], ['TRACES', app.proj.wires.length], burned && ['BURN', burned]].filter(Boolean).map(([k, v]) => `<span><b>${k}</b>${window.Parts.esc(String(v))}</span>`).join('');
       // energy traces: brighter and faster with more current
       const k = Math.min(1, I / 0.04); wrap.style.setProperty('--flowDur', (1.6 - 1.2 * k).toFixed(2) + 's'); wrap.style.setProperty('--flowGlow', (0.35 + 0.65 * k).toFixed(2));
       if (burned > burned0) { const fl = $('#mFlash'); fl.classList.remove('on'); void fl.offsetWidth; fl.classList.add('on'); haptic([30, 20, 60]); sound(120); }
