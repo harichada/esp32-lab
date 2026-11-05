@@ -530,8 +530,8 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (frame % 6 === 3) renderTfts();
     if (frame % 30 === 0) spiCfg();
     app.editor.refreshDynamic();
-    if (frame % 2 === 0) updateWireFlow();
-    if (app.view3d && app.view3d.active && frame % 2 === 0) app.view3d.sync(app.sim, app.sim._wireFlow || {});
+    if (frame % 2 === 0) { try { updateWireFlow(); } catch (e) { console.error(e); } }
+    if (app.view3d && app.view3d.active && frame % 2 === 0) { try { app.view3d.sync(app.sim, app.sim._wireFlow || {}); } catch (e) { view3dFail(e); } }
     if (frame % 6 === 0) updatePanels();
     requestAnimationFrame(tick);
   }
@@ -829,7 +829,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     view3dLoading = (async () => {
       if (!window.loadView3D) {
         await new Promise((res, rej) => {
-          const s = document.createElement('script'); s.src = 'js/view3d.js?v=23'; s.async = true;
+          const s = document.createElement('script'); s.src = 'js/view3d.js?v=24'; s.async = true;
           s.onload = res; s.onerror = () => rej(new Error('view3d load failed')); document.head.appendChild(s);
         });
       }
@@ -840,29 +840,67 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
           hover({ wire: w, ev });
         },
         onPart: (id) => { app.editor.select({ part: id }); },
+        onFail: (e) => view3dFail(e),
       });
       app.view3d = v; if (app.proj) v.setProject(app.proj); return v;
     })();
     try { return await view3dLoading; } finally { view3dLoading = null; }
   }
-  async function setViewMode(mode) {
-    viewMode = mode === '3d' ? '3d' : '2d';
+  // 3D is opt-in per session-safe rules: the 3D preference is only persisted after a frame actually
+  // rendered, any WebGL/runtime failure drops back to 2D with a toast, and a 2D exit (toolbar, Exit 3D
+  // button, Esc) is always reachable because those controls sit above the 3D canvas.
+  let viewSeq = 0;
+  const LSV = 'esp32lab.view';
+  const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (_) {} };
+  function applyViewChrome() {
     document.body.classList.toggle('view3d', viewMode === '3d');
     const b2 = $('#bView2d'), b3 = $('#bView3d');
     if (b2) b2.classList.toggle('on', viewMode === '2d');
     if (b3) b3.classList.toggle('on', viewMode === '3d');
-    localStorage.setItem('esp32lab.view', viewMode);
-    if (viewMode === '3d') {
-      try {
-        const v = await ensureView3d(); v.setActive(true); v.sync(app.sim, app.sim && app.sim.wireFlow());
-        toast('3D view — drag orbit · pinch/wheel zoom · two-finger pan');
-      } catch (e) { console.error(e); toast('3D view failed to load (WebGL?)', true); setViewMode('2d'); }
-    } else if (app.view3d) { app.view3d.setActive(false); }
+  }
+  function view3dFail(e) {
+    console.error('3D view failed', e);
+    lsSet(LSV, '2d');
+    if (viewMode !== '3d') { if (app.view3d) try { app.view3d.setActive(false); } catch (_) {} return; }
+    viewMode = '2d'; viewSeq++;
+    try { if (app.view3d) app.view3d.setActive(false); } catch (_) {}
+    applyViewChrome();
+    toast('3D view unavailable (' + ((e && e.message) || 'WebGL error') + ') — back to 2D', true);
+  }
+  async function setViewMode(mode, quiet) {
+    const seq = ++viewSeq;
+    viewMode = mode === '3d' ? '3d' : '2d';
+    applyViewChrome();
+    if (viewMode === '2d') {
+      lsSet(LSV, '2d');
+      try { if (app.view3d) app.view3d.setActive(false); } catch (e) { console.error(e); }
+      try { app.editor && app.editor.render && app.editor.render(); } catch (_) {}
+      return;
+    }
+    try {
+      const v = await ensureView3d();
+      if (seq !== viewSeq || viewMode !== '3d') return;       // user went back to 2D while loading
+      v.setActive(true);
+      let flow = {}; try { flow = (app.sim && (app.sim._wireFlow || app.sim.wireFlow())) || {}; } catch (_) {}
+      v.sync(app.sim, flow);
+      const ok = await v.healthCheck();
+      if (seq !== viewSeq || viewMode !== '3d') return;
+      if (!ok.ok) throw new Error(ok.why || 'blank frame');
+      lsSet(LSV, '3d');
+      if (!quiet) toast('3D view — drag orbit · pinch/wheel zoom · Esc or 2D to exit');
+    } catch (e) { if (seq === viewSeq) view3dFail(e); }
   }
   function setupViewToggle() {
     const b2 = $('#bView2d'), b3 = $('#bView3d'); if (!b2 || !b3) return;
     b2.onclick = () => setViewMode('2d'); b3.onclick = () => setViewMode('3d');
-    if (localStorage.getItem('esp32lab.view') === '3d') setTimeout(() => setViewMode('3d'), 0);
+    const ex = $('#bExit3d'); if (ex) ex.onclick = () => setViewMode('2d');
+    window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && viewMode === '3d') { e.preventDefault(); setViewMode('2d'); } }, true);
+    let want = null; try { want = localStorage.getItem(LSV); } catch (_) {}
+    // Crash guard: mark 2D before restoring; it flips back to 3D only after a healthy frame.
+    if (want === '3d' && new URLSearchParams(location.search).get('view') !== '2d') {
+      lsSet(LSV, '2d');
+      setTimeout(() => setViewMode('3d', true), 800);
+    }
   }
 
   window.addEventListener('DOMContentLoaded', init);

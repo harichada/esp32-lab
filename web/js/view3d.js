@@ -109,9 +109,12 @@
       this.goal.target.set(c.x, Math.max(8, Math.min(14, size.y * 0.1 + 5)), c.z);
       this.goal.theta = (angleDeg != null ? angleDeg : 40) * Math.PI / 180;
       this.goal.phi = 1.10;
-      const fov = (this.cam.fov || 40) * Math.PI / 180;
-      const fit = (span * 0.52) / Math.max(0.2, Math.tan(fov * 0.5));
-      this.goal.r = Math.max(110, Math.min(420, fit * 1.22 + 40));
+      const vfov = (this.cam.fov || 40) * Math.PI / 180;
+      // Fit the narrower of vertical/horizontal FOV so portrait phones don't open inside the breadboard
+      const hfov = 2 * Math.atan(Math.tan(vfov * 0.5) * Math.max(0.2, this.cam.aspect || 1));
+      const fov = Math.min(vfov, hfov);
+      const fit = (span * 0.52) / Math.max(0.12, Math.tan(fov * 0.5));
+      this.goal.r = Math.max(110, Math.min(1100, fit * 1.22 + 40));
       this.sph.theta = this.goal.theta; this.sph.phi = this.goal.phi; this.sph.r = this.goal.r;
       this.target.copy(this.goal.target); this.apply();
     }
@@ -154,7 +157,10 @@
       if (this.ready) return;
       const THREE = await ensureThree();
       const w = this.wrap.clientWidth || 800, h = this.wrap.clientHeight || 500;
+      this.canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); this._lost = true; this._fail(new Error('WebGL context lost')); }, false);
+      this.canvas.addEventListener('webglcontextrestored', () => { this._lost = false; }, false);
       this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, alpha: false, powerPreference: 'high-performance' });
+      this.renderer.setClearColor(0x0a0b0e, 1);
       this.dpr = Math.min(root.devicePixelRatio || 1, /Mobi|Android/i.test(navigator.userAgent) ? 1.5 : 2);
       this.renderer.setPixelRatio(this.dpr);
       this.renderer.setSize(w, h, false);
@@ -1000,11 +1006,59 @@
             if (this._idle > 4) this.orbit.goal.theta += 0.0004;
           } else this._idle = 0;
         }
-        this._updatePulses(dt);
-        if (this.composer) this.composer.render();
-        else this.renderer.render(this.scene, this.camera);
+        try {
+          this._updatePulses(dt);
+          if (this.composer) this.composer.render();
+          else this.renderer.render(this.scene, this.camera);
+          this._frames = (this._frames || 0) + 1; this._errs = 0;
+          if (this._probe) this._probe();
+        } catch (e) {
+          // composer/bloom failures: drop to plain renderer once; persistent errors bail to 2D
+          if (this.composer) { console.warn('3D composer failed, plain render', e); this.composer = null; return; }
+          if (++this._errs > 3) this._fail(e);
+        }
       };
       this._raf = requestAnimationFrame(step);
+    }
+    _fail(e) {
+      if (this._failed) return; this._failed = true;
+      try { this.setActive(false); } catch (_) {}
+      if (this.hooks.onFail) this.hooks.onFail(e);
+      setTimeout(() => { this._failed = false; }, 1500);
+    }
+    // Resolves {ok} after a couple of real frames: fails on lost context, no frames, or an all-white frame.
+    healthCheck(timeout = 2500) {
+      return new Promise((res) => {
+        if (!this.ready) return res({ ok: false, why: 'not ready' });
+        const start = this._frames || 0, t0 = performance.now();
+        const gl = this.renderer.getContext();
+        let white = 0, checked = 0;
+        this._probe = () => {
+          if ((this._frames || 0) - start < 2) return;
+          try {
+            if (gl.isContextLost()) { this._probe = null; return res({ ok: false, why: 'WebGL context lost' }); }
+            const W = gl.drawingBufferWidth, H = gl.drawingBufferHeight, px = new Uint8Array(4);
+            let allWhite = true;
+            for (const [fx, fy] of [[0.03, 0.03], [0.97, 0.03], [0.5, 0.5], [0.03, 0.97], [0.97, 0.97]]) {
+              gl.readPixels(Math.floor(W * fx), Math.floor(H * fy), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+              if (!(px[0] > 245 && px[1] > 245 && px[2] > 245)) { allWhite = false; break; }
+            }
+            checked++; if (allWhite) white++;
+          } catch (_) { checked++; }
+          if (checked >= 2) { this._probe = null; res(white >= 2 ? { ok: false, why: 'blank white frame' } : { ok: true }); }
+        };
+        const wait = () => {
+          if (!this._probe) return;
+          if (this._lost) { this._probe = null; return res({ ok: false, why: 'WebGL context lost' }); }
+          if (performance.now() - t0 > timeout) {
+            this._probe = null;
+            // No frames at all (rAF throttled in a background tab) is not a failure; a lost context is.
+            return res(gl.isContextLost() ? { ok: false, why: 'WebGL context lost' } : { ok: true });
+          }
+          setTimeout(wait, 100);
+        };
+        wait();
+      });
     }
     dispose() {
       cancelAnimationFrame(this._raf); root.removeEventListener('resize', this._onResize);

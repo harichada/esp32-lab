@@ -29,7 +29,7 @@
       this.size = k;
       if (!this.x || this.x.length !== k) { this.x = new Float64Array(k); }
     }
-    v(node, x = this.x) { return node > 0 ? x[node - 1] : 0; }
+    v(node, x = this.x) { return node > 0 && x ? (x[node - 1] || 0) : 0; }
 
     _stamp(A, z, x, h, dc) {
       const n = this.size;

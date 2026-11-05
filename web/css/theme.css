@@ -253,3 +253,10 @@ body.probe-armed #stageWrap{box-shadow:inset 0 0 0 2px #ff9f1a,inset 0 0 60px rg
 .tel-i canvas{width:150px;height:30px}
 .tel-i button{height:16px;width:16px;padding:0;justify-content:center;font-size:11px;background:transparent;border:0;color:#5f86a3}.tel-i button:hover{color:#fff}
 [data-theme=light] .telstrip{background:rgba(3,7,12,.88)}
+
+/* 3D safety: 2D/3D toggle + Exit 3D always above the WebGL canvas; dark backdrop, never white */
+body.view3d #stageWrap{background:#07090d}
+body.view3d .canvas-tools,body.view3d .zoom-tools{z-index:12}
+.exit3d{display:none;position:absolute;top:12px;right:12px;z-index:13;height:34px;padding:0 16px;border-radius:17px;border:1px solid rgba(34,211,238,.55);background:rgba(4,8,14,.82);color:#e6fdff;font:600 13px/34px var(--mono,ui-monospace,monospace);letter-spacing:.06em;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.45);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+.exit3d:hover{background:rgba(34,211,238,.18)}
+body.view3d .exit3d{display:block}
