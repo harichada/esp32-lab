@@ -21,12 +21,13 @@
     // ----- theme -----
     $('#bTheme').onclick = () => { const t = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light'; document.documentElement.dataset.theme = t; LS.setItem('esp32lab.theme', t); drawMap(true); };
     // ----- zoom + minimap -----
-    const zoomBy = (f) => { const r = $('#stage').getBoundingClientRect(), v = ed.view, s = Math.min(4, Math.max(0.15, v.s * f)), cx = v.x + r.width / v.s / 2, cy = v.y + r.height / v.s / 2; v.x = cx - r.width / s / 2; v.y = cy - r.height / s / 2; v.s = s; ed.applyView(); };
+    const zoomBy = (f) => { if (app.schematic && app.schematic.active) { app.schematic.zoomBy(f); return; } const r = $('#stage').getBoundingClientRect(), v = ed.view, s = Math.min(4, Math.max(0.15, v.s * f)), cx = v.x + r.width / v.s / 2, cy = v.y + r.height / v.s / 2; v.x = cx - r.width / s / 2; v.y = cy - r.height / s / 2; v.s = s; ed.applyView(); };
     app.zoomBy = zoomBy; $('#bZoomIn').onclick = () => zoomBy(1.25); $('#bZoomOut').onclick = () => zoomBy(0.8);
     const mm = $('#minimap'); if (!get('minimap', window.innerWidth > 1400)) mm.classList.add('off'); $('#bMap').classList.toggle('on', !mm.classList.contains('off'));
     $('#bMap').onclick = () => { mm.classList.toggle('off'); put('minimap', !mm.classList.contains('off')); $('#bMap').classList.toggle('on', !mm.classList.contains('off')); drawMap(true); };
     let mmT = null, lastKey = '';
     function drawMap(force) {
+      if (app.schematic && app.schematic.active) return;
       const pct = Math.round(ed.view.s * 100) + '%'; if ($('#zoomPct').textContent !== pct) $('#zoomPct').textContent = pct;
       if (mm.classList.contains('off') || !ed.proj) return;
       const r = $('#stage').getBoundingClientRect(), v = ed.view, key = [v.x, v.y, v.s, r.width, r.height, ed.proj.parts.length, ed.proj.wires.length, document.documentElement.dataset.theme].join();
@@ -59,7 +60,8 @@
       ['Save project', 'Project', () => app.cmd.save()], ['Make a copy of this example', 'Project', () => app.cmd.makeCopy()], ['Open My Projects', 'Project', () => app.cmd.projects()], ['Download project JSON', 'Project', () => app.cmd.download()],
       ...tabs.map((t) => [`Show ${document.querySelector(`#tabs [data-tab=${t}]`).textContent} panel`, 'View', () => { setC('dock', false); document.querySelector(`#tabs [data-tab=${t}]`).click(); }]),
       ['Toggle parts panel', 'View', () => setC('palette', !body.classList.contains('c-palette'))], ['Toggle inspector', 'View', () => setC('side', !body.classList.contains('c-side'))], ['Toggle bottom panel', 'View', () => setC('dock', !body.classList.contains('c-dock'))],
-      ['Fit circuit to view', 'View', () => ed.fit()], ['Zoom in', 'View', () => zoomBy(1.25)], ['Zoom out', 'View', () => zoomBy(0.8)], ['Toggle minimap', 'View', () => $('#bMap').click()], ['Toggle light / dark theme', 'View', () => $('#bTheme').click()],
+      ['2D breadboard view', 'View', () => app.cmd.view2d()], ['Schematic view', 'View', () => app.cmd.viewSch && app.cmd.viewSch()], ['3D view', 'View', () => app.cmd.view3d()],
+      ['Fit circuit to view', 'View', () => (app.schematic && app.schematic.active ? app.schematic.fit() : ed.fit())], ['Zoom in', 'View', () => zoomBy(1.25)], ['Zoom out', 'View', () => zoomBy(0.8)], ['Toggle minimap', 'View', () => $('#bMap').click()], ['Toggle light / dark theme', 'View', () => $('#bTheme').click()],
       ['Toggle current-flow animation', 'View', () => $('#cbFlow').click()], ['Toggle right-angle wires', 'Edit', () => $('#cbOrtho').click()], ['Undo', 'Edit', () => ed.undo()], ['Redo', 'Edit', () => ed.redo()], ['Keyboard shortcuts', 'Help', showKeys],
       ...root.Examples.LIST.map(([k, n]) => [`Open example: ${n}`, 'Example', () => app.cmd.loadExample(k)]),
       ...Object.entries(root.Parts.T).map(([k, d]) => [`Add part: ${d.label}`, 'Part', () => { const r = $('#stage').getBoundingClientRect(), v = ed.view; ed.addPart(k, v.x + r.width / v.s / 2, v.y + r.height / v.s / 2); }]),

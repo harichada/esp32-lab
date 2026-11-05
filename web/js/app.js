@@ -25,6 +25,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     app.devDirty = true; setStatus('idle', 'idle'); renderBanner();
     if (window.Bom) Bom.render(document.getElementById('bomView'), app.proj);
     if (app.view3d) app.view3d.setProject(app.proj);
+    if (app.schematic) app.schematic.setProject(app.proj);
   }
   async function loadExample(k) {
     const ex = Examples.EX[k](); ex.example = k;
@@ -532,6 +533,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     app.editor.refreshDynamic();
     if (frame % 2 === 0) { try { updateWireFlow(); } catch (e) { console.error(e); } }
     if (app.view3d && app.view3d.active && frame % 2 === 0) { try { app.view3d.sync(app.sim, app.sim._wireFlow || {}); } catch (e) { view3dFail(e); } }
+    if (app.schematic && app.schematic.active) { try { if (frame % 8 === 0) app.schematic.touch(); app.schematic.sync(); } catch (e) { console.error(e); } }
     if (frame % 6 === 0) updatePanels();
     requestAnimationFrame(tick);
   }
@@ -747,7 +749,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   setInterval(latchTick, 20);
   function init() {
     app.editor = new Editor($('#stage'), {
-      changed: (topo) => { if (topo) app.sim.topoDirty = true; app.sim.dirty = true; invalidateGpio(); autosave(); }, beforeEdit,
+      changed: (topo) => { if (topo) app.sim.topoDirty = true; app.sim.dirty = true; invalidateGpio(); autosave(); if (app.schematic) app.schematic.invalidate(); }, beforeEdit,
       netKey: (x, y) => { app.sim.netAt(x, y); return app.sim.uf.find(Math.round(x) + ',' + Math.round(y)); },
       selected: (s) => { renderInspector(s); if (s) { /* keep current tab */ } },
       hover, state: (p) => app.sim ? app.sim.partState(p) : null, running: () => !!app.run || !espPart(), press,
@@ -759,7 +761,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     $('#selWireColor').innerHTML = ['auto', ...Object.keys(window.WIRE_COLORS)].map((c) => `<option>${c}</option>`).join(''); $('#selWireColor').onchange = (e) => app.editor.setWireColor(e.target.value);
     $('#bRun').onclick = startRun; $('#bStop').onclick = stopRun; $('#bReset').onclick = () => { app.sim.resetState(); app.editor.render(); };
     $('#bUndo').onclick = () => app.editor.undo(); $('#bRedo').onclick = () => app.editor.redo(); $('#bRot').onclick = () => app.editor.rotateSel(); $('#bDel').onclick = () => app.editor.deleteSel();
-    $('#bSave').onclick = save; $('#bDownload').onclick = download; $('#fileIn').onchange = (e) => { if (e.target.files[0]) openFile(e.target.files[0]); e.target.value = ''; }; $('#bFit').onclick = () => app.editor.fit();
+    $('#bSave').onclick = save; $('#bDownload').onclick = download; $('#fileIn').onchange = (e) => { if (e.target.files[0]) openFile(e.target.files[0]); e.target.value = ''; }; $('#bFit').onclick = () => (viewMode === 'schematic' && app.schematic ? app.schematic.fit() : app.editor.fit());
     $('#tabs').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; document.querySelectorAll('#tabs button').forEach((x) => x.classList.toggle('on', x === b)); document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('on', t.id === 'tab-' + b.dataset.tab)); if (b.dataset.tab === 'dev') { renderDevices(); drawIr(); } if (b.dataset.tab === 'net') { app.netlog.dirty = true; app.netlog.render(); } };
     $('#selMode').onchange = (e) => { beforeEdit(); app.proj.mode = e.target.value; autosave(); modeNote(); renderFileTabs(); };
     $('#fileTabs').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; syncCode(); if (b.dataset.f === '+') { const n = prompt('File name (e.g. config.h)'); if (!n || !/^[\w.-]+\.(h|hpp|c|cpp|ino)$/.test(n)) return; beforeEdit(); app.proj.files[n] = ''; autosave(); app.file = n; } else app.file = b.dataset.f; renderFileTabs(); loadCode(); };
@@ -769,8 +771,17 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     $('#bRestart').onclick = () => { stopRun(); startRun(); };
     $('#cbFlow').checked = localStorage.getItem('esp32lab.flow') !== '0'; $('#stage').classList.toggle('flow', $('#cbFlow').checked);
     $('#cbFlow').onchange = (e) => { $('#stage').classList.toggle('flow', e.target.checked); localStorage.setItem('esp32lab.flow', e.target.checked ? '1' : '0'); };
+    if (window.Schematic) {
+      app.schematic = new Schematic.SchematicView($('#stageWrap'), {
+        select: (id) => app.editor.select(id ? { part: id } : null),
+        state: (p) => (app.sim ? app.sim.partState(p) : null),
+        voltage: (p, name) => app.sim.pinVoltage(p, name),
+        readout: (p) => app.sim.readout(p),
+      });
+      if (app.proj) app.schematic.setProject(app.proj);
+    }
     setupViewToggle();
-    app.cmd = { run: startRun, stop: stopRun, restart: () => { stopRun(); startRun(); }, save, projects: projectsDialog, loadExample, makeCopy: () => makeCopy(false), toast, download, view3d: () => setViewMode('3d'), view2d: () => setViewMode('2d') };
+    app.cmd = { run: startRun, stop: stopRun, restart: () => { stopRun(); startRun(); }, save, projects: projectsDialog, loadExample, makeCopy: () => makeCopy(false), toast, download, view3d: () => setViewMode('3d'), view2d: () => setViewMode('2d'), viewSch: () => setViewMode('schematic') };
     $('#cbOrtho').checked = localStorage.getItem('esp32lab.ortho') !== '0'; app.editor.ortho = $('#cbOrtho').checked; $('#cbOrtho').onchange = (e) => { app.editor.ortho = e.target.checked; localStorage.setItem('esp32lab.ortho', e.target.checked ? '1' : '0'); };
     app.editor.setHint();
     $('#code').addEventListener('keydown', (e) => { if (e.key === 'Tab') { e.preventDefault(); const t = e.target, s = t.selectionStart; t.setRangeText('  ', s, t.selectionEnd, 'end'); syncCode(); } });
@@ -802,10 +813,11 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       if ((e.ctrlKey || e.metaKey) && e.key === 'y') { e.preventDefault(); app.editor.redo(); return; }
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       const kp = app.run ? keyPart(e.key) : null; if (kp) { e.preventDefault(); if (!e.repeat) press(kp, true); return; }   // labelled keys only act as buttons while running
-      if (e.key === 'Escape') { app.editor.cancelWire(); app.editor.select(null); }
+      if (e.key === 'Escape') { app.editor.cancelWire(); app.editor.select(null); if (app.schematic) app.schematic.select(null); }
+      else if (viewMode === 'schematic' && (e.key === 'Delete' || e.key === 'Backspace' || e.key === 'r' || e.key === 'R')) { if (e.key === 'Delete' || e.key === 'Backspace') e.preventDefault(); }
       else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); app.editor.deleteSel(); }
       else if (e.key === 'r' || e.key === 'R') app.editor.rotateSel();
-      else if (e.key === 'f' || e.key === 'F') app.editor.fit();
+      else if (e.key === 'f' || e.key === 'F') { if (viewMode === 'schematic' && app.schematic) app.schematic.fit(); else app.editor.fit(); }
     });
     window.addEventListener('keyup', (e) => { if (typing(e)) return; const kp = keyPart(e.key); if (kp && app.sim.partState(kp).pressed) press(kp, false); });
     // start-up: ?p=<project> > ?ex=<example, read-only> > last open project > legacy single-slot save > Blink example
@@ -873,8 +885,10 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (_) {} };
   function applyViewChrome() {
     document.body.classList.toggle('view3d', viewMode === '3d');
-    const b2 = $('#bView2d'), b3 = $('#bView3d');
+    document.body.classList.toggle('viewsch', viewMode === 'schematic');
+    const b2 = $('#bView2d'), b3 = $('#bView3d'), bs = $('#bViewSch');
     if (b2) b2.classList.toggle('on', viewMode === '2d');
+    if (bs) bs.classList.toggle('on', viewMode === 'schematic');
     if (b3) b3.classList.toggle('on', viewMode === '3d');
   }
   function view3dFail(e) {
@@ -900,17 +914,33 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (off && viewMode === '3d') setViewMode('2d');
     return off;
   }
+  function leaveSchematic() {
+    try { if (app.schematic) app.schematic.setActive(false); } catch (e) { console.error(e); }
+  }
   async function setViewMode(mode, quiet) {
     if (mode === '3d' && applyNo3d()) { mode = '2d'; if (!quiet) toast('3D view is desktop-only for now — staying in 2D'); }
+    if (mode === 'schematic' && !app.schematic) mode = '2d';
     const seq = ++viewSeq;
-    viewMode = mode === '3d' ? '3d' : '2d';
+    viewMode = mode === '3d' ? '3d' : mode === 'schematic' ? 'schematic' : '2d';
     applyViewChrome();
+    if (viewMode !== '3d') {
+      try { if (app.view3d) app.view3d.setActive(false); } catch (e) { console.error(e); }
+    }
     if (viewMode === '2d') {
       try { localStorage.removeItem(LSV); } catch (_) {}
-      try { if (app.view3d) app.view3d.setActive(false); } catch (e) { console.error(e); }
+      leaveSchematic();
       try { app.editor && app.editor.render && app.editor.render(); } catch (_) {}
+      const z = $('#zoomPct'); if (z && app.editor) z.textContent = Math.round(app.editor.view.s * 100) + '%';
       return;
     }
+    if (viewMode === 'schematic') {
+      try { localStorage.removeItem(LSV); } catch (_) {}
+      app.schematic.setProject(app.proj);
+      app.schematic.setActive(true);
+      if (!quiet) toast('Schematic — view only · select a part to inspect · pan and zoom · edit in 2D');
+      return;
+    }
+    leaveSchematic();
     try {
       const v = await ensureView3d();
       if (seq !== viewSeq || viewMode !== '3d') return;       // user went back to 2D while loading
@@ -924,8 +954,9 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     } catch (e) { if (seq === viewSeq) view3dFail(e); }
   }
   function setupViewToggle() {
-    const b2 = $('#bView2d'), b3 = $('#bView3d'); if (!b2 || !b3) return;
+    const b2 = $('#bView2d'), b3 = $('#bView3d'), bs = $('#bViewSch'); if (!b2 || !b3) return;
     b2.onclick = () => setViewMode('2d'); b3.onclick = () => setViewMode('3d');
+    if (bs) bs.onclick = () => setViewMode('schematic');
     const ex = $('#bExit3d'); if (ex) ex.onclick = () => setViewMode('2d');
     window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && viewMode === '3d') { e.preventDefault(); setViewMode('2d'); } }, true);
     // HOTFIX: always boot in 2D and drop any saved 3D preference.

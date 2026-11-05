@@ -249,6 +249,9 @@ body.m.view3d .canvas-tools,body.m.view3d .zoom-tools{z-index:12}
 body.m .exit3d{top:72px;right:auto;left:50%;transform:translateX(-50%);height:44px;line-height:44px;padding:0 20px;border-radius:8px;font-size:13px}
 body.m.view3d #mParts{opacity:.3;pointer-events:none}
 body.m.view3d .hint{display:none}
+body.m.viewsch .hint{display:block;bottom:calc(64px + env(safe-area-inset-bottom));max-width:calc(100% - 24px)}
+body.m.viewsch #mSel [data-a=rot],body.m.viewsch #mSel [data-a=del]{display:none!important}
+body.m .view-toggle .seg{padding:0 9px}
 /* oscilloscope HUD sheet (full-screen) */
 body.m[data-msheet=scope] #mScope{transform:none;visibility:visible;transition:transform .32s cubic-bezier(.2,.85,.25,1),visibility 0s;top:var(--mTop);bottom:0;max-height:none;border-radius:0;padding-bottom:0}
 body.m #mScope .m-sh-h{padding-top:2px}body.m #mScope .m-grab{display:none}body.m #mScope .m-sh-row{min-height:38px}
