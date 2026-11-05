@@ -136,7 +136,7 @@
       if (h) mark(h.pos, 'hl-pin'); for (const q of extra || []) mark(q, 'hl-pin');
       this.ovHl.innerHTML = s;
     }
-    setHint(t) { if (this.hintEl) this.hintEl.textContent = t || this.defaultHint(); }
+    setHint(t) { if (!this.hintEl) return; if (document.body.classList.contains('viewsch')) { this.hintEl.textContent = 'Schematic is view-only — switch to 2D to add, move, or wire · drag to pan · scroll to zoom'; return; } this.hintEl.textContent = t || this.defaultHint(); }
     defaultHint() { return this.sel && this.sel.wire ? 'Wire selected: Delete/Backspace removes · right-click for colour · double-click adds a bend · drag bends' : 'Click a pin, then click another pin to wire (drag works too) · hover a pin to see its net · Esc cancels · right-click a wire for options · wheel/pinch = zoom · drag background = pan'; }
     // ---------- interaction ----------
     _bind() {

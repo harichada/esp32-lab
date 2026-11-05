@@ -199,6 +199,30 @@ body.view3d #stage{visibility:hidden;pointer-events:none}
 body.view3d .hint{opacity:0}
 body.view3d #minimap{display:none}
 body.view3d .canvas-tools .tgl:has(#cbOrtho),body.view3d #selWireColor,body.view3d #bRot,body.view3d #bDel{opacity:.35;pointer-events:none}
+/* ---- schematic view (classic symbols, view-only) ---- */
+#stageSch.stage-sch{position:absolute;inset:0;width:100%;height:100%;display:none;z-index:3;background:var(--canvas);touch-action:none}
+#stageSch.stage-sch.on{display:block}
+body.viewsch #stage{visibility:hidden;pointer-events:none}
+body.viewsch #minimap{display:none}
+body.viewsch .canvas-tools .tgl:has(#cbOrtho),body.viewsch #selWireColor,body.viewsch #bRot,body.viewsch #bDel,body.viewsch #iRot,body.viewsch #iDel{opacity:.35;pointer-events:none}
+body.viewsch .canvas-tools,body.viewsch .zoom-tools{z-index:12}
+body.viewsch .hint{z-index:5;opacity:1;max-width:min(760px,calc(100% - 28px))}
+#stageSch .sch-stroke{fill:none;stroke:var(--txt);stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+#stageSch .sch-wire{fill:none;stroke:var(--acc);stroke-width:1.55;stroke-linejoin:round;pointer-events:none}
+#stageSch .sch-hitnet{fill:none;stroke:transparent;stroke-width:12}
+#stageSch .sch-body{fill:color-mix(in srgb,var(--l1) 86%,var(--canvas));stroke:var(--txt);stroke-width:1.45}
+#stageSch .sch-dot{fill:var(--txt);stroke:none}
+#stageSch .sch-pin{fill:var(--acc);stroke:var(--canvas);stroke-width:1}
+#stageSch .sch-ref{fill:var(--txt);font:600 12px var(--sans,system-ui,sans-serif);text-anchor:middle}
+#stageSch .sch-val{fill:var(--txt2);font:11px var(--mono,ui-monospace,monospace);text-anchor:middle}
+#stageSch .sch-pname{fill:var(--txt2);font:9.5px var(--mono,ui-monospace,monospace)}
+#stageSch .sch-title{fill:var(--txt);font:600 11px var(--sans,system-ui,sans-serif);text-anchor:middle}
+#stageSch .sch-flag,#stageSch .sch-netlbl{fill:var(--acc);font:700 10.5px var(--mono,ui-monospace,monospace)}
+#stageSch .sch-gnd{stroke:var(--txt)}
+#stageSch .sch-hit{fill:transparent}
+#stageSch .sch-sym.sel .sch-body,#stageSch .sch-sym.sel .sch-stroke{stroke:var(--acc)}
+#stageSch .sch-sym.sel .sch-body{fill:var(--acc-bg)}
+#stageSch .sch-glow{pointer-events:none}
 #stage.flow.live .wire .w-flow{opacity:var(--wo,.55);animation-duration:var(--wd,.9s);animation-direction:var(--wdir,normal)}
 @media (prefers-reduced-motion:reduce){
   #stage.flow.live .w-flow{animation:none!important;opacity:.35}

@@ -139,7 +139,7 @@
     const sel = document.createElement('div'); sel.id = 'mSel'; sel.className = 'm-only';
     sel.innerHTML = `<button data-a="rot" aria-label="Rotate">${ic('i-rotate')}</button><button data-a="props" aria-label="Properties">${ic('m-sliders')}<span>Properties</span></button><button data-a="del" class="danger" aria-label="Delete">${ic('i-trash')}</button>`;
     $('#stageWrap').appendChild(sel);
-    sel.onclick = (e) => { const b = e.target.closest('[data-a]'); if (!b) return; if (b.dataset.a === 'rot') ed.rotateSel(); else if (b.dataset.a === 'del') ed.deleteSel(); else setSheet('insp'); };
+    sel.onclick = (e) => { const b = e.target.closest('[data-a]'); if (!b) return; if (document.body.classList.contains('viewsch') && (b.dataset.a === 'rot' || b.dataset.a === 'del')) return; if (b.dataset.a === 'rot') ed.rotateSel(); else if (b.dataset.a === 'del') ed.deleteSel(); else setSheet('insp'); };
     const hs = ed.hooks.selected; ed.hooks.selected = (s) => { hs(s); const has = !!(s && (s.part || s.wire)); document.body.classList.toggle('m-has-sel', has); sel.querySelector('[data-a=rot]').hidden = !(s && s.part); sel.querySelector('[data-a=props]').hidden = !(s && s.part); if (!has && sheet === 'insp') setSheet(null); };
     // wiring state -> highlight valid targets, larger hit radius while wiring
     const pn = ed.pinNear.bind(ed);
@@ -153,7 +153,7 @@
     const dw = ed._down.bind(ed); ed._down = function (ev) { const was = this.mode && this.mode.k; dw(ev); if (document.body.classList.contains('m') && was !== 'wire' && this.mode && this.mode.k === 'wire') { haptic(6); sound(520); } };
     const av = ed.applyView.bind(ed); ed.applyView = function () { av(); const w = $('#stageWrap'); if (w) { w.style.setProperty('--px', (-this.view.x * 0.08 % 400).toFixed(1) + 'px'); w.style.setProperty('--py', (-this.view.y * 0.08 % 400).toFixed(1) + 'px'); } };
     // hint text for phones
-    ed.setHint = function (t) { if (this.hintEl) this.hintEl.textContent = t || (document.body.classList.contains('m') ? 'Tap pin → tap pin to wire · hold part for options' : this.defaultHint()); };
+    ed.setHint = function (t) { if (!this.hintEl) return; if (document.body.classList.contains('viewsch')) { this.hintEl.textContent = 'Schematic is view-only — switch to 2D to add, move, or wire · drag to pan · scroll to zoom'; return; } this.hintEl.textContent = t || (document.body.classList.contains('m') ? 'Tap pin → tap pin to wire · hold part for options' : this.defaultHint()); };
     window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && sheet && document.body.classList.contains('m')) setSheet(null); });
   }
 
