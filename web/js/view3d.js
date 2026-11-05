@@ -8,6 +8,7 @@
   const LEDCOL = { red: 0xff1744, green: 0x00e676, blue: 0x2979ff, yellow: 0xffea00, white: 0xf5f7ff, orange: 0xff9100, ir: 0xb388ff };
   const MM = 1 / 0.254;
   const GND_HEX = 0x22c55e;   // ground marker green (posts, rings, symbols)
+  const LANE_JOG = 3; // run length before a lane-shifted run leaves the riser top
   const WIRE_R = 0.5 * MM; // 1.0 mm OD — chunkier than AWG22 so jumpers read at framed distance (was 0.7 mm → ~2 px)
   // dedicated package models (2D print text, sub-line)
   const TO92 = { npn: ['2N2222', 'NPN'], pnp: ['2N2907', 'PNP'], n2n3904: ['2N3904', 'NPN'], p2n3906: ['2N3906', 'PNP'] };
@@ -451,9 +452,11 @@
           for (const pin of (d && d.pins ? d.pins(rec.part) : [])) { const q = root.Parts.pinWorld(rec.part, pin), kk = Math.round(q.x) + ',' + Math.round(q.y); this._pinOwners.set(kk, id); this._pinNames.set(kk, pin.name); }
         } catch (_) {}
       }
-      for (const w of this.proj.wires) {
-        const tube = this._makeWire(w, hasBB);
-        if (tube) { gWires.add(tube.group); this.wires.set(w.id, tube); box.expandByObject(tube.group); }
+      const plans = this.proj.wires.map((w) => this._planWire(w, hasBB));
+      try { this._layoutWires(plans); } catch (e) { console.warn('3D wire layout', e); }
+      for (const p of plans) {
+        const tube = p && this._buildWire(p);
+        if (tube) { gWires.add(tube.group); this.wires.set(tube.id, tube); box.expandByObject(tube.group); }
       }
       if (this.kick && !box.isEmpty()) {
         const c = new THREE.Vector3(); box.getCenter(c); this.kick.position.set(c.x, 70, c.z);
@@ -1285,7 +1288,8 @@
       if (own) { const e = this._partBoxes.find((q) => q.id === own); if (e && e.pinTop != null) h = Math.max(h, e.pinTop); }
       return { y: Math.max(base, h ? h + WIRE_R * 0.6 : base), own };
     }
-    _makeWire(w, onBoard) {
+    // Phase 1 — endpoints + base route of one jumper, no meshes yet (so all wires can be laid out together).
+    _planWire(w, onBoard) {
       const THREE = root.THREE;
       const a = w.a, b = w.b;
       if (!a || !b) return null;
@@ -1300,27 +1304,156 @@
       const via = (w.pts || []).filter((q) => q && isFinite(q.x) && isFinite(q.y));
       // clear anything the run passes over
       let clear = 0; { let prev = A; for (const q of [...via.map((q) => new THREE.Vector3(q.x, 0, q.y)), B]) { clear = Math.max(clear, this._heightAlong(prev, q, skip)); prev = q; } }
-      let pts;
       if (onBoard && dist > 8) {
         const rise = Math.max(boardTop + Math.min(7, 2.5 + dist * 0.02), clear + WIRE_R * 2 + 1.5, ya + 2, yb + 2);
-        const p0 = A.clone(); const p1 = A.clone(); p1.y = rise;
         let mids;
-        if (via.length) mids = via.map((q) => new THREE.Vector3(q.x, rise, q.y));
-        else if (Math.abs(dx) > 4 && Math.abs(dz) > 4) mids = [Math.abs(dx) >= Math.abs(dz) ? new THREE.Vector3(B.x, rise, A.z) : new THREE.Vector3(A.x, rise, B.z)];
+        if (via.length) mids = via.map((q) => ({ x: q.x, z: q.y }));
+        else if (Math.abs(dx) > 4 && Math.abs(dz) > 4) mids = [Math.abs(dx) >= Math.abs(dz) ? { x: B.x, z: A.z } : { x: A.x, z: B.z }];
         else mids = [];
-        const p2 = B.clone(); p2.y = rise; const p3 = B.clone();
-        pts = [p0, p1, ...mids, p2, p3];
-      } else {
-        const mid = A.clone().lerp(B, 0.5);
-        mid.y = Math.max(Math.max(ya, yb) + 1.5 + Math.min(6, dist * 0.04), clear + WIRE_R * 2 + 1);
-        pts = [A, mid, B];
+        // horizontal run (x,z) at height `rise`: above A → bends → above B; drop repeated bends
+        let run = [{ x: A.x, z: A.z }, ...mids, { x: B.x, z: B.z }].filter((q, i, s) => i === 0 || Math.hypot(q.x - s[i - 1].x, q.z - s[i - 1].z) > 0.05);
+        // straight-through bends (collinear, e.g. a 2D via in the middle of a straight run) are not corners
+        run = run.filter((q, i, s) => i === 0 || i === s.length - 1 || Math.abs((q.x - s[i - 1].x) * (s[i + 1].z - q.z) - (q.z - s[i - 1].z) * (s[i + 1].x - q.x)) > 0.5 || (q.x - s[i - 1].x) * (s[i + 1].x - q.x) + (q.z - s[i - 1].z) * (s[i + 1].z - q.z) < 0);
+        if (run.length < 2) run.push({ x: B.x, z: B.z });
+        return { w, a, b, A, B, kind: 'run', run, base: rise, h: rise, off: run.slice(1).map(() => ({ x: 0, z: 0 })), lean: [{ x: 0, z: 0 }, { x: 0, z: 0 }] };
       }
+      const mid = A.clone().lerp(B, 0.5);
+      mid.y = Math.max(Math.max(ya, yb) + 1.5 + Math.min(6, dist * 0.04), clear + WIRE_R * 2 + 1);
+      return { w, a, b, A, B, kind: 'arch', pts: [A, mid, B] };
+    }
+    // Phase 2 — keep every jumper a separate, readable lead. Root cause of "merged" leads: every Manhattan run over a
+    // region rose to the same height (rise only depends on length/obstacles, ~21.4 over the ESP32), so runs that share a
+    // breadboard row/column in 2D were drawn as one coincident tube, perpendicular runs crossed *through* each other at
+    // the same height (a fused T/X blob), and a run passing over another jumper's pin cut through its riser.
+    // Fix: (1) height layers — wires whose runs cross, touch, run alongside within a wire width, or pass over each
+    // other's pin get heights at least one wire diameter + gap apart (greedy, lowest first, capped); (2) lanes —
+    // parallel runs sharing a corridor are fanned out sideways by a wire diameter + gap so they read from above too;
+    // (3) jumpers sharing one hole lean their risers apart, each along its own run (fanned by rank). Pin contact points (board-top / header heights) never move.
+    _layoutWires(plans) {
+      const R2 = WIRE_R * 2, GAP = 1.4, H = R2 + GAP, LANE = R2 + GAP, MAXUP = 6 * H;
+      const P = plans.filter((p) => p && p.kind === 'run');
+      if (P.length < 2) return;
+      const unit = (s, e) => { const L = Math.hypot(e.x - s.x, e.z - s.z) || 1; return { x: (e.x - s.x) / L, z: (e.z - s.z) / L, L }; };
+      const key = (q) => Math.round(q.x) + ',' + Math.round(q.z), pinUse = new Map();
+      P.forEach((p, pi) => [p.run[0], p.run[p.run.length - 1]].forEach((q, k) => { const kk = key(q); if (!pinUse.has(kk)) pinUse.set(kk, []); pinUse.get(kk).push({ pi, k }); }));
+      const segs = [];
+      P.forEach((p, pi) => { for (let k = 0; k < p.run.length - 1; k++) { const s = p.run[k], e = p.run[k + 1], L = Math.hypot(e.x - s.x, e.z - s.z); if (L < 0.05) continue; segs.push({ pi, k, s, e, L, ux: (e.x - s.x) / L, uz: (e.z - s.z) / L }); } });
+      const ptSeg = (q, S) => { const t = Math.max(0, Math.min(S.L, (q.x - S.s.x) * S.ux + (q.z - S.s.z) * S.uz)); return Math.hypot(S.s.x + S.ux * t - q.x, S.s.z + S.uz * t - q.z); };
+      const mkSeg = (s, e) => { const L = Math.hypot(e.x - s.x, e.z - s.z); return L < 0.05 ? null : { s, e, L, ux: (e.x - s.x) / L, uz: (e.z - s.z) / L }; };
+      const segSeg = (S, T) => {
+        const d1 = (T.s.x - S.s.x) * S.uz - (T.s.z - S.s.z) * S.ux, d2 = (T.e.x - S.s.x) * S.uz - (T.e.z - S.s.z) * S.ux;
+        const d3 = (S.s.x - T.s.x) * T.uz - (S.s.z - T.s.z) * T.ux, d4 = (S.e.x - T.s.x) * T.uz - (S.e.z - T.s.z) * T.ux;
+        if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) return 0;
+        return Math.min(ptSeg(T.s, S), ptSeg(T.e, S), ptSeg(S.s, T), ptSeg(S.e, T));
+      };
+      const conflict = P.map(() => new Set()), over = P.map(() => new Set()); // over[i] ∋ j: j's run passes over i's riser → j above i
+      const parent = segs.map((_, i) => i), find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+      for (let x = 0; x < segs.length; x++) for (let y = x + 1; y < segs.length; y++) {
+        const S = segs[x], T = segs[y]; if (S.pi === T.pi) continue;
+        if (Math.abs(S.ux * T.uz - S.uz * T.ux) < 0.2) {
+          const px = T.s.x - S.s.x, pz = T.s.z - S.s.z, perp = Math.abs(px * S.uz - pz * S.ux);
+          if (perp > R2 + GAP) continue;
+          const t0 = px * S.ux + pz * S.uz, t1 = (T.e.x - S.s.x) * S.ux + (T.e.z - S.s.z) * S.uz;
+          const ov = Math.min(S.L, Math.max(t0, t1)) - Math.max(0, Math.min(t0, t1));
+          if (ov > -R2) { conflict[S.pi].add(T.pi); conflict[T.pi].add(S.pi); }
+          if (ov > R2) parent[find(x)] = find(y); // a shared corridor, not just a touch at the ends → fan out into lanes
+        } else if (segSeg(S, T) < R2 + GAP * 0.5) { conflict[S.pi].add(T.pi); conflict[T.pi].add(S.pi); }
+      }
+      // (2) lanes: fan parallel runs sharing a corridor out sideways, one lane per wire, ordered by position then wire order
+      const groups = new Map();
+      segs.forEach((S, x) => { const r = find(x); if (!groups.has(r)) groups.set(r, []); groups.get(r).push(S); });
+      for (const G of groups.values()) {
+        const byWire = new Map(); for (const S of G) { if (!byWire.has(S.pi)) byWire.set(S.pi, []); byWire.get(S.pi).push(S); }
+        if (byWire.size < 2) continue;
+        const nx = -G[0].uz, nz = G[0].ux;
+        const m = [...byWire].map(([pi, Ss]) => ({ pi, Ss, perp: Ss.reduce((s, S) => s + S.s.x * nx + S.s.z * nz, 0) / Ss.length })).sort((u, v) => u.perp - v.perp || u.pi - v.pi);
+        let pos = m.map((q) => q.perp); for (let k = 1; k < pos.length; k++) pos[k] = Math.max(pos[k], pos[k - 1] + LANE);
+        const shift = m.reduce((s, q, k) => s + (q.perp - pos[k]), 0) / m.length; pos = pos.map((v) => v + shift);
+        m.forEach((q, k) => { const d = pos[k] - q.perp; for (const S of q.Ss) { const o = P[S.pi].off[S.k]; o.x += nx * d; o.z += nz * d; } });
+      }
+      // (3) jumpers sharing one hole: each riser leans along its own run and sideways (its lane, else fanned by rank),
+      // so the leads leave the hole as separate wires instead of one stacked post
+      for (const users of pinUse.values()) if (users.length > 1) {
+        const U = users.map(({ pi, k }) => { const p = P[pi], m = p.run.length; return { p, k, u: k ? unit(p.run[m - 1], p.run[m - 2]) : unit(p.run[0], p.run[1]), lane: p.off[k ? m - 2 : 0] }; });
+        U.forEach((q) => {
+          // fan sideways only among leads leaving the hole in (about) the same direction; others already part along their runs
+          const same = U.filter((o) => o.u.x * q.u.x + o.u.z * q.u.z > 0.7), r = same.indexOf(q);
+          const along = Math.min(LANE * (1 + r), 0.4 * q.u.L), side = (r - (same.length - 1) / 2) * LANE, hasLane = !!(q.lane.x || q.lane.z);
+          const l = hasLane ? { x: q.u.x * along + q.lane.x, z: q.u.z * along + q.lane.z } : { x: q.u.x * along - q.u.z * side, z: q.u.z * along + q.u.x * side };
+          l.along = along; l.u = q.u; l.lane = hasLane; q.p.lean[q.k] = l;
+        });
+      }
+      // runs passing over another jumper's riser (pin → lean point; it climbs to that jumper's run height)
+      P.forEach((p, i) => [0, 1].forEach((k) => {
+        const q = k ? p.run[p.run.length - 1] : p.run[0], top = { x: q.x + p.lean[k].x, z: q.z + p.lean[k].z }, F = mkSeg(q, top);
+        const sharers = new Set((pinUse.get(key(q)) || []).map((u) => u.pi));
+        for (const S of segs) {
+          if (S.pi === i || sharers.has(S.pi)) continue;
+          if ((F ? segSeg(F, S) : ptSeg(q, S)) < R2 + GAP * 0.5) { over[i].add(S.pi); conflict[i].add(S.pi); conflict[S.pi].add(i); }
+        }
+      }));
+      // (1) heights: lowest wires first; each takes the lowest height ≥ its own clearance that is a full layer away from
+      // every conflicting wire already placed (and above any placed wire whose riser it passes over)
+      const order = P.map((_, i) => i).sort((i, j) => P[i].base - P[j].base || i - j), done = new Set();
+      const fits = (i, c) => { for (const j of conflict[i]) if (done.has(j) && Math.abs(c - P[j].h) < H - 1e-6) return false; for (const j of done) if (over[j].has(i) && c < P[j].h + H - 1e-6) return false; return true; };
+      for (const i of order) {
+        const p = P[i]; let lo = p.base; for (const j of done) if (over[j].has(i)) lo = Math.max(lo, P[j].h + H);
+        const cands = [lo, ...[...conflict[i]].filter((j) => done.has(j)).map((j) => P[j].h + H)].filter((c) => c >= lo).sort((x, y) => x - y);
+        p.h = cands.find((c) => fits(i, c)); if (p.h == null) p.h = lo;
+        p.h = Math.min(p.h, p.base + MAXUP); done.add(i);
+      }
+      for (let pass = 0; pass < 4; pass++) for (let i = 0; i < P.length; i++) for (const j of over[i]) if (P[j].h < P[i].h + H && P[i].h + H <= P[j].base + MAXUP) P[j].h = P[i].h + H;
+      for (const p of P) [0, 1].forEach((k) => { const l = p.lean[k]; if (!l.u) return; const y = k ? p.B.y : p.A.y, extra = Math.max(0, Math.min(0.3 * (p.h - y), 2 * LANE, 0.4 * l.u.L) - LANE); l.x += l.u.x * extra; l.z += l.u.z * extra; });
+    }
+    // Phase 3 — polyline from the laid-out run (height h, lane offsets, leaning risers) and the meshes.
+    _wirePoints(p) {
+      const THREE = root.THREE;
+      if (p.kind !== 'run') return p.pts;
+      const r = p.run, h = p.h, o = p.off, n = r.length, V = (x, z) => new THREE.Vector3(x, h, z), out = [p.A.clone()];
+      const dir = (k) => { const L = Math.hypot(r[k + 1].x - r[k].x, r[k + 1].z - r[k].z) || 1; return { x: (r[k + 1].x - r[k].x) / L, z: (r[k + 1].z - r[k].z) / L }; };
+      const u0 = dir(0), ue = dir(n - 2), l0 = p.lean[0], l1 = p.lean[1];
+      out.push(V(r[0].x + l0.x, r[0].z + l0.z));
+      if ((o[0].x || o[0].z) && !l0.lane) out.push(V(r[0].x + l0.x + u0.x * LANE_JOG + o[0].x, r[0].z + l0.z + u0.z * LANE_JOG + o[0].z));
+      for (let k = 1; k < n - 1; k++) {
+        const u1 = dir(k - 1), u2 = dir(k), o1 = o[k - 1], o2 = o[k], den = u1.x * u2.z - u1.z * u2.x;
+        if (Math.abs(den) < 0.2) { out.push(V(r[k].x + o1.x, r[k].z + o1.z)); if (Math.hypot(o2.x - o1.x, o2.z - o1.z) > 0.05) out.push(V(r[k].x + o2.x, r[k].z + o2.z)); continue; }
+        const qx = o2.x - o1.x, qz = o2.z - o1.z, t = (qx * u2.z - qz * u2.x) / den;   // r+o1+t·u1 = r+o2+s·u2
+        out.push(V(r[k].x + o1.x + t * u1.x, r[k].z + o1.z + t * u1.z));
+      }
+      const oe = o[n - 2];
+      if ((oe.x || oe.z) && !l1.lane) out.push(V(r[n - 1].x + l1.x - ue.x * LANE_JOG + oe.x, r[n - 1].z + l1.z - ue.z * LANE_JOG + oe.z));
+      out.push(V(r[n - 1].x + l1.x, r[n - 1].z + l1.z));
+      out.push(p.B.clone());
+      return out;
+    }
+    _filletPts(pts, rad) {
+      const out = [pts[0].clone()];
+      for (let i = 1; i < pts.length - 1; i++) {
+        const P0 = pts[i - 1], P = pts[i], P1 = pts[i + 1];
+        const a = P.clone().sub(P0), b = P1.clone().sub(P), la = a.length(), lb = b.length();
+        if (la < 1e-6 || lb < 1e-6) continue;
+        a.divideScalar(la); b.divideScalar(lb);
+        const d = Math.min(rad, 0.45 * la, 0.45 * lb);
+        if (a.dot(b) > 0.995 || d < 0.3) { out.push(P.clone()); continue; }
+        const s = P.clone().addScaledVector(a, -d), e = P.clone().addScaledVector(b, d);
+        for (let k = 0; k <= 4; k++) { const t = k / 4, u = 1 - t; out.push(new root.THREE.Vector3(u * u * s.x + 2 * u * t * P.x + t * t * e.x, u * u * s.y + 2 * u * t * P.y + t * t * e.y, u * u * s.z + 2 * u * t * P.z + t * t * e.z)); }
+      }
+      out.push(pts[pts.length - 1].clone());
+      return out.filter((q, i) => i === 0 || q.distanceTo(out[i - 1]) > 0.05);
+    }
+    _makeWire(w, onBoard) { const p = this._planWire(w, onBoard); return p ? this._buildWire(p) : null; }
+    _buildWire(p) {
+      const THREE = root.THREE, w = p.w, a = p.a, b = p.b;
+      let pts = this._wirePoints(p);
       // drop consecutive duplicates (CatmullRom NaNs on zero-length segments)
       pts = pts.filter((q, i) => i === 0 || q.distanceTo(pts[i - 1]) > 0.05);
       if (pts.length < 2) return null;
-      const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.15);
+      // Runs: round each bend with a small fillet and spline through the dense result (centripetal). A plain Catmull-Rom
+      // through the sparse Manhattan bends bowed long runs ~4 units sideways, so neighbours one breadboard pitch apart touched.
+      const curve = p.kind === 'run' && pts.length > 2 ? new THREE.CatmullRomCurve3(this._filletPts(pts, 4.5), false, 'centripetal')
+        : new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.15);
       const radial = 8;
-      const segs = Math.max(12, Math.floor(curve.getLength() / 4));
+      const segs = Math.max(12, Math.floor(curve.getLength() / 3));
       const col = wireHex(w.color);
       const core = new THREE.Mesh(new THREE.TubeGeometry(curve, segs, WIRE_R * 0.45, radial, false), this._mat({ color: 0xb8bcc2, metalness: 0.85, roughness: 0.28 }));
       const ins = new THREE.Mesh(new THREE.TubeGeometry(curve, segs, WIRE_R, radial, false), this._mat({
