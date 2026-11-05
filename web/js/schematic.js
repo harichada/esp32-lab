@@ -7,7 +7,7 @@
  */
 (function (root) {
   const P = root.Parts;
-  const GS = 10, STUB = 20;
+  const GS = 10, STUB = 30, KEEP = 30;
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const SRC = new Set(['battery', 'battery9v', 'aapack', 'coincell', 'cell18650', 'bench', 'vcc33', 'vcc5', 'buck', 'ldo']);
   const SKIP = new Set(['breadboard', 'label']);
@@ -142,6 +142,27 @@
   }
 
   function snap(v) { return Math.round(v / GS) * GS; }
+  function textWidth(text, px) { return Math.max(4, Math.ceil(String(text || '').length * px * 0.62)); }
+  function pinText(t, kind) { return (kind === 'DIP' && t.num ? t.num + ' ' : '') + (t.name || ''); }
+  function placeEdge(list, dir, s) {
+    if (!list.length) return;
+    const gaps = list.map((t) => Math.max(40, snap(textWidth(pinText(t, s.kind), 9.5) + 22)));
+    const sum = gaps.reduce((a, b) => a + b, 0);
+    let x = Math.max(0, (s.w - sum) / 2);
+    list.forEach((t, i) => {
+      t.dir = dir;
+      t.lx = snap(x + gaps[i] / 2);
+      t.ly = dir === 't' ? 0 : s.h;
+      x += gaps[i];
+    });
+    for (let i = 1; i < list.length; i++) {
+      const need = snap((gaps[i - 1] + gaps[i]) / 2);
+      if (list[i].lx < list[i - 1].lx + need) list[i].lx = list[i - 1].lx + need;
+    }
+    const last = list[list.length - 1];
+    if (last.lx > s.w - GS) s.w = snap(last.lx + GS);
+    for (const t of list) t.lx = Math.max(GS, Math.min(s.w - GS, t.lx));
+  }
 
   function layout(proj) {
     const pinNet = pinNetMap(proj);
@@ -170,12 +191,20 @@
     for (const [net, terms] of netTerms) meta.set(net, netKind(net, terms));
     for (const s of symbols) for (const t of s.terms) {
       const m = meta.get(t.net) || { rail: null, name: '', wire: false };
-      t.rail = (s.kind === 'GND' && m.rail === 'gnd') ? null : m.rail;
-      t.netName = m.name || '';
-      t.wire = !!m.wire && t.rail !== 'gnd' && t.rail !== 'flag';
-      if (m.rail === 'gnd' && s.kind !== 'GND') t.rail = 'gnd';
-      if (m.rail === 'flag') { t.rail = 'flag'; t.wire = false; }
-      if (!m.wire && m.rail !== 'gnd' && m.rail !== 'flag') { t.wire = false; t.rail = null; }
+      const alone = (netTerms.get(t.net) || []).length < 2;
+      // A supply flag only exists when this pin's net really is that supply.
+      // An open pin is a no-connect: no rail, no wire, no invented "VCC" label.
+      t.nc = alone;
+      t.netName = alone || !m.name ? '' : m.name;
+      if (alone || (m.rail === 'flag' && !m.name)) {
+        t.rail = null; t.wire = false;
+      } else {
+        t.rail = (s.kind === 'GND' && m.rail === 'gnd') ? null : m.rail;
+        t.wire = !!m.wire && t.rail !== 'gnd' && t.rail !== 'flag';
+        if (m.rail === 'gnd' && s.kind !== 'GND') t.rail = 'gnd';
+        if (m.rail === 'flag') { t.rail = 'flag'; t.wire = false; }
+        if (!m.wire && m.rail !== 'gnd' && m.rail !== 'flag') { t.wire = false; t.rail = null; }
+      }
     }
 
     // Signal graph: nets that are actually drawn as wires.
@@ -199,34 +228,23 @@
     const order = [...symbols].sort((a, b) => (adj.get(b.id).size - adj.get(a.id).size) || (b.terms.length - a.terms.length));
     const seeds = [...rootsPref, ...order];
     for (const s of seeds) if (!seen.has(s.id) && adj.get(s.id).size) { const bag = new Set(); absorb(s.id, bag); comps.push(bag); }
-    for (const s of symbols) if (!seen.has(s.id)) { const bag = new Set([s.id]); seen.add(s.id); comps.push(bag); }
-    // Floaters that only share a supply/gnd net join that component.
+    // A source joins the circuit it actually feeds (its + / VOUT net is that supply).
+    // Sharing only GND, or touching nothing, does not pull a part into the signal columns.
     for (const bag of comps) {
-      const share = new Set();
-      for (const id of bag) {
-        const s = byId.get(id);
-        for (const t of s.terms) for (const o of netTerms.get(t.net) || []) if (!bag.has(o.sid)) share.add(o.sid);
-      }
-      for (const id of share) {
-        const s = byId.get(id);
-        if (s && adj.get(id).size === 0 && !comps.some((c) => c !== bag && c.has(id) && adj.get(id).size)) {
-          // only pull parts that aren't already a real signal component
-          if (![...comps].some((c) => c.has(id) && [...c].some((x) => adj.get(x).size))) { bag.add(id); }
-        }
+      for (const s of symbols) {
+        if (seen.has(s.id) || !SRC.has(s.part.type)) continue;
+        const feeds = s.terms.some((t) => t.rail === 'flag' && (netTerms.get(t.net) || []).some((o) => bag.has(o.sid)));
+        if (feeds) { bag.add(s.id); seen.add(s.id); }
       }
     }
-    // A part pulled into a later bag may still sit in an earlier singleton. Drop empty duplicates.
-    const placed = new Set();
-    const compList = [];
-    for (const bag of comps) {
-      const ids = [...bag].filter((id) => !placed.has(id));
-      if (!ids.length) continue;
-      ids.forEach((id) => placed.add(id));
-      compList.push(new Set(ids));
-    }
+    const compList = comps;
+    // The first signal component is the main circuit. Anything else — open parts, or a
+    // fragment wired only to itself — is parked in one row underneath it.
+    const mainIds = new Set(compList[0] ? [...compList[0]] : []);
+    const parkedIds = symbols.filter((s) => !mainIds.has(s.id)).map((s) => s.id);
 
     let compTop = 0;
-    compList.forEach((bag, ci) => {
+    compList.slice(0, 1).forEach((bag, ci) => {
       const ids = [...bag];
       const root = ids.find((id) => byId.get(id).kind === 'ESP') || ids.find((id) => byId.get(id).kind === 'DIP') || ids.slice().sort((a, b) => adj.get(b).size - adj.get(a).size)[0];
       const layer = new Map();
@@ -293,15 +311,40 @@
       compTop = maxY + dy + 70;
     });
 
+    // Parts with no signal wire (and sources that don't feed this circuit) sit in one row
+    // below the diagram instead of scattering through the signal columns.
+    if (parkedIds.length) {
+      let band = 0, any = false;
+      for (const s of symbols) if (!parkedIds.includes(s.id) && s.y !== undefined) {
+        any = true;
+        band = Math.max(band, s.y + s.h + ((s.pad && s.pad.B) || 24));
+      }
+      let x = 0, y = any ? snap(band + 80) : 20, rowH = 0;
+      const wrap = 980;
+      for (const id of parkedIds) {
+        const s = byId.get(id);
+        s.parked = true; s.flow = 1; s.layer = 0; s.comp = -1; s.root = id;
+        buildGeom(s, { neighLayers: () => [], flow: 1, bag: new Set([id]) });
+        const p = pads(s);
+        s.pad = p;
+        const slot = p.L + s.w + p.R;
+        if (x > 0 && x + slot > wrap) { x = 0; y += rowH + 28; rowH = 0; }
+        s.x = snap(x + p.L); s.y = snap(y + p.T);
+        x += slot + KEEP * 2 + GS * 2;
+        rowH = Math.max(rowH, p.T + s.h + p.B);
+      }
+    }
+
     // Absolute pins, rails, routes.
     for (const s of symbols) for (const t of s.terms) { t.x = s.x + t.lx; t.y = s.y + t.ly; }
     const rails = [];
     const obstacles = [];
     for (const s of symbols) {
-      obstacles.push({ x: s.x - 4, y: s.y - 4, x2: s.x + s.w + 4, y2: s.y + s.h + 4, sid: s.id });
+      obstacles.push({ x: s.x - KEEP, y: s.y - KEEP, x2: s.x + s.w + KEEP, y2: s.y + s.h + KEEP, sid: s.id });
       for (const t of s.terms) if (t.rail === 'gnd' || t.rail === 'flag') {
         const g = railGeom(t, s.kind === 'ESP' || s.kind === 'DIP' || s.kind === 'BOX' ? 'mini' : 'full');
-        if (g.kind === 'flag' && rails.some((r) => r.kind === 'flag' && r.name === g.name && Math.abs(r.px - g.px) < 40 && Math.abs(r.py - g.py) < 28)) g.nolabel = true;
+        if (!g) continue;
+        if (g.kind === 'flag' && rails.some((r) => r.kind === 'flag' && r.name === g.name && Math.abs(r.px - g.px) < 36 && Math.abs(r.py - g.py) < 24)) g.nolabel = true;
         rails.push(g);
         obstacles.push({ x: g.x, y: g.y, x2: g.x2, y2: g.y2, sid: s.id, rail: true });
       }
@@ -309,8 +352,9 @@
     const routed = routeNets(symbols, netTerms, meta, obstacles);
     const dots = junctions(routed.polys, symbols);
     const labels = wireLabels(routed.polys, netTerms, meta);
-    const bounds = computeBounds(symbols, rails, routed.polys, labels);
-    return { symbols, rails, polys: routed.polys, dots, labels, bounds, fallback: routed.fallback, nets: meta };
+    const texts = placeTexts(symbols, rails, routed.polys, labels);
+    const bounds = computeBounds(symbols, rails, routed.polys, labels, texts);
+    return { symbols, rails, polys: routed.polys, dots, labels, texts, bounds, fallback: routed.fallback, nets: meta };
   }
 
   function opp(dir) { return { l: 'r', r: 'l', t: 'b', b: 't' }[dir] || 'r'; }
@@ -358,22 +402,35 @@
     if (s.kind === 'DIP' || (s.kind === 'BOX' && s.terms.length > 4)) {
       const pins = s.terms;
       const left = [], right = [], top = [], bot = [];
+      const powerName = /^(VCC|VDD|V\+|3V3|5V|VIN|VBAT)$/i;
       for (const t of pins) {
         const w = want(t);
-        if (t.rail === 'gnd' || (String(t.name).toUpperCase() === 'GND' && w === 'b')) bot.push(t);
-        else if (t.rail === 'flag' || /^(VCC|VDD|3V3|5V|VIN)$/i.test(t.name) && (t.rail === 'flag' || !t.wire)) top.push(t);
+        if (t.rail === 'gnd' || (String(t.name).toUpperCase() === 'GND' && !t.wire)) bot.push(t);
+        else if (t.rail === 'flag' || (powerName.test(t.name) && !t.wire && !t.nc)) top.push(t);
         else if (w === 'up') (sideOf(flow, 'up') === 'l' ? left : right).push(t);
-        else if (w === 'down' || w === 'flag') (sideOf(flow, 'down') === 'r' ? right : left).push(t);
-        else left.push(t);
+        else (sideOf(flow, 'down') === 'r' ? right : left).push(t);
       }
-      if (!left.length && !right.length) pins.forEach((t, i) => (i < pins.length / 2 ? left : right).push(t));
+      // More than three power pins won't stay readable on the lid — extras go to the sides.
+      while (top.length > 3) {
+        const extra = top.findIndex((t) => !powerName.test(t.name));
+        const t = top.splice(extra >= 0 ? extra : top.length - 1, 1)[0];
+        (sideOf(flow, 'down') === 'r' ? right : left).push(t);
+      }
+      if (!left.length && !right.length && !top.length && !bot.length) pins.forEach((t, i) => (i < pins.length / 2 ? left : right).push(t));
       const n = Math.max(left.length, right.length, 1);
-      s.w = s.kind === 'DIP' ? 120 : 140;
-      s.h = 20 + n * 20;
-      const putV = (list, dir) => list.forEach((t, i) => { t.dir = dir; t.lx = dir === 'l' ? 0 : s.w; t.ly = 20 + i * 20; });
+      s.h = 30 + n * 20;
+      const sideW = (list) => list.reduce((m, t) => Math.max(m, textWidth(pinText(t, s.kind), 9.5)), 0);
+      const edgeNeed = (list) => {
+        if (!list.length) return 0;
+        const sum = list.reduce((a, t) => a + Math.max(40, snap(textWidth(pinText(t, s.kind), 9.5) + 18)), 0);
+        return snap(sum + 20);
+      };
+      s.w = snap(Math.max(s.kind === 'DIP' ? 120 : 140, edgeNeed(top), edgeNeed(bot), sideW(left) + sideW(right) + textWidth(s.title || '', 11) + 64));
+      const putV = (list, dir) => list.forEach((t, i) => { t.dir = dir; t.lx = dir === 'l' ? 0 : s.w; t.ly = 30 + i * 20; });
       putV(left, 'l'); putV(right, 'r');
-      top.forEach((t, i) => { t.dir = 't'; t.lx = 20 * (i + 1); t.ly = 0; if (t.lx >= s.w) t.lx = s.w - 20; });
-      bot.forEach((t, i) => { t.dir = 'b'; t.lx = 20 * (i + 1); t.ly = s.h; if (t.lx >= s.w) t.lx = s.w - 20; });
+      placeEdge(top, 't', s);
+      placeEdge(bot, 'b', s);
+      for (const t of right) t.lx = s.w;
       return;
     }
     if (s.kind === 'POT' || s.kind === 'SW3') {
@@ -446,13 +503,18 @@
       if (ts[0].lx === ts[1].lx && ts[0].ly === ts[1].ly) put(ts[1], opp(da));
       return;
     }
-    s.w = 100; s.h = 20 + Math.ceil(ts.length / 2) * 20;
+    s.w = 100; s.h = 30 + Math.ceil(ts.length / 2) * 20;
     const lh = [], rh = [];
     ts.forEach((t) => (want(t) === 'up' ? lh : rh).push(t));
     if (!lh.length || !rh.length) { lh.length = 0; rh.length = 0; ts.forEach((t, i) => (i % 2 ? rh : lh).push(t)); }
-    lh.forEach((t, i) => { t.dir = 'l'; t.lx = 0; t.ly = 20 + i * 20; });
-    rh.forEach((t, i) => { t.dir = 'r'; t.lx = s.w; t.ly = 20 + i * 20; });
-    s.h = 20 + Math.max(lh.length, rh.length, 1) * 20;
+    const rows = Math.max(lh.length, rh.length, 1);
+    if (s.kind === 'BOX') {
+      const side = (list) => list.reduce((m, t) => Math.max(m, textWidth(pinText(t, s.kind), 9.5)), 0);
+      s.w = snap(Math.max(120, side(lh) + side(rh) + textWidth(s.title || '', 11) + 56));
+    }
+    lh.forEach((t, i) => { t.dir = 'l'; t.lx = 0; t.ly = 30 + i * 20; });
+    rh.forEach((t, i) => { t.dir = 'r'; t.lx = s.w; t.ly = 30 + i * 20; });
+    s.h = 30 + rows * 20;
   }
 
   function pads(s) {
@@ -511,6 +573,7 @@
     }
     alignOutward(syms, idsByL);
     packOverlaps(syms);
+    packHorizontal(syms);
     for (const s of syms) { s.x = snap(s.x); s.y = snap(s.y); }
   }
 
@@ -543,6 +606,24 @@
     }
   }
 
+  function packHorizontal(syms) {
+    // Facing pins grow stubs of STUB px. Bodies that share a row need a gap so those stubs,
+    // and the wires that follow, never meet inside a symbol or on the same grid edge.
+    const gap = KEEP * 2 + GS * 2;
+    let guard = 0, moved = true;
+    while (moved && guard++ < 40) {
+      moved = false;
+      const boxes = syms.map((s) => ({ x: s.x, y: s.y, x2: s.x + s.w, y2: s.y + s.h, s })).sort((a, b) => a.x - b.x || a.y - b.y);
+      for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i], b = boxes[j];
+        if (a.y2 <= b.y + 4 || b.y2 <= a.y + 4) continue;
+        if (b.x >= a.x2 + gap) continue;
+        const push = Math.ceil((a.x2 + gap - b.x) / GS) * GS;
+        b.s.x += push; b.x += push; b.x2 += push; moved = true;
+      }
+    }
+  }
+
   function packOverlaps(syms) {
     const box = (s) => {
       const p = s.pad || pads(s);
@@ -567,7 +648,8 @@
     const mini = size === 'mini';
     const x = t.x, y = t.y, dir = t.dir || 'b';
     if (t.rail === 'flag') {
-      const name = t.netName || 'VCC';
+      const name = t.netName || '';
+      if (!name) return null;
       let x0 = x, y0 = y, x2 = x, y2 = y;
       if (dir === 't') { y0 = y - 28; y2 = y; x0 = x - 18; x2 = x + Math.max(18, name.length * 7); }
       else if (dir === 'b') { y0 = y; y2 = y + 28; x0 = x - 18; x2 = x + Math.max(18, name.length * 7); }
@@ -593,8 +675,13 @@
     for (const s of symbols) for (const t of s.terms) {
       if (!t.wire) continue;
       let stub = stubOf(t, STUB);
-      for (let k = 0; k < 4; k++) {
-        if (!obstacles.some((r) => inside(stub, r))) break;
+      for (let k = 0; k < 10; k++) {
+        const key = stub.x + ',' + stub.y;
+        const owner = pinAt.get(key);
+        const taken = owner !== undefined && owner !== t.net;
+        const buried = obstacles.some((r) => inside(stub, r));
+        const cuts = leadCuts(t, stub, obstacles);
+        if (!taken && !buried && !cuts) break;
         stub = stubOf(t, STUB + (k + 1) * GS);
       }
       t.sx = stub.x; t.sy = stub.y;
@@ -616,7 +703,7 @@
         const goal = { x: pins[i].sx, y: pins[i].sy };
         let path = astar(tree, goal, ctx, net, true);
         if (!path) path = astar(tree, goal, ctx, net, false); // allow a perpendicular crossing
-        if (!path) { path = orthoFallback(tree[0], goal); ctx.fallback = true; }
+        if (!path) { path = orthoFallback(tree[0], goal, ctx.obstacles); ctx.fallback = true; }
         for (const p of path) tree.push(p);
         branches.push({ path, pin: pins[i] });
       }
@@ -637,6 +724,21 @@
     return { polys, fallback: ctx.fallback };
   }
 
+  function leadCuts(t, stub, obstacles) {
+    for (const r of obstacles) {
+      if (r.sid === t.sid) continue;
+      if (r.rail) continue;
+      const a = { x: t.x, y: t.y }, b = stub;
+      if (a.x === b.x) {
+        const y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y);
+        if (a.x > r.x && a.x < r.x2 && y1 > r.y && y0 < r.y2) return true;
+      } else if (a.y === b.y) {
+        const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x);
+        if (a.y > r.y && a.y < r.y2 && x1 > r.x && x0 < r.x2) return true;
+      }
+    }
+    return false;
+  }
   function stubOf(t, d) {
     if (t.dir === 'l') return { x: snap(t.x - d), y: t.y };
     if (t.dir === 'r') return { x: snap(t.x + d), y: t.y };
@@ -647,9 +749,38 @@
     if (x === nx) return 'v:' + x + ':' + Math.min(y, ny);
     return 'h:' + y + ':' + Math.min(x, nx);
   }
-  function orthoFallback(a, b) {
-    if (a.x === b.x || a.y === b.y) return [a, b];
-    return [a, { x: b.x, y: a.y }, b];
+  function pathHitsObs(path, obstacles) {
+    if (!obstacles) return false;
+    for (let i = 1; i < path.length; i++) {
+      const a = path[i - 1], b = path[i];
+      for (const r of obstacles) {
+        if (a.x === b.x) {
+          const y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y);
+          if (a.x > r.x && a.x < r.x2 && y1 > r.y && y0 < r.y2) return true;
+        } else if (a.y === b.y) {
+          const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x);
+          if (a.y > r.y && a.y < r.y2 && x1 > r.x && x0 < r.x2) return true;
+        }
+      }
+    }
+    return false;
+  }
+  function orthoFallback(a, b, obstacles) {
+    const cands = [];
+    const lane = (x, y) => cands.push([a, { x, y: a.y }, { x, y }, { x: b.x, y }, b]);
+    if (a.x === b.x || a.y === b.y) cands.push([a, b]);
+    else { cands.push([a, { x: b.x, y: a.y }, b]); cands.push([a, { x: a.x, y: b.y }, b]); }
+    const ys = [], xs = [];
+    for (const r of obstacles || []) { ys.push(r.y - GS, r.y2 + GS); xs.push(r.x - GS, r.x2 + GS); }
+    for (const d of [40, -40, 80, -80, 140, -140, 220, -220, 320, -320]) { ys.push(a.y + d); xs.push(a.x + d); }
+    for (const y of ys) cands.push([a, { x: a.x, y }, { x: b.x, y }, b]);
+    for (const x of xs) cands.push([a, { x, y: a.y }, { x, y: b.y }, b]);
+    for (const y of ys) for (const x of xs) lane(x, y);
+    for (const path of cands) {
+      const clean = path.filter((p, i) => i === 0 || p.x !== path[i - 1].x || p.y !== path[i - 1].y);
+      if (!pathHitsObs(clean, obstacles)) return clean;
+    }
+    return cands[0];
   }
   function simplify(pts) {
     const o = [];
@@ -807,6 +938,9 @@
       }
       for (const [k, axes] of deg) {
         if (pins.has(k)) continue;
+        const [xs, ys] = k.split(',');
+        const dx = +xs, dy = +ys;
+        if (symbols.some((s) => dx >= s.x && dx <= s.x + s.w && dy >= s.y && dy <= s.y + s.h)) continue;
         // distinct directions: h and v count, plus a T is 3 incident half-edges
         let n = 0; const seen = new Set();
         for (const seg of segs) {
@@ -816,7 +950,7 @@
             if (seg[0] === k || seg[1] === k) n++;
           }
         }
-        if (n >= 3) { const [xs, ys] = k.split(','); dots.push({ x: +xs, y: +ys, net }); }
+        if (n >= 3) dots.push({ x: dx, y: dy, net });
         void axes;
       }
     }
@@ -851,13 +985,136 @@
     return labels;
   }
 
-  function computeBounds(symbols, rails, polys, labels) {
+  function ncPoint(t) {
+    const d = 9;
+    if (t.dir === 'l') return { x: t.x - d, y: t.y };
+    if (t.dir === 'r') return { x: t.x + d, y: t.y };
+    if (t.dir === 't') return { x: t.x, y: t.y - d };
+    return { x: t.x, y: t.y + d };
+  }
+  function makeBox(text, x, y, size, anchor) {
+    const w = textWidth(text, size), h = size + 3;
+    const x0 = anchor === 'start' ? x : anchor === 'end' ? x - w : x - w / 2;
+    return { x: x0, y: y - size, w, h, x2: x0 + w, y2: y + 3, text, ax: x, ay: y, anchor };
+  }
+  function boxesHit(a, b, pad) {
+    const p = pad || 0;
+    const ix = Math.min(a.x2, b.x2) - Math.max(a.x, b.x);
+    const iy = Math.min(a.y2, b.y2) - Math.max(a.y, b.y);
+    return ix > 1 - p && iy > 1 - p;
+  }
+  /** Nudge every label onto a free spot. Side pin names and titles stay inside their own body. */
+  function placeTexts(symbols, rails, polys, labels) {
+    const blockers = [];
+    for (const s of symbols) blockers.push({ x: s.x - 1, y: s.y - 1, x2: s.x + s.w + 1, y2: s.y + s.h + 1, body: s.id });
+    for (const r of rails) if (r.kind === 'gnd') blockers.push({ x: r.x - 2, y: r.y - 2, x2: r.x2 + 2, y2: r.y2 + 2 });
+    for (const s of symbols) for (const t of s.terms) if (t.nc && s.kind !== 'ESP') {
+      const p = ncPoint(t);
+      blockers.push({ x: p.x - 6, y: p.y - 6, x2: p.x + 6, y2: p.y + 6 });
+    }
+    for (const pl of polys) for (let i = 1; i < pl.pts.length; i++) {
+      const a = pl.pts[i - 1], b = pl.pts[i];
+      blockers.push({ x: Math.min(a.x, b.x) - 3, y: Math.min(a.y, b.y) - 3, x2: Math.max(a.x, b.x) + 3, y2: Math.max(a.y, b.y) + 3 });
+    }
+    const items = [];
+    for (const s of symbols) {
+      const ref = { kind: 'ref', text: s.ref, size: 12, anchor: 'middle', x: s.x + s.w / 2, y: s.y - 8, move: true };
+      items.push(ref); s.refPos = ref;
+      if (s.value && s.kind !== 'SRC' && s.kind !== 'MET') {
+        const gnd = s.terms.some((t) => t.rail === 'gnd');
+        const val = {
+          kind: 'val', text: s.value, size: 11, move: true,
+          anchor: gnd ? 'start' : 'middle',
+          x: gnd ? s.x + s.w + 8 : s.x + s.w / 2,
+          y: gnd ? s.y + Math.min(16, Math.max(12, s.h * 0.45)) : s.y + s.h + 14,
+        };
+        items.push(val); s.valPos = val;
+      }
+      if (s.kind === 'ESP' || s.kind === 'DIP' || s.kind === 'BOX') {
+        const title = {
+          kind: 'title', text: s.kind === 'ESP' ? 'ESP32' : (s.title || ''), size: 11, anchor: 'middle',
+          x: s.x + s.w / 2, y: s.y + 13, own: s.id, move: true,
+        };
+        items.push(title); s.titlePos = title;
+      }
+      if (s.kind === 'SRC' || s.kind === 'MET') {
+        const plus = s.terms.find((t) => t.dir === 'l' || t.dir === 'r') || s.terms[0];
+        const cx = s.kind === 'MET' ? s.x + s.w / 2 : (plus && plus.dir === 'r' ? plus.x - 26 : plus.x + 26);
+        const cy = s.kind === 'MET' ? (plus ? plus.y : s.y + s.h / 2) : (plus ? plus.y : s.y + 20);
+        const title = { kind: 'title', text: s.kind === 'MET' ? (s.value || 'V') : (s.value || s.title || ''), size: 11, anchor: 'middle', x: cx, y: cy + 4, own: s.id, move: false };
+        if (title.text) { items.push(title); s.titlePos = title; }
+      }
+      const named = s.kind === 'ESP' || s.kind === 'DIP' || s.kind === 'BOX' || s.kind === 'SW3' || s.kind === 'POT';
+      if (!named) continue;
+      const inside = s.kind === 'ESP' || s.kind === 'DIP' || s.kind === 'BOX';
+      for (const t of s.terms) {
+        if (!t.name) continue;
+        let x = t.x, y = t.y, anchor = 'middle', own = null, move = true;
+        if (t.dir === 'l') { x = inside ? s.x + 6 : t.x - 6; y = t.y + 3; anchor = inside ? 'start' : 'end'; own = inside ? s.id : null; move = !inside; }
+        else if (t.dir === 'r') { x = inside ? s.x + s.w - 6 : t.x + 6; y = t.y + 3; anchor = inside ? 'end' : 'start'; own = inside ? s.id : null; move = !inside; }
+        else if (t.dir === 't') { y = t.y - 13; anchor = 'middle'; move = true; }
+        else { y = inside ? t.y - 5 : t.y + 12; anchor = 'middle'; own = inside ? s.id : null; move = true; }
+        const lab = { kind: 'pin', text: pinText(t, s.kind), size: 9.5, anchor, x, y, own, move };
+        items.push(lab); t.labPos = lab;
+      }
+    }
+    for (const r of rails) if (r.kind === 'flag' && r.name && !r.nolabel) {
+      const anchor = r.dir === 'l' ? 'end' : r.dir === 'r' ? 'start' : 'middle';
+      const x = r.dir === 'l' ? r.px - 10 : r.dir === 'r' ? r.px + 10 : r.px;
+      const y = r.dir === 't' ? r.py - 28 : r.dir === 'b' ? r.py + 18 : r.py - 4;
+      const lab = { kind: 'flag', text: r.name, size: 10.5, anchor, x, y, move: true };
+      items.push(lab); r.labPos = lab;
+    }
+    for (const l of labels) {
+      const lab = { kind: 'net', text: l.name, size: 10.5, anchor: l.anchor || 'middle', x: l.x, y: l.y, move: true };
+      items.push(lab); l.labPos = lab;
+    }
+    function hitAny(box, self) {
+      for (const b of blockers) {
+        if (self.own && b.body === self.own) continue;
+        if (boxesHit(box, b)) return true;
+      }
+      for (const o of items) if (o !== self && o.box && boxesHit(box, o.box, 5)) return true;
+      return false;
+    }
+    for (const it of items) if (!it.move) it.box = makeBox(it.text, it.x, it.y, it.size, it.anchor);
+    const shifts = [];
+    for (const ring of [0, 14, 28, 42, 56, 72, 90]) {
+      if (ring === 0) { shifts.push([0, 0]); continue; }
+      for (let k = 0; k < 8; k++) {
+        const a = k * Math.PI / 4;
+        shifts.push([Math.round(Math.cos(a) * ring), Math.round(Math.sin(a) * ring)]);
+      }
+    }
+    for (const it of items) {
+      if (!it.move) continue;
+      let placed = null;
+      for (const [dx, dy] of shifts) {
+        const box = makeBox(it.text, it.x + dx, it.y + dy, it.size, it.anchor);
+        if (!hitAny(box, it)) { placed = box; break; }
+      }
+      if (!placed) {
+        // Last resort: step away until the box is clear, then keep that spot even if the sheet is crowded.
+        for (let n = 1; n <= 12 && !placed; n++) {
+          const box = makeBox(it.text, it.x + n * 16, it.y - n * 14, it.size, it.anchor);
+          if (!hitAny(box, it)) placed = box;
+        }
+      }
+      if (!placed) placed = makeBox(it.text, it.x, it.y - 48, it.size, it.anchor);
+      it.x = placed.ax; it.y = placed.ay; it.box = placed;
+    }
+    for (const l of labels) if (l.labPos) { l.x = l.labPos.x; l.y = l.labPos.y; l.anchor = l.labPos.anchor; }
+    return items.filter((it) => it.box).map((it) => Object.assign(it.box, { kind: it.kind, own: it.own || null, text: it.text }));
+  }
+
+  function computeBounds(symbols, rails, polys, labels, texts) {
     let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
     const add = (x, y) => { if (!isFinite(x) || !isFinite(y)) return; x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); };
     for (const s of symbols) { add(s.x - (s.pad ? s.pad.L : 20), s.y - 24); add(s.x + s.w + (s.pad ? s.pad.R : 20), s.y + s.h + 20); }
     for (const r of rails) { add(r.x, r.y); add(r.x2, r.y2); }
     for (const pl of polys) for (const p of pl.pts) add(p.x, p.y);
-    for (const l of labels) add(l.x, l.y);
+    for (const l of labels) { add(l.x - 8, l.y - 14); add(l.x + textWidth(l.name, 10.5) + 8, l.y + 4); }
+    for (const t of texts || []) { add(t.x, t.y); add(t.x2, t.y2); }
     if (x0 > x1) return { x: 0, y: 0, w: 200, h: 120 };
     return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
   }
@@ -878,11 +1135,12 @@
   }
   function drawRail(r) {
     if (r.kind === 'flag') {
-      const tx = r.dir === 'l' ? r.px - 8 : r.dir === 'r' ? r.px + 8 : r.px;
-      const ty = r.dir === 't' ? r.py - 18 : r.dir === 'b' ? r.py + 16 : r.py - 4;
-      const anchor = r.dir === 'l' ? 'end' : r.dir === 'r' ? 'start' : 'middle';
-      const lead = r.dir === 't' ? `M${r.px} ${r.py} V${r.py - 14}` : r.dir === 'b' ? `M${r.px} ${r.py} V${r.py + 12}` : r.dir === 'l' ? `M${r.px} ${r.py} H${r.px - 12}` : `M${r.px} ${r.py} H${r.px + 12}`;
-      const label = r.nolabel ? '' : `<text class="sch-flag" x="${tx}" y="${ty}" text-anchor="${anchor}">${esc(r.name)}</text>`;
+      const p = r.labPos;
+      const tx = p ? p.x : (r.dir === 'l' ? r.px - 10 : r.dir === 'r' ? r.px + 10 : r.px);
+      const ty = p ? p.y : (r.dir === 't' ? r.py - 28 : r.dir === 'b' ? r.py + 18 : r.py - 4);
+      const anchor = p ? p.anchor : (r.dir === 'l' ? 'end' : r.dir === 'r' ? 'start' : 'middle');
+      const lead = r.dir === 't' ? `M${r.px} ${r.py} V${r.py - 16}` : r.dir === 'b' ? `M${r.px} ${r.py} V${r.py + 14}` : r.dir === 'l' ? `M${r.px} ${r.py} H${r.px - 14}` : `M${r.px} ${r.py} H${r.px + 14}`;
+      const label = r.nolabel || !r.name ? '' : `<text class="sch-flag" x="${tx}" y="${ty}" text-anchor="${anchor}">${esc(r.name)}</text>`;
       return `<path d="${lead}" class="sch-stroke sch-rail"/>${label}`;
     }
     const mini = r.mini;
@@ -902,23 +1160,32 @@
     return sym.terms.map((t) => `<circle class="sch-pin" cx="${t.x}" cy="${t.y}" r="2.2" data-pin="${esc(t.name)}" data-pid="${esc(sym.id)}"/>`).join('');
   }
   function refText(sym) {
-    const y = sym.y - 6;
-    return `<text class="sch-ref" x="${sym.x + sym.w / 2}" y="${y}">${esc(sym.ref)}</text>` +
-      (sym.value ? `<text class="sch-val" x="${sym.x + sym.w / 2}" y="${sym.y + sym.h + 13}">${esc(sym.value)}</text>` : '');
+    const r = sym.refPos || { x: sym.x + sym.w / 2, y: sym.y - 8, anchor: 'middle' };
+    const v = sym.valPos;
+    return `<text class="sch-ref" x="${r.x}" y="${r.y}" style="text-anchor:${r.anchor || 'middle'}">${esc(sym.ref)}</text>` +
+      (v && sym.value ? `<text class="sch-val" x="${v.x}" y="${v.y}" style="text-anchor:${v.anchor || 'middle'}">${esc(sym.value)}</text>` : '');
   }
   function hit(sym) {
     return `<rect class="sch-hit" x="${sym.x}" y="${sym.y}" width="${sym.w}" height="${sym.h}" data-pid="${esc(sym.id)}"/>`;
   }
   function pinName(t, sym, inside) {
     if (sym.kind === 'R' || sym.kind === 'C' || sym.kind === 'L' || sym.kind === 'D' || sym.kind === 'Z' || sym.kind === 'LED') return '';
+    if (t.labPos) {
+      const p = t.labPos;
+      return `<text class="sch-pname" x="${p.x}" y="${p.y}" style="text-anchor:${p.anchor}">${esc(p.text)}</text>`;
+    }
     const inward = inside;
     let x = t.x, y = t.y, anchor = 'middle';
     if (t.dir === 'l') { x = inward ? sym.x + 6 : t.x - 6; anchor = inward ? 'start' : 'end'; y = t.y + 3; }
     else if (t.dir === 'r') { x = inward ? sym.x + sym.w - 6 : t.x + 6; anchor = inward ? 'end' : 'start'; y = t.y + 3; }
-    else if (t.dir === 't') { y = t.y + (inward ? 12 : -4); }
-    else { y = t.y + (inward ? -4 : 12); }
+    else if (t.dir === 't') { y = t.y - 13; }
+    else { y = t.y + (inward ? -5 : 12); }
     const label = (sym.kind === 'DIP' && t.num ? t.num + ' ' : '') + t.name;
-    return `<text class="sch-pname" x="${x}" y="${y}" text-anchor="${anchor}">${esc(label)}</text>`;
+    return `<text class="sch-pname" x="${x}" y="${y}" style="text-anchor:${anchor}">${esc(label)}</text>`;
+  }
+  function drawNc(t) {
+    const p = ncPoint(t), d = 4.5;
+    return `<path class="sch-nc" d="M${p.x - d} ${p.y - d} L${p.x + d} ${p.y + d} M${p.x - d} ${p.y + d} L${p.x + d} ${p.y - d}"/>`;
   }
   function drawSymbol(sym, sel) {
     const on = sel && sel === sym.id ? ' sel' : '';
@@ -941,8 +1208,9 @@
     else if (k === 'SPK' || k === 'MOT' || k === 'LAMP') body = drawCircleDev(sym);
     else body = drawBox(sym);
     const names = (k === 'ESP' || k === 'DIP' || k === 'BOX' || k === 'SW3' || k === 'POT') ? sym.terms.map((t) => pinName(t, sym, k === 'ESP' || k === 'DIP' || k === 'BOX')).join('') : '';
+    const ncs = sym.kind === 'ESP' ? '' : sym.terms.filter((t) => t.nc).map(drawNc).join('');
     const glow = sym.led ? `<circle class="sch-glow" data-glow="${esc(sym.id)}" cx="${(sym.terms[0] ? (sym.terms[0].x + (sym.terms[1] ? sym.terms[1].x : sym.terms[0].x)) / 2 : sym.x + sym.w / 2)}" cy="${sym.y + sym.h / 2}" r="14" fill="${sym.led}" opacity="0"/>` : '';
-    return `<g class="sch-sym${on}" data-pid="${esc(sym.id)}">${body}${glow}${pinDots(sym)}${names}${refText(sym)}${hit(sym)}</g>`;
+    return `<g class="sch-sym${on}" data-pid="${esc(sym.id)}">${body}${glow}${pinDots(sym)}${ncs}${names}${refText(sym)}${hit(sym)}</g>`;
   }
   function horizPins(sym) {
     const hs = sym.terms.filter((t) => t.dir === 'l' || t.dir === 'r');
@@ -1125,9 +1393,8 @@
   }
   function drawBox(sym) {
     const notch = sym.kind === 'DIP' ? `<circle class="sch-dot" cx="${sym.x + 8}" cy="${sym.y + 8}" r="2.4"/>` : '';
-    const title = sym.kind === 'ESP' ? 'ESP32' : sym.title;
-    const titleY = sym.kind === 'ESP' ? sym.y + 14 : sym.y + sym.h / 2 + 4;
-    return `<rect class="sch-body" x="${sym.x}" y="${sym.y}" width="${sym.w}" height="${sym.h}" rx="3"/>${notch}<text class="sch-title" x="${sym.x + sym.w / 2}" y="${titleY}">${esc(title)}</text>`;
+    const title = sym.titlePos || { x: sym.x + sym.w / 2, y: sym.y + 13, text: sym.kind === 'ESP' ? 'ESP32' : sym.title };
+    return `<rect class="sch-body" x="${sym.x}" y="${sym.y}" width="${sym.w}" height="${sym.h}" rx="3"/>${notch}<text class="sch-title" x="${title.x}" y="${title.y}">${esc(title.text || (sym.kind === 'ESP' ? 'ESP32' : sym.title))}</text>`;
   }
 
 
@@ -1195,11 +1462,13 @@
       const b = this.model.bounds, r = this.svg.getBoundingClientRect();
       const w = r.width || 800, h = r.height || 600;
       // Leave room for the floating toolbar and the view-only hint along the bottom.
-      const padX = 48, padT = 28, padB = 78;
-      const s = Math.min(2.4, Math.max(0.12, Math.min(w / (b.w + padX * 2), (h - padT - padB) / (b.h + 24))));
+      // The example banner sits over the canvas in screen pixels (~12px offset + ~30px chip).
+      // Convert that clearance into world units so fit-to-view never hides the top of the sheet.
+      const bannerPx = 58, toolPx = 118, sidePx = 40;
+      const s = Math.min(2.4, Math.max(0.12, Math.min((w - sidePx * 2) / Math.max(b.w, 1), (h - bannerPx - toolPx) / Math.max(b.h, 1))));
       this.view.s = s;
-      this.view.x = b.x - padX - (w / s - b.w - padX * 2) / 2;
-      this.view.y = b.y - padT - ((h - padB) / s - b.h - padT) / 2;
+      this.view.x = b.x - (w / s - b.w) / 2;
+      this.view.y = b.y - bannerPx / s;
       this.apply();
     }
     zoomBy(f, client) {

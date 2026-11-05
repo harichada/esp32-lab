@@ -223,6 +223,7 @@ body.viewsch .hint{z-index:5;opacity:1;max-width:min(760px,calc(100% - 28px))}
 #stageSch .sch-sym.sel .sch-body,#stageSch .sch-sym.sel .sch-stroke{stroke:var(--acc)}
 #stageSch .sch-sym.sel .sch-body{fill:var(--acc-bg)}
 #stageSch .sch-glow{pointer-events:none}
+#stageSch .sch-nc{fill:none;stroke:var(--mut);stroke-width:1.25;stroke-linecap:round}
 #stage.flow.live .wire .w-flow{opacity:var(--wo,.55);animation-duration:var(--wd,.9s);animation-direction:var(--wdir,normal)}
 @media (prefers-reduced-motion:reduce){
   #stage.flow.live .w-flow{animation:none!important;opacity:.35}
