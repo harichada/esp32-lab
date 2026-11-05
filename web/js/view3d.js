@@ -446,7 +446,7 @@
         if (rec.part.type === 'breadboard') continue;
         try {
           rec.mesh.updateMatrixWorld(true); const bb = this._solidBox(rec.mesh);
-          if (bb && !bb.isEmpty()) this._partBoxes.push({ id, box: bb, pinTop: rec.mesh.userData.pinTop != null ? rec.mesh.userData.pinTop : null });
+          if (bb && !bb.isEmpty()) this._partBoxes.push({ id, box: bb, pinTop: rec.mesh.userData.pinTop != null ? rec.mesh.userData.pinTop : null, keepClear: !!rec.mesh.userData.keepClear });
           const d = root.Parts.T[rec.part.type];
           for (const pin of (d && d.pins ? d.pins(rec.part) : [])) { const q = root.Parts.pinWorld(rec.part, pin), kk = Math.round(q.x) + ',' + Math.round(q.y); this._pinOwners.set(kk, id); this._pinNames.set(kk, pin.name); }
         } catch (_) {}
@@ -1168,10 +1168,18 @@
         const plug = new THREE.Mesh(new THREE.CylinderGeometry(2.6, 2.6, 4 * MM, 16), this._mat({ color: col, roughness: 0.4 }));
         plug.position.set(x, H + 0.8 + 1.4 * MM + 2 * MM, -22); plug.castShadow = true; g.add(plug);
         const ytop = H + 0.8 + 1.4 * MM + 4 * MM;
-        this._lead(g, [[x, ytop, -22], [x, ytop + 3, -16], [x, H + 4, -6], [x, 3, -1], [x, 0.6, 0]], col === 0xc62828 ? 0xd32f2f : 0x222222, 0.45 * MM);
+        this._lead(g, [[x, ytop, -22], [x, ytop + 3, -16], [x, H + 4, -6], [x, 3, -1], [x, 0.6, 0]], col === 0xc62828 ? 0xd32f2f : 0x222222, 0.45 * MM).userData.noSolid = true;
+        // probe tip pushed into the board hole at the pin
+        const tip = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.35, 2.4, 10), this._mat({ color: 0xc0c4ca, metalness: 0.3, roughness: 0.3 }));
+        tip.position.set(x, 0.3, 0); tip.userData.noSolid = true; g.add(tip);
       };
       jack(0, 0xc62828); jack(30, 0x16171a);
-      g.userData.pinTop = 0.8;
+      // No pinTop: the + / COM pins are the probe tips on the board in front of the housing (2D y=0), not on top of it.
+      // With pinTop set, _endY/_heightAt counted the whole meter box (≈47 high) at the pin, so every jumper to the DMM
+      // ended — and rose — in mid-air above the meter. Like LED/resistor leads, wires now plug in at board-top height.
+      // The probe leads/tips are left out of the solid box (noSolid) so the pins stay clear, while keepClear makes
+      // jumpers to the meter still arch over the housing instead of cutting through it.
+      g.userData.keepClear = true;
       return g;
     }
     _pkgLabel(name, sub, w, h, bg, fg) {
@@ -1260,7 +1268,7 @@
     _heightAt(x, z, pad, skip) {
       let h = 0;
       for (const e of (this._partBoxes || [])) {
-        if (skip && skip.has(e.id) && e.pinTop == null) continue;
+        if (skip && skip.has(e.id) && e.pinTop == null && !e.keepClear) continue;
         const b = e.box;
         if (x >= b.min.x - pad && x <= b.max.x + pad && z >= b.min.z - pad && z <= b.max.z + pad) h = Math.max(h, b.max.y);
       }
@@ -1506,7 +1514,7 @@
     _solidBox(obj) {
       const THREE = root.THREE, box = new THREE.Box3(), tmp = new THREE.Box3();
       obj.traverse((c) => {
-        if (!c.isMesh || c.isSprite || !c.geometry || !c.visible) return;
+        if (!c.isMesh || c.isSprite || !c.geometry || !c.visible || c.userData.noSolid) return;
         if (c.material && c.material.transparent && c.material.depthWrite === false) return;
         if (!c.geometry.boundingBox) c.geometry.computeBoundingBox();
         tmp.copy(c.geometry.boundingBox).applyMatrix4(c.matrixWorld); box.union(tmp);
