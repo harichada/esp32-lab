@@ -76,7 +76,10 @@ async def gate(request: Request, call_next):
     if pth == '/' or pth.endswith('.html'):
         resp.headers['Cache-Control'] = 'no-cache, must-revalidate'   # always revalidate the page so new ?v= asset URLs are picked up
     elif pth.startswith(('/js/', '/css/')):
-        resp.headers['Cache-Control'] = 'public, max-age=31536000, immutable' if request.query_params.get('v') else 'no-cache'
+        if pth.endswith('/view3d.js'):
+            resp.headers['Cache-Control'] = 'no-cache, must-revalidate'   # 3D hotfixes must reach phones immediately
+        else:
+            resp.headers['Cache-Control'] = 'public, max-age=31536000, immutable' if request.query_params.get('v') else 'no-cache'
     if TOKEN and request.query_params.get('t') == TOKEN:
         resp.set_cookie('simtok', TOKEN, httponly=True, samesite='lax', secure=True, max_age=86400 * 7)
     return resp

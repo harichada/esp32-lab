@@ -114,7 +114,7 @@
       const hfov = 2 * Math.atan(Math.tan(vfov * 0.5) * Math.max(0.2, this.cam.aspect || 1));
       const fov = Math.min(vfov, hfov);
       const fit = (span * 0.52) / Math.max(0.12, Math.tan(fov * 0.5));
-      this.goal.r = Math.max(110, Math.min(1100, fit * 1.22 + 40));
+      this.goal.r = Math.max(110, Math.min(1100, fit * 1.08 + 30));
       this.sph.theta = this.goal.theta; this.sph.phi = this.goal.phi; this.sph.r = this.goal.r;
       this.target.copy(this.goal.target); this.apply();
     }
@@ -185,6 +185,16 @@
         } catch (_) {}
         try { info += ' ' + (gl.getParameter(gl.RENDERER) || ''); } catch (_) {}
         this.softGL = /SwiftShader|llvmpipe|Software|Subzero|Microsoft Basic Render/i.test(info);
+        // ?gl3d=hw forces the real-GPU render path (bloom/PMREM/shadows) for testing under SwiftShader
+        const q = (root.location && root.location.search) || '';
+        if (/[?&]gl3d=hw\b/.test(q)) this.softGL = false;
+        if (/[?&]gl3d=soft\b/.test(q)) this.softGL = true;
+        // HOTFIX: the real-GPU "fx" path (PMREM env + UnrealBloom composer + shadows) renders a blank
+        // (NaN → white on many mobile/desktop GPUs, empty under SwiftShader). Use the verified safe path
+        // everywhere; the fx path is opt-in with ?fx3d=1 for further work.
+        this.gpuFx = !this.softGL && /[?&]fx3d=1\b/.test(q);
+        this.realGPU = !this.softGL;
+        if (!this.gpuFx) this.softGL = true;
         this._glInfo = info.trim();
       })();
 
@@ -1027,33 +1037,55 @@
       setTimeout(() => { this._failed = false; }, 1500);
     }
     // Resolves {ok} after a couple of real frames: fails on lost context, no frames, or an all-white frame.
-    healthCheck(timeout = 2500) {
+    _cameraInsideBoard() {
+      const THREE = root.THREE; if (!THREE || !this.camera) return false;
+      const cp = this.camera.position;
+      for (const [, rec] of this.parts) {
+        if (!rec || !rec.part || rec.part.type !== 'breadboard' || !rec.mesh) continue;
+        const bb = new THREE.Box3().setFromObject(rec.mesh); bb.expandByScalar(4);
+        if (bb.containsPoint(cp)) return true;
+      }
+      if (this._vbbMesh) { const bb = new THREE.Box3().setFromObject(this._vbbMesh); bb.expandByScalar(4); if (bb.containsPoint(cp)) return true; }
+      return cp.y < 6;   // below/inside the board plane
+    }
+    _whiteFraction(gl) {
+      const W = gl.drawingBufferWidth, H = gl.drawingBufferHeight;
+      const buf = new Uint8Array(W * H * 4);
+      gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+      let n = 0, white = 0;
+      const sx = Math.max(1, Math.floor(W / 48)), sy = Math.max(1, Math.floor(H / 32));
+      for (let y = Math.floor(sy / 2); y < H; y += sy) for (let x = Math.floor(sx / 2); x < W; x += sx) {
+        const i = (y * W + x) * 4, r = buf[i], g = buf[i + 1], b = buf[i + 2];
+        n++; if (Math.min(r, g, b) > 200 && Math.max(r, g, b) - Math.min(r, g, b) < 40) white++;
+      }
+      return n ? white / n : 0;
+    }
+    // Resolves {ok} after real frames: fails on lost context, camera inside the board, or a frame
+    // that is >60% near-white (the "white screen").
+    healthCheck(timeout = 3000) {
       return new Promise((res) => {
         if (!this.ready) return res({ ok: false, why: 'not ready' });
+        if (this._cameraInsideBoard()) return res({ ok: false, why: 'camera', camera: true });
         const start = this._frames || 0, t0 = performance.now();
         const gl = this.renderer.getContext();
-        let white = 0, checked = 0;
+        let worst = 0, checked = 0;
         this._probe = () => {
           if ((this._frames || 0) - start < 2) return;
           try {
             if (gl.isContextLost()) { this._probe = null; return res({ ok: false, why: 'WebGL context lost' }); }
-            const W = gl.drawingBufferWidth, H = gl.drawingBufferHeight, px = new Uint8Array(4);
-            let allWhite = true;
-            for (const [fx, fy] of [[0.03, 0.03], [0.97, 0.03], [0.5, 0.5], [0.03, 0.97], [0.97, 0.97]]) {
-              gl.readPixels(Math.floor(W * fx), Math.floor(H * fy), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
-              if (!(px[0] > 245 && px[1] > 245 && px[2] > 245)) { allWhite = false; break; }
-            }
-            checked++; if (allWhite) white++;
-          } catch (_) { checked++; }
-          if (checked >= 2) { this._probe = null; res(white >= 2 ? { ok: false, why: 'blank white frame' } : { ok: true }); }
+            worst = Math.max(worst, this._whiteFraction(gl));
+          } catch (_) {}
+          checked++;
+          this.lastWhite = worst;
+          if (worst > 0.6) { this._probe = null; return res({ ok: false, why: 'white frame', camera: true, white: worst }); }
+          if (checked >= 2) { this._probe = null; res({ ok: true, white: worst }); }
         };
         const wait = () => {
           if (!this._probe) return;
           if (this._lost) { this._probe = null; return res({ ok: false, why: 'WebGL context lost' }); }
           if (performance.now() - t0 > timeout) {
             this._probe = null;
-            // No frames at all (rAF throttled in a background tab) is not a failure; a lost context is.
-            return res(gl.isContextLost() ? { ok: false, why: 'WebGL context lost' } : { ok: true });
+            return res(gl.isContextLost() ? { ok: false, why: 'WebGL context lost' } : { ok: true, white: worst, noFrames: true });
           }
           setTimeout(wait, 100);
         };

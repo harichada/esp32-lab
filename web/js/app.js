@@ -829,7 +829,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     view3dLoading = (async () => {
       if (!window.loadView3D) {
         await new Promise((res, rej) => {
-          const s = document.createElement('script'); s.src = 'js/view3d.js?v=24'; s.async = true;
+          const s = document.createElement('script'); s.src = 'js/view3d.js?v=40'; s.async = true;
           s.onload = res; s.onerror = () => rej(new Error('view3d load failed')); document.head.appendChild(s);
         });
       }
@@ -865,14 +865,29 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     viewMode = '2d'; viewSeq++;
     try { if (app.view3d) app.view3d.setActive(false); } catch (_) {}
     applyViewChrome();
-    toast('3D view unavailable (' + ((e && e.message) || 'WebGL error') + ') — back to 2D', true);
+    toast(e && e.camera ? '3D camera failed — back to 2D' : '3D view unavailable (' + ((e && e.message) || 'WebGL error') + ') — back to 2D', true);
+  }
+  // HOTFIX: 3D is desktop-only for now (phones/tablets/touch-first and landscape phones get 2D only).
+  function no3dDevice() {
+    const mm = (q) => !!(window.matchMedia && window.matchMedia(q).matches);
+    const w = window.innerWidth || 0, h = window.innerHeight || 0;
+    const coarse = mm('(pointer: coarse)') && !mm('(any-pointer: fine)');
+    const touchUA = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
+    return w <= 820 || (Math.min(w, h) <= 500 && (coarse || touchUA)) || coarse || touchUA || document.body.classList.contains('m');
+  }
+  function applyNo3d() {
+    const off = no3dDevice();
+    document.body.classList.toggle('no3d', off);
+    if (off && viewMode === '3d') setViewMode('2d');
+    return off;
   }
   async function setViewMode(mode, quiet) {
+    if (mode === '3d' && applyNo3d()) { mode = '2d'; if (!quiet) toast('3D view is desktop-only for now — staying in 2D'); }
     const seq = ++viewSeq;
     viewMode = mode === '3d' ? '3d' : '2d';
     applyViewChrome();
     if (viewMode === '2d') {
-      lsSet(LSV, '2d');
+      try { localStorage.removeItem(LSV); } catch (_) {}
       try { if (app.view3d) app.view3d.setActive(false); } catch (e) { console.error(e); }
       try { app.editor && app.editor.render && app.editor.render(); } catch (_) {}
       return;
@@ -885,8 +900,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       v.sync(app.sim, flow);
       const ok = await v.healthCheck();
       if (seq !== viewSeq || viewMode !== '3d') return;
-      if (!ok.ok) throw new Error(ok.why || 'blank frame');
-      lsSet(LSV, '3d');
+      if (!ok.ok) { const er = new Error(ok.why || 'blank frame'); er.camera = !!ok.camera; throw er; }
       if (!quiet) toast('3D view — drag orbit · pinch/wheel zoom · Esc or 2D to exit');
     } catch (e) { if (seq === viewSeq) view3dFail(e); }
   }
@@ -895,12 +909,12 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     b2.onclick = () => setViewMode('2d'); b3.onclick = () => setViewMode('3d');
     const ex = $('#bExit3d'); if (ex) ex.onclick = () => setViewMode('2d');
     window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && viewMode === '3d') { e.preventDefault(); setViewMode('2d'); } }, true);
-    let want = null; try { want = localStorage.getItem(LSV); } catch (_) {}
-    // Crash guard: mark 2D before restoring; it flips back to 3D only after a healthy frame.
-    if (want === '3d' && new URLSearchParams(location.search).get('view') !== '2d') {
-      lsSet(LSV, '2d');
-      setTimeout(() => setViewMode('3d', true), 800);
-    }
+    // HOTFIX: always boot in 2D and drop any saved 3D preference.
+    try { localStorage.removeItem(LSV); } catch (_) {}
+    const f2 = $('#bForce2d'); if (f2) f2.onclick = () => { setViewMode('2d'); toast('2D view'); };
+    applyNo3d();
+    window.addEventListener('resize', () => applyNo3d());
+    window.addEventListener('orientationchange', () => setTimeout(applyNo3d, 300));
   }
 
   window.addEventListener('DOMContentLoaded', init);

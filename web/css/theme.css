@@ -260,3 +260,10 @@ body.view3d .canvas-tools,body.view3d .zoom-tools{z-index:12}
 .exit3d{display:none;position:absolute;top:12px;right:12px;z-index:13;height:34px;padding:0 16px;border-radius:17px;border:1px solid rgba(34,211,238,.55);background:rgba(4,8,14,.82);color:#e6fdff;font:600 13px/34px var(--mono,ui-monospace,monospace);letter-spacing:.06em;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.45);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
 .exit3d:hover{background:rgba(34,211,238,.18)}
 body.view3d .exit3d{display:block}
+
+/* HOTFIX 3D: always-on 2D kill-switch chip in the header (outside #stage, top of every stack) */
+.force2d{position:relative;z-index:2147483647;flex:0 0 auto;height:26px;min-width:38px;padding:0 10px;margin:0 6px;border-radius:13px;border:1px solid rgba(34,211,238,.45);background:#0b1118;color:#cfefff;font:700 12px/24px var(--mono,ui-monospace,monospace);letter-spacing:.08em;cursor:pointer}
+.force2d:hover{background:#12202b}
+body.view3d .force2d{background:#0e7490;color:#fff;border-color:#22d3ee}
+/* phones / touch: no 3D entry at all for this hotfix */
+body.no3d #bView3d,body.no3d .exit3d,body.no3d #stage3d{display:none!important}
