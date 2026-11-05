@@ -38,11 +38,11 @@ wl_status_t QemuEthWiFiClass::status() { return s_up ? WL_CONNECTED : WL_DISCONN
 IPAddress QemuEthWiFiClass::localIP() {
   esp_netif_ip_info_t i; if (s_netif && esp_netif_get_ip_info(s_netif, &i) == ESP_OK) return IPAddress(i.ip.addr); return IPAddress();
 }
-// *.wokwi.internal / host.wokwi.internal -> the simulator's slirp guestfwd address (mock devices)
+// *.sim.internal / host.sim.internal (plus legacy *.wokwi.internal alias for older sketches) -> the simulator's slirp guestfwd address (mock devices)
 extern "C" int __real_lwip_getaddrinfo(const char *n, const char *s, const struct addrinfo *h, struct addrinfo **r);
 extern "C" int __wrap_lwip_getaddrinfo(const char *n, const char *s, const struct addrinfo *h, struct addrinfo **r) {
   const char *orig = n;
-  if (n && strstr(n, "wokwi.internal")) n = "10.0.2.100";
+  if (n && (strstr(n, ".sim.internal") || strstr(n, "wokwi.internal"))) n = "10.0.2.100";
   int rc = __real_lwip_getaddrinfo(n, s, h, r);
   char ip[16] = "?";
   if (rc == 0 && r && *r && (*r)->ai_addr) inet_ntoa_r(((struct sockaddr_in *)(*r)->ai_addr)->sin_addr, ip, sizeof ip);

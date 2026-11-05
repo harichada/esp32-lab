@@ -100,7 +100,7 @@ window.addEventListener('DOMContentLoaded', function () {
     <h4>Projects</h4>
     <button class="m-li" data-d="projects">${ic('i-folder')}<span>My Projects…</span></button>
     <button class="m-li" data-d="save">${ic('i-save')}<span>Save</span></button>
-    <button class="m-li" data-d="import">${ic('i-upload')}<span>Import JSON / Wokwi diagram</span></button>
+    <button class="m-li" data-d="import">${ic('i-upload')}<span>Import JSON / diagram.json</span></button>
     <button class="m-li" data-d="download">${ic('i-download')}<span>Export project JSON</span></button>
     <h4>Examples</h4><div id="mEx"></div></div></aside>`));
   $('#mEx').innerHTML = (window.Examples ? Examples.LIST : []).map(([k, n]) => `<button class="m-li" data-ex="${k}">${I.book}<span>${P.esc(n)}</span></button>`).join('');

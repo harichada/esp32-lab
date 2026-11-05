@@ -1,0 +1,226 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Open-source notices</title>
+<style>body{font:14px/1.5 system-ui,sans-serif;max-width:1100px;margin:24px auto;padding:0 16px;color:#222;background:#fff}table{border-collapse:collapse;font-size:12.5px}td,th{border:1px solid #ccc;padding:4px 6px;vertical-align:top}th{background:#f2f2f2}code{background:#f4f4f4;padding:0 3px}a{word-break:break-all}</style></head><body>
+<p><a href="./">&larr; Back to the simulator</a></p><h1>Third-party notices</h1>
+<p>This product (working name: "the simulator"; final product name TBD) bundles or uses the components below.
+Each remains under its own license. First-party code: see <code>LICENSE</code> (all rights reserved).</p>
+<p><strong>Not affiliated</strong> with or endorsed by Espressif Systems, Arduino SA, or Wokwi (CodeMagic LTD).
+ESP32 / Espressif, Arduino, and Wokwi are trademarks of their respective owners; used only descriptively.
+The diagram.json importer reads a third-party file format for interoperability only.</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Version</th>
+<th>License</th>
+<th>Upstream</th>
+<th>License text</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Espressif QEMU fork (+ local GPIO-bridge patch)</td>
+<td>QEMU 9.2.2 base, commit <code>febae182e132e4055529be423a818225ebddaa3a</code></td>
+<td>GPL-2.0</td>
+<td>https://github.com/espressif/qemu</td>
+<td>https://github.com/espressif/qemu/blob/esp-develop/LICENSE · <a href="https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt" rel="noopener">https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt</a></td>
+</tr>
+<tr>
+<td>ESP32 ROM ELF/images</td>
+<td>esp-rom-elfs</td>
+<td>Apache-2.0 (ROM ELFs); © 2015-2022 Espressif Systems (Shanghai) Co. Ltd.</td>
+<td>https://github.com/espressif/esp-rom-elfs</td>
+<td>https://github.com/espressif/esp-rom-elfs/blob/master/LICENSE</td>
+</tr>
+<tr>
+<td>glib</td>
+<td>distro</td>
+<td>LGPL-2.1+</td>
+<td>https://gitlab.gnome.org/GNOME/glib</td>
+<td>https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt</td>
+</tr>
+<tr>
+<td>pixman</td>
+<td>distro</td>
+<td>MIT</td>
+<td>https://gitlab.freedesktop.org/pixman/pixman</td>
+<td>https://gitlab.freedesktop.org/pixman/pixman/-/blob/master/COPYING</td>
+</tr>
+<tr>
+<td>libgcrypt</td>
+<td>distro</td>
+<td>LGPL-2.1+</td>
+<td>https://gnupg.org/software/libgcrypt/</td>
+<td>https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt</td>
+</tr>
+<tr>
+<td>libslirp</td>
+<td>distro</td>
+<td>BSD-3-Clause</td>
+<td>https://gitlab.freedesktop.org/slirp/libslirp</td>
+<td>https://gitlab.freedesktop.org/slirp/libslirp/-/blob/master/COPYRIGHT</td>
+</tr>
+<tr>
+<td>musl libc (Android static QEMU)</td>
+<td>–</td>
+<td>MIT</td>
+<td>https://musl.libc.org/</td>
+<td>https://git.musl-libc.org/cgit/musl/tree/COPYRIGHT</td>
+</tr>
+<tr>
+<td>xtensa-esp-elf GCC / binutils toolchain</td>
+<td>esp-14.2.0_20260121</td>
+<td>GPL-3.0 + GCC Runtime Library Exception</td>
+<td>https://github.com/espressif/crosstool-NG</td>
+<td>https://www.gnu.org/licenses/gpl-3.0.txt · <a href="https://www.gnu.org/licenses/gcc-exception-3.1.html" rel="noopener">https://www.gnu.org/licenses/gcc-exception-3.1.html</a></td>
+</tr>
+<tr>
+<td>glibc (Android APK runtime)</td>
+<td>2.31 (Debian 11)</td>
+<td>LGPL-2.1+</td>
+<td>https://sourceware.org/glibc/ · <a href="https://sources.debian.org/src/glibc/2.31-13/" rel="noopener">https://sources.debian.org/src/glibc/2.31-13/</a></td>
+<td>https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt</td>
+</tr>
+<tr>
+<td>libstdc++ / libgcc_s</td>
+<td>GCC</td>
+<td>GPL-3.0 + Runtime Library Exception</td>
+<td>https://gcc.gnu.org/</td>
+<td>https://www.gnu.org/licenses/gcc-exception-3.1.html</td>
+</tr>
+<tr>
+<td>Arduino-ESP32 core</td>
+<td>3.3.12</td>
+<td>LGPL-2.1</td>
+<td>https://github.com/espressif/arduino-esp32</td>
+<td>https://github.com/espressif/arduino-esp32/blob/master/LICENSE.md</td>
+</tr>
+<tr>
+<td>ESP-IDF libraries</td>
+<td>(bundled with core)</td>
+<td>Apache-2.0</td>
+<td>https://github.com/espressif/esp-idf</td>
+<td>https://github.com/espressif/esp-idf/blob/master/LICENSE</td>
+</tr>
+<tr>
+<td>esptool</td>
+<td>5.3.1</td>
+<td>GPL-2.0-or-later</td>
+<td>https://github.com/espressif/esptool</td>
+<td>https://github.com/espressif/esptool/blob/master/LICENSE</td>
+</tr>
+<tr>
+<td>arduino-cli</td>
+<td>1.5.1</td>
+<td>GPL-3.0</td>
+<td>https://github.com/arduino/arduino-cli</td>
+<td>https://github.com/arduino/arduino-cli/blob/master/LICENSE.txt</td>
+</tr>
+<tr>
+<td>NanoHTTPD / nanohttpd-websocket</td>
+<td>2.3.1</td>
+<td>BSD-3-Clause</td>
+<td>https://github.com/NanoHttpd/nanohttpd</td>
+<td>https://github.com/NanoHttpd/nanohttpd/blob/master/LICENSE.md</td>
+</tr>
+<tr>
+<td>org.json</td>
+<td>20240303</td>
+<td>Public Domain</td>
+<td>https://github.com/stleary/JSON-java</td>
+<td>https://github.com/stleary/JSON-java/blob/master/LICENSE</td>
+</tr>
+<tr>
+<td>Java-WebSocket</td>
+<td>1.5.7</td>
+<td>MIT</td>
+<td>https://github.com/TooTallNate/Java-WebSocket</td>
+<td>https://github.com/TooTallNate/Java-WebSocket/blob/master/LICENSE</td>
+</tr>
+<tr>
+<td>FastAPI, uvicorn, websockets, httptools, uvloop</td>
+<td>distro</td>
+<td>MIT / BSD-3-Clause</td>
+<td>https://github.com/fastapi/fastapi · <a href="https://github.com/encode/uvicorn" rel="noopener">https://github.com/encode/uvicorn</a> · <a href="https://github.com/python-websockets/websockets" rel="noopener">https://github.com/python-websockets/websockets</a> · <a href="https://github.com/MagicStack/httptools" rel="noopener">https://github.com/MagicStack/httptools</a> · <a href="https://github.com/MagicStack/uvloop" rel="noopener">https://github.com/MagicStack/uvloop</a></td>
+<td>see each repo's LICENSE</td>
+</tr>
+<tr>
+<td>Inter font</td>
+<td>–</td>
+<td>SIL OFL 1.1</td>
+<td>https://github.com/rsms/inter</td>
+<td>web/fonts/LICENSE-*</td>
+</tr>
+<tr>
+<td>JetBrains Mono font</td>
+<td>–</td>
+<td>SIL OFL 1.1</td>
+<td>https://github.com/JetBrains/JetBrainsMono</td>
+<td>web/fonts/LICENSE-*</td>
+</tr>
+<tr>
+<td>Adafruit GFX, SSD1306, SH110X, BME280, ILI9341, MPU6050, TouchScreen, TSC2007</td>
+<td>–</td>
+<td>BSD</td>
+<td>https://github.com/adafruit</td>
+<td>each library's license.txt</td>
+</tr>
+<tr>
+<td>Adafruit BusIO, MCP3008, STMPE610, DHT sensor library</td>
+<td>–</td>
+<td>MIT</td>
+<td>https://github.com/adafruit</td>
+<td>each library's LICENSE</td>
+</tr>
+<tr>
+<td>Adafruit Unified Sensor</td>
+<td>–</td>
+<td>Apache-2.0</td>
+<td>https://github.com/adafruit/Adafruit_Sensor</td>
+<td>https://www.apache.org/licenses/LICENSE-2.0</td>
+</tr>
+<tr>
+<td>Adafruit NeoPixel</td>
+<td>–</td>
+<td>LGPL-3.0</td>
+<td>https://github.com/adafruit/Adafruit_NeoPixel</td>
+<td>https://github.com/adafruit/Adafruit_NeoPixel/blob/master/COPYING</td>
+</tr>
+<tr>
+<td>ESP32Servo</td>
+<td>3.2.1</td>
+<td>LGPL-2.1</td>
+<td>https://github.com/madhephaestus/ESP32Servo</td>
+<td>https://www.gnu.org/licenses/old-licenses/lgpl-2.1.txt</td>
+</tr>
+<tr>
+<td>Keypad</td>
+<td>3.1.1</td>
+<td>GPL-3.0</td>
+<td>https://github.com/Chris--A/Keypad</td>
+<td>https://www.gnu.org/licenses/gpl-3.0.txt</td>
+</tr>
+<tr>
+<td>LiquidCrystal_PCF8574 (replaces LiquidCrystal_I2C)</td>
+<td>2.3.0</td>
+<td>BSD-3-Clause, © Matthias Hertel</td>
+<td>https://github.com/mathertel/LiquidCrystal_PCF8574</td>
+<td>https://github.com/mathertel/LiquidCrystal_PCF8574/blob/master/LICENSE</td>
+</tr>
+</tbody>
+</table>
+<p>Adafruit's names and SSD1306 splash logo appear only as part of their libraries, not as branding.</p>
+<h2>Apache-2.0 attribution (Espressif ROM)</h2>
+<p>ESP32 ROM code is Copyright (c) 2015-2022 Espressif Systems (Shanghai) Co. Ltd., used under the Apache License 2.0
+(<a href="https://www.apache.org/licenses/LICENSE-2.0" rel="noopener">https://www.apache.org/licenses/LICENSE-2.0</a>). It is distributed unmodified. ROM third-party copyrights:
+<a href="https://docs.espressif.com/projects/esp-idf/en/latest/esp32/COPYRIGHT.html#rom-source-code-copyrights" rel="noopener">https://docs.espressif.com/projects/esp-idf/en/latest/esp32/COPYRIGHT.html#rom-source-code-copyrights</a></p>
+<h2>GPL-2.0 notice and written source offer (QEMU)</h2>
+<p>The emulator is a modified build of Espressif's QEMU fork, licensed under the GNU GPL version 2. It comes with
+ABSOLUTELY NO WARRANTY. Corresponding source: upstream <a href="https://github.com/espressif/qemu" rel="noopener">https://github.com/espressif/qemu</a> at commit
+<code>febae182e132e4055529be423a818225ebddaa3a</code> (<code>android/qemu/BASE_COMMIT</code>), plus the local changes in
+<code>android/qemu/esp32-local-mods.patch</code> and <code>android/qemu/meson-slirp-fix.patch</code>, built with
+<code>android/qemu/build-static-aarch64.sh</code>.
+<strong>Written offer:</strong> for at least three years from when we last distribute this binary, Hari Kishore Chada will
+give anyone who asks a complete machine-readable copy of the corresponding source (including the patches and
+build script above) for no more than the cost of physically distributing it. Ask through the product's support contact.
+The same offer covers the GPL/LGPL toolchain and glibc binaries shipped in the Android APK (exact upstream tags above).</p>
+<h2>First-party code</h2><p>Copyright &copy; 2026 Hari Kishore Chada. All rights reserved.</p></body></html>

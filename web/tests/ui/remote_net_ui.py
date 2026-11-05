@@ -27,7 +27,7 @@ async def main():
     await pg.screenshot(path=os.path.join(os.path.dirname(os.path.abspath(__file__)),'remote_net.png'))
     ok=[('TV powered on by key 1 (IR + JSON-RPC)', w['tv']['power']=='on'), ('Vol+ via IRCC changed volume', w['tv']['volume']==13),
         ('Roku cursor moved by ECP keypress/Up', w['roku']['cur']==4), ('Eco plug toggled ON over UDP', w['eco']['on']),
-        ('netlog has DHCP ACK', 'DHCP ACK' in nl), ('netlog has DNS', 'DNS host.wokwi.internal' in nl), ('netlog has TCP connect', 'TCP connect' in nl),
+        ('netlog has DHCP ACK', 'DHCP ACK' in nl), ('netlog has DNS', 'DNS host.sim.internal' in nl), ('netlog has TCP connect', 'TCP connect' in nl),
         ('netlog has HTTP status+latency', re.search(r'-> 200 \(\d+ B, \d+ ms\)', nl) is not None), ('netlog has UDP send/recv', 'UDP send' in nl and 'UDP recv' in nl),
         ('netlog has device reactions', 'DEV ' in nl), ('firmware [net] lines on Serial', '[net] WiFi connected' in ser), ('Network tab renders rows', bool(vis)),
         ('filter narrows rows', 0 < nf < vis), ('no page errors', not errs)]

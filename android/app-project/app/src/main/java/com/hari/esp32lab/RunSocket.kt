@@ -81,7 +81,7 @@ class QemuSession(val sid: String, private val img: File, private val ws: RunSoc
                     val head = StringBuilder()
                     while (!head.endsWith("\r\n\r\n")) { val b = ins.read(); if (b < 0) return@use; head.append(b.toChar()); if (head.length > 65536) return@use }
                     val lines = head.split("\r\n"); val rl = (lines[0].split(" ") + listOf("", "", "")); val method = rl[0]; val path = rl[1]
-                    val hdrs = JSONObject(); var n = 0; var host = "host.wokwi.internal:$gport"
+                    val hdrs = JSONObject(); var n = 0; var host = "host.sim.internal:$gport"
                     for (l in lines.drop(1)) { val i = l.indexOf(':'); if (i > 0) { val k = l.substring(0, i).trim(); val v = l.substring(i + 1).trim(); hdrs.put(k, v)
                         if (k.equals("content-length", true)) n = v.toIntOrNull() ?: 0; if (k.equals("host", true)) host = v } }
                     val body = ByteArray(n); var o = 0; while (o < n) { val r = ins.read(body, o, n - o); if (r < 0) break; o += r }

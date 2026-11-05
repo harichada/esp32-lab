@@ -48,7 +48,7 @@ if ! [ -x "$PREFIX/bin/arduino-cli" ]; then
 fi
 arduino-cli core update-index
 arduino-cli core install "esp32:esp32@$CORE_VER"
-arduino-cli lib install "Adafruit SSD1306" "Adafruit GFX Library" "Adafruit BME280 Library" "Adafruit MPU6050" "Adafruit Unified Sensor" "Adafruit BusIO" "Adafruit ILI9341" "Adafruit MCP3008"
+arduino-cli lib install "Adafruit SSD1306" "Adafruit GFX Library" "Adafruit BME280 Library" "Adafruit MPU6050" "Adafruit Unified Sensor" "Adafruit BusIO" "Adafruit ILI9341" "Adafruit MCP3008" "LiquidCrystal_PCF8574"
 
 log "Patched Espressif QEMU (GPIO/IO_MUX/RTCIO/RMT/SENS-ADC/LEDC bridge)"
 if ! [ -x "$PREFIX/qemu/bin/qemu-system-xtensa" ]; then

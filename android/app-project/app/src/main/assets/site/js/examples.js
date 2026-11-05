@@ -1264,12 +1264,12 @@ void loop() {
   delay(40);
 }
 `;
-  const LCDCLOCK_INO = `// 16x2 I2C LCD clock with a set-time menu (LiquidCrystal_I2C, PCF8574 at 0x27)
+  const LCDCLOCK_INO = `// 16x2 I2C LCD clock with a set-time menu (LiquidCrystal_PCF8574, PCF8574 at 0x27)
 // M = menu (set hours -> set minutes -> run), + = increase the selected field.
 #include <Wire.h>
-#include <LiquidCrystal_I2C.h>
+#include <LiquidCrystal_PCF8574.h>
 
-LiquidCrystal_I2C lcd(0x27, 16, 2);
+LiquidCrystal_PCF8574 lcd(0x27);
 const int MENU_PIN = 14, PLUS_PIN = 27;
 const char *days[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
 long base = 9L * 3600 + 41 * 60;     // 09:41:00 at boot
@@ -1298,8 +1298,8 @@ void setup() {
   Serial.begin(115200);
   pinMode(MENU_PIN, INPUT_PULLUP);
   pinMode(PLUS_PIN, INPUT_PULLUP);
-  lcd.init();
-  lcd.backlight();
+  Wire.begin(); lcd.begin(16, 2);
+  lcd.setBacklight(255);
   lcd.createChar(0, bell);
   lcd.setCursor(0, 0); lcd.print(" ESP32 LCD Clock");
   lcd.setCursor(0, 1); lcd.print("  M=menu  +=set ");
@@ -1336,11 +1336,11 @@ void loop() {
   const THERMOSTAT_INO = `// DHT22 smart thermostat: 16x2 LCD + heater/fan relays (LEDs)
 // Up/Down keys change the set point; the heater runs below it, the fan above it (0.5 C hysteresis).
 #include <Wire.h>
-#include <LiquidCrystal_I2C.h>
+#include <LiquidCrystal_PCF8574.h>
 #include <DHT.h>
 
 DHT dht(27, DHT22);
-LiquidCrystal_I2C lcd(0x27, 16, 2);
+LiquidCrystal_PCF8574 lcd(0x27);
 const int UP_PIN = 13, DOWN_PIN = 14, HEAT_PIN = 25, FAN_PIN = 26;
 float setpoint = 22.0;
 bool heating = false, cooling = false;
@@ -1374,7 +1374,7 @@ void setup() {
   pinMode(UP_PIN, INPUT_PULLUP); pinMode(DOWN_PIN, INPUT_PULLUP);
   pinMode(HEAT_PIN, OUTPUT); pinMode(FAN_PIN, OUTPUT);
   dht.begin();
-  lcd.init(); lcd.backlight();
+  Wire.begin(); lcd.begin(16, 2); lcd.setBacklight(255);
   put(0, "DHT22 thermostat"); put(1, "  reading...    ");
   Serial.println("Thermostat: Up/Down = set point; drag the DHT22 sliders to change the room");
 }
@@ -1620,7 +1620,7 @@ void loop() {
     ]);
     const lcd = k.add(part('lcd1602', 520, 600, { addr: '0x27', color: 'blue' }, 0, 'LCD1'));
     k.i2c([lcd]);
-    return fun('16×2 LCD clock with set menu (I2C)', LCDCLOCK_INO, k, 'LiquidCrystal_I2C on a PCF8574 backpack at 0x27: the simulator decodes the 4-bit HD44780 protocol from the I2C expander bytes (RS/EN/backlight + D4-D7), including the custom bell glyph (CGRAM) and the degree sign. MENU (m) selects hours/minutes; PLUS (+) changes the blinking field.');
+    return fun('16×2 LCD clock with set menu (I2C)', LCDCLOCK_INO, k, 'LiquidCrystal_PCF8574 on a PCF8574 backpack at 0x27: the simulator decodes the 4-bit HD44780 protocol from the I2C expander bytes (RS/EN/backlight + D4-D7), including the custom bell glyph (CGRAM) and the degree sign. MENU (m) selects hours/minutes; PLUS (+) changes the blinking field.');
   };
   EX.thermostat = () => {
     const k = funKit(); let dht;
@@ -1645,7 +1645,7 @@ void loop() {
 // Type the PIN (default 1234) and press # to unlock. * clears. A = lock now, B = show hint.
 #include <Keypad.h>
 #include <Wire.h>
-#include <LiquidCrystal_I2C.h>
+#include <LiquidCrystal_PCF8574.h>
 #include <ESP32Servo.h>
 
 const byte ROWS = 4, COLS = 4;
@@ -1658,7 +1658,7 @@ char keys[ROWS][COLS] = {
 byte rowPins[ROWS] = {13, 12, 14, 27};   // R1..R4
 byte colPins[COLS] = {26, 25, 33, 32};   // C1..C4
 Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
-LiquidCrystal_I2C lcd(0x27, 16, 2);
+LiquidCrystal_PCF8574 lcd(0x27);
 Servo bolt;
 
 const int SERVO_PIN = 18, LED_RED = 4, LED_GREEN = 2;
@@ -1693,7 +1693,7 @@ void setup() {
   Serial.begin(115200);
   pinMode(LED_RED, OUTPUT); pinMode(LED_GREEN, OUTPUT);
   Wire.begin();
-  lcd.init(); lcd.backlight();
+  Wire.begin(); lcd.begin(16, 2); lcd.setBacklight(255);
   bolt.setPeriodHertz(50);
   bolt.attach(SERVO_PIN, 544, 2400);
   lcd.setCursor(0, 0); lcd.print("Keypad door lock");

@@ -1,9 +1,9 @@
-// 16x2 I2C LCD clock with a set-time menu (LiquidCrystal_I2C, PCF8574 at 0x27)
+// 16x2 I2C LCD clock with a set-time menu (LiquidCrystal_PCF8574, PCF8574 at 0x27)
 // M = menu (set hours -> set minutes -> run), + = increase the selected field.
 #include <Wire.h>
-#include <LiquidCrystal_I2C.h>
+#include <LiquidCrystal_PCF8574.h>
 
-LiquidCrystal_I2C lcd(0x27, 16, 2);
+LiquidCrystal_PCF8574 lcd(0x27);
 const int MENU_PIN = 14, PLUS_PIN = 27;
 const char *days[] = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"};
 long base = 9L * 3600 + 41 * 60;     // 09:41:00 at boot
@@ -32,8 +32,8 @@ void setup() {
   Serial.begin(115200);
   pinMode(MENU_PIN, INPUT_PULLUP);
   pinMode(PLUS_PIN, INPUT_PULLUP);
-  lcd.init();
-  lcd.backlight();
+  Wire.begin(); lcd.begin(16, 2);
+  lcd.setBacklight(255);
   lcd.createChar(0, bell);
   lcd.setCursor(0, 0); lcd.print(" ESP32 LCD Clock");
   lcd.setCursor(0, 1); lcd.print("  M=menu  +=set ");

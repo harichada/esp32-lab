@@ -1,4 +1,4 @@
-/* Wokwi-style realistic artwork. Overrides only the svg() of existing parts (pins/hit areas untouched) and adds the 4x4 keypad. */
+/* Realistic part artwork (first-party SVG). Overrides only the svg() of existing parts (pins/hit areas untouched) and adds the 4x4 keypad. */
 (function (root) {
   const P = root.Parts, T = P.T, esc = P.esc, G = 10;
   const dots = (pins) => pins.map((q) => `<circle cx="${q.x}" cy="${q.y}" r="2.6" class="pin" data-pin="${esc(q.name)}"/>`).join('');

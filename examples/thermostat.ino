@@ -1,11 +1,11 @@
 // DHT22 smart thermostat: 16x2 LCD + heater/fan relays (LEDs)
 // Up/Down keys change the set point; the heater runs below it, the fan above it (0.5 C hysteresis).
 #include <Wire.h>
-#include <LiquidCrystal_I2C.h>
+#include <LiquidCrystal_PCF8574.h>
 #include <DHT.h>
 
 DHT dht(27, DHT22);
-LiquidCrystal_I2C lcd(0x27, 16, 2);
+LiquidCrystal_PCF8574 lcd(0x27);
 const int UP_PIN = 13, DOWN_PIN = 14, HEAT_PIN = 25, FAN_PIN = 26;
 float setpoint = 22.0;
 bool heating = false, cooling = false;
@@ -39,7 +39,7 @@ void setup() {
   pinMode(UP_PIN, INPUT_PULLUP); pinMode(DOWN_PIN, INPUT_PULLUP);
   pinMode(HEAT_PIN, OUTPUT); pinMode(FAN_PIN, OUTPUT);
   dht.begin();
-  lcd.init(); lcd.backlight();
+  Wire.begin(); lcd.begin(16, 2); lcd.setBacklight(255);
   put(0, "DHT22 thermostat"); put(1, "  reading...    ");
   Serial.println("Thermostat: Up/Down = set point; drag the DHT22 sliders to change the room");
 }

@@ -418,7 +418,7 @@ async def _session_main(ws, bid, img):
                     if ':' in l: k, v = l.split(':', 1); hdrs[k.strip()] = v.strip()
                 n = int(next((v for k, v in hdrs.items() if k.lower() == 'content-length'), '0') or 0)
                 body = (await r.readexactly(n)).decode('latin-1') if n else ''
-                host = next((v for k, v in hdrs.items() if k.lower() == 'host'), f'host.wokwi.internal:{port}')
+                host = next((v for k, v in hdrs.items() if k.lower() == 'host'), f'host.sim.internal:{port}')
                 t1 = time.time(); nlog('http', f'HTTP {method} {host} {path} (guest TCP :{port}, {n} B body)', method=method, host=host, path=path)
                 nid[0] += 1; i = nid[0]; fut = asyncio.get_event_loop().create_future(); pending[i] = fut
                 await ws.send_json({'t': 'net', 'id': i, 'k': 'http', 'via': 'lwip', 'method': method, 'url': f'http://{host}{path}', 'headers': hdrs, 'body': body})

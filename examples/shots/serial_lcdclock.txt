@@ -1,5 +1,5 @@
 — 16×2 LCD clock with set menu (I2C) —
-LiquidCrystal_I2C on a PCF8574 backpack at 0x27: the simulator decodes the 4-bit HD44780 protocol from the I2C expander bytes (RS/EN/backlight + D4-D7), including the custom bell glyph (CGRAM) and the degree sign. MENU (m) selects hours/minutes; PLUS (+) changes the blinking field.
+LiquidCrystal_PCF8574 on a PCF8574 backpack at 0x27: the simulator decodes the 4-bit HD44780 protocol from the I2C expander bytes (RS/EN/backlight + D4-D7), including the custom bell glyph (CGRAM) and the degree sign. MENU (m) selects hours/minutes; PLUS (+) changes the blinking field.
 
 [compiled ; starting QEMU]
 [qemu] qemu started

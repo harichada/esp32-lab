@@ -8,12 +8,12 @@
 struct KabCred { bool valid; uint32_t idInt, m; char key[13], pass[33]; uint16_t port; int power; };
 
 // ---------------- CONFIG ----------------
-#ifdef SIM   // Wokwi / emulator build: open guest Wi-Fi, configurable targets (host[:port])
+#ifdef SIM   // Simulator build: open guest Wi-Fi, configurable targets (host[:port])
 #ifndef SIM_SONY_HOST
-#define SIM_SONY_HOST "host.wokwi.internal:8080"   // Wokwi private gateway -> your PC; or any public host
+#define SIM_SONY_HOST "host.sim.internal:8080"   // simulator private gateway -> your PC; or any public host
 #endif
 #ifndef SIM_ROKU_HOST
-#define SIM_ROKU_HOST "host.wokwi.internal"
+#define SIM_ROKU_HOST "host.sim.internal"
 #endif
 #ifndef SIM_ROKU_PORT
 #define SIM_ROKU_PORT "8060"
@@ -21,7 +21,7 @@ struct KabCred { bool valid; uint32_t idInt, m; char key[13], pass[33]; uint16_t
 #ifndef SIM_ECO_HOST
 #define SIM_ECO_HOST "10.13.37.2"
 #endif
-const char* WIFI_SSID = "Wokwi-GUEST";
+const char* WIFI_SSID = "SIM-GUEST";
 const char* WIFI_PASS = "";
 const char* SONY_IP   = SIM_SONY_HOST;
 #else

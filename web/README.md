@@ -1,4 +1,4 @@
-# ESP32 Circuit Lab — local Wokwi-style ESP32 + electronics simulator
+# ESP32 Circuit Lab — local ESP32 + electronics simulator
 
 It runs real ESP32 firmware: sketches are compiled by arduino-cli (esp32 core 3.3.12) and executed in Espressif's QEMU, with a patch that bridges the chip's pins to a circuit solver running in the browser.
 
@@ -34,7 +34,7 @@ The circuit solver uses modified nodal analysis with Newton–Raphson, and backw
 ## Network log and virtual devices (Wi-Fi remote)
 - **Network tab** (next to Serial): timestamped WiFi/DHCP/DNS/TCP connect/HTTP (method, host:port, path, status, bytes, latency, errors) and UDP send/recv of the emulated ESP32, decoded by the server from the QEMU network hub and the slirp guest-forwards, plus the virtual devices' reactions (`DEV`) and firmware `[net]` lines (`FW`). Filter box (`http`, `udp`, `8060`, `errors`…), Copy and Clear. Turn off with `?netlog=0` (browser) or `SIM_NETLOG=0` (server).
 - **Virtual devices** (Devices tab, `js/devices.js`): Sony Bravia (IRCC SOAP + JSON-RPC `setPowerStatus`, `X-Auth-PSK`, default PSK `0000`), Roku ECP (`POST :8060/keypress/<Key>`), Eco Plug (legacy UDP 80 and KAB UDP 1022). Addresses that reach them from the emulated ESP32:
-  - `host.wokwi.internal` (any `*.wokwi.internal`) → 10.0.2.100, ports 80, 8060, 8080 (the `-DSIM` build: Sony `host.wokwi.internal:8080`, Roku `:8060`, Eco `10.13.37.2`).
+  - `host.sim.internal` (any `*.sim.internal`; legacy `*.wokwi.internal` still accepted) → 10.0.2.100, ports 80, 8060, 8080 (the `-DSIM` build: Sony `host.sim.internal:8080`, Roku `:8060`, Eco `10.13.37.2`).
   - Real LAN addresses also work: TCP to 192.168.x.x / 172.16–31.x.x / 10.x.x.x (not 10.0.2.x) on ports 80/8060/8080 is redirected to the virtual devices, and UDP to any non-slirp address goes to them. So the firmware's real targets (Sony 192.168.1.50, Roku 192.168.1.60:8060, Eco 192.168.1.70) or `SIM_SONY_HOST="192.168.1.50"` etc. in the Defines box behave the same. Build with `SIM_NO_LAN_REMAP` in Defines to switch the redirect off.
   - **Real devices**: the emulator cannot reach your home LAN (slirp NAT on the server). Flash `firmware/remote.ino` to a real ESP32 **without** `SIM`, set `WIFI_SSID`/`WIFI_PASS`, `SONY_IP` + `SONY_PSK` (TV: Network > IP control > Authentication "Normal and Pre-Shared Key"), `ROKU_IP` (Roku: Settings > System > Advanced > Control by mobile apps = Enabled/Permissive) and `ECO_IPS`, and give each device a DHCP reservation. Serial shows the same `[net]` diagnostics.
 - Key taps are held until the firmware has had time to scan and debounce them, and the server caches GPIO-input answers per pad state (`SIM_GPIO_CACHE=0` / `?gcache=0` to disable) so lock-step keyboard scanning stays fast through a tunnel.
@@ -42,7 +42,7 @@ The circuit solver uses modified nodal analysis with Newton–Raphson, and backw
 ## How it fits together
 - `server/server.py`: FastAPI. `/api/compile` runs arduino-cli. `WS /api/run/{id}` starts QEMU and relays the GPIO bridge, UART and the HTTP guest-forward.
 - `server/qemu-patch/`: the QEMU patch plus its BASE_COMMIT.
-- `server/shims/QemuEth`: the open_eth + lwIP WiFi replacement, with a DNS hook for `*.wokwi.internal`.
+- `server/shims/QemuEth`: the open_eth + lwIP WiFi replacement, with a DNS hook for `*.sim.internal` (and legacy `*.wokwi.internal`).
 - `server/shims/QemuNet`: a UART-only fallback, used when the request asks for `"net":"shim"`.
 - `js/`: the editor, solver, parts, the runtime bridge and the mock devices.
 
@@ -52,7 +52,7 @@ The circuit solver uses modified nodal analysis with Newton–Raphson, and backw
 - `python3 tests/ui/projects_wiring_ui.py [url]`: copy-on-edit, My Projects persistence and server copy, click-click wiring, hover labels, net highlight, Delete/Backspace, right-click menu, double-click bend, Esc, undo.
 - `python3 tests/ui/remote_net_ui.py [url]`: remote example end to end in Chrome (80 ms key taps, virtual TV/Roku/Eco change, Network tab content). Tests read the token from `SIM_TOKEN` or `/tmp/sim_token`.
 - `python3 tests/e2e_backend.py http://127.0.0.1:8765`: real firmware for Blink, Button and the Remote, including lwIP HTTP and analogReadMilliVolts.
-- `python3 tests/ui/editor_ui.py`: headless Chrome. Covers drag and drop, wiring, undo, Wokwi import, the transistor example, Stage 2 Pot→PWM (calibrated ADC + mV, including the >2.6 V range), the I²C example and the SPI example.
+- `python3 tests/ui/editor_ui.py`: headless Chrome. Covers drag and drop, wiring, undo, diagram.json import, the transistor example, Stage 2 Pot→PWM (calibrated ADC + mV, including the >2.6 V range), the I²C example and the SPI example.
 - `setup.sh` installs the Adafruit SSD1306/GFX/BME280/MPU6050/ILI9341/MCP3008 libraries for the I²C and SPI examples.
 - Unit tests also cover the SPI parts (`tests/spidev.test.js`) and the ADC calibration inverse.
 
