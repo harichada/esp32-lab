@@ -380,6 +380,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     app.i2c = app.i2c || {}; let d = app.i2c[q.id];
     if (!d) {
       const env = () => q.props;
+      if (window.PartsReg && PartsReg.isI2c(q.type)) return (app.i2c[q.id] = PartsReg.i2cDev(q));   // add-on I2C parts (js/parts/)
       d = app.i2c[q.id] = q.type === 'lcd1602' ? new I2CDev.LCD1602() : q.type === 'ssd1306' ? new I2CDev.SSD1306() : q.type === 'bme280' ? new I2CDev.BME280(() => ({ temp: +q.props.temp, hum: +q.props.hum, press: +q.props.press })) : new I2CDev.MPU6050(() => ({ ax: +q.props.ax, ay: +q.props.ay, az: +q.props.az, gx: +q.props.gx, gy: +q.props.gy, gz: +q.props.gz, temp: +q.props.temp }));
     }
     return d;
@@ -387,7 +388,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   function i2cFind(esp, bus, addr) {
     const S = app.sim, sda = S.pinNet.get(esp.id + ':D21'), scl = S.pinNet.get(esp.id + ':D22');
     for (const q of app.proj.parts) {
-      if (!/^(ssd1306|bme280|mpu6050|lcd1602)$/.test(q.type) || parseInt(q.props.addr, 16) !== addr) continue;
+      if (!(/^(ssd1306|bme280|mpu6050|lcd1602)$/.test(q.type) || (window.PartsReg && PartsReg.isI2c(q.type))) || parseInt(q.props.addr, 16) !== addr) continue;
       const qs = S.pinNet.get(q.id + ':SDA'), qc = S.pinNet.get(q.id + ':SCL');
       const wired = bus === 0 ? (qs === sda && qc === scl && sda > 0 && scl > 0) : (qs > 0 && qc > 0);
       if (wired && S.pinVoltage(q, 'VCC') - S.pinVoltage(q, 'GND') > 2.5) return q;
@@ -646,7 +647,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
         let x0 = 0, y0 = 0, x1 = sz.w, y1 = sz.h; for (const q of pins) { x0 = Math.min(x0, q.x); y0 = Math.min(y0, q.y); x1 = Math.max(x1, q.x); y1 = Math.max(y1, q.y); }
         if (k === 'breadboard') { p.props.cols = 20; x1 = 210; y0 = -14; y1 = 208; }
         const pad = 14; return `<svg viewBox="${x0 - pad} ${y0 - pad - 20} ${x1 - x0 + 2 * pad} ${y1 - y0 + 2 * pad + 20}" preserveAspectRatio="xMidYMid meet">${d.svg(p, null)}</svg>`; } catch (e) { return ''; } };
-    let h = ''; for (const [c, list] of Object.entries(cats)) { h += `<div class="pcat" data-cat="${P.esc(c)}">${c}</div><div class="pgrid" data-cat="${P.esc(c)}">`; for (const [k, d] of list) h += `<div class="pitem" draggable="true" data-type="${k}" data-q="${P.esc((d.label + ' ' + k + ' ' + c).toLowerCase())}" title="${P.esc(d.label)} — drag onto the canvas or click to add">${thumb(k, d)}<span>${P.esc(d.label)}</span></div>`; h += '</div>'; }
+    let h = ''; for (const [c, list] of Object.entries(cats)) { h += `<div class="pcat" data-cat="${P.esc(c)}">${c}</div><div class="pgrid" data-cat="${P.esc(c)}">`; for (const [k, d] of list) h += `<div class="pitem" draggable="true" data-type="${k}" data-q="${P.esc((d.label + ' ' + k + ' ' + c + ' ' + (d.keywords || '')).toLowerCase())}" title="${P.esc(d.label)} — drag onto the canvas or click to add">${thumb(k, d)}<span>${P.esc(d.label)}</span></div>`; h += '</div>'; }
     $('#palList').innerHTML = h + '<div class="pal-empty" hidden>No parts match.</div>';
     $('#palList').querySelectorAll('.pcat').forEach((el) => el.onclick = () => { el.classList.toggle('closed'); el.nextElementSibling.classList.toggle('closed'); });
     $('#palSearch').oninput = (e) => { const q = e.target.value.trim().toLowerCase(); let n = 0;

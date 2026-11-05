@@ -11,6 +11,9 @@
  *   M  {d,g,s,type:'n'|'p', vth, k, lambda}   square-law MOSFET
  *   LDO {in,out,gnd,vreg,drop}    behavioural regulator: Vout = clamp(Vin - drop, 0, vreg), current drawn from VIN
  *   G  {a,b,g}                    conductance (stamped like R)
+ *   OA {p,n,o,vp,vn,a,ro,hi,lo,oc} behavioural op-amp / comparator output (tanh-limited between rails; oc = open collector)
+ *   L  {a,b,l,st}                 inductor (backward Euler companion; current kept in st.iL across rebuilds)
+ *   PT {c,e,il}                   phototransistor collector current il·tanh(Vce/0.15)
  */
 (function (root) {
   const VT = 0.025852;
@@ -96,6 +99,31 @@
             addG(e.b, e.e, 1e-12); addG(e.b, e.c, 1e-12);
             break;
           }
+          case 'OA': {   // add-on parts (js/parts/ics.js)
+            const vd = V(e.p) - V(e.n), o = e.o; if (!(o > 0)) break;
+            if (e.oc) {
+              const k = e.k || 2000, t = Math.tanh(k * vd), s = 0.5 * (1 - t), gon = 1 / (e.ro || 15), G = gon * s + 1e-9, vo = V(o) - V(e.vn);
+              const c = gon * (-0.5 * k * (1 - t * t)) * vo, I0 = G * vo;
+              addA(o, o, G); addA(o, e.vn, -G); addA(o, e.p, c); addA(o, e.n, -c);
+              z[o - 1] -= I0 - G * vo - c * vd;
+            } else {
+              const lo = V(e.vn) + (e.lo || 0.02), hi = Math.max(lo + 0.02, V(e.vp) - (e.hi || 1.5)), mid = (lo + hi) / 2, half = (hi - lo) / 2, A = e.a || 2e4;
+              // limit the tanh argument's change per Newton iteration (like pn-junction limiting) so high gain can't bang between rails
+              let u = A * vd / half; const pb = Math.min(4, Math.max(-4, e._u || 0)); if (!((u > 4 && pb >= 4) || (u < -4 && pb <= -4))) u = Math.min(pb + 1.5, Math.max(pb - 1.5, u)); e._u = u;
+              const ve = u * half / A, t = Math.tanh(u), vt = mid + half * t, dv = A * (1 - t * t) + 1e-9, g = 1 / (e.ro || 20);
+              addA(o, o, g); addA(o, e.p, -g * dv); addA(o, e.n, g * dv);
+              z[o - 1] += g * (vt - dv * ve);
+            }
+            break;
+          }
+          case 'L': {
+            if (dc) { addG(e.a, e.b, 1e3); break; }
+            const g = h / Math.max(e.l, 1e-12); addG(e.a, e.b, g); addI(e.a, e.b, e.iprev || 0); break;
+          }
+          case 'PT': {
+            const vce = V(e.c) - V(e.e), t = Math.tanh(vce / 0.15), i = e.il * t, g = e.il * (1 - t * t) / 0.15 + 1e-12;
+            addG(e.c, e.e, g); addI(e.c, e.e, i - g * vce); break;
+          }
           case 'M': {
             const s = e.type === 'p' ? -1 : 1;
             let d = e.d, so = e.s;
@@ -167,6 +195,7 @@
     step(h) {
       const ok = this.solve(h, false);
       for (const e of this.el) if (e.kind === 'C') e.vprev = this.v(e.a) - this.v(e.b);
+        else if (e.kind === 'L') { e.iprev = (e.iprev || 0) + h / Math.max(e.l, 1e-12) * (this.v(e.a) - this.v(e.b)); if (e.st) e.st.iL = e.iprev; }
       this.t += h;
       return ok;
     }
@@ -187,6 +216,9 @@
           return { ic: s * (If - Ir - Ir / e.br), ib: s * (If / e.bf + Ir / e.br) };
         }
         case 'M': return e._id || 0;
+        case 'L': return (e.iprev || 0) + (this._h || 1e-4) / Math.max(e.l, 1e-12) * (V(e.a) - V(e.b));
+        case 'PT': return e.il * Math.tanh((V(e.c) - V(e.e)) / 0.15);
+        case 'OA': { const vd = V(e.p) - V(e.n); if (e.oc) return (1 / (e.ro || 15) * 0.5 * (1 - Math.tanh((e.k || 2000) * vd)) + 1e-9) * (V(e.o) - V(e.vn)); const lo = V(e.vn) + (e.lo || 0.02), hi = Math.max(lo + 0.02, V(e.vp) - (e.hi || 1.5)), half = (hi - lo) / 2; return (V(e.o) - ((lo + hi) / 2 + half * Math.tanh((e.a || 2e4) * vd / half))) / (e.ro || 20); }
       }
       return 0;
     }

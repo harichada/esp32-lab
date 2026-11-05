@@ -147,6 +147,7 @@
         esp: (p) => self.espRuntime(p), state: (p) => self.partState(p),
         probe: (p, node) => { self.probes[p.props.ch || 1] = node; },
       };
+      if (root.PartsReg) root.PartsReg.beforeBuild(this);   // add-on parts (js/parts/): decode ESP32 pin activity
       for (const p of this.project.parts) { const d = P.T[p.type]; if (d && d.stamp) d.stamp(p, cx); }
       if (this.circuit && this.circuit.n === C.n && this.circuit.x) { C._index(); if (this.circuit.x.length === C.size) C.x = this.circuit.x.slice(); }
       C.t = this.t;
@@ -165,6 +166,7 @@
         if (this.needsRebuild()) this.build();
         const c = this.circuit; c._h = h; c.step(h); this.t += h;
         for (const e of c.el) if (e.kind === 'C') this._capV.set(e._key, e.vprev);
+        for (const p of this.project.parts) { const d = P.T[p.type]; if (d && d.onStep && d.onStep(p, this, h)) this.dirty = true; }   // per-step logic (js/parts/ics.js: 555, gates, counters)
         this._sample();
       }
       this._after(dt);
@@ -189,6 +191,7 @@
         let burned = false;
         for (const p of this.project.parts) { const d = P.T[p.type]; if (d && d.measure) { const was = self.partState(p).burned; d.measure(p, cx, dt); if (!was && self.partState(p).burned) burned = true; } }
         if (burned) this.dirty = true;
+        if (root.PartsReg && root.PartsReg.after(this, dt)) this.dirty = true;
         if (!this.hasDynamics()) this._sample();
         this.warnings = [];
         for (const p of this.project.parts) { const d = P.T[p.type]; if (d && d.warn) { const w = d.warn(p, cx); if (w) this.warnings.push({ id: p.id, msg: w }); } }
