@@ -829,7 +829,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     view3dLoading = (async () => {
       if (!window.loadView3D) {
         await new Promise((res, rej) => {
-          const s = document.createElement('script'); s.src = 'js/view3d.js?v=46'; s.async = true;
+          const s = document.createElement('script'); s.src = 'js/view3d.js?v=47'; s.async = true;
           s.onload = res; s.onerror = () => rej(new Error('view3d load failed')); document.head.appendChild(s);
         });
       }

@@ -1315,7 +1315,7 @@
         // straight-through bends (collinear, e.g. a 2D via in the middle of a straight run) are not corners
         run = run.filter((q, i, s) => i === 0 || i === s.length - 1 || Math.abs((q.x - s[i - 1].x) * (s[i + 1].z - q.z) - (q.z - s[i - 1].z) * (s[i + 1].x - q.x)) > 0.5 || (q.x - s[i - 1].x) * (s[i + 1].x - q.x) + (q.z - s[i - 1].z) * (s[i + 1].z - q.z) < 0);
         if (run.length < 2) run.push({ x: B.x, z: B.z });
-        return { w, a, b, A, B, kind: 'run', run, base: rise, h: rise, off: run.slice(1).map(() => ({ x: 0, z: 0 })), lean: [{ x: 0, z: 0 }, { x: 0, z: 0 }] };
+        return { w, a, b, A, B, kind: 'run', run, base: rise, hs: run.slice(1).map(() => rise), off: run.slice(1).map(() => ({ x: 0, z: 0 })), lean: [{ x: 0, z: 0 }, { x: 0, z: 0 }] };
       }
       const mid = A.clone().lerp(B, 0.5);
       mid.y = Math.max(Math.max(ya, yb) + 1.5 + Math.min(6, dist * 0.04), clear + WIRE_R * 2 + 1);
@@ -1325,9 +1325,10 @@
     // region rose to the same height (rise only depends on length/obstacles, ~21.4 over the ESP32), so runs that share a
     // breadboard row/column in 2D were drawn as one coincident tube, perpendicular runs crossed *through* each other at
     // the same height (a fused T/X blob), and a run passing over another jumper's pin cut through its riser.
-    // Fix: (1) height layers — wires whose runs cross, touch, run alongside within a wire width, or pass over each
-    // other's pin get heights at least one wire diameter + gap apart (greedy, lowest first, capped); (2) lanes —
-    // parallel runs sharing a corridor are fanned out sideways by a wire diameter + gap so they read from above too;
+    // Fix: (1) height layers per run segment — segments that cross, touch end-to-end, or pass over another jumper's
+    // riser get heights at least one wire diameter + gap apart (greedy, lowest first, capped); the lifted segment's
+    // neighbours ramp up at the bend, the rest of the wire stays low; (2) lanes — parallel runs sharing a corridor are
+    // fanned out sideways by a wire diameter + gap at the same height (no stacking that hides a lead from the camera);
     // (3) jumpers sharing one hole lean their risers apart, each along its own run (fanned by rank). Pin contact points (board-top / header heights) never move.
     _layoutWires(plans) {
       const R2 = WIRE_R * 2, GAP = 1.4, H = R2 + GAP, LANE = R2 + GAP, MAXUP = 6 * H;
@@ -1346,7 +1347,10 @@
         if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) return 0;
         return Math.min(ptSeg(T.s, S), ptSeg(T.e, S), ptSeg(S.s, T), ptSeg(S.e, T));
       };
-      const conflict = P.map(() => new Set()), over = P.map(() => new Set()); // over[i] ∋ j: j's run passes over i's riser → j above i
+      // conflicts are per run *segment* (not per wire), so a wire only climbs where it actually crosses/touches another and
+      // stays at its own height elsewhere (whole-wire layers stacked parallel neighbours and hid the lower ones from the camera)
+      const conflict = segs.map(() => new Set()), over = segs.map(() => new Set()); // over[e] ∋ s: segment s passes over the riser at the end of segment e → s above e
+      const link = (x, y) => { conflict[x].add(y); conflict[y].add(x); };
       const parent = segs.map((_, i) => i), find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
       for (let x = 0; x < segs.length; x++) for (let y = x + 1; y < segs.length; y++) {
         const S = segs[x], T = segs[y]; if (S.pi === T.pi) continue;
@@ -1355,9 +1359,10 @@
           if (perp > R2 + GAP) continue;
           const t0 = px * S.ux + pz * S.uz, t1 = (T.e.x - S.s.x) * S.ux + (T.e.z - S.s.z) * S.uz;
           const ov = Math.min(S.L, Math.max(t0, t1)) - Math.max(0, Math.min(t0, t1));
-          if (ov > -R2) { conflict[S.pi].add(T.pi); conflict[T.pi].add(S.pi); }
-          if (ov > R2) parent[find(x)] = find(y); // a shared corridor, not just a touch at the ends → fan out into lanes
-        } else if (segSeg(S, T) < R2 + GAP * 0.5) { conflict[S.pi].add(T.pi); conflict[T.pi].add(S.pi); }
+          // a shared corridor → fan out sideways into lanes at the same height (stacking them instead hid the lower lead
+          // under the upper one from the default camera); only an end-to-end touch needs a height step
+          if (ov > R2) parent[find(x)] = find(y); else if (ov > -R2) link(x, y);
+        } else if (segSeg(S, T) < R2 + GAP * 0.5) link(x, y);
       }
       // (2) lanes: fan parallel runs sharing a corridor out sideways, one lane per wire, ordered by position then wire order
       const groups = new Map();
@@ -1383,46 +1388,55 @@
           l.along = along; l.u = q.u; l.lane = hasLane; q.p.lean[q.k] = l;
         });
       }
-      // runs passing over another jumper's riser (pin → lean point; it climbs to that jumper's run height)
+      // runs passing over another jumper's riser (pin → lean point; it climbs to that jumper's end-segment height)
+      const segAt = new Map(); segs.forEach((S, x) => segAt.set(S.pi + ':' + S.k, x));
       P.forEach((p, i) => [0, 1].forEach((k) => {
         const q = k ? p.run[p.run.length - 1] : p.run[0], top = { x: q.x + p.lean[k].x, z: q.z + p.lean[k].z }, F = mkSeg(q, top);
+        const E = segAt.get(i + ':' + (k ? p.run.length - 2 : 0)); if (E == null) return;
         const sharers = new Set((pinUse.get(key(q)) || []).map((u) => u.pi));
-        for (const S of segs) {
-          if (S.pi === i || sharers.has(S.pi)) continue;
-          if ((F ? segSeg(F, S) : ptSeg(q, S)) < R2 + GAP * 0.5) { over[i].add(S.pi); conflict[i].add(S.pi); conflict[S.pi].add(i); }
-        }
+        segs.forEach((S, x) => {
+          if (S.pi === i || sharers.has(S.pi)) return;
+          if ((F ? segSeg(F, S) : ptSeg(q, S)) < R2 + GAP * 0.5) { over[E].add(x); link(E, x); }
+        });
       }));
-      // (1) heights: lowest wires first; each takes the lowest height ≥ its own clearance that is a full layer away from
-      // every conflicting wire already placed (and above any placed wire whose riser it passes over)
-      const order = P.map((_, i) => i).sort((i, j) => P[i].base - P[j].base || i - j), done = new Set();
-      const fits = (i, c) => { for (const j of conflict[i]) if (done.has(j) && Math.abs(c - P[j].h) < H - 1e-6) return false; for (const j of done) if (over[j].has(i) && c < P[j].h + H - 1e-6) return false; return true; };
-      for (const i of order) {
-        const p = P[i]; let lo = p.base; for (const j of done) if (over[j].has(i)) lo = Math.max(lo, P[j].h + H);
-        const cands = [lo, ...[...conflict[i]].filter((j) => done.has(j)).map((j) => P[j].h + H)].filter((c) => c >= lo).sort((x, y) => x - y);
-        p.h = cands.find((c) => fits(i, c)); if (p.h == null) p.h = lo;
-        p.h = Math.min(p.h, p.base + MAXUP); done.add(i);
+      // (1) heights: lowest segments first; each takes the lowest height ≥ its wire's clearance that is a full layer away
+      // from every conflicting segment already placed (and above any placed riser it passes over)
+      const base = segs.map((S) => P[S.pi].base), h = base.slice();
+      const order = segs.map((_, x) => x).sort((x, y) => base[x] - base[y] || segs[x].pi - segs[y].pi || segs[x].k - segs[y].k), done = new Set();
+      const fits = (x, c) => { for (const y of conflict[x]) if (done.has(y) && Math.abs(c - h[y]) < H - 1e-6) return false; for (const y of done) if (over[y].has(x) && c < h[y] + H - 1e-6) return false; return true; };
+      for (const x of order) {
+        let lo = base[x]; for (const y of done) if (over[y].has(x)) lo = Math.max(lo, h[y] + H);
+        const cands = [lo, ...[...conflict[x]].filter((y) => done.has(y)).map((y) => h[y] + H)].filter((c) => c >= lo).sort((a, b) => a - b);
+        let c = cands.find((v) => fits(x, v)); if (c == null) c = lo;
+        h[x] = Math.min(c, base[x] + MAXUP); done.add(x);
       }
-      for (let pass = 0; pass < 4; pass++) for (let i = 0; i < P.length; i++) for (const j of over[i]) if (P[j].h < P[i].h + H && P[i].h + H <= P[j].base + MAXUP) P[j].h = P[i].h + H;
-      for (const p of P) [0, 1].forEach((k) => { const l = p.lean[k]; if (!l.u) return; const y = k ? p.B.y : p.A.y, extra = Math.max(0, Math.min(0.3 * (p.h - y), 2 * LANE, 0.4 * l.u.L) - LANE); l.x += l.u.x * extra; l.z += l.u.z * extra; });
+      for (let pass = 0; pass < 4; pass++) for (let e = 0; e < segs.length; e++) for (const x of over[e]) if (h[x] < h[e] + H && h[e] + H <= base[x] + MAXUP) h[x] = h[e] + H;
+      segs.forEach((S, x) => { P[S.pi].hs[S.k] = h[x]; });
+      for (const p of P) [0, 1].forEach((k) => { const l = p.lean[k]; if (!l.u) return; const y = k ? p.B.y : p.A.y, hh = k ? p.hs[p.hs.length - 1] : p.hs[0], extra = Math.max(0, Math.min(0.3 * (hh - y), 2 * LANE, 0.4 * l.u.L) - LANE); l.x += l.u.x * extra; l.z += l.u.z * extra; });
     }
     // Phase 3 — polyline from the laid-out run (height h, lane offsets, leaning risers) and the meshes.
     _wirePoints(p) {
       const THREE = root.THREE;
       if (p.kind !== 'run') return p.pts;
-      const r = p.run, h = p.h, o = p.off, n = r.length, V = (x, z) => new THREE.Vector3(x, h, z), out = [p.A.clone()];
-      const dir = (k) => { const L = Math.hypot(r[k + 1].x - r[k].x, r[k + 1].z - r[k].z) || 1; return { x: (r[k + 1].x - r[k].x) / L, z: (r[k + 1].z - r[k].z) / L }; };
+      const r = p.run, hs = p.hs, o = p.off, n = r.length, V = (x, z, y) => new THREE.Vector3(x, y, z), out = [p.A.clone()];
+      const dir = (k) => { const L = Math.hypot(r[k + 1].x - r[k].x, r[k + 1].z - r[k].z) || 1; return { x: (r[k + 1].x - r[k].x) / L, z: (r[k + 1].z - r[k].z) / L, L }; };
+      const ramp = (k) => Math.min(10, 0.3 * dir(k).L);
       const u0 = dir(0), ue = dir(n - 2), l0 = p.lean[0], l1 = p.lean[1];
-      out.push(V(r[0].x + l0.x, r[0].z + l0.z));
-      if ((o[0].x || o[0].z) && !l0.lane) out.push(V(r[0].x + l0.x + u0.x * LANE_JOG + o[0].x, r[0].z + l0.z + u0.z * LANE_JOG + o[0].z));
+      out.push(V(r[0].x + l0.x, r[0].z + l0.z, hs[0]));
+      if ((o[0].x || o[0].z) && !l0.lane) out.push(V(r[0].x + l0.x + u0.x * LANE_JOG + o[0].x, r[0].z + l0.z + u0.z * LANE_JOG + o[0].z, hs[0]));
       for (let k = 1; k < n - 1; k++) {
-        const u1 = dir(k - 1), u2 = dir(k), o1 = o[k - 1], o2 = o[k], den = u1.x * u2.z - u1.z * u2.x;
-        if (Math.abs(den) < 0.2) { out.push(V(r[k].x + o1.x, r[k].z + o1.z)); if (Math.hypot(o2.x - o1.x, o2.z - o1.z) > 0.05) out.push(V(r[k].x + o2.x, r[k].z + o2.z)); continue; }
+        const u1 = dir(k - 1), u2 = dir(k), o1 = o[k - 1], o2 = o[k], h1 = hs[k - 1], h2 = hs[k], top = Math.max(h1, h2), den = u1.x * u2.z - u1.z * u2.x;
+        if (Math.abs(den) < 0.2) { out.push(V(r[k].x + o1.x, r[k].z + o1.z, h1)); if (Math.hypot(o2.x - o1.x, o2.z - o1.z) > 0.05 || h2 !== h1) out.push(V(r[k].x + o2.x, r[k].z + o2.z, h2)); continue; }
         const qx = o2.x - o1.x, qz = o2.z - o1.z, t = (qx * u2.z - qz * u2.x) / den;   // r+o1+t·u1 = r+o2+s·u2
-        out.push(V(r[k].x + o1.x + t * u1.x, r[k].z + o1.z + t * u1.z));
+        const cx = r[k].x + o1.x + t * u1.x, cz = r[k].z + o1.z + t * u1.z;
+        // a segment that was lifted over a crossing meets its lower neighbour at the bend: the lower one ramps up to it there
+        if (h1 < top) { const d = ramp(k - 1); out.push(V(cx - u1.x * d, cz - u1.z * d, h1)); }
+        out.push(V(cx, cz, top));
+        if (h2 < top) { const d = ramp(k); out.push(V(cx + u2.x * d, cz + u2.z * d, h2)); }
       }
-      const oe = o[n - 2];
-      if ((oe.x || oe.z) && !l1.lane) out.push(V(r[n - 1].x + l1.x - ue.x * LANE_JOG + oe.x, r[n - 1].z + l1.z - ue.z * LANE_JOG + oe.z));
-      out.push(V(r[n - 1].x + l1.x, r[n - 1].z + l1.z));
+      const oe = o[n - 2], he = hs[n - 2];
+      if ((oe.x || oe.z) && !l1.lane) out.push(V(r[n - 1].x + l1.x - ue.x * LANE_JOG + oe.x, r[n - 1].z + l1.z - ue.z * LANE_JOG + oe.z, he));
+      out.push(V(r[n - 1].x + l1.x, r[n - 1].z + l1.z, he));
       out.push(p.B.clone());
       return out;
     }
