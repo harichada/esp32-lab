@@ -209,6 +209,20 @@
         if (!m.wire && m.rail !== 'gnd' && m.rail !== 'flag') { t.wire = false; t.rail = null; }
       }
     }
+    // A battery (or other source) that only carries a VCC flag looks parked. Draw one
+    // wire from its output into a load on that net; the remaining pins keep the flag.
+    for (const [net, terms] of netTerms) {
+      const m = meta.get(net);
+      if (!m || m.rail !== 'flag') continue;
+      const src = terms.find((t) => SRC.has(t.type) && /^(\+|VOUT)$/.test(t.name) && !t.nc);
+      if (!src) continue;
+      const load = terms.find((t) => t !== src && !t.nc && (t.type === 'resistor' || t.type === 'ldr' || t.type === 'potentiometer' || t.type === 'trimmer'))
+        || terms.find((t) => t !== src && !t.nc && /^(VCC|VDD|3V3|5V|VIN)$/i.test(t.name))
+        || terms.find((t) => t !== src && !t.nc);
+      if (!load) continue;
+      src.rail = null; src.wire = true;
+      load.rail = null; load.wire = true;
+    }
 
     // A Ground part on a net that already reaches another pin is the same net the
     // GND rail draws. Keep one only when ground parts are the entire net.
@@ -1050,8 +1064,15 @@
       let name = pl.name;
       if (!name) {
         const terms = netTerms.get(pl.net) || [];
-        const nice = terms.map((t) => t.name).find((n) => /^(D\d+|GPIO\d+|3V3|VIN|A\d|OUT|TRIG|THR|DIS|RESET|SDA|SCL|MOSI|MISO|SCK|CS)$/i.test(n) || /^[A-Z]{2,}/.test(n) && n.length <= 6);
-        if (nice && terms.length >= 2) name = nice.replace(/^GND\.\d$/, 'GND');
+        const byPart = new Map();
+        for (const t of terms) {
+          if (!byPart.has(t.sid)) byPart.set(t.sid, new Set());
+          if (t.name) byPart.get(t.sid).add(String(t.name).toUpperCase());
+        }
+        // TRIG tied to THR on the same chip is a junction, not a wire named TRIG.
+        const tied = [...byPart.values()].some((set) => [...set].filter((n) => !/^(1|2|\+|-|A|K)$/.test(n)).length >= 2);
+        const nice = tied ? '' : terms.map((t) => t.name).find((n) => /^(D\d+|GPIO\d+|3V3|VIN|A\d|OUT|TRIG|THR|DIS|RESET|SDA|SCL|MOSI|MISO|SCK|CS)$/i.test(n) || /^[A-Z]{2,}/.test(n) && n.length <= 6);
+        if (nice && terms.length >= 2) name = String(nice).replace(/^GND\.\d$/, 'GND');
       }
       if (!name || (m && m.rail === 'gnd')) continue;
       for (let i = 1; i < pl.pts.length; i++) {
@@ -1661,7 +1682,7 @@
     });
   }
 
-  const api = { layout, toSvg, SchematicView, signature };
+  const api = { layout, toSvg, SchematicView, signature, pinNets: pinNetMap };
   root.Schematic = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);

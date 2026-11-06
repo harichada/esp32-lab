@@ -2,7 +2,8 @@
 const test = require('node:test');
 const assert = require('node:assert');
 for (const f of ['solver.js', 'parts.js', 'parts-art.js', 'sim.js', 'remote_logic.js', 'examples.js', 'basic.js', 'bom.js', 'parts/registry.js', 'parts/sensors.js', 'parts/displays.js', 'parts/examples-sensors-displays.js', 'parts/ics.js', 'parts/passives.js', 'parts/examples-ics.js', 'parts/hwkit.js', 'parts/actuators.js', 'parts/power.js', 'parts/semis.js', 'parts/examples-actuators.js', 'schematic.js']) require('../js/' + f);
-const { layout } = globalThis.Schematic;
+const { layout, pinNets } = globalThis.Schematic;
+const { Sim } = globalThis.SimCore;
 const E = globalThis.Examples;
 const P = globalThis.Parts;
 
@@ -167,6 +168,38 @@ test('555 blinker schematic shows the timer, passives, and supply flags', () => 
   assert.ok(!model.fallback, '555 routed cleanly');
 });
 
+test('555 example is a standard astable: TRIG and THR meet at the timing cap, and the battery is wired in', () => {
+  const proj = E.EX.ic_555blink();
+  assert.deepStrictEqual(proj.parts.map((p) => p.id).sort(), ['BAT1', 'C1', 'LED1', 'R1', 'R2', 'R3', 'U1']);
+  const sim = new Sim(proj);
+  sim.topology();
+  const net = (id, pin) => sim.pinNet.get(id + ':' + pin);
+  const timing = net('U1', 'TRIG');
+  assert.strictEqual(net('U1', 'THR'), timing, 'THR tied to TRIG');
+  assert.strictEqual(net('C1', '+'), timing, 'timing cap on THR/TRIG');
+  assert.strictEqual(net('R2', '2'), timing, 'R2 feeds the timing node');
+  assert.notStrictEqual(net('U1', 'DIS'), timing, 'DIS is the other side of R2');
+  assert.strictEqual(net('U1', 'DIS'), net('R1', '2'));
+  assert.strictEqual(net('U1', 'DIS'), net('R2', '1'));
+  assert.strictEqual(net('R1', '1'), net('U1', 'VCC'));
+  assert.strictEqual(net('R1', '1'), net('BAT1', '+'));
+  assert.strictEqual(net('U1', 'RESET'), net('U1', 'VCC'));
+  assert.strictEqual(net('U1', 'GND'), net('C1', '-'));
+  assert.strictEqual(net('U1', 'GND'), net('BAT1', '-'));
+  assert.strictEqual(net('U1', 'GND'), net('LED1', 'C'));
+  assert.strictEqual(net('U1', 'OUT'), net('R3', '2'));
+  assert.strictEqual(net('R3', '1'), net('LED1', 'A'));
+  const model = layout(proj);
+  audit(model, '555-astable');
+  assert.ok(!model.labels.some((l) => l.name === 'TRIG'), 'the timing node is not a wire named TRIG');
+  const bat = model.symbols.find((s) => s.id === 'BAT1');
+  assert.ok(!bat.parked);
+  assert.strictEqual(bat.terms.find((t) => t.name === '+').wire, true, 'battery positive is wired into the circuit');
+  const timingNet = model.symbols.find((s) => s.id === 'U1').terms.find((t) => t.name === 'TRIG').net;
+  const onTiming = model.symbols.flatMap((s) => s.terms.filter((t) => t.net === timingNet).map((t) => s.id + '.' + t.name)).sort();
+  assert.deepStrictEqual(onTiming, ['C1.+', 'R2.2', 'U1.THR', 'U1.TRIG']);
+});
+
 test('two-transistor flasher lays out without crossing bodies', () => {
   const model = layout(E.EX.b_blink());
   audit(model, 'astable');
@@ -228,7 +261,8 @@ test('loose parts park below the circuit and open pins are not supply flags', ()
   assert.ok(xtal.terms.some((t) => t.wire && cap.terms.some((u) => u.net === t.net)));
   const bat = model.symbols.find((s) => s.id === 'BAT1');
   assert.ok(!bat.parked, 'battery that feeds the 555 stays with the circuit');
-  assert.strictEqual(bat.terms.find((t) => t.name === '+').rail, 'flag');
+  const plus = bat.terms.find((t) => t.name === '+');
+  assert.ok(plus.wire || plus.rail === 'flag', 'battery still feeds the VCC net');
   assert.ok(!model.fallback, 'loose fixture routed cleanly');
 });
 
@@ -278,6 +312,59 @@ function assertCircuit(model, label) {
     assert.ok(model.texts.some((t) => t.kind === 'note' && t.pid === s.id && t.text === 'Not connected'), label + ' ' + s.id + ' missing caption');
   }
 }
+
+test('every example: 2D, 3D and schematic share one netlist, with no stray or duplicate parts', () => {
+  const keys = E.LIST.map((row) => row[0]);
+  assert.ok(keys.length >= 42, 'example list has ' + keys.length);
+  const problems = [];
+  for (const key of keys) {
+    const fn = E.EX[key];
+    if (typeof fn !== 'function') continue;
+    let proj;
+    try { proj = fn(); } catch (e) { problems.push(key + ' example threw ' + e.message); continue; }
+    if (!proj || !(proj.parts || []).length) { problems.push(key + ' has no parts'); continue; }
+    const ids = proj.parts.map((p) => p.id);
+    if (new Set(ids).size !== ids.length) problems.push(key + ' has duplicate part ids');
+    const sim = new Sim(JSON.parse(JSON.stringify(proj)));
+    sim.topology();
+    let model;
+    try { model = layout(proj); } catch (e) { problems.push(key + ' layout threw ' + e.message); continue; }
+    try { assertCircuit(model, key); }
+    catch (e) { problems.push(e.message); }
+    for (const s of model.symbols) if (!ids.includes(s.id)) problems.push(key + ' schematic invented ' + s.id);
+    const sch = pinNets(proj);
+    const pins = [];
+    for (const p of proj.parts) {
+      if (p.type === 'breadboard' || p.type === 'label') continue;
+      const d = P.T[p.type];
+      if (!d || !d.pins) continue;
+      let list = [];
+      try { list = d.pins(p) || []; } catch (e) { problems.push(key + ' pins threw ' + p.id); continue; }
+      for (const pin of list) pins.push(p.id + ':' + pin.name);
+    }
+    for (let i = 0; i < pins.length; i++) for (let j = i + 1; j < pins.length; j++) {
+      const a = pins[i], b = pins[j];
+      const simSame = sim.pinNet.get(a) !== undefined && sim.pinNet.get(a) === sim.pinNet.get(b);
+      const schSame = sch.get(a) !== undefined && sch.get(a) === sch.get(b);
+      if (simSame !== schSame) {
+        problems.push(key + ' net mismatch ' + a + ' / ' + b);
+        i = pins.length; break;
+      }
+    }
+    // A ground symbol omitted from the drawing must still be the same sim net as a drawn ground pin.
+    for (const p of proj.parts) {
+      if (p.type !== 'ground' || model.symbols.some((s) => s.id === p.id)) continue;
+      const g = sim.pinNet.get(p.id + ':GND');
+      const drawn = [...sch.keys()].some((k) => sim.pinNet.get(k) === g);
+      if (!drawn) problems.push(key + ' dropped ground ' + p.id + ' that is not on a drawn net');
+    }
+    // 2D and 3D render these same wires. Nothing else defines their connectivity.
+    for (const w of proj.wires || []) {
+      if (!w.a || !w.b || !isFinite(w.a.x) || !isFinite(w.b.x)) problems.push(key + ' wire ' + w.id + ' is not a 2D/3D segment');
+    }
+  }
+  assert.deepStrictEqual(problems, []);
+});
 
 test('every example: no fallback, no connected floater, no text overlap, no wire through a body', () => {
   const keys = E.LIST.map((row) => row[0]);
