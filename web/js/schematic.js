@@ -3,6 +3,9 @@
  * Layout: union-find nets (breadboard strips included, breadboard body omitted) → layered placement
  * from the MCU / IC / highest-degree part, passives aligned to the pin they talk to → orthogonal
  * A* routes with a turn penalty. Power nets of 3+ pins and GND are flags / ground symbols, not long wires.
+ * A ground part on a net that already has another pin is omitted; that pin draws the GND symbol.
+ * Only a part whose every pin is open is parked, under a "Not connected" caption.
+ * A* searches the whole board before a straight-line fallback, and a fallback is logged with the net.
  * Editing stays on the 2D canvas. Phones may open this view; 3D stays desktop-only.
  */
 (function (root) {
@@ -207,6 +210,31 @@
       }
     }
 
+    // A Ground part on a net that already reaches another pin is the same net the
+    // GND rail draws. Keep one only when ground parts are the entire net.
+    {
+      const drop = new Set();
+      const byNet = new Map();
+      for (const s of symbols) if (s.part.type === 'ground' && s.terms[0]) {
+        const net = s.terms[0].net;
+        if (!byNet.has(net)) byNet.set(net, []);
+        byNet.get(net).push(s);
+      }
+      for (const [net, gs] of byNet) {
+        const mate = (netTerms.get(net) || []).some((t) => t.type !== 'ground');
+        for (const s of (mate ? gs : gs.slice(1))) drop.add(s.id);
+      }
+      if (drop.size) {
+        for (let i = symbols.length - 1; i >= 0; i--) if (drop.has(symbols[i].id)) symbols.splice(i, 1);
+        for (const [net, terms] of [...netTerms]) {
+          const next = terms.filter((t) => !drop.has(t.sid));
+          if (next.length) netTerms.set(net, next); else netTerms.delete(net);
+        }
+        byId.clear();
+        for (const s of symbols) byId.set(s.id, s);
+      }
+    }
+
     // Signal graph: nets that are actually drawn as wires.
     const adj = new Map(symbols.map((s) => [s.id, new Set()]));
     for (const [net, terms] of netTerms) {
@@ -228,23 +256,55 @@
     const order = [...symbols].sort((a, b) => (adj.get(b.id).size - adj.get(a.id).size) || (b.terms.length - a.terms.length));
     const seeds = [...rootsPref, ...order];
     for (const s of seeds) if (!seen.has(s.id) && adj.get(s.id).size) { const bag = new Set(); absorb(s.id, bag); comps.push(bag); }
-    // A source joins the circuit it actually feeds (its + / VOUT net is that supply).
-    // Sharing only GND, or touching nothing, does not pull a part into the signal columns.
-    for (const bag of comps) {
-      for (const s of symbols) {
-        if (seen.has(s.id) || !SRC.has(s.part.type)) continue;
-        const feeds = s.terms.some((t) => t.rail === 'flag' && (netTerms.get(t.net) || []).some((o) => bag.has(o.sid)));
-        if (feeds) { bag.add(s.id); seen.add(s.id); }
+    // Modules that share a net — a signal wire, a supply flag, GND, or a breadboard
+    // rail — are one circuit even when no schematic wire is drawn between them.
+    function liveNets(bag) {
+      const nets = new Set();
+      for (const id of bag) for (const t of byId.get(id).terms) if (!t.nc) nets.add(t.net);
+      return nets;
+    }
+    function mergeBags(list) {
+      if (list.length < 2) return list;
+      const parent = list.map((_, i) => i);
+      function findC(i) { while (parent[i] !== i) i = parent[i] = parent[parent[i]]; return i; }
+      const netOwner = new Map();
+      list.forEach((bag, i) => {
+        for (const net of liveNets(bag)) {
+          if (!netOwner.has(net)) netOwner.set(net, findC(i));
+          else parent[findC(i)] = findC(netOwner.get(net));
+        }
+      });
+      const out = new Map();
+      list.forEach((bag, i) => {
+        const r = findC(i);
+        if (!out.has(r)) out.set(r, new Set());
+        for (const id of bag) out.get(r).add(id);
+      });
+      return [...out.values()];
+    }
+    let compList = mergeBags(comps);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const bag of compList) {
+        const nets = liveNets(bag);
+        for (const s of symbols) {
+          if (seen.has(s.id)) continue;
+          if (!s.terms.some((t) => !t.nc && nets.has(t.net))) continue;
+          bag.add(s.id); seen.add(s.id); grew = true;
+        }
       }
     }
-    const compList = comps;
-    // The first signal component is the main circuit. Anything else — open parts, or a
-    // fragment wired only to itself — is parked in one row underneath it.
-    const mainIds = new Set(compList[0] ? [...compList[0]] : []);
-    const parkedIds = symbols.filter((s) => !mainIds.has(s.id)).map((s) => s.id);
+    // A part with a live pin (its own GND pins, or the only ground symbol) is a circuit.
+    // Parking is only for a part whose every pin has no other terminal.
+    for (const s of symbols) if (!seen.has(s.id) && s.terms.some((t) => !t.nc)) {
+      compList.push(new Set([s.id])); seen.add(s.id);
+    }
+    compList = mergeBags(compList);
+    const parkedIds = symbols.filter((s) => !seen.has(s.id)).map((s) => s.id);
 
     let compTop = 0;
-    compList.slice(0, 1).forEach((bag, ci) => {
+    compList.forEach((bag, ci) => {
       const ids = [...bag];
       const root = ids.find((id) => byId.get(id).kind === 'ESP') || ids.find((id) => byId.get(id).kind === 'DIP') || ids.slice().sort((a, b) => adj.get(b).size - adj.get(a).size)[0];
       const layer = new Map();
@@ -253,7 +313,8 @@
         const [u, L] = q.shift();
         for (const v of adj.get(u) || []) if (bag.has(v) && !layer.has(v)) { layer.set(v, L + 1); q.push([v, L + 1]); }
       }
-      for (const id of ids) if (!layer.has(id)) layer.set(id, 0);
+      // Parts pulled in through GND or a supply (no signal path from the root) sit upstream.
+      for (const id of ids) if (!layer.has(id)) layer.set(id, -1);
       let flow = 1;
       const rootS = byId.get(root);
       if (rootS.kind === 'ESP') {
@@ -264,7 +325,7 @@
         }
         flow = left >= right ? -1 : 1;
       }
-      for (const id of ids) { const s = byId.get(id); s.layer = layer.get(id) || 0; s.comp = ci; s.flow = flow; s.root = root; }
+      for (const id of ids) { const s = byId.get(id); s.layer = layer.has(id) ? layer.get(id) : -1; s.comp = ci; s.flow = flow; s.root = root; }
       // Batteries and supplies sit one column upstream of the device they feed, even when the
       // supply net is drawn as a wire (otherwise BFS parks them downstream of a resistor).
       ids.forEach((id) => {
@@ -311,8 +372,8 @@
       compTop = maxY + dy + 70;
     });
 
-    // Parts with no signal wire (and sources that don't feed this circuit) sit in one row
-    // below the diagram instead of scattering through the signal columns.
+    // A part is parked only when every pin is open. It is not on a breadboard rail,
+    // a shared ground, or any other net.
     if (parkedIds.length) {
       let band = 0, any = false;
       for (const s of symbols) if (!parkedIds.includes(s.id) && s.y !== undefined) {
@@ -354,7 +415,7 @@
     const labels = wireLabels(routed.polys, netTerms, meta);
     const texts = placeTexts(symbols, rails, routed.polys, labels);
     const bounds = computeBounds(symbols, rails, routed.polys, labels, texts);
-    return { symbols, rails, polys: routed.polys, dots, labels, texts, bounds, fallback: routed.fallback, nets: meta };
+    return { symbols, rails, polys: routed.polys, dots, labels, texts, bounds, fallback: routed.fallback, fallbackWhy: routed.fallbackWhy || [], nets: meta };
   }
 
   function opp(dir) { return { l: 'r', r: 'l', t: 'b', b: 't' }[dir] || 'r'; }
@@ -691,7 +752,14 @@
       endpoints.get(t.net).push(t);
     }
     const nets = [...endpoints.entries()].sort((a, b) => a[1].length - b[1].length || a[0] - b[0]);
-    const ctx = { obstacles, pinAt, used: new Map(), vinfo: new Map(), fallback: false };
+    let bMinX = Infinity, bMaxX = -Infinity, bMinY = Infinity, bMaxY = -Infinity;
+    const grow = (x, y) => { bMinX = Math.min(bMinX, x); bMaxX = Math.max(bMaxX, x); bMinY = Math.min(bMinY, y); bMaxY = Math.max(bMaxY, y); };
+    for (const r of obstacles) { grow(r.x, r.y); grow(r.x2, r.y2); }
+    for (const pins of endpoints.values()) for (const t of pins) { grow(t.x, t.y); grow(t.sx, t.sy); }
+    if (!isFinite(bMinX)) { bMinX = 0; bMaxX = 0; bMinY = 0; bMaxY = 0; }
+    const spanX = Math.ceil((bMaxX - bMinX + 160) / GS), spanY = Math.ceil((bMaxY - bMinY + 160) / GS);
+    const board = { minX: bMinX - 80, maxX: bMaxX + 80, minY: bMinY - 80, maxY: bMaxY + 80, cap: Math.min(250000, Math.max(40000, spanX * spanY * 4)) };
+    const ctx = { obstacles, pinAt, used: new Map(), vinfo: new Map(), fallback: false, fallbackWhy: [], board };
     const polys = []; // {net, name, pts}
     for (const [net, pins] of nets) {
       if (pins.length < 2) continue;
@@ -701,9 +769,19 @@
       let ok = true;
       for (let i = 1; i < pins.length; i++) {
         const goal = { x: pins[i].sx, y: pins[i].sy };
-        let path = astar(tree, goal, ctx, net, true);
-        if (!path) path = astar(tree, goal, ctx, net, false); // allow a perpendicular crossing
-        if (!path) { path = orthoFallback(tree[0], goal, ctx.obstacles); ctx.fallback = true; }
+        const near = routeWindow(tree, goal, 180, 20000);
+        let path = astar(tree, goal, ctx, net, true, near);
+        if (!path) path = astar(tree, goal, ctx, net, false, near);
+        if (!path) path = astar(tree, goal, ctx, net, true, ctx.board);
+        if (!path) path = astar(tree, goal, ctx, net, false, ctx.board);
+        if (!path) path = astar(tree, goal, ctx, net, 'open', ctx.board);
+        if (!path) {
+          const why = 'net ' + net + ' ' + pins[0].sid + '.' + pins[0].name + ' → ' + pins[i].sid + '.' + pins[i].name;
+          ctx.fallback = true;
+          ctx.fallbackWhy.push(why);
+          if (typeof console !== 'undefined' && console.warn) console.warn('schematic fallback: ' + why);
+          path = orthoFallback(tree[0], goal, ctx.obstacles);
+        }
         for (const p of path) tree.push(p);
         branches.push({ path, pin: pins[i] });
       }
@@ -721,7 +799,7 @@
       }
       void ok;
     }
-    return { polys, fallback: ctx.fallback };
+    return { polys, fallback: ctx.fallback, fallbackWhy: ctx.fallbackWhy };
   }
 
   function leadCuts(t, stub, obstacles) {
@@ -821,7 +899,12 @@
     if (v.net === net) v.axes.add(axis);
   }
 
-  function astar(tree, goal, ctx, net, strict) {
+  function routeWindow(tree, goal, margin, cap) {
+    let minX = goal.x, maxX = goal.x, minY = goal.y, maxY = goal.y;
+    for (const p of tree) { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y); }
+    return { minX: minX - margin, maxX: maxX + margin, minY: minY - margin, maxY: maxY + margin, cap };
+  }
+  function astar(tree, goal, ctx, net, strict, win) {
     const goalK = goal.x + ',' + goal.y;
     const startSet = new Set(tree.map((p) => p.x + ',' + p.y));
     if (startSet.has(goalK)) return [{ x: goal.x, y: goal.y }];
@@ -852,13 +935,12 @@
       }
       return top;
     };
-    let minX = goal.x, maxX = goal.x, minY = goal.y, maxY = goal.y;
-    for (const p of tree) { minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y); }
-    minX -= 140; maxX += 140; minY -= 140; maxY += 140;
+    const minX = win.minX, maxX = win.maxX, minY = win.minY, maxY = win.maxY;
     for (const p of tree) push(0, p.x, p.y, -1);
     const dirs = [[GS, 0, 0], [-GS, 0, 1], [0, GS, 2], [0, -GS, 3]];
     let guard = 0;
-    while (heap.length && guard++ < 25000) {
+    const cap = win.cap || 25000;
+    while (heap.length && guard++ < cap) {
       const cur = pop();
       if (cur.x === goal.x && cur.y === goal.y) {
         const path = [{ x: cur.x, y: cur.y }];
@@ -898,14 +980,17 @@
     const k = nx + ',' + ny;
     const owner = ctx.pinAt.get(k);
     if (owner !== undefined && owner !== net && k !== goalK) return false;
+    // The goal cell is this net's own stub. Reach it even when another route grazed the point.
+    if (k === goalK) return true;
     const info = ctx.vinfo.get(k);
     if (info && info.net !== net) {
-      if (strict) return false;
       const axis = horiz ? 'h' : 'v';
       if (info.axes.has(axis)) return false;
-      if (info.axes.size !== 1) return false;
+      if (strict === true) return false;
+      // 'open' may cross a foreign corner. A plain retry only hops a straight foreign run.
+      if (strict !== 'open' && info.axes.size !== 1) return false;
     }
-    if (k === goalK || owner === net) return true;
+    if (owner === net) return true;
     for (const r of ctx.obstacles) if (nx > r.x && nx < r.x2 && ny > r.y && ny < r.y2) return false;
     return true;
   }
@@ -1030,6 +1115,11 @@
         };
         items.push(val); s.valPos = val;
       }
+      if (s.parked) {
+        const below = s.valPos ? s.y + s.h + 36 : s.y + s.h + 16;
+        const note = { kind: 'note', text: 'Not connected', size: 10, anchor: 'middle', x: s.x + s.w / 2, y: below, move: true, pid: s.id };
+        items.push(note); s.notePos = note;
+      }
       if (s.kind === 'ESP' || s.kind === 'DIP' || s.kind === 'BOX') {
         const title = {
           kind: 'title', text: s.kind === 'ESP' ? 'ESP32' : (s.title || ''), size: 11, anchor: 'middle',
@@ -1104,7 +1194,7 @@
       it.x = placed.ax; it.y = placed.ay; it.box = placed;
     }
     for (const l of labels) if (l.labPos) { l.x = l.labPos.x; l.y = l.labPos.y; l.anchor = l.labPos.anchor; }
-    return items.filter((it) => it.box).map((it) => Object.assign(it.box, { kind: it.kind, own: it.own || null, text: it.text }));
+    return items.filter((it) => it.box).map((it) => Object.assign(it.box, { kind: it.kind, own: it.own || null, text: it.text, pid: it.pid || null }));
   }
 
   function computeBounds(symbols, rails, polys, labels, texts) {
@@ -1162,8 +1252,10 @@
   function refText(sym) {
     const r = sym.refPos || { x: sym.x + sym.w / 2, y: sym.y - 8, anchor: 'middle' };
     const v = sym.valPos;
+    const n = sym.notePos;
     return `<text class="sch-ref" x="${r.x}" y="${r.y}" style="text-anchor:${r.anchor || 'middle'}">${esc(sym.ref)}</text>` +
-      (v && sym.value ? `<text class="sch-val" x="${v.x}" y="${v.y}" style="text-anchor:${v.anchor || 'middle'}">${esc(sym.value)}</text>` : '');
+      (v && sym.value ? `<text class="sch-val" x="${v.x}" y="${v.y}" style="text-anchor:${v.anchor || 'middle'}">${esc(sym.value)}</text>` : '') +
+      (n ? `<text class="sch-note" x="${n.x}" y="${n.y}" style="text-anchor:${n.anchor || 'middle'}">${esc(n.text)}</text>` : '');
   }
   function hit(sym) {
     return `<rect class="sch-hit" x="${sym.x}" y="${sym.y}" width="${sym.w}" height="${sym.h}" data-pid="${esc(sym.id)}"/>`;
