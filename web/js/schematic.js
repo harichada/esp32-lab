@@ -1,8 +1,9 @@
 /* Electronic schematic view (read-only).
  * Same project as the 2D breadboard and the 3D view — nothing here writes parts, wires, or props.
- * Layout: union-find nets (breadboard strips included, breadboard body omitted) → layered placement
- * from the MCU / IC / highest-degree part, passives aligned to the pin they talk to → orthogonal
- * A* routes with a turn penalty. Power nets of 3+ pins and GND are flags / ground symbols, not long wires.
+ * When the project carries a netlist, pin connectivity comes from those nets. Otherwise it is the
+ * union-find of breadboard strips and wires (breadboard body omitted). Layout then places parts
+ * from the MCU / IC / highest-degree part, aligns passives to the pin they talk to, and routes
+ * with an orthogonal A*. Power nets of 3+ pins and GND are flags / ground symbols, not long wires.
  * A ground part on a net that already has another pin is omitted; that pin draws the GND symbol.
  * Only a part whose every pin is open is parked, under a "Not connected" caption.
  * A* searches the whole board before a straight-line fallback, and a fallback is logged with the net.
@@ -32,7 +33,20 @@
       const groups = [...(d.groups ? d.groups(p) : []), ...(p.type === 'esp32' ? [['GND.1', 'GND.2']] : [])];
       for (const g of groups) for (let i = 1; i < g.length; i++) uf.union(pinKey.get(p.id + ':' + g[0]), pinKey.get(p.id + ':' + g[i]));
     }
-    for (const w of proj.wires || []) uf.union(kxy(w.a.x, w.a.y), kxy(w.b.x, w.b.y));
+    const stored = proj.netlist && Array.isArray(proj.netlist.nets) && proj.netlist.nets.length;
+    if (stored) {
+      for (const net of proj.netlist.nets) {
+        let anchor = null;
+        for (const pk of net.pins || []) {
+          const k = pinKey.get(pk);
+          if (k == null) continue;
+          if (anchor == null) anchor = k;
+          else uf.union(anchor, k);
+        }
+      }
+    } else {
+      for (const w of proj.wires || []) uf.union(kxy(w.a.x, w.a.y), kxy(w.b.x, w.b.y));
+    }
     const gk = [];
     for (const p of proj.parts || []) {
       if (p.type === 'ground') gk.push(pinKey.get(p.id + ':GND'));
@@ -192,6 +206,19 @@
     }
     const meta = new Map();
     for (const [net, terms] of netTerms) meta.set(net, netKind(net, terms));
+    // Two different nets must not share a supply name. A repeated "VCC" or "3V3"
+    // would read as one rail. The first net keeps the name; the others are drawn
+    // as wires with no supply label.
+    {
+      const taken = new Set();
+      for (const m of meta.values()) {
+        if (!m.name || m.rail === 'gnd') continue;
+        if (taken.has(m.name)) {
+          m.name = '';
+          if (m.rail === 'flag') { m.rail = null; m.wire = true; }
+        } else taken.add(m.name);
+      }
+    }
     for (const s of symbols) for (const t of s.terms) {
       const m = meta.get(t.net) || { rail: null, name: '', wire: false };
       const alone = (netTerms.get(t.net) || []).length < 2;
@@ -1059,6 +1086,9 @@
   function wireLabels(polys, netTerms, meta) {
     const labels = [];
     const best = new Map();
+    // Supply names belong to the one net netKind named. Copying "VCC" off a pin
+    // would put the same name on every separate supply.
+    const supply = /^(VCC|3V3|5V|VIN|GND|\+V|\d+(?:\.\d+)?V)$/i;
     for (const pl of polys) {
       const m = meta.get(pl.net);
       let name = pl.name;
@@ -1072,7 +1102,7 @@
         // TRIG tied to THR on the same chip is a junction, not a wire named TRIG.
         const tied = [...byPart.values()].some((set) => [...set].filter((n) => !/^(1|2|\+|-|A|K)$/.test(n)).length >= 2);
         const nice = tied ? '' : terms.map((t) => t.name).find((n) => /^(D\d+|GPIO\d+|3V3|VIN|A\d|OUT|TRIG|THR|DIS|RESET|SDA|SCL|MOSI|MISO|SCK|CS)$/i.test(n) || /^[A-Z]{2,}/.test(n) && n.length <= 6);
-        if (nice && terms.length >= 2) name = String(nice).replace(/^GND\.\d$/, 'GND');
+        if (nice && !supply.test(nice) && terms.length >= 2) name = String(nice).replace(/^GND\.\d$/, 'GND');
       }
       if (!name || (m && m.rail === 'gnd')) continue;
       for (let i = 1; i < pl.pts.length; i++) {
@@ -1082,8 +1112,14 @@
         if (!prev || len > prev.len) best.set(pl.net, { len, a, b, name, net: pl.net });
       }
     }
+    // The same text on two nets would read as one net.
+    const seen = new Set();
     for (const v of best.values()) {
-      if (v.len < 30) continue;
+      if (seen.has(v.name)) v.name = '';
+      else seen.add(v.name);
+    }
+    for (const v of best.values()) {
+      if (!v.name || v.len < 30) continue;
       const mx = (v.a.x + v.b.x) / 2, my = (v.a.y + v.b.y) / 2;
       const horiz = v.a.y === v.b.y;
       labels.push({ x: mx, y: horiz ? my - 8 : my, name: v.name, net: v.net, anchor: horiz ? 'middle' : 'start' });
