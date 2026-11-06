@@ -206,6 +206,19 @@
     }
     const meta = new Map();
     for (const [net, terms] of netTerms) meta.set(net, netKind(net, terms));
+    // Two different nets must not share a supply name. A repeated "VCC" or "3V3"
+    // would read as one rail. The first net keeps the name; the others are drawn
+    // as wires with no supply label.
+    {
+      const taken = new Set();
+      for (const m of meta.values()) {
+        if (!m.name || m.rail === 'gnd') continue;
+        if (taken.has(m.name)) {
+          m.name = '';
+          if (m.rail === 'flag') { m.rail = null; m.wire = true; }
+        } else taken.add(m.name);
+      }
+    }
     for (const s of symbols) for (const t of s.terms) {
       const m = meta.get(t.net) || { rail: null, name: '', wire: false };
       const alone = (netTerms.get(t.net) || []).length < 2;
@@ -1073,6 +1086,9 @@
   function wireLabels(polys, netTerms, meta) {
     const labels = [];
     const best = new Map();
+    // Supply names belong to the one net netKind named. Copying "VCC" off a pin
+    // would put the same name on every separate supply.
+    const supply = /^(VCC|3V3|5V|VIN|GND|\+V|\d+(?:\.\d+)?V)$/i;
     for (const pl of polys) {
       const m = meta.get(pl.net);
       let name = pl.name;
@@ -1086,7 +1102,7 @@
         // TRIG tied to THR on the same chip is a junction, not a wire named TRIG.
         const tied = [...byPart.values()].some((set) => [...set].filter((n) => !/^(1|2|\+|-|A|K)$/.test(n)).length >= 2);
         const nice = tied ? '' : terms.map((t) => t.name).find((n) => /^(D\d+|GPIO\d+|3V3|VIN|A\d|OUT|TRIG|THR|DIS|RESET|SDA|SCL|MOSI|MISO|SCK|CS)$/i.test(n) || /^[A-Z]{2,}/.test(n) && n.length <= 6);
-        if (nice && terms.length >= 2) name = String(nice).replace(/^GND\.\d$/, 'GND');
+        if (nice && !supply.test(nice) && terms.length >= 2) name = String(nice).replace(/^GND\.\d$/, 'GND');
       }
       if (!name || (m && m.rail === 'gnd')) continue;
       for (let i = 1; i < pl.pts.length; i++) {
@@ -1096,8 +1112,14 @@
         if (!prev || len > prev.len) best.set(pl.net, { len, a, b, name, net: pl.net });
       }
     }
+    // The same text on two nets would read as one net.
+    const seen = new Set();
     for (const v of best.values()) {
-      if (v.len < 30) continue;
+      if (seen.has(v.name)) v.name = '';
+      else seen.add(v.name);
+    }
+    for (const v of best.values()) {
+      if (!v.name || v.len < 30) continue;
       const mx = (v.a.x + v.b.x) / 2, my = (v.a.y + v.b.y) / 2;
       const horiz = v.a.y === v.b.y;
       labels.push({ x: mx, y: horiz ? my - 8 : my, name: v.name, net: v.net, anchor: horiz ? 'middle' : 'start' });
