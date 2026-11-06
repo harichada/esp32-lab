@@ -1,8 +1,9 @@
 /* Electronic schematic view (read-only).
  * Same project as the 2D breadboard and the 3D view — nothing here writes parts, wires, or props.
- * Layout: union-find nets (breadboard strips included, breadboard body omitted) → layered placement
- * from the MCU / IC / highest-degree part, passives aligned to the pin they talk to → orthogonal
- * A* routes with a turn penalty. Power nets of 3+ pins and GND are flags / ground symbols, not long wires.
+ * When the project carries a netlist, pin connectivity comes from those nets. Otherwise it is the
+ * union-find of breadboard strips and wires (breadboard body omitted). Layout then places parts
+ * from the MCU / IC / highest-degree part, aligns passives to the pin they talk to, and routes
+ * with an orthogonal A*. Power nets of 3+ pins and GND are flags / ground symbols, not long wires.
  * A ground part on a net that already has another pin is omitted; that pin draws the GND symbol.
  * Only a part whose every pin is open is parked, under a "Not connected" caption.
  * A* searches the whole board before a straight-line fallback, and a fallback is logged with the net.
@@ -32,7 +33,20 @@
       const groups = [...(d.groups ? d.groups(p) : []), ...(p.type === 'esp32' ? [['GND.1', 'GND.2']] : [])];
       for (const g of groups) for (let i = 1; i < g.length; i++) uf.union(pinKey.get(p.id + ':' + g[0]), pinKey.get(p.id + ':' + g[i]));
     }
-    for (const w of proj.wires || []) uf.union(kxy(w.a.x, w.a.y), kxy(w.b.x, w.b.y));
+    const stored = proj.netlist && Array.isArray(proj.netlist.nets) && proj.netlist.nets.length;
+    if (stored) {
+      for (const net of proj.netlist.nets) {
+        let anchor = null;
+        for (const pk of net.pins || []) {
+          const k = pinKey.get(pk);
+          if (k == null) continue;
+          if (anchor == null) anchor = k;
+          else uf.union(anchor, k);
+        }
+      }
+    } else {
+      for (const w of proj.wires || []) uf.union(kxy(w.a.x, w.a.y), kxy(w.b.x, w.b.y));
+    }
     const gk = [];
     for (const p of proj.parts || []) {
       if (p.type === 'ground') gk.push(pinKey.get(p.id + ':GND'));
