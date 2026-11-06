@@ -14,6 +14,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
   function setProject(p, opts) {
     stopRun(); app.readOnly = !!(opts && opts.readOnly);
+    if (window.Netlist) { try { Netlist.migrate(p); } catch (e) { /* open the board even if its netlist cannot be built */ } }
     app.proj = normalize(p); app.sim = new Sim(app.proj); app.file = 'sketch'; app.world = new Devices.MockWorld(); app.world.onchange = () => (app.devDirty = true); app.world.onlog = (e) => app.netlog.add({ k: 'dev', msg: `${e.proto}: ${e.summary}`, ok: !(e.code < 0 || e.code >= 400) });
     app.editor.setProject(app.proj); setTimeout(() => app.editor.fit(), 0);
     $('#selMode').value = app.proj.mode; $('#inDefines').value = app.proj.defines.join(','); renderFileTabs(); loadCode(); modeNote();
@@ -749,7 +750,10 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   setInterval(latchTick, 20);
   function init() {
     app.editor = new Editor($('#stage'), {
-      changed: (topo) => { if (topo) app.sim.topoDirty = true; app.sim.dirty = true; invalidateGpio(); autosave(); if (app.schematic) app.schematic.invalidate(); }, beforeEdit,
+      changed: (topo) => {
+        if (window.Netlist && app.proj) { try { Netlist.syncFromWires(app.proj); } catch (e) { /* the wires stay; the next load rebuilds the netlist */ } }
+        if (topo) app.sim.topoDirty = true; app.sim.dirty = true; invalidateGpio(); autosave(); if (app.schematic) app.schematic.invalidate();
+      }, beforeEdit,
       netKey: (x, y) => { app.sim.netAt(x, y); return app.sim.uf.find(Math.round(x) + ',' + Math.round(y)); },
       selected: (s) => { renderInspector(s); if (s) { /* keep current tab */ } },
       hover, state: (p) => app.sim ? app.sim.partState(p) : null, running: () => !!app.run || !espPart(), press,
