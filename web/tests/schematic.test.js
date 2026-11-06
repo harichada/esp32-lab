@@ -109,6 +109,8 @@ test('blink LED schematic: ESP32, resistor, LED, orthogonal, GND symbols, projec
   const led = model.symbols.find((s) => s.part.type === 'led');
   const cpin = led.terms.find((t) => t.name === 'C');
   assert.strictEqual(cpin.rail, 'gnd');
+  assert.strictEqual(cpin.net, 0, 'LED cathode returns through the breadboard rails');
+  assert.ok(!model.symbols.some((s) => s.parked), 'blink has no loose parts');
   assert.ok(model.rails.some((g) => g.kind === 'gnd' && g.pid === led.id));
   assert.ok(model.rails.some((g) => g.kind === 'gnd' && g.pid === 'esp'));
   // resistor and LED share a wired net
@@ -205,24 +207,79 @@ test('loose parts park below the circuit and open pins are not supply flags', ()
   const model = layout(p);
   audit(model, 'loose');
   const loose = model.symbols.filter((s) => s.parked);
-  assert.deepStrictEqual(loose.map((s) => s.id).sort(), ['C2', 'CAP1', 'RES1', 'Y1']);
-  const mainBottom = Math.max(...model.symbols.filter((s) => !s.parked).map((s) => s.y + s.h));
-  for (const s of loose) assert.ok(s.y >= mainBottom + 40, s.id + ' parked at ' + s.y + ' vs ' + mainBottom);
+  assert.deepStrictEqual(loose.map((s) => s.id).sort(), ['C2', 'RES1']);
+  const placed = model.symbols.filter((s) => !s.parked);
+  const mainBottom = Math.max(...placed.filter((s) => s.part.type === 'ne555' || s.part.type === 'battery9v' || s.part.type === 'led').map((s) => s.y + s.h));
+  for (const s of loose) {
+    assert.ok(s.y >= mainBottom + 40, s.id + ' parked at ' + s.y + ' vs ' + mainBottom);
+    assert.ok(s.terms.every((t) => t.nc), s.id + ' parked with a connected pin');
+    assert.ok(model.texts.some((t) => t.kind === 'note' && t.pid === s.id && t.text === 'Not connected'), s.id + ' caption');
+  }
   const ys = loose.map((s) => s.y);
-  assert.ok(Math.max(...ys) - Math.min(...ys) < 40, 'loose parts share one row');
+  assert.ok(Math.max(...ys) - Math.min(...ys) < 40, 'open parts share one row');
   for (const s of loose) for (const t of s.terms) {
     assert.notStrictEqual(t.rail, 'flag', s.id + '.' + t.name + ' flagged ' + t.netName);
     assert.ok(!t.netName, s.id + '.' + t.name + ' labeled ' + t.netName);
   }
   const xtal = model.symbols.find((s) => s.id === 'Y1');
+  const cap = model.symbols.find((s) => s.id === 'CAP1');
+  assert.ok(!xtal.parked && !cap.parked, 'a wired crystal and capacitor stay in a circuit');
   assert.ok(xtal.terms.some((t) => t.nc));
-  assert.ok(xtal.terms.some((t) => t.wire));
+  assert.ok(xtal.terms.some((t) => t.wire && cap.terms.some((u) => u.net === t.net)));
   const bat = model.symbols.find((s) => s.id === 'BAT1');
   assert.ok(!bat.parked, 'battery that feeds the 555 stays with the circuit');
   assert.strictEqual(bat.terms.find((t) => t.name === '+').rail, 'flag');
+  assert.ok(!model.fallback, 'loose fixture routed cleanly');
 });
 
-test('every example: text boxes do not overlap and wires stay outside symbol bodies', () => {
+test('ground parts on a shared net draw as the GND rail, not floating symbols', () => {
+  const model = layout(E.EX.transistor());
+  audit(model, 'transistor');
+  assert.ok(!model.fallback, 'transistor ' + (model.fallbackWhy || []).join('; '));
+  assert.ok(!model.symbols.some((s) => s.part.type === 'ground'), 'G1/G2 are the emitter and supply ground');
+  assert.ok(!model.symbols.some((s) => s.parked));
+  const q = model.symbols.find((s) => s.kind === 'NPN');
+  assert.strictEqual(q.terms.find((t) => t.name === 'E').rail, 'gnd');
+  assert.ok(model.rails.some((r) => r.kind === 'gnd' && r.pid === q.id));
+  const v5 = model.symbols.find((s) => s.part.type === 'vcc5');
+  assert.ok(v5 && !v5.parked);
+  assert.strictEqual(v5.terms.find((t) => t.name === 'GND').rail, 'gnd');
+});
+
+test('spirit-level LED grounds are rails, and the dense examples do not fall back', () => {
+  for (const key of ['level', 'remote', 'sensorsjs', 'displaysjs', 'ic_555blink']) {
+    const model = layout(E.EX[key]());
+    audit(model, key);
+    assert.ok(!model.fallback, key + ' fallback ' + (model.fallbackWhy || []).join('; '));
+    assert.ok(!model.symbols.some((s) => s.parked && s.part.type === 'ground'), key + ' parked a ground');
+    for (const s of model.symbols) if (s.parked) {
+      assert.ok(s.terms.every((t) => t.nc), key + ' ' + s.id + ' parked but connected');
+    }
+  }
+  const level = layout(E.EX.level());
+  assert.ok(!level.symbols.some((s) => s.part.type === 'ground'));
+  const leds = level.symbols.filter((s) => s.part.type === 'led');
+  assert.ok(leds.length >= 2);
+  for (const led of leds) assert.strictEqual(led.terms.find((t) => t.name === 'C').rail, 'gnd');
+});
+
+function assertCircuit(model, label) {
+  audit(model, label);
+  assert.ok(!model.fallback, label + ' fallback ' + (model.fallbackWhy || []).join('; '));
+  for (const s of model.symbols) {
+    if (s.part.type !== 'ground') continue;
+    const net = s.terms[0] && s.terms[0].net;
+    const shared = model.symbols.some((o) => o.id !== s.id && o.part.type !== 'ground' && o.terms.some((t) => t.net === net));
+    assert.ok(!shared, label + ' ground ' + s.id + ' restates a connected net');
+    assert.ok(!s.parked, label + ' ground ' + s.id + ' parked');
+  }
+  for (const s of model.symbols) if (s.parked) {
+    assert.ok(s.terms.every((t) => t.nc), label + ' ' + s.id + ' parked but a pin shares a net');
+    assert.ok(model.texts.some((t) => t.kind === 'note' && t.pid === s.id && t.text === 'Not connected'), label + ' ' + s.id + ' missing caption');
+  }
+}
+
+test('every example: no fallback, no connected floater, no text overlap, no wire through a body', () => {
   const keys = E.LIST.map((row) => row[0]);
   assert.ok(keys.length >= 20, 'example list loaded');
   const problems = [];
@@ -232,7 +289,7 @@ test('every example: text boxes do not overlap and wires stay outside symbol bod
     let proj;
     try { proj = fn(); } catch (e) { problems.push(key + ' example threw ' + e.message); continue; }
     if (!proj || !(proj.parts || []).some((p) => p.type !== 'breadboard' && p.type !== 'label')) continue;
-    try { audit(layout(proj), key, false); }
+    try { assertCircuit(layout(proj), key); }
     catch (e) { problems.push(e.message); }
   }
   assert.deepStrictEqual(problems, []);

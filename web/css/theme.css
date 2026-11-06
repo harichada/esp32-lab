@@ -215,6 +215,7 @@ body.viewsch .hint{z-index:5;opacity:1;max-width:min(760px,calc(100% - 28px))}
 #stageSch .sch-pin{fill:var(--acc);stroke:var(--canvas);stroke-width:1}
 #stageSch .sch-ref{fill:var(--txt);font:600 12px var(--sans,system-ui,sans-serif);text-anchor:middle}
 #stageSch .sch-val{fill:var(--txt2);font:11px var(--mono,ui-monospace,monospace);text-anchor:middle}
+#stageSch .sch-note{fill:var(--mut);font:10px var(--sans,system-ui,sans-serif);text-anchor:middle}
 #stageSch .sch-pname{fill:var(--txt2);font:9.5px var(--mono,ui-monospace,monospace)}
 #stageSch .sch-title{fill:var(--txt);font:600 11px var(--sans,system-ui,sans-serif);text-anchor:middle}
 #stageSch .sch-flag,#stageSch .sch-netlbl{fill:var(--acc);font:700 10.5px var(--mono,ui-monospace,monospace)}
