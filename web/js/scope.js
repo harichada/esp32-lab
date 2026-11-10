@@ -82,7 +82,7 @@
     for (const c of I.ch) { c.on = false; c.probe = null; } I.watch = []; I.clearAll();
     if (proj.scope && proj.scope.div) I.tdiv = TB.reduce((b, x) => Math.abs(Math.log(x / proj.scope.div)) < Math.abs(Math.log(b / proj.scope.div)) ? x : b, 1);
     // legacy “Oscilloscope probe” parts become live channels
-    for (const p of proj.parts) if (p.type === 'scope') { const c = I.ch[(+p.props.ch || 1) - 1]; c.on = true; c.probe = { kind: 'probe', ch: +p.props.ch || 1, label: p.id + ' (CH' + (+p.props.ch || 1) + ' probe)' }; }
+    for (const p of proj.parts) if (p.type === 'scope') { const ch = (root.Parts && root.Parts.scopeChannel) ? root.Parts.scopeChannel(p.props.ch) : 1; const c = I.ch[ch - 1]; if (!c) continue; c.on = true; c.probe = { kind: 'probe', ch, label: p.id + ' (CH' + ch + ' probe)' }; }
     const on = I.ch.filter((c) => c.on); if (on.length) I.trig.src = on[0].k;
     I.renderUi(); I.renderStrip(true);
   };

@@ -20,6 +20,29 @@
     const mult = { p: 1e-12, n: 1e-9, u: 1e-6, 'µ': 1e-6, m: 1e-3, '': 1, k: 1e3, K: 1e3, M: 1e6, G: 1e9 }[m[2]];
     return parseFloat(m[1]) * mult;
   }
+  // Parse a user-entered part value. Non-finite / empty / unparseable input
+  // falls back to `fallback` and sets ok=false so the part can warn.
+  // Zero is kept as zero — callers that need a tiny wire resistance use stampResistance.
+  function parseProp(raw, fallback) {
+    if (raw === '' || raw === undefined || raw === null) return { value: fallback, ok: false };
+    const v = typeof raw === 'number' ? raw : parseVal(raw);
+    if (!isFinite(v)) return { value: fallback, ok: false };
+    return { value: v, ok: true };
+  }
+  const WIRE_R = 1e-3;   // 1 mΩ: a 0 Ω entry is stamped as a tiny ideal wire, not as 1 Ω
+  function stampResistance(raw, fallback) {
+    const p = parseProp(raw, fallback);
+    if (p.ok && p.value === 0) return { value: WIRE_R, ok: true, wire: true };
+    return { value: p.value, ok: p.ok, wire: false };
+  }
+  // Oscilloscope probe channel: always 1..4. Non-numeric values fall back to 1.
+  function scopeChannel(ch) {
+    const n = Math.round(Number(ch));
+    return Number.isFinite(n) ? Math.min(4, Math.max(1, n)) : 1;
+  }
+  function invalidValueWarning(kind, raw, fallback, unit) {
+    return `invalid ${kind} ${JSON.stringify(raw)}, using ${fmt(fallback, unit)}`;
+  }
   // resistor colour bands (4-band)
   const BANDC = ['#000', '#8b4513', '#e02020', '#ff8c00', '#f5d000', '#20a020', '#2050e0', '#9030c0', '#888', '#fff'];
   function bands(r) {
@@ -165,9 +188,15 @@
       s += `<rect x="8" y="-5.5" width="24" height="5" rx="2" fill="url(#gGloss)" opacity=".7" pointer-events="none"/>`;
       return s + pinDots(this.pins(p)) + `<text x="20" y="-8" class="plbl">${esc(fmt(parseVal(p.props.r), 'Ω'))}</text>`;
     },
-    stamp(p, cx) { cx.add({ kind: 'R', a: cx.node(p, '1'), b: cx.node(p, '2'), r: parseVal(p.props.r) || 1, main: true }, p); },
+    stamp(p, cx) { cx.add({ kind: 'R', a: cx.node(p, '1'), b: cx.node(p, '2'), r: stampResistance(p.props.r, this.props.r).value, main: true }, p); },
     readout(p, cx) { const e = cx.main(p); if (!e) return ''; const i = cx.I(e); const w = i * i * e.r; return `${fmt(Math.abs(i), 'A')} · ${fmt(w, 'W')}` + (w > 0.25 ? ' ⚠ >¼W' : ''); },
-    warn(p, cx) { const e = cx.main(p); if (e) { const i = cx.I(e); if (i * i * e.r > 0.5) return 'resistor overheating (>0.5 W)'; } },
+    warn(p, cx) {
+      const used = stampResistance(p.props.r, this.props.r);
+      const msgs = [];
+      if (!used.ok) msgs.push(invalidValueWarning('resistance', p.props.r, this.props.r, 'Ω'));
+      const e = cx.main(p); if (e) { const i = cx.I(e); if (i * i * e.r > 0.5) msgs.push('resistor overheating (>0.5 W)'); }
+      return msgs.join('; ') || undefined;
+    },
   });
   def('capacitor', {
     label: 'Capacitor', cat: 'Passive', props: { c: 1e-6, kind: 'ceramic' },
@@ -179,9 +208,15 @@
       if (p.props.kind === 'electrolytic') return `<line x1="0" y1="0" x2="20" y2="0" class="lead"/><rect x="1" y="-19" width="18" height="18" rx="3" class="ecap" filter="url(#fShadow)"/><rect x="14" y="-19" width="4" height="18" class="ecap-stripe"/><rect x="1" y="-19" width="18" height="8" rx="3" fill="url(#gGloss)" opacity=".5"/><path d="M4 -16 h12 M4 -4 h12" stroke="#0006" stroke-width=".6"/><text x="4" y="-6" class="ecap-t">+</text>` + pinDots(this.pins(p)) + `<text x="10" y="-21" class="plbl">${esc(fmt(c, 'F'))}</text>`;
       return `<line x1="0" y1="0" x2="20" y2="0" class="lead"/><ellipse cx="10" cy="-7" rx="7.5" ry="6.2" class="ccap" filter="url(#fShadow)"/><ellipse cx="8" cy="-9.5" rx="4" ry="2.2" fill="#fff" opacity=".35"/><text x="10" y="-5.2" class="ccap-t">${c >= 1e-6 ? '105' : c >= 1e-7 ? '104' : c >= 1e-8 ? '103' : '102'}</text>` + pinDots(this.pins(p)) + `<text x="10" y="-16" class="plbl">${esc(fmt(c, 'F'))}</text>`;
     },
-    stamp(p, cx) { const ps = this.pins(p); cx.add({ kind: 'C', a: cx.node(p, ps[0].name), b: cx.node(p, ps[1].name), c: parseVal(p.props.c) || 1e-9, main: true }, p); },
+    stamp(p, cx) { const ps = this.pins(p); cx.add({ kind: 'C', a: cx.node(p, ps[0].name), b: cx.node(p, ps[1].name), c: parseProp(p.props.c, this.props.c).value, main: true }, p); },
     readout(p, cx) { const e = cx.main(p); return e ? `V=${fmt(cx.V(e.a) - cx.V(e.b), 'V')}` : ''; },
-    warn(p, cx) { const e = cx.main(p); if (e && p.props.kind === 'electrolytic' && cx.V(e.a) - cx.V(e.b) < -0.7) return 'electrolytic reverse-biased!'; },
+    warn(p, cx) {
+      const used = parseProp(p.props.c, this.props.c);
+      const msgs = [];
+      if (!used.ok) msgs.push(invalidValueWarning('capacitance', p.props.c, this.props.c, 'F'));
+      const e = cx.main(p); if (e && p.props.kind === 'electrolytic' && cx.V(e.a) - cx.V(e.b) < -0.7) msgs.push('electrolytic reverse-biased!');
+      return msgs.join('; ') || undefined;
+    },
   });
   function ledDef(type, label, isIR) {
     def(type, {
@@ -307,7 +342,11 @@
     pins: () => [{ name: '1', x: 0, y: 0 }, { name: 'W', x: 10, y: 0 }, { name: '2', x: 20, y: 0 }],
     size: () => ({ w: 20, h: 10 }),
     svg(p) { const a = -135 + 270 * (+p.props.pos); return [0, 10, 20].map((v) => `<line x1="${v}" y1="0" x2="${v}" y2="-6" class="lead"/>`).join('') + `<rect x="-6" y="-30" width="32" height="24" rx="3" class="pot-body" filter="url(#fShadow)"/><path d="M2.2 -10.2 A11 11 0 1 1 17.8 -10.2" class="pot-track"/><g transform="rotate(${a} 10 -18)"><circle cx="10" cy="-18" r="9" class="pot-knob" fill="url(#gKnob)"/>${Array.from({ length: 18 }, (_, k) => `<line x1="10" y1="-27" x2="10" y2="-25.4" stroke="#0009" stroke-width=".8" transform="rotate(${k * 20} 10 -18)"/>`).join('')}<circle cx="10" cy="-18" r="5.5" fill="#2a2f37" stroke="#4a525d" stroke-width=".5"/><line x1="10" y1="-18" x2="10" y2="-25" class="pot-ind"/></g>` + pinDots(this.pins(p)) + `<text x="10" y="-34" class="plbl">${Math.round(p.props.pos * 100)}%</text>`; },
-    stamp(p, cx) { const r = parseVal(p.props.r) || 1e4, x = Math.min(0.999, Math.max(0.001, +p.props.pos)); cx.add({ kind: 'R', a: cx.node(p, '1'), b: cx.node(p, 'W'), r: r * x }, p); cx.add({ kind: 'R', a: cx.node(p, 'W'), b: cx.node(p, '2'), r: r * (1 - x) }, p); },
+    stamp(p, cx) { const r = stampResistance(p.props.r, this.props.r).value, x = Math.min(0.999, Math.max(0.001, +p.props.pos)); cx.add({ kind: 'R', a: cx.node(p, '1'), b: cx.node(p, 'W'), r: r * x }, p); cx.add({ kind: 'R', a: cx.node(p, 'W'), b: cx.node(p, '2'), r: r * (1 - x) }, p); },
+    warn(p) {
+      const used = stampResistance(p.props.r, this.props.r);
+      if (!used.ok) return invalidValueWarning('resistance', p.props.r, this.props.r, 'Ω');
+    },
     wheel(p, d) { p.props.pos = Math.min(1, Math.max(0, +p.props.pos - d * 0.05)); return true; },
   });
   def('ldr', {
@@ -386,7 +425,7 @@
     label: 'Oscilloscope probe', cat: 'Instruments', props: { ch: 1 },
     edit: [{ k: 'ch', label: 'Channel', t: 'sel', opts: [1, 2, 3, 4] }],
     pins: () => [{ name: 'P', x: 0, y: 0 }], size: () => ({ w: 10, h: 10 }),
-    svg(p) { const c = ['#ffd84a', '#4ae0ff', '#ff5ad1', '#7dff6a'][(+p.props.ch || 1) - 1]; return `<line x1="0" y1="0" x2="0" y2="-14" class="lead"/><rect x="-5" y="-40" width="10" height="26" rx="3" style="fill:${c}" class="probe"/><text x="0" y="-44" class="plbl">CH${p.props.ch}</text>` + pinDots(this.pins(p)); },
+    svg(p) { const ch = scopeChannel(p.props.ch); const c = ['#ffd84a', '#4ae0ff', '#ff5ad1', '#7dff6a'][ch - 1]; return `<line x1="0" y1="0" x2="0" y2="-14" class="lead"/><rect x="-5" y="-40" width="10" height="26" rx="3" style="fill:${c}" class="probe"/><text x="0" y="-44" class="plbl">CH${ch}</text>` + pinDots(this.pins(p)); },
     stamp(p, cx) { cx.probe(p, cx.node(p, 'P')); },
   });
   // ---------- I2C modules (bus traffic comes from the emulated ESP32 I2C controller) ----------
@@ -525,7 +564,7 @@
   function rotPt(x, y, r) { switch (r & 3) { case 1: return [-y, x]; case 2: return [-x, -y]; case 3: return [y, -x]; default: return [x, y]; } }
   function pinWorld(p, pin) { const [x, y] = rotPt(pin.x, pin.y, p.rot || 0); return { x: p.x + x, y: p.y + y }; }
 
-  const api = { T, fmt, parseVal, bands, espGpio, ESP_TOP, ESP_BOT, INPUT_ONLY, STRAPPING, ADC1, ADC2, rotPt, pinWorld, G, VTH, esc, LEDCOL };
+  const api = { T, fmt, parseVal, parseProp, stampResistance, WIRE_R, scopeChannel, bands, espGpio, ESP_TOP, ESP_BOT, INPUT_ONLY, STRAPPING, ADC1, ADC2, rotPt, pinWorld, G, VTH, esc, LEDCOL };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.Parts = api;
 })(typeof window !== 'undefined' ? window : globalThis);

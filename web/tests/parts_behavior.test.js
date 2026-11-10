@@ -294,3 +294,79 @@ test('DHT22 bytes() encode temperature and humidity with a checksum', () => {
   assert.ok(t & 0x8000, 'negative temps set the sign bit');
   assert.equal(t & 0x7fff, 105);
 });
+
+test('resistor r=0 is stamped as 1 mΩ; invalid strings use 220 Ω and warn', () => {
+  const V = mk('vcc5'), G = mk('ground'), Rs = mk('resistor', { r: 1000 }), Rz = mk('resistor', { r: 0 });
+  const { sim } = circuit([V, G, Rs, Rz], [
+    [[V, '+'], [Rs, '1']],
+    [[Rs, '2'], [Rz, '1']],
+    [[Rz, '2'], [G, 'GND'], [V, 'GND']],
+  ]);
+  const el = sim.mains.get(Rz.id);
+  assert.ok(el, 'zero-ohm resistor has a main element');
+  assert.equal(el.r, P.WIRE_R);
+  assert.equal(P.WIRE_R, 1e-3);
+  const i = (5 - v(sim, V, '+')) > -1 ? sim.circuit.current(el) : 0;
+  // 1 kΩ + 1 mΩ ≈ 5 mA; voltage across the 1 mΩ part is ~5 µV.
+  assert.ok(Math.abs(Math.abs(i) - 0.005) < 5e-5, 'I=' + i);
+  assert.ok(Math.abs(v(sim, Rz, '1', '2')) < 1e-4, 'Vr=' + v(sim, Rz, '1', '2'));
+
+  const V2 = mk('vcc5'), G2 = mk('ground'), Rbad = mk('resistor', { r: 'foo' }), Rref = mk('resistor', { r: 1000 });
+  const bad = circuit([V2, G2, Rbad, Rref], [
+    [[V2, '+'], [Rref, '1']],
+    [[Rref, '2'], [Rbad, '1']],
+    [[Rbad, '2'], [G2, 'GND'], [V2, 'GND']],
+  ]);
+  assert.equal(bad.sim.mains.get(Rbad.id).r, 220);
+  const mid = 5 * 220 / (1000 + 220);
+  assert.ok(Math.abs(v(bad.sim, Rbad, '1') - mid) < 0.02, 'Vmid=' + v(bad.sim, Rbad, '1'));
+  const msgs = (bad.sim.warnings || []).map((w) => w.msg).join('; ');
+  assert.match(msgs, /invalid resistance/);
+  assert.match(msgs, /220/);
+});
+
+test('capacitor C=0 stays open (not 1 nF); invalid strings use 1 µF and warn', () => {
+  const V = mk('vcc5'), G = mk('ground'), R = mk('resistor', { r: 1000 }), C0 = mk('capacitor', { c: 0 });
+  const project = projFromNets([V, G, R, C0], [
+    [[V, '+'], [R, '1']],
+    [[R, '2'], [C0, '1']],
+    [[C0, '2'], [G, 'GND'], [V, 'GND']],
+  ]);
+  const sim = new Sim(project);
+  for (let i = 0; i < 20; i++) sim.advance(0.001);
+  assert.equal(sim.mains.get(C0.id).c, 0);   // previously `parseVal(c) || 1e-9` stamped this as 1 nF
+  // A 0 F capacitor is an open; the far node is not uniquely held at 0 V, but the sim must not throw or NaN.
+  assert.ok(Number.isFinite(v(sim, C0, '1', '2')), 'Vc=' + v(sim, C0, '1', '2'));
+
+  const V2 = mk('vcc5'), G2 = mk('ground'), R2 = mk('resistor', { r: 1000 }), Cbad = mk('capacitor', { c: 'foo' });
+  const project2 = projFromNets([V2, G2, R2, Cbad], [
+    [[V2, '+'], [R2, '1']],
+    [[R2, '2'], [Cbad, '1']],
+    [[Cbad, '2'], [G2, 'GND'], [V2, 'GND']],
+  ]);
+  const sim2 = new Sim(project2);
+  for (let i = 0; i < 50; i++) sim2.advance(0.0001);   // 5 ms ≈ 5τ for 1 kΩ × 1 µF
+  assert.equal(sim2.mains.get(Cbad.id).c, 1e-6);
+  assert.ok(v(sim2, Cbad, '1', '2') > 4.8, 'invalid C should use 1 µF default, Vc=' + v(sim2, Cbad, '1', '2'));
+  const msgs = (sim2.warnings || []).map((w) => w.msg).join('; ');
+  assert.match(msgs, /invalid capacitance/);
+});
+
+test('potentiometer r=0 uses 1 mΩ total; invalid strings use 10 kΩ and warn', () => {
+  const used0 = P.stampResistance(0, 10000);
+  assert.equal(used0.value, 1e-3);
+  assert.ok(used0.wire);
+  const usedBad = P.stampResistance('foo', 10000);
+  assert.equal(usedBad.value, 10000);
+  assert.equal(usedBad.ok, false);
+
+  const V = mk('vcc5'), G = mk('ground'), POT = mk('potentiometer', { r: 'foo', pos: 0.25 });
+  const { sim } = circuit([V, G, POT], [
+    [[V, '+'], [POT, '1']],
+    [[POT, '2'], [G, 'GND'], [V, 'GND']],
+  ]);
+  assert.ok(Math.abs(v(sim, POT, 'W') - 3.75) < 0.05, 'wiper=' + v(sim, POT, 'W'));
+  const msgs = (sim.warnings || []).map((w) => w.msg).join('; ');
+  assert.match(msgs, /invalid resistance/);
+  assert.match(msgs, /10 kΩ|10kΩ|10000/);
+});

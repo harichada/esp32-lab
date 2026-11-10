@@ -76,28 +76,25 @@ test('property sweeps do not throw or produce NaN voltages', { timeout: 180000 }
       }
     }
   }
-  // Known defect (not fixed in this change): Sim.advance does
-  //   this.scope[ch].push(...)
-  // for whatever props.ch the probe was stamped with (sim.js, probes[p.props.ch || 1]).
-  // ch=-1 and a non-numeric string are truthy, so they skip the `|| 1` fallback and crash.
-  const known = hard.filter((h) => /^scope\.ch=/.test(h) && /reading 'push'/.test(h));
-  const unexpected = hard.filter((h) => !known.includes(h));
-  globalThis.__PART_PROP_SWEEP__ = { fields: swept, cases, hard: hard.length, known: known.length, unexpected: unexpected.length, notes: notes.length, knownList: known };
-  console.log('property sweep: %d fields, %d cases, %d hard failures (%d known, %d unexpected), %d label notes',
-    swept, cases, hard.length, known.length, unexpected.length, notes.length);
-  if (known.length) known.forEach((n) => console.log('  known bug:', n));
-  assert.deepEqual(unexpected, []);
-  assert.ok(known.length >= 2, 'expected the scope.ch crash to still reproduce; remove the known-bug waiver if it is fixed');
+  globalThis.__PART_PROP_SWEEP__ = { fields: swept, cases, hard: hard.length, notes: notes.length };
+  console.log('property sweep: %d fields, %d cases, %d hard failures, %d label notes', swept, cases, hard.length, notes.length);
+  assert.deepEqual(hard, []);
 });
 
-test('scope probe: an out-of-range channel crashes Sim.advance (known bug)', () => {
-  const { minimalProject, stepSim } = require('./tools/part-helpers');
-  for (const ch of [-1, 'not-a-valid-option']) {
+test('scope probe: out-of-range channels clamp to 1–4 and do not crash Sim.advance', () => {
+  const { minimalProject, stepSim, P } = require('./tools/part-helpers');
+  assert.equal(P.scopeChannel(-1), 1);
+  assert.equal(P.scopeChannel(0), 1);
+  assert.equal(P.scopeChannel(99), 4);
+  assert.equal(P.scopeChannel('not-a-valid-option'), 1);
+  assert.equal(P.scopeChannel(3), 3);
+  assert.equal(P.scopeChannel('2'), 2);
+  for (const ch of [-1, 0, 99, 'not-a-valid-option', '', 3]) {
     const ctx = minimalProject('scope', { ch });
-    assert.throws(() => stepSim(ctx.project, 2, 0.01), /push/);
+    const sim = stepSim(ctx.project, 2, 0.01);
+    const keys = Object.keys(sim.probes).map(Number);
+    assert.ok(keys.length, 'no probe recorded for ch=' + JSON.stringify(ch));
+    assert.ok(keys.every((k) => k >= 1 && k <= 4), 'probe keys ' + keys + ' for ch=' + JSON.stringify(ch));
+    assert.ok(Array.isArray(sim.scope[keys[0]]) && sim.scope[keys[0]].length >= 1, 'channel buffer empty');
   }
-  // Valid channels still work.
-  const ok = minimalProject('scope', { ch: 3 });
-  const sim = stepSim(ok.project, 2, 0.01);
-  assert.ok(sim);
 });
