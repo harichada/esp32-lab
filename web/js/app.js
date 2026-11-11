@@ -887,7 +887,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     view3dLoading = (async () => {
       if (!window.loadView3D) {
         await new Promise((res, rej) => {
-          const s = document.createElement('script'); s.src = 'js/view3d.js?v=47'; s.async = true;
+          const s = document.createElement('script'); s.src = 'js/view3d.js?v=48'; s.async = true;
           s.onload = res; s.onerror = () => rej(new Error('view3d load failed')); document.head.appendChild(s);
         });
       }
@@ -929,6 +929,12 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   let viewSeq = 0;
   const LSV = 'esp32lab.view';
   const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (_) {} };
+  function show3dLoad(on) {
+    const el = $('#view3dLoad');
+    if (el) { el.hidden = !on; el.setAttribute('aria-busy', on ? 'true' : 'false'); }
+    document.body.classList.toggle('view3d-busy', !!on);
+  }
+  function paintFrame() { return new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res))); }
   function applyViewChrome() {
     document.body.classList.toggle('view3d', viewMode === '3d');
     document.body.classList.toggle('viewsch', viewMode === 'schematic');
@@ -936,6 +942,12 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (b2) b2.classList.toggle('on', viewMode === '2d');
     if (bs) bs.classList.toggle('on', viewMode === 'schematic');
     if (b3) b3.classList.toggle('on', viewMode === '3d');
+    const f2 = $('#bForce2d');
+    if (f2 && window.ViewChrome) {
+      const c = ViewChrome.viewChipState(viewMode, { compact: (window.innerWidth || 0) <= 820 });
+      f2.textContent = c.text; f2.title = c.title; f2.setAttribute('aria-label', c.aria);
+      f2.dataset.view = viewMode;
+    }
   }
   function view3dFail(e) {
     console.error('3D view failed', e);
@@ -943,16 +955,17 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (viewMode !== '3d') { if (app.view3d) try { app.view3d.setActive(false); } catch (_) {} return; }
     viewMode = '2d'; viewSeq++;
     try { if (app.view3d) app.view3d.setActive(false); } catch (_) {}
+    show3dLoad(false);
     applyViewChrome();
     toast(e && e.camera ? '3D camera failed — back to 2D' : '3D view unavailable (' + ((e && e.message) || 'WebGL error') + ') — back to 2D', true);
   }
-  // HOTFIX: 3D is desktop-only for now (phones/tablets/touch-first and landscape phones get 2D only).
+  // Touch-first phones stay on the 2D hotfix. A resized desktop window (phone width, fine pointer) keeps 3D.
   function no3dDevice() {
     const mm = (q) => !!(window.matchMedia && window.matchMedia(q).matches);
-    const w = window.innerWidth || 0, h = window.innerHeight || 0;
-    const coarse = mm('(pointer: coarse)') && !mm('(any-pointer: fine)');
     const touchUA = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
-    return w <= 820 || (Math.min(w, h) <= 500 && (coarse || touchUA)) || coarse || touchUA || document.body.classList.contains('m');
+    const env = { coarse: mm('(pointer: coarse)'), fine: mm('(any-pointer: fine)'), touchUA: touchUA };
+    if (window.ViewChrome) return ViewChrome.blocks3d(env);
+    return !!(touchUA || (env.coarse && !env.fine));
   }
   function applyNo3d() {
     const off = no3dDevice();
@@ -970,6 +983,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     viewMode = mode === '3d' ? '3d' : mode === 'schematic' ? 'schematic' : '2d';
     applyViewChrome();
     if (viewMode !== '3d') {
+      show3dLoad(false);
       try { if (app.view3d) app.view3d.setActive(false); } catch (e) { console.error(e); }
     }
     if (viewMode === '2d') {
@@ -987,7 +1001,10 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       return;
     }
     leaveSchematic();
+    show3dLoad(true);
     try {
+      await paintFrame(); // let the spinner paint before three.js parses and the scene builds
+      if (seq !== viewSeq || viewMode !== '3d') return;
       const v = await ensureView3d();
       if (seq !== viewSeq || viewMode !== '3d') return;       // user went back to 2D while loading
       v.setActive(true);
@@ -996,8 +1013,9 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       const ok = await v.healthCheck();
       if (seq !== viewSeq || viewMode !== '3d') return;
       if (!ok.ok) { const er = new Error(ok.why || 'blank frame'); er.camera = !!ok.camera; throw er; }
-      if (!quiet) toast('3D view — drag orbit · pinch/wheel zoom · Esc or 2D to exit');
-    } catch (e) { if (seq === viewSeq) view3dFail(e); }
+      show3dLoad(false);
+      if (!quiet) toast('3D view — drag orbit · pinch/wheel zoom · Esc or Back to 2D to exit');
+    } catch (e) { if (seq === viewSeq) view3dFail(e); show3dLoad(false); }
   }
   function setupViewToggle() {
     const b2 = $('#bView2d'), b3 = $('#bView3d'), bs = $('#bViewSch'); if (!b2 || !b3) return;
@@ -1007,9 +1025,10 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && viewMode === '3d' && !document.querySelector('#newBlankDlg:not([hidden])')) { e.preventDefault(); setViewMode('2d'); } }, true);
     // HOTFIX: always boot in 2D and drop any saved 3D preference.
     try { localStorage.removeItem(LSV); } catch (_) {}
-    const f2 = $('#bForce2d'); if (f2) f2.onclick = () => { setViewMode('2d'); toast('2D view'); };
+    const f2 = $('#bForce2d'); if (f2) f2.onclick = () => { if (viewMode === '2d') return; setViewMode('2d'); toast('2D editor'); };
     applyNo3d();
-    window.addEventListener('resize', () => applyNo3d());
+    applyViewChrome();
+    window.addEventListener('resize', () => { applyNo3d(); applyViewChrome(); });
     window.addEventListener('orientationchange', () => setTimeout(applyNo3d, 300));
   }
 

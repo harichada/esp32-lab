@@ -44,6 +44,55 @@
     return [BANDC[Math.floor(d / 10)] || 0, BANDC[d % 10] || 0, mult, 0xc9a227];
   }
 
+  // Place `cam` so every corner of `box` lands inside `margins` (NDC) at the
+  // orbit angle. Distance is solved from the real projection, so a phone-narrow
+  // viewport pulls back instead of cropping the board.
+  function fitCameraToBox(cam, box, opts) {
+    const THREE = root.THREE || globalThis.THREE;
+    opts = opts || {};
+    const theta = (opts.angleDeg != null ? opts.angleDeg : 40) * Math.PI / 180;
+    const phi = opts.phi != null ? opts.phi : 1.10;
+    const margins = opts.margins || { xMin: -0.9, xMax: 0.9, yMin: -0.86, yMax: 0.9 };
+    const target = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const span = Math.max(size.x, size.y, size.z, 1);
+    if (cam.far < span * 20) { cam.far = span * 40; cam.updateProjectionMatrix(); }
+    const corners = [];
+    for (const x of [box.min.x, box.max.x]) for (const y of [box.min.y, box.max.y]) for (const z of [box.min.z, box.max.z]) corners.push(new THREE.Vector3(x, y, z));
+    const ndc = new THREE.Vector3();
+    const place = (r) => {
+      cam.position.set(
+        target.x + r * Math.sin(phi) * Math.sin(theta),
+        target.y + r * Math.cos(phi),
+        target.z + r * Math.sin(phi) * Math.cos(theta)
+      );
+      cam.lookAt(target);
+      cam.updateMatrixWorld(true);
+    };
+    const fits = () => {
+      for (let i = 0; i < corners.length; i++) {
+        ndc.copy(corners[i]).project(cam);
+        if (!Number.isFinite(ndc.x) || !Number.isFinite(ndc.y) || !Number.isFinite(ndc.z)) return false;
+        if (ndc.z < -1 || ndc.z > 1) return false;
+        if (ndc.x < margins.xMin || ndc.x > margins.xMax || ndc.y < margins.yMin || ndc.y > margins.yMax) return false;
+      }
+      return true;
+    };
+    let lo = Math.max(40, span * 0.2), hi = lo, guard = 0;
+    place(hi);
+    while (!fits() && hi < span * 80 && guard++ < 28) { lo = hi; hi *= 1.45; place(hi); }
+    if (fits()) {
+      for (let i = 0; i < 22; i++) {
+        const mid = (lo + hi) / 2;
+        place(mid);
+        if (fits()) hi = mid; else lo = mid;
+      }
+    }
+    const r = hi * 1.03;
+    place(r);
+    return { target: target.clone(), theta: theta, phi: phi, r: r };
+  }
+
   class Orbit {
     constructor(cam, el, target) {
       this.cam = cam; this.el = el; this.target = target.clone();
@@ -113,22 +162,13 @@
       this.cam.position.set(t.x + r * Math.sin(phi) * Math.sin(theta), t.y + r * Math.cos(phi), t.z + r * Math.sin(phi) * Math.cos(theta));
       this.cam.lookAt(t);
     }
-    frameBox(box, angleDeg) {
+    frameBox(box, angleDeg, margins) {
       if (!box || box.isEmpty()) return;
-      const c = new THREE.Vector3(); box.getCenter(c);
-      const size = new THREE.Vector3(); box.getSize(size);
-      const span = Math.max(size.x, size.z, 40);
-      this.goal.target.set(c.x, Math.max(8, Math.min(14, size.y * 0.1 + 5)), c.z);
-      this.goal.theta = (angleDeg != null ? angleDeg : 40) * Math.PI / 180;
-      this.goal.phi = 1.10;
-      const vfov = (this.cam.fov || 40) * Math.PI / 180;
-      // Fit the narrower of vertical/horizontal FOV so portrait phones don't open inside the breadboard
-      const hfov = 2 * Math.atan(Math.tan(vfov * 0.5) * Math.max(0.2, this.cam.aspect || 1));
-      const fov = Math.min(vfov, hfov);
-      const fit = (span * 0.52) / Math.max(0.12, Math.tan(fov * 0.5));
-      this.goal.r = Math.max(110, Math.min(1100, fit * 1.08 + 30));
-      this.sph.theta = this.goal.theta; this.sph.phi = this.goal.phi; this.sph.r = this.goal.r;
-      this.target.copy(this.goal.target); this.apply();
+      const pose = fitCameraToBox(this.cam, box, { angleDeg: angleDeg, phi: 1.10, margins: margins });
+      this.goal.target.copy(pose.target);
+      this.goal.theta = pose.theta; this.goal.phi = pose.phi; this.goal.r = pose.r;
+      this.sph.theta = pose.theta; this.sph.phi = pose.phi; this.sph.r = pose.r;
+      this.target.copy(pose.target); this.apply();
     }
     flyTo(pos, r) {
       this._fly = { t0: performance.now(), dur: RM() ? 1 : 780, fromT: this.target.clone(), toT: pos.clone(), fromR: this.sph.r, toR: r || this.sph.r * 0.62, fromTh: this.sph.theta, fromPh: this.sph.phi };
@@ -263,8 +303,15 @@
       this.root = new THREE.Group(); this.scene.add(this.root);
       this.pulseRoot = new THREE.Group(); this.scene.add(this.pulseRoot);
       this.ready = true;
-      this._onResize = () => this.resize();
+      this._onResize = () => {
+        if (this._resizeRaf) return;
+        this._resizeRaf = requestAnimationFrame(() => { this._resizeRaf = 0; this.resize(); });
+      };
       root.addEventListener('resize', this._onResize);
+      if (typeof ResizeObserver !== 'undefined') {
+        this._ro = new ResizeObserver(() => this._onResize());
+        this._ro.observe(this.wrap);
+      }
       // Interactive parts (buttons, switches, pots) get the pointer before the orbit camera does.
       // Capture-phase listeners on the canvas run before Orbit's own (bubble) listeners.
       this.canvas.addEventListener('pointerdown', (e) => {
@@ -333,10 +380,54 @@
 
     resize() {
       if (!this.ready) return;
-      const w = Math.max(1, this.wrap.clientWidth), h = Math.max(1, this.wrap.clientHeight);
-      this.camera.aspect = w / h; this.camera.updateProjectionMatrix();
-      this.renderer.setPixelRatio(this.dpr); this.renderer.setSize(w, h, false);
-      if (this.composer) this.composer.setSize(w, h);
+      const w = this.wrap.clientWidth, h = this.wrap.clientHeight;
+      if (w < 2 || h < 2) return;
+      const same = w === this._vw && h === this._vh;
+      this._vw = w; this._vh = h;
+      if (!same) {
+        this.camera.aspect = w / h; this.camera.updateProjectionMatrix();
+        this.dpr = Math.min(root.devicePixelRatio || 1, /Mobi|Android/i.test(navigator.userAgent) ? 1.5 : 2);
+        this.renderer.setPixelRatio(this.dpr); this.renderer.setSize(w, h, false);
+        if (this.composer) this.composer.setSize(w, h);
+      }
+      if (this.active && this._fitBox) this._applyFrame();
+    }
+    // Safe NDC window: keep the board off the stage edges and out from under the
+    // banner, view toolbar, and (on a phone-width layout) the bottom dial.
+    _safeNdc() {
+      const w = this.wrap.clientWidth || 1, h = this.wrap.clientHeight || 1;
+      const wrap = this.wrap.getBoundingClientRect();
+      let top = Math.max(12, h * 0.04), bot = Math.max(14, h * 0.05), left = Math.max(12, w * 0.04), right = Math.max(12, w * 0.04);
+      let extra = [];
+      try { extra = [...document.querySelectorAll('body.m #mHub, body.m #mIgnite, body.m #mParts')]; } catch (_) {}
+      const nodes = [...this.wrap.querySelectorAll('.projbanner, .canvas-tools, .zoom-tools, .exit3d'), ...extra];
+      for (const el of nodes) {
+        if (!el) continue;
+        const cs = getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width < 8 || r.height < 8) continue;
+        const l = Math.max(r.left, wrap.left), ri = Math.min(r.right, wrap.right);
+        const t = Math.max(r.top, wrap.top), b = Math.min(r.bottom, wrap.bottom);
+        if (ri - l < 8 || b - t < 8) continue;
+        const fromTop = t - wrap.top, fromBot = wrap.bottom - b;
+        if (fromTop <= fromBot && fromTop < h * 0.45) top = Math.max(top, (b - wrap.top) + 10);
+        else if (fromBot < h * 0.58) bot = Math.max(bot, (wrap.bottom - t) + 10);
+      }
+      if (top + bot > h * 0.62) { const s = (h * 0.62) / (top + bot); top *= s; bot *= s; }
+      if (left + right > w * 0.5) { const s = (w * 0.5) / (left + right); left *= s; right *= s; }
+      return {
+        xMin: (left / w) * 2 - 1, xMax: 1 - (right / w) * 2,
+        yMin: (bot / h) * 2 - 1, yMax: 1 - (top / h) * 2,
+      };
+    }
+    _applyFrame() {
+      if (!this._fitBox || !this.orbit) return;
+      this.orbit.frameBox(this._fitBox, 40, this._safeNdc());
+      if (this.scene && this.scene.fog && this.scene.fog.isFogExp2) {
+        const r = this.orbit.sph.r;
+        this.scene.fog.density = Math.min(0.00055, 0.45 / Math.max(r, 1));
+      }
     }
     setActive(on) {
       this.active = !!on; this.canvas.classList.toggle('on', this.active);
@@ -461,17 +552,12 @@
       if (this.kick && !box.isEmpty()) {
         const c = new THREE.Vector3(); box.getCenter(c); this.kick.position.set(c.x, 70, c.z);
       }
-      if (fit) {
-        const focus = new THREE.Box3();
-        let n = 0;
-        for (const [, rec] of this.parts) {
-          if (rec.part.type === 'breadboard') continue;
-          focus.expandByObject(rec.mesh); n++;
-        }
-        const use = (n > 0 && !focus.isEmpty()) ? focus : box;
-        if (n > 0) { const pad = new THREE.Vector3(55, 20, 55); use.min.sub(pad); use.max.add(pad); }
-        // also expand by virtual board lightly so floor shows
-        this.orbit.frameBox(use, 40);
+      if (fit && !box.isEmpty()) {
+        // Frame the breadboard together with the parts and wires. Fitting only the
+        // parts left the long board running off the right and bottom of the view.
+        const use = box.clone(); use.expandByScalar(10);
+        this._fitBox = use;
+        this._applyFrame();
       }
       this._linearize(this.root);
       this._updateLive();
@@ -1724,12 +1810,15 @@
       });
     }
     dispose() {
-      cancelAnimationFrame(this._raf); root.removeEventListener('resize', this._onResize);
+      cancelAnimationFrame(this._raf); cancelAnimationFrame(this._resizeRaf);
+      root.removeEventListener('resize', this._onResize);
+      if (this._ro) this._ro.disconnect();
       this.clear(); if (this.renderer) this.renderer.dispose();
     }
   }
 
   root.View3D = View3D;
+  root.View3DFit = { fitCameraToBox: fitCameraToBox };
   root.loadView3D = async function loadView3D(wrap, hooks) {
     const v = new View3D(wrap, hooks);
     await v.init();
