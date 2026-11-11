@@ -142,6 +142,15 @@ canvas{width:100%;background:var(--l0);border:1px solid var(--line);border-radiu
 /* modals, menus, command palette */
 .modal{position:fixed;inset:0;background:rgba(3,4,6,.6);backdrop-filter:blur(3px);z-index:60;display:flex;align-items:flex-start;justify-content:center;padding-top:10vh;animation:fade 150ms}.modal[hidden]{display:none}@keyframes fade{from{opacity:0}}
 .modal-box{background:var(--l1);border-radius:12px;padding:var(--s4);width:min(760px,94vw);max-height:76vh;overflow:auto;display:flex;flex-direction:column;gap:var(--s3);box-shadow:var(--sh3)}.modal-box h3{font-size:15px;font-weight:600}
+/* "+ New blank" chooser (Basic circuit vs ESP32) */
+.nb-modal{z-index:70}.nb-box{width:min(600px,94vw)}.nb-sub{margin:0;color:var(--txt2)}
+.nb-opts{display:grid;grid-template-columns:1fr 1fr;gap:var(--s3)}
+.nb-opt{display:grid;grid-template-columns:1fr auto;align-items:center;align-content:start;gap:8px 10px;height:auto;min-height:132px;padding:var(--s4);text-align:left;white-space:normal;border-radius:var(--r3);background:var(--l2);border:1px solid var(--line2)}
+.nb-opt:hover{background:var(--l3);border-color:var(--acc-d)}.nb-opt:focus-visible{border-color:var(--acc);background:var(--acc-bg)}
+.nb-t{font-size:14px;font-weight:600;color:var(--txt)}.nb-tag{font-size:10.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--acc);background:var(--acc-bg);border-radius:999px;padding:2px 8px}
+.nb-d{grid-column:1/-1;font-size:12.5px;font-weight:400;line-height:1.5;color:var(--txt2)}
+.nb-foot{justify-content:flex-end}
+@media (max-width:540px){.nb-opts{grid-template-columns:1fr}.nb-opt{min-height:0}}
 .projs{width:100%;border-collapse:collapse}.projs td{padding:10px 8px;border-top:1px solid var(--line);vertical-align:middle}.projs tr:hover td{background:var(--l2)}.projs td:last-child{text-align:right;white-space:nowrap}.projs td button{margin-left:4px;height:26px;padding:0 8px;font-size:12px}.projs .pn{font-weight:550}.projs tr.cur .pn{color:var(--acc)}
 .ctxmenu{position:absolute;z-index:30;background:var(--l2);border-radius:10px;padding:5px;display:flex;flex-direction:column;gap:1px;min-width:180px;box-shadow:var(--sh3);animation:fade 120ms}.ctxmenu button{justify-content:flex-start;background:none;border-color:transparent;height:28px}.ctxmenu button:hover{background:var(--l4)}
 .ctx-colors{display:flex;flex-wrap:wrap;gap:5px;padding:7px 8px 4px;border-top:1px solid var(--line);margin-top:3px}.ctx-colors span{width:16px;height:16px;border-radius:50%;cursor:pointer;box-shadow:inset 0 0 0 1px rgba(0,0,0,.4);transition:transform var(--t)}.ctx-colors span:hover{transform:scale(1.2)}

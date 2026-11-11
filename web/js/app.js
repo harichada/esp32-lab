@@ -16,7 +16,10 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     stopRun(); app.readOnly = !!(opts && opts.readOnly);
     if (window.Netlist) { try { Netlist.migrate(p); } catch (e) { /* open the board even if its netlist cannot be built */ } }
     app.proj = normalize(p); app.sim = new Sim(app.proj); app.file = 'sketch'; app.world = new Devices.MockWorld(); app.world.onchange = () => (app.devDirty = true); app.world.onlog = (e) => app.netlog.add({ k: 'dev', msg: `${e.proto}: ${e.summary}`, ok: !(e.code < 0 || e.code >= 400) });
-    app.editor.setProject(app.proj); setTimeout(() => app.editor.fit(), 0);
+    app.editor.setProject(app.proj);
+    // Editor.setProject drops the selection without notifying the Inspector.
+    app.editor.select(null);
+    setTimeout(() => app.editor.fit(), 0);
     $('#selMode').value = app.proj.mode; $('#inDefines').value = app.proj.defines.join(','); renderFileTabs(); loadCode(); modeNote();
     $('#cbDiodes').checked = !app.proj.parts.some((q) => q.type === 'diode' && q.props.bypass);
     const hasDev = !!app.proj.devices; document.querySelector('[data-tab=dev]').style.display = hasDev ? '' : 'none';
@@ -26,7 +29,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     app.devDirty = true; setStatus('idle', 'idle'); renderBanner();
     if (window.Bom) Bom.render(document.getElementById('bomView'), app.proj);
     if (app.view3d) app.view3d.setProject(app.proj);
-    if (app.schematic) app.schematic.setProject(app.proj);
+    if (app.schematic) { app.schematic.sel = null; app.schematic.setProject(app.proj); }
   }
   async function loadExample(k) {
     const ex = Examples.EX[k](); ex.example = k;
@@ -76,7 +79,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       if (e.target === d) { d.hidden = true; return; }
       const b = e.target.closest('[data-a]'); if (!b) return; const id = b.closest('tr') && b.closest('tr').dataset.id; const a = b.dataset.a;
       if (a === 'close') d.hidden = true;
-      else if (a === 'new') { const p = store.importJson({ name: 'New project', mode: 'qemu', code: Examples.BLINK, parts: Examples.EX.blank().parts, wires: [] }); openProject(p.id); d.hidden = true; }
+      else if (a === 'new') newBlankDialog(b, (kind) => { const p = store.importJson(Examples.newBlank(kind)); openProject(p.id); d.hidden = true; });
       else if (a === 'open') { openProject(id); d.hidden = true; }
       else if (a === 'ren') { const n = prompt('Rename project', store.list().find((x) => x.id === id).name); if (n) { store.rename(id, n); if (app.proj.id === id) { app.proj.name = n; renderBanner(true); } projectsDialog(); } }
       else if (a === 'dup') { store.duplicate(id); projectsDialog(); }
@@ -88,6 +91,44 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     $('#cbSrv').onchange = (e) => { store.serverSync = e.target.checked; if (e.target.checked && !app.readOnly) store.save(app.proj); };
     $('#projImp').onchange = (e) => { const f = e.target.files[0]; if (!f) return; f.text().then((t) => { try { const o = JSON.parse(t); const p = store.importJson(o.connections && o.parts && !o.wires ? importWokwi(o) : o); openProject(p.id); d.hidden = true; toast('Imported ' + f.name); } catch (er) { toast('Could not import: ' + er.message, true); } }); };
   }
+  // "+ New blank" chooser: Basic circuit (bare breadboard, no ESP32) vs ESP32 (DevKit V1, empty sketch, real firmware).
+  // Cancel / ✕ / Esc / backdrop close it without touching the current project. Focus is trapped while open.
+  function newBlankDialog(opener, onPick) {
+    let d = $('#newBlankDlg'); if (!d) { d = document.createElement('div'); d.id = 'newBlankDlg'; d.className = 'modal nb-modal'; document.body.appendChild(d); }
+    d.innerHTML = `<div class="modal-box nb-box" role="dialog" aria-modal="true" aria-labelledby="nbTitle" aria-describedby="nbSub">
+      <div class="row"><h3 id="nbTitle" style="flex:1;margin:0">New blank project</h3><button data-a="cancel" aria-label="Close">✕</button></div>
+      <p id="nbSub" class="muted nb-sub">What are you building?</p>
+      <div class="nb-opts" role="group" aria-label="Project type">
+        <button class="nb-opt" data-k="basic"><span class="nb-t">Basic circuit</span><span class="nb-tag">No code</span>
+          <span class="nb-d">An empty breadboard with no microcontroller. Add batteries, resistors, LEDs, switches and meters. The circuit is solved live, with nothing to compile.</span></button>
+        <button class="nb-opt" data-k="esp32"><span class="nb-t">ESP32</span><span class="nb-tag">Real firmware</span>
+          <span class="nb-d">An ESP32 DevKit V1 on a breadboard with an empty sketch. Your Arduino code is compiled and run on an emulated ESP32 (QEMU).</span></button>
+      </div>
+      <div class="row nb-foot"><button data-a="cancel">Cancel</button></div></div>`;
+    const prevFocus = opener || document.activeElement;
+    const close = () => { d.hidden = true; window.removeEventListener('keydown', onKey, true); if (prevFocus && prevFocus.isConnected && prevFocus.focus) prevFocus.focus(); };
+    const focusables = () => [...d.querySelectorAll('button:not([disabled])')];
+    function onKey(e) {
+      if (d.hidden) return;
+      if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); close(); return; }
+      if (e.key === 'Tab') {
+        const f = focusables(); if (!f.length) return; const i = f.indexOf(document.activeElement);
+        if (e.shiftKey && i <= 0) { e.preventDefault(); f[f.length - 1].focus(); } else if (!e.shiftKey && (i === -1 || i === f.length - 1)) { e.preventDefault(); f[0].focus(); }
+        return;
+      }
+      if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') && document.activeElement && document.activeElement.classList.contains('nb-opt')) {
+        const o = [...d.querySelectorAll('.nb-opt')], i = o.indexOf(document.activeElement); e.preventDefault(); o[(i + (e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? o.length - 1 : 1)) % o.length].focus();
+      }
+    }
+    window.addEventListener('keydown', onKey, true);
+    d.onclick = (e) => {
+      if (e.target === d) { close(); return; }
+      const opt = e.target.closest('.nb-opt'); if (opt) { const k = opt.dataset.k; d.hidden = true; window.removeEventListener('keydown', onKey, true); onPick(k); return; }
+      if (e.target.closest('[data-a=cancel]')) close();
+    };
+    d.hidden = false; const first = d.querySelector('.nb-opt'); if (first) first.focus();
+  }
+  app.newBlankDialog = newBlankDialog;
   app.makeCopy = makeCopy; app.openProject = openProject;
   function download() { syncCode(); const b = new Blob([JSON.stringify(app.proj, null, 1)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = (app.proj.name || 'project').replace(/[^\w.-]+/g, '_') + '.json'; a.click(); }
   function openFile(f) {
@@ -962,7 +1003,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     b2.onclick = () => setViewMode('2d'); b3.onclick = () => setViewMode('3d');
     if (bs) bs.onclick = () => setViewMode('schematic');
     const ex = $('#bExit3d'); if (ex) ex.onclick = () => setViewMode('2d');
-    window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && viewMode === '3d') { e.preventDefault(); setViewMode('2d'); } }, true);
+    window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && viewMode === '3d' && !document.querySelector('#newBlankDlg:not([hidden])')) { e.preventDefault(); setViewMode('2d'); } }, true);
     // HOTFIX: always boot in 2D and drop any saved 3D preference.
     try { localStorage.removeItem(LSV); } catch (_) {}
     const f2 = $('#bForce2d'); if (f2) f2.onclick = () => { setViewMode('2d'); toast('2D view'); };

@@ -126,6 +126,7 @@ body.m table.pins{font-size:13px}body.m table.pins td{padding:8px}body.m .sw{wid
 /* modals + toasts on phones */
 body.m .modal{padding:calc(var(--mTop) + 8px) 10px 10px;align-items:flex-start;z-index:80}
 body.m .modal-box{width:100%;max-height:calc(100% - 20px);border-radius:18px;padding:16px}
+body.m .nb-modal{z-index:90}body.m .nb-opts{grid-template-columns:1fr}body.m .nb-opt{min-height:0;padding:14px}body.m .nb-foot button{height:40px;padding:0 18px}
 body.m .projs td{padding:12px 6px;font-size:14px}body.m .projs td:last-child{white-space:normal}body.m .projs td button{height:40px;min-height:40px;margin:3px}
 body.m .projs tr{display:flex;flex-wrap:wrap;align-items:center}body.m .projs td:last-child{text-align:left;width:100%;border-top:0;padding-top:0}
 body.m .toast{bottom:calc(var(--dock) + 110px);font-size:14px;border-radius:14px;max-width:calc(100vw - 24px)}
