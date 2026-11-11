@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 for (const f of ['solver.js', 'parts.js', 'parts-art.js', 'sim.js', 'remote_logic.js', 'examples.js', 'basic.js', 'bom.js', 'parts/registry.js', 'parts/sensors.js', 'parts/displays.js', 'parts/examples-sensors-displays.js', 'parts/ics.js', 'parts/passives.js', 'parts/examples-ics.js', 'parts/hwkit.js', 'parts/actuators.js', 'parts/power.js', 'parts/semis.js', 'parts/examples-actuators.js', 'schematic.js']) require('../js/' + f);
-const { layout, pinNets } = globalThis.Schematic;
+const { layout, pinNets, toSvg } = globalThis.Schematic;
 const { Sim } = globalThis.SimCore;
 const E = globalThis.Examples;
 const P = globalThis.Parts;
@@ -97,6 +97,46 @@ function connected(model, net) {
   return new Set(pts);
 }
 
+// A real series string: one diode's cathode meets exactly one other diode's anode.
+// The anode has to sit on the supply side and the two anodes must not face each other.
+function seriesDiodeProblems(model) {
+  const diodes = model.symbols.filter((s) => s.kind === 'LED' || s.kind === 'D');
+  const onNet = new Map();
+  for (const s of model.symbols) for (const t of s.terms) {
+    if (!onNet.has(t.net)) onNet.set(t.net, []);
+    onNet.get(t.net).push(s.id + '.' + t.name);
+  }
+  const problems = [];
+  for (const led of diodes) {
+    const a = led.terms.find((t) => t.name === 'A' || t.name === '+');
+    const c = led.terms.find((t) => t && t !== a);
+    if (!a || !c || (onNet.get(c.net) || []).length !== 2) continue;
+    const mate = diodes.find((o) => o !== led && o.terms.some((t) => (t.name === 'A' || t.name === '+') && t.net === c.net));
+    if (!mate) continue;
+    const na = mate.terms.find((t) => (t.name === 'A' || t.name === '+') && t.net === c.net);
+    const up = (led.flow || 1) > 0 ? 'l' : 'r';
+    if ((a.dir === 'l' || a.dir === 'r') && (c.dir === 'l' || c.dir === 'r') && a.dir !== up) {
+      problems.push(led.id + ' cathode is on the supply side of its anode');
+    }
+    const sameRow = Math.abs(a.y - na.y) <= 20;
+    const anodesFace = sameRow && ((a.dir === 'r' && na.dir === 'l' && na.x > a.x) || (a.dir === 'l' && na.dir === 'r' && a.x > na.x));
+    if (anodesFace) problems.push(led.id + ' and ' + mate.id + ' anodes face each other');
+    if ((c.dir === 'l' || c.dir === 'r') && (na.dir === 'l' || na.dir === 'r')) {
+      const faces = (c.dir === 'r' && na.dir === 'l' && na.x >= c.x) || (c.dir === 'l' && na.dir === 'r' && na.x <= c.x);
+      if (!faces) problems.push(led.id + '.C does not meet ' + mate.id + '.A');
+    }
+  }
+  return problems;
+}
+
+function cathodeBarX(svg, id) {
+  const i = svg.indexOf('data-pid="' + id + '"');
+  if (i < 0) return null;
+  const g = svg.slice(i, svg.indexOf('</g>', i));
+  const m = /M(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?) V(-?\d+(?:\.\d+)?)/.exec(g);
+  return m ? +m[1] : null;
+}
+
 test('blink LED schematic: ESP32, resistor, LED, orthogonal, GND symbols, project unchanged', () => {
   const raw = E.EX.blink();
   const before = JSON.stringify(raw);
@@ -119,6 +159,47 @@ test('blink LED schematic: ESP32, resistor, LED, orthogonal, GND symbols, projec
   const ln = led.terms.filter((t) => t.wire).map((t) => t.net);
   assert.ok(rn.some((n) => ln.includes(n)), 'series net');
   assert.ok(!model.fallback, 'blink routed cleanly');
+});
+
+test('series vs parallel LEDs: supply is drawn, and the red pair is one anode-to-cathode string', () => {
+  const model = layout(E.EX.b_series());
+  audit(model, 'b_series');
+  assert.ok(!model.fallback, (model.fallbackWhy || []).join('; '));
+  const pin = (id, name) => model.symbols.find((s) => s.id === id).terms.find((t) => t.name === name);
+  const plus = pin('BAT1', '+');
+  assert.strictEqual(plus.net, pin('R1', '1').net);
+  assert.strictEqual(plus.net, pin('R2', '1').net);
+  assert.strictEqual(plus.net, pin('R3', '1').net);
+  for (const [id, name] of [['BAT1', '+'], ['R1', '1'], ['R2', '1'], ['R3', '1']]) {
+    const t = pin(id, name);
+    assert.strictEqual(t.wire, true, id + ' supply pin is not drawn');
+    assert.notStrictEqual(t.rail, 'flag', id + ' supply pin is only a ' + t.netName + ' flag');
+  }
+  const reach = connected(model, plus.net);
+  for (const id of ['R1', 'R2', 'R3']) {
+    const t = pin(id, '1');
+    assert.ok(reach.has(t.x + ',' + t.y) || reach.has(t.sx + ',' + t.sy), id + ' is not on the supply wire');
+  }
+  assert.strictEqual(pin('R1', '2').net, pin('LED1', 'A').net);
+  assert.strictEqual(pin('LED1', 'C').net, pin('LED2', 'A').net);
+  assert.notStrictEqual(pin('LED1', 'A').net, pin('LED2', 'A').net);
+  assert.strictEqual(pin('LED2', 'C').rail, 'gnd');
+  assert.strictEqual(pin('LED3', 'C').rail, 'gnd');
+  assert.strictEqual(pin('LED4', 'C').rail, 'gnd');
+  assert.strictEqual(pin('R2', '2').net, pin('LED3', 'A').net);
+  assert.strictEqual(pin('R3', '2').net, pin('LED4', 'A').net);
+  const a1 = pin('LED1', 'A'), c1 = pin('LED1', 'C'), a2 = pin('LED2', 'A');
+  assert.ok(a1.x < c1.x && c1.x <= a2.x, 'red LEDs do not read left to right');
+  assert.strictEqual(a1.dir, 'l');
+  assert.strictEqual(c1.dir, 'r');
+  assert.strictEqual(a2.dir, 'l');
+  assert.deepStrictEqual(seriesDiodeProblems(model), []);
+  const svg = toSvg(model);
+  for (const id of ['LED1', 'LED2', 'LED3', 'LED4']) {
+    const a = pin(id, 'A'), c = pin(id, 'C'), bx = cathodeBarX(svg, id);
+    assert.ok(bx !== null, id + ' has no cathode bar');
+    assert.ok(Math.abs(bx - c.x) < Math.abs(bx - a.x), id + ' bar ' + bx + ' is nearer the anode ' + a.x + ' than the cathode ' + c.x);
+  }
 });
 
 test('resistor divider + DMM schematic connects the midpoint', () => {
@@ -311,6 +392,8 @@ function assertCircuit(model, label) {
     assert.ok(s.terms.every((t) => t.nc), label + ' ' + s.id + ' parked but a pin shares a net');
     assert.ok(model.texts.some((t) => t.kind === 'note' && t.pid === s.id && t.text === 'Not connected'), label + ' ' + s.id + ' missing caption');
   }
+  const series = seriesDiodeProblems(model);
+  assert.deepStrictEqual(series, [], label + ' series diode: ' + series.join('; '));
 }
 
 test('every example: 2D, 3D and schematic share one netlist, with no stray or duplicate parts', () => {
