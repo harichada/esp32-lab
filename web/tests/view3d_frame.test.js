@@ -111,6 +111,43 @@ test('series-sized content frames closer than the old stand-in board', () => {
   assert.ok(inside(project(c, board), MARGIN), 'blink board still inside after the content pad');
 });
 
+test('a short wide stage fills the limiting field of view and stays centered', () => {
+  // 500×427 canvas, the phone-landscape stage that used to park the circuit in a top sliver.
+  const content = new THREE.Box3(new THREE.Vector3(70, -2, 120), new THREE.Vector3(360, 44, 460));
+  const margins = { xMin: -0.9, xMax: 0.9, yMin: -0.72, yMax: 0.7 };
+  const c = cam(500 / 427);
+  const pose = fitCameraToBox(c, content, { angleDeg: 40, margins: margins });
+  const ndc = project(c, content);
+  assert.ok(inside(ndc, margins), ndc.map((n) => n.x.toFixed(2) + ',' + n.y.toFixed(2)).join(' '));
+  const xs = ndc.map((n) => n.x), ys = ndc.map((n) => n.y);
+  const spanX = Math.max(...xs) - Math.min(...xs);
+  const spanY = Math.max(...ys) - Math.min(...ys);
+  const fill = Math.max(spanX / (margins.xMax - margins.xMin), spanY / (margins.yMax - margins.yMin));
+  assert.ok(fill > 0.72, fill);
+  const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+  const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+  assert.ok(Math.abs(cx - (margins.xMin + margins.xMax) / 2) < 0.16, cx);
+  assert.ok(Math.abs(cy - (margins.yMin + margins.yMax) / 2) < 0.2, cy);
+  assert.ok(pose.r < 1600, pose.r);
+});
+
+test('a tall stage centers the circuit in the visible window', () => {
+  const content = new THREE.Box3(new THREE.Vector3(70, -2, 120), new THREE.Vector3(360, 44, 460));
+  const margins = { xMin: -0.94, xMax: 0.94, yMin: -0.56, yMax: 0.69 };
+  const c = cam(390 / 790);
+  const pose = fitCameraToBox(c, content, { angleDeg: 40, margins: margins });
+  const ndc = project(c, content);
+  assert.ok(inside(ndc, margins), ndc.map((n) => n.x.toFixed(2) + ',' + n.y.toFixed(2)).join(' '));
+  const xs = ndc.map((n) => n.x), ys = ndc.map((n) => n.y);
+  const fill = Math.max((Math.max(...xs) - Math.min(...xs)) / (margins.xMax - margins.xMin), (Math.max(...ys) - Math.min(...ys)) / (margins.yMax - margins.yMin));
+  assert.ok(fill > 0.72, fill);
+  const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+  const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+  assert.ok(Math.abs(cx) < 0.08, cx);
+  assert.ok(Math.abs(cy - (margins.yMin + margins.yMax) / 2) < 0.12, cy);
+  assert.ok(pose.r < 2200, pose.r);
+});
+
 test('a small circuit still frames without the camera sitting inside it', () => {
   const box = new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(80, 16, 50));
   const c = cam(1.4);
@@ -158,6 +195,8 @@ test('3D hides the 2D zoom readout stylesheet rule', () => {
   const mobile = fs.readFileSync(path.join(__dirname, '../css/mobile.css'), 'utf8');
   assert.match(theme, /body\.view3d #zoomPct\{display:none!important\}/);
   assert.match(mobile, /body\.m\.view3d #zoomPct\{display:none!important\}/);
+  assert.match(mobile, /body\.m \.view-toggle \.seg\{[^}]*min-width:44px/);
+  assert.match(mobile, /body\.m \.zoom-tools\{bottom:80px/);
 });
 
 test('3D stays available at phone width on a desktop pointer', () => {

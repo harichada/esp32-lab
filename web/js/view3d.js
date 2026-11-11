@@ -75,15 +75,15 @@
   }
 
   // Place `cam` so every corner of `box` lands inside `margins` (NDC) at the
-  // orbit angle. Distance is solved from the real projection, so a phone-narrow
-  // viewport pulls back instead of cropping the board.
+  // orbit angle, then center that box in the visible window. Distance comes from
+  // both fields of view: the axis that overflows the visible window wins.
   function fitCameraToBox(cam, box, opts) {
     const THREE = root.THREE || globalThis.THREE;
     opts = opts || {};
     const theta = (opts.angleDeg != null ? opts.angleDeg : 40) * Math.PI / 180;
     const phi = opts.phi != null ? opts.phi : 1.10;
     const margins = opts.margins || { xMin: -0.9, xMax: 0.9, yMin: -0.86, yMax: 0.9 };
-    const target = box.getCenter(new THREE.Vector3());
+    let target = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3());
     const span = Math.max(size.x, size.y, size.z, 1);
     if (cam.far < span * 20) { cam.far = span * 40; cam.updateProjectionMatrix(); }
@@ -99,27 +99,59 @@
       cam.lookAt(target);
       cam.updateMatrixWorld(true);
     };
-    const fits = () => {
+    const extents = () => {
+      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, ok = true;
       for (let i = 0; i < corners.length; i++) {
         ndc.copy(corners[i]).project(cam);
-        if (!Number.isFinite(ndc.x) || !Number.isFinite(ndc.y) || !Number.isFinite(ndc.z)) return false;
-        if (ndc.z < -1 || ndc.z > 1) return false;
-        if (ndc.x < margins.xMin || ndc.x > margins.xMax || ndc.y < margins.yMin || ndc.y > margins.yMax) return false;
+        if (!Number.isFinite(ndc.x) || !Number.isFinite(ndc.y) || !Number.isFinite(ndc.z) || ndc.z < -1 || ndc.z > 1) ok = false;
+        if (ndc.x < x0) x0 = ndc.x;
+        if (ndc.x > x1) x1 = ndc.x;
+        if (ndc.y < y0) y0 = ndc.y;
+        if (ndc.y > y1) y1 = ndc.y;
       }
-      return true;
+      return { x0: x0, x1: x1, y0: y0, y1: y1, ok: ok };
     };
-    let lo = Math.max(40, span * 0.2), hi = lo, guard = 0;
-    place(hi);
-    while (!fits() && hi < span * 80 && guard++ < 28) { lo = hi; hi *= 1.45; place(hi); }
-    if (fits()) {
-      for (let i = 0; i < 22; i++) {
+    const fitsAt = (e) => e.ok && e.x0 >= margins.xMin - 1e-3 && e.x1 <= margins.xMax + 1e-3 && e.y0 >= margins.yMin - 1e-3 && e.y1 <= margins.yMax + 1e-3;
+    // Reference pose, then scale by whichever field of view is tighter.
+    let r = Math.max(span * 1.2, 80);
+    place(r);
+    const usableX = Math.max(0.25, margins.xMax - margins.xMin);
+    const usableY = Math.max(0.25, margins.yMax - margins.yMin);
+    let e = extents();
+    const sx = e.x1 - e.x0, sy = e.y1 - e.y0;
+    if (sx > 0.02 && sy > 0.02) r *= Math.max(sx / usableX, sy / usableY);
+    place(r);
+    let lo = Math.max(40, r * 0.45), hi = r, guard = 0;
+    while (!fitsAt(extents()) && hi < span * 80 && guard++ < 24) { lo = hi; hi *= 1.35; place(hi); }
+    if (fitsAt(extents())) {
+      for (let i = 0; i < 18; i++) {
         const mid = (lo + hi) / 2;
         place(mid);
-        if (fits()) hi = mid; else lo = mid;
+        if (fitsAt(extents())) hi = mid; else lo = mid;
       }
     }
-    const r = hi * 1.03;
+    r = hi * 1.02;
     place(r);
+    // The look-at point is the box center. Shift it so that center lands in the
+    // middle of the visible window (toolbars make that window asymmetric).
+    const wantX = (margins.xMin + margins.xMax) / 2;
+    const wantY = (margins.yMin + margins.yMax) / 2;
+    const vfov = (cam.fov || 40) * Math.PI / 180;
+    for (let i = 0; i < 5; i++) {
+      e = extents();
+      const dx = wantX - (e.x0 + e.x1) / 2;
+      const dy = wantY - (e.y0 + e.y1) / 2;
+      if (Math.abs(dx) < 0.015 && Math.abs(dy) < 0.015) break;
+      const dist = Math.max(1, cam.position.distanceTo(target));
+      const worldY = dist * Math.tan(vfov / 2);
+      const worldX = worldY * Math.max(0.2, cam.aspect || 1);
+      const right = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 0);
+      const up = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 1);
+      target = target.clone().addScaledVector(right, -dx * worldX).addScaledVector(up, -dy * worldY);
+      place(r);
+    }
+    guard = 0;
+    while (!fitsAt(extents()) && r < span * 80 && guard++ < 16) { r *= 1.08; place(r); }
     return { target: target.clone(), theta: theta, phi: phi, r: r };
   }
 
@@ -428,15 +460,18 @@
       }
       if (this.active && this._fitBox) this._applyFrame();
     }
-    // Safe NDC window: keep the board off the stage edges and out from under the
-    // banner, view toolbar, and (on a phone-width layout) the bottom dial.
+    // Visible canvas, as NDC. A bar insets an edge only when it crosses the middle
+    // of the canvas. A dial or button parked in a corner used to be treated as a
+    // full-width band, which pushed a short window's circuit into a sliver at the top.
     _safeNdc() {
       const w = this.wrap.clientWidth || 1, h = this.wrap.clientHeight || 1;
       const wrap = this.wrap.getBoundingClientRect();
-      let top = Math.max(12, h * 0.04), bot = Math.max(14, h * 0.05), left = Math.max(12, w * 0.04), right = Math.max(12, w * 0.04);
+      let top = Math.max(10, h * 0.03), bot = Math.max(10, h * 0.03), left = Math.max(8, w * 0.03), right = Math.max(8, w * 0.03);
       let extra = [];
       try { extra = [...document.querySelectorAll('body.m #mHub, body.m #mIgnite, body.m #mParts')]; } catch (_) {}
       const nodes = [...this.wrap.querySelectorAll('.projbanner, .canvas-tools, .zoom-tools, .exit3d'), ...extra];
+      const midL = wrap.left + w * 0.3, midR = wrap.right - w * 0.3;
+      const midT = wrap.top + h * 0.3, midB = wrap.bottom - h * 0.3;
       for (const el of nodes) {
         if (!el) continue;
         const cs = getComputedStyle(el);
@@ -446,12 +481,20 @@
         const l = Math.max(r.left, wrap.left), ri = Math.min(r.right, wrap.right);
         const t = Math.max(r.top, wrap.top), b = Math.min(r.bottom, wrap.bottom);
         if (ri - l < 8 || b - t < 8) continue;
-        const fromTop = t - wrap.top, fromBot = wrap.bottom - b;
-        if (fromTop <= fromBot && fromTop < h * 0.45) top = Math.max(top, (b - wrap.top) + 10);
-        else if (fromBot < h * 0.58) bot = Math.max(bot, (wrap.bottom - t) + 10);
+        const crossesX = ri > midL && l < midR;
+        const crossesY = b > midT && t < midB;
+        const cy = (t + b) / 2, cx = (l + ri) / 2;
+        // A short bar along the top or bottom insets that edge only. It must not
+        // also become a side column just because it reaches the vertical middle.
+        let bar = false;
+        if (crossesX && cy < wrap.top + h * 0.42 && t < wrap.top + h * 0.36) { top = Math.max(top, (b - wrap.top) + 8); bar = true; }
+        else if (crossesX && cy > wrap.bottom - h * 0.42 && b > wrap.bottom - h * 0.4) { bot = Math.max(bot, (wrap.bottom - t) + 8); bar = true; }
+        if (!bar && crossesY && cx < wrap.left + w * 0.28) left = Math.max(left, (ri - wrap.left) + 8);
+        else if (!bar && crossesY && cx > wrap.right - w * 0.28) right = Math.max(right, (wrap.right - l) + 8);
       }
-      if (top + bot > h * 0.62) { const s = (h * 0.62) / (top + bot); top *= s; bot *= s; }
-      if (left + right > w * 0.5) { const s = (w * 0.5) / (left + right); left *= s; right *= s; }
+      // Chrome may frame the picture. It may not reduce it to a strip.
+      if (top + bot > h * 0.46) { const s = (h * 0.46) / (top + bot); top *= s; bot *= s; }
+      if (left + right > w * 0.4) { const s = (w * 0.4) / (left + right); left *= s; right *= s; }
       return {
         xMin: (left / w) * 2 - 1, xMax: 1 - (right / w) * 2,
         yMin: (bot / h) * 2 - 1, yMax: 1 - (top / h) * 2,
