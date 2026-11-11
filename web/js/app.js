@@ -721,7 +721,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       document.querySelector('.pal-empty').hidden = n > 0; };
     document.querySelectorAll('.pitem').forEach((el) => {
       el.addEventListener('dragstart', (ev) => ev.dataTransfer.setData('text/x-part', el.dataset.type));
-      el.addEventListener('click', () => { const r = $('#stage').getBoundingClientRect(), v = app.editor.view; app.editor.addPart(el.dataset.type, v.x + r.width / v.s / 2, v.y + r.height / v.s / 2); });
+      el.addEventListener('click', () => app.editor.addPartInView(el.dataset.type));
     });
   }
   function about() {

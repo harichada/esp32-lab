@@ -57,7 +57,7 @@
     document.body.insertAdjacentHTML('beforeend', `<div id="mScrim" class="m-only"></div>
       <nav id="mDial" class="m-only" aria-label="Mode dial"><div class="m-orbit">${modes.map(([k, n, i], j) => `<button class="m-tab" data-m="${k}" style="--j:${j}" aria-label="${n}">${ic(i)}<span>${n}</span></button>`).join('')}</div>
         <button id="mHub" aria-label="Open mode dial"><svg class="m-ring" viewBox="0 0 80 80"><circle cx="40" cy="40" r="36"/><circle cx="40" cy="40" r="30" class="m-ring2"/></svg><span class="m-hub-i">${ic('m-circuit')}</span><span class="m-hub-t">CIRCUIT</span></button></nav>
-      <button id="mIgnite" class="m-only" aria-label="Hold to launch"><svg viewBox="0 0 80 80"><circle cx="40" cy="40" r="34" class="m-ig-bg"/><circle cx="40" cy="40" r="34" class="m-ig-p" pathLength="100"/></svg><span class="m-ig-i">${ic('i-play')}</span><span class="m-ig-t">HOLD</span></button>
+      <button id="mIgnite" class="m-only" aria-label="Run"><svg viewBox="0 0 80 80"><circle cx="40" cy="40" r="34" class="m-ig-bg"/><circle cx="40" cy="40" r="34" class="m-ig-p" pathLength="100"/></svg><span class="m-ig-i">${ic('i-play')}</span><span class="m-ig-t">RUN</span></button>
       <div id="mTicker" class="m-only"><div id="mTickT"></div></div><div id="mCount" class="m-only"></div><div id="mFlash" class="m-only"></div>`);
     const dial = $('#mDial'); let dialOpen = false;
     const openDial = (v) => { dialOpen = v; dial.classList.toggle('open', v); document.body.classList.toggle('m-dial', v); haptic(6); };
@@ -112,8 +112,8 @@
         <button data-a="restart">${ic('i-restart')}<span>Restart</span></button><button data-a="reset">${ic('i-reset')}<span>Reset state</span></button>
         <button data-a="fit">${ic('i-fit')}<span>Fit to view</span></button><button data-a="theme">${ic('i-sun')}<span>Theme</span></button></div></div>
       <div class="m-grp"><div class="m-lbl">Panels</div><div class="m-list">
-        <button data-d="bom">Parts list (BOM)</button><button data-d="net">Network</button><button data-d="dev">Devices</button><button data-d="scope">Scope</button><button data-d="build">Build log</button><button data-d="about">About</button></div></div>
-      <div class="m-grp"><div class="m-lbl">Wiring</div><div class="m-wire" id="mWire"></div></div>
+        <button data-d="code">Code</button><button data-d="serial">Serial</button><button data-d="bom">Parts list (BOM)</button><button data-d="net">Network</button><button data-d="dev">Devices</button><button data-d="scope">Scope</button><button data-d="build">Build log</button><button data-d="about">About</button></div></div>
+      <div class="m-grp"><div class="m-lbl">Wiring</div><div class="m-wire" id="mWire"><p class="m-wire-cap">New wire colour. This does not change a selected part.</p></div></div>
       <div class="m-grp"><div class="m-lbl">Feedback</div><div class="m-wire"><label class="m-sw"><input type="checkbox" id="mHap"><span>Haptics</span></label><label class="m-sw"><input type="checkbox" id="mSnd"><span>Sound effects</span></label></div></div>
       <div class="m-legal"><span id="mConn" class="conn"><i></i><span>backend</span></span><a href="notices.html" target="_blank" rel="noopener">Open-source notices</a><small>Simulator for ESP32 · © 2026 Hari Kishore Chada. Not affiliated with Espressif, Arduino or Wokwi.</small></div></div>`;
     document.body.appendChild(more); sheetHead(more, 'More');
@@ -121,7 +121,7 @@
     const msc = document.createElement('section'); msc.id = 'mScope'; msc.className = 'panel m-sheet m-only'; document.body.appendChild(msc); sheetHead(msc, 'Oscilloscope', '<span class="m-sc-tag">MSO-4 · LIVE</span>');
     if (window.Instruments) { Instruments.onArm = () => { if (document.body.classList.contains('m') && sheet === 'scope') { setSheet(null); app.cmd.toast('Tap a pin or wire to probe'); } }; Instruments.onProbed = () => { if (document.body.classList.contains('m')) setSheet('scope'); }; }
     more.onclick = (e) => { const b = e.target.closest('[data-a],[data-d]'); if (!b) return; const a = b.dataset.a;
-      if (b.dataset.d === 'scope') { setSheet('scope'); return; }
+      if (b.dataset.d === 'scope' || b.dataset.d === 'code' || b.dataset.d === 'serial') { setSheet(b.dataset.d); return; }
       if (b.dataset.d) { openDock(b.dataset.d); return; }
       if (a === 'projects') { setSheet(null); app.cmd.projects(); } else if (a === 'save') { app.cmd.save(); } else if (a === 'download') app.cmd.download();
       else if (a === 'import') $('#fileIn').click(); else if (a === 'restart') { setSheet(null); app.cmd.restart(); } else if (a === 'reset') $('#bReset').click();
@@ -162,21 +162,25 @@
   let actx = null;
   function sound(f) { if (localStorage.getItem('esp32lab.sound') !== '1') return; try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); const o = actx.createOscillator(), g = actx.createGain(); o.type = 'sine'; o.frequency.value = f; g.gain.setValueAtTime(0.05, actx.currentTime); g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime + 0.12); o.connect(g).connect(actx.destination); o.start(); o.stop(actx.currentTime + 0.13); } catch (e) { /* */ } }
   function ignition() {
-    const b = $('#mIgnite'), p = b.querySelector('.m-ig-p'); let t0 = 0, raf = 0, hold = false; const HOLD = RM.matches ? 250 : 650;
+    // The round control used to say HOLD: a 650 ms press, then a T−3 countdown, before it
+    // clicked the real Run button (which is hidden on a phone). A tap did nothing useful.
+    const b = $('#mIgnite');
     const running = () => document.body.classList.contains('running') || !!app.run;
-    const reset = () => { cancelAnimationFrame(raf); hold = false; b.classList.remove('arming'); p.style.strokeDashoffset = 100; };
-    const step = () => { const k = Math.min(1, (performance.now() - t0) / HOLD); p.style.strokeDashoffset = 100 - 100 * k; if (k >= 1) { reset(); launch(); return; } raf = requestAnimationFrame(step); };
-    b.addEventListener('pointerdown', (e) => { e.preventDefault(); if (running()) { haptic(20); $('#bStop').click(); return; } hold = true; t0 = performance.now(); b.classList.add('arming'); haptic(5); raf = requestAnimationFrame(step); });
-    const up = () => { if (hold && performance.now() - t0 < HOLD) app.cmd.toast('Hold to launch'); reset(); };
-    b.addEventListener('pointerup', up); b.addEventListener('pointercancel', reset); b.addEventListener('pointerleave', () => { if (hold) reset(); });
+    const paint = () => {
+      const on = running(), busy = !on && document.body.classList.contains('busy');
+      b.classList.toggle('live', on);
+      b.querySelector('use').setAttribute('href', on ? '#i-stop' : '#i-play');
+      b.querySelector('.m-ig-t').textContent = on ? 'STOP' : busy ? 'BOOT' : 'RUN';
+      b.setAttribute('aria-label', on ? 'Stop' : busy ? 'Starting' : 'Run');
+    };
+    b.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (running()) { haptic(20); $('#bStop').click(); return; }
+      haptic(12); sound(440); $('#bRun').click();
+    });
     b.addEventListener('contextmenu', (e) => e.preventDefault());
-    b.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); running() ? $('#bStop').click() : launch(); } });
-    function launch() {
-      haptic([15, 40, 15, 40, 40]); sound(440);
-      const c = $('#mCount'); if (!RM.matches) { let n = 3; c.className = 'm-only on'; c.textContent = 'T−' + n; const iv = setInterval(() => { n--; if (n > 0) { c.textContent = 'T−' + n; sound(440 + (3 - n) * 110); } else { clearInterval(iv); c.textContent = 'IGNITION'; setTimeout(() => { c.className = 'm-only'; }, 650); } }, 230); }
-      $('#bRun').click();
-    }
-    new MutationObserver(() => { const r = running(); b.classList.toggle('live', r); b.querySelector('use').setAttribute('href', r ? '#i-stop' : '#i-play'); b.querySelector('.m-ig-t').textContent = r ? 'ABORT' : document.body.classList.contains('busy') ? 'BOOT' : 'HOLD'; b.setAttribute('aria-label', r ? 'Stop' : 'Hold to launch'); }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+    new MutationObserver(paint).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+    paint();
   }
   function telemetry() {
     const el = $('#mTickT'), wrap = $('#stageWrap'); let burned0 = 0, t = 0;
@@ -217,6 +221,7 @@
       if (!pts.has(e.pointerId)) return; pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (lp && Math.hypot(e.clientX - lp.x, e.clientY - lp.y) > 10) { clearTimeout(lp.t); lp = null; }
       if (g && pts.size === 2) { e.stopPropagation(); e.preventDefault(); const m = mid(), r = st.getBoundingClientRect(); const s = Math.min(4, Math.max(0.15, g.s * m.d / (g.m.d || 1)));
+        ed.markUserView && ed.markUserView();
         ed.view.s = s; ed.view.x = g.wx - (m.x - r.left) / s; ed.view.y = g.wy - (m.y - r.top) / s; ed.applyView(); const z = $('#zoomPct'); if (z) z.textContent = Math.round(s * 100) + '%'; }
     }, true);
     const up = (e) => { if (!pts.has(e.pointerId)) return; pts.delete(e.pointerId); if (lp) { clearTimeout(lp.t); lp = null; } if (pts.size < 2) { if (g) e.stopPropagation(); g = null; } };
@@ -246,12 +251,19 @@
       else if (homes.has(id)) { const h = homes.get(id); h.parent.insertBefore(el, h.next && h.next.parentNode === h.parent ? h.next : null); } }
   }
   function apply() {
-    const m = MQ.matches; document.body.classList.toggle('m', m);
+    const m = MQ.matches, entered = m && !document.body.classList.contains('m');
+    document.body.classList.toggle('m', m);
     if (m && !built && window.app && window.app.editor) build();
     if (built) { relocate(m); window.Mobile_track && window.Mobile_track(m); }
-    if (!m) setSheet(null); setTimeout(() => window.app && window.app.editor && window.app.editor.applyView(), 50);
+    if (!m) setSheet(null);
+    // Entering the phone layout (or opening on one) refits. A desktop fit near 177%
+    // otherwise stays put and clips the breadboard once the canvas is ~500px wide.
+    setTimeout(() => {
+      const ed = window.app && window.app.editor; if (!ed) return;
+      if (entered || ed._autoFit || !ed._fitSize) ed.fit(); else ed.applyView();
+    }, 60);
     if (window.app && window.app.editor) window.app.editor.setHint();
   }
-  window.addEventListener('DOMContentLoaded', () => { apply(); if (MQ.addEventListener) MQ.addEventListener('change', apply); else MQ.addListener(apply); if (document.body.classList.contains('m')) setTimeout(() => window.app.editor.fit(), 200); });
+  window.addEventListener('DOMContentLoaded', () => { apply(); if (MQ.addEventListener) MQ.addEventListener('change', apply); else MQ.addListener(apply); if (document.body.classList.contains('m')) setTimeout(() => window.app && window.app.editor && window.app.editor.fit(), 200); });
   window.Mobile = { setSheet, openDock };
 })();

@@ -564,7 +564,123 @@
   function rotPt(x, y, r) { switch (r & 3) { case 1: return [-y, x]; case 2: return [-x, -y]; case 3: return [y, -x]; default: return [x, y]; } }
   function pinWorld(p, pin) { const [x, y] = rotPt(pin.x, pin.y, p.rot || 0); return { x: p.x + x, y: p.y + y }; }
 
-  const api = { T, fmt, parseVal, parseProp, stampResistance, WIRE_R, scopeChannel, bands, espGpio, ESP_TOP, ESP_BOT, INPUT_ONLY, STRAPPING, ADC1, ADC2, rotPt, pinWorld, G, VTH, esc, LEDCOL };
+  // Click-to-add aims at the view centre. A fitted breadboard's centre is the
+  // plastic channel (no holes), so a new LED used to land in the trough and
+  // look connected when it wasn't. If that point is over a breadboard, return
+  // an origin whose every pin sits in a hole. A footprint at least 0.3" across
+  // (DIP ICs, tactile buttons, the DevKit) may bridge the channel; a single-row
+  // part may not. Off the board — or when nothing free remains — return a spot
+  // that does not sit on the breadboard body.
+  function placeNewPart(parts, type, x, y, rot) {
+    const snap = (v) => Math.round(v / G) * G;
+    const sx = snap(x), sy = snap(y), r = rot || 0;
+    const d = T[type];
+    parts = parts || [];
+    if (!d || type === 'label') return { x: sx, y: sy };
+    const probe = { id: '_new', type, x: 0, y: 0, rot: r, props: JSON.parse(JSON.stringify(d.props || {})) };
+    let localPins = [];
+    try { localPins = d.pins(probe) || []; } catch (e) { localPins = []; }
+    const offs = localPins.map((pin) => rotPt(pin.x, pin.y, r));
+    const boards = parts.filter((p) => p.type === 'breadboard' && T.breadboard);
+    const boxes = boards.map((p) => {
+      const sz = T.breadboard.size(p);
+      const corners = [[-8, -16], [sz.w + 4, -16], [sz.w + 4, sz.h + 16], [-8, sz.h + 16]];
+      let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+      for (const [a, b] of corners) {
+        const [rx, ry] = rotPt(a, b, p.rot || 0);
+        x0 = Math.min(x0, p.x + rx); y0 = Math.min(y0, p.y + ry); x1 = Math.max(x1, p.x + rx); y1 = Math.max(y1, p.y + ry);
+      }
+      return { x0, y0, x1, y1 };
+    });
+    const inside = (px, py) => boxes.some((b) => px >= b.x0 && px <= b.x1 && py >= b.y0 && py <= b.y1);
+    const over = inside(sx, sy) || offs.some(([dx, dy]) => inside(sx + dx, sy + dy));
+    const hits = (a, b) => a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0;
+    function bodyOf(px, py) {
+      let sz = { w: 10, h: 10 };
+      try { sz = d.size(Object.assign({}, probe, { x: px, y: py })) || sz; } catch (e) { /* keep default */ }
+      let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+      const acc = (qx, qy) => { x0 = Math.min(x0, qx); y0 = Math.min(y0, qy); x1 = Math.max(x1, qx); y1 = Math.max(y1, qy); };
+      for (const [a, b] of [[0, 0], [sz.w, 0], [0, sz.h], [sz.w, sz.h]]) { const [rx, ry] = rotPt(a, b, r); acc(px + rx, py + ry); }
+      for (const [dx, dy] of offs) acc(px + dx, py + dy);
+      if (!(x0 <= x1)) return { x0: px, y0: py, x1: px + G, y1: py + G };
+      return { x0, y0, x1, y1 };
+    }
+    function freeSpot() {
+      const others = [];
+      for (const p of parts) {
+        if (p.type === 'breadboard' || p.type === 'label' || !T[p.type] || !T[p.type].size) continue;
+        let sz = { w: 10, h: 10 };
+        try { sz = T[p.type].size(p) || sz; } catch (e) { /* keep default */ }
+        let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+        for (const [a, b] of [[0, 0], [sz.w, 0], [0, sz.h], [sz.w, sz.h]]) {
+          const [rx, ry] = rotPt(a, b, p.rot || 0);
+          x0 = Math.min(x0, p.x + rx); y0 = Math.min(y0, p.y + ry); x1 = Math.max(x1, p.x + rx); y1 = Math.max(y1, p.y + ry);
+        }
+        others.push({ x0, y0, x1, y1 });
+      }
+      const clear = (px, py) => {
+        if (offs.length ? offs.some(([dx, dy]) => inside(px + dx, py + dy)) : inside(px, py)) return false;
+        const body = bodyOf(px, py);
+        if (boxes.some((b) => hits(body, b)) || others.some((b) => hits(body, b))) return false;
+        return true;
+      };
+      if (clear(sx, sy)) return { x: sx, y: sy };
+      for (let rad = G; rad <= 900; rad += G) {
+        for (let t = -rad; t <= rad; t += G) {
+          for (const [px, py] of [[sx + t, sy - rad], [sx + t, sy + rad], [sx - rad, sy + t], [sx + rad, sy + t]]) {
+            if (clear(px, py)) return { x: px, y: py };
+          }
+        }
+      }
+      return { x: sx, y: sy };
+    }
+    if (!boards.length || (!over && type !== 'breadboard')) return { x: sx, y: sy };
+    if (type === 'breadboard' || !offs.length) return freeSpot();
+
+    const holeAt = new Map();
+    for (const p of boards) {
+      for (const h of T.breadboard.pins(p)) {
+        const w = pinWorld(p, h);
+        const key = Math.round(w.x) + ',' + Math.round(w.y);
+        if (holeAt.has(key)) continue;
+        const row = /^([a-j])/.exec(h.name);
+        holeAt.set(key, { x: Math.round(w.x), y: Math.round(w.y), side: row ? ('abcde'.includes(row[1]) ? 'a' : 'f') : 'rail', bb: p.id });
+      }
+    }
+    const occupied = new Set();
+    for (const p of parts) {
+      if (p.type === 'breadboard' || p.type === 'label' || !T[p.type]) continue;
+      let ps = [];
+      try { ps = T[p.type].pins(p) || []; } catch (e) { ps = []; }
+      for (const pin of ps) { const w = pinWorld(p, pin); occupied.add(Math.round(w.x) + ',' + Math.round(w.y)); }
+    }
+    const ys = offs.map((o) => o[1]);
+    const span = ys.length ? Math.max.apply(null, ys) - Math.min.apply(null, ys) : 0;
+    const mayStraddle = span >= 30;
+    let best = null; const seen = new Set();
+    for (const h of holeAt.values()) {
+      const ox = h.x - offs[0][0], oy = h.y - offs[0][1], id = ox + ',' + oy;
+      if (seen.has(id)) continue; seen.add(id);
+      let ok = true, occ = 0; const sides = new Map();
+      for (const [dx, dy] of offs) {
+        const key = (ox + dx) + ',' + (oy + dy), hit = holeAt.get(key);
+        if (!hit) { ok = false; break; }
+        if (occupied.has(key)) occ++;
+        if (hit.side !== 'rail') {
+          const prev = sides.get(hit.bb);
+          if (prev && prev !== hit.side) { if (!mayStraddle) { ok = false; break; } sides.set(hit.bb, 'both'); }
+          else if (!prev) sides.set(hit.bb, hit.side);
+        }
+      }
+      if (!ok) continue;
+      const score = occ * 1e6 + Math.hypot(ox - sx, oy - sy);
+      if (!best || score < best.score) best = { x: ox, y: oy, score, occ };
+    }
+    if (best && best.occ === 0) return { x: best.x, y: best.y };
+    return freeSpot();
+  }
+
+  const api = { T, fmt, parseVal, parseProp, stampResistance, WIRE_R, scopeChannel, bands, espGpio, ESP_TOP, ESP_BOT, INPUT_ONLY, STRAPPING, ADC1, ADC2, rotPt, pinWorld, placeNewPart, G, VTH, esc, LEDCOL };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.Parts = api;
 })(typeof window !== 'undefined' ? window : globalThis);
