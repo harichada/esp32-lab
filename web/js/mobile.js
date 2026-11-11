@@ -140,7 +140,16 @@
     sel.innerHTML = `<button data-a="rot" aria-label="Rotate">${ic('i-rotate')}</button><button data-a="props" aria-label="Properties">${ic('m-sliders')}<span>Properties</span></button><button data-a="del" class="danger" aria-label="Delete">${ic('i-trash')}</button>`;
     $('#stageWrap').appendChild(sel);
     sel.onclick = (e) => { const b = e.target.closest('[data-a]'); if (!b) return; if (document.body.classList.contains('viewsch') && (b.dataset.a === 'rot' || b.dataset.a === 'del')) return; if (b.dataset.a === 'rot') ed.rotateSel(); else if (b.dataset.a === 'del') ed.deleteSel(); else setSheet('insp'); };
-    const hs = ed.hooks.selected; ed.hooks.selected = (s) => { hs(s); const has = !!(s && (s.part || s.wire)); document.body.classList.toggle('m-has-sel', has); sel.querySelector('[data-a=rot]').hidden = !(s && s.part); sel.querySelector('[data-a=props]').hidden = !(s && s.part); if (!has && sheet === 'insp') setSheet(null); };
+    const hs = ed.hooks.selected; ed.hooks.selected = (s) => {
+      hs(s);
+      const has = !!(s && (s.part || s.wire));
+      document.body.classList.toggle('m-has-sel', has);
+      sel.querySelector('[data-a=rot]').hidden = !(s && s.part);
+      // A wire used to leave only the trash button: Properties was part-only, and nothing opened the sheet.
+      sel.querySelector('[data-a=props]').hidden = !(s && (s.part || s.wire));
+      if (s && s.wire && document.body.classList.contains('m')) setSheet('insp');
+      else if (!has && sheet === 'insp') setSheet(null);
+    };
     // wiring state -> highlight valid targets, larger hit radius while wiring
     const pn = ed.pinNear.bind(ed);
     ed.pinNear = function (w, ev, maxR) { if (document.body.classList.contains('m') && this.mode && this.mode.k === 'wire') maxR = Math.max(maxR || 14, Math.min(30, 30 / this.view.s)); return pn(w, ev, maxR); };
