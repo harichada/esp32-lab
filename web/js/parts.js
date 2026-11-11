@@ -650,15 +650,15 @@
         if (boxes.some((b) => hits(body, b)) || others.some((b) => hits(body, b))) return false;
         return true;
       };
-      if (clear(sx, sy)) return { x: sx, y: sy };
-      for (let rad = G; rad <= 900; rad += G) {
-        for (let t = -rad; t <= rad; t += G) {
-          for (const [px, py] of [[sx + t, sy - rad], [sx + t, sy + rad], [sx - rad, sy + t], [sx + rad, sy + t]]) {
-            if (clear(px, py)) return { x: px, y: py };
-          }
-        }
+      if (clear(sx, sy) && !inside(sx, sy)) return { x: sx, y: sy };
+      let right = -1e9, left = 1e9;
+      for (const b of boxes) { right = Math.max(right, b.x1); left = Math.min(left, b.x0); }
+      for (let i = 2; i <= 40; i++) {
+        const xr = snap(right) + i * G, xl = snap(left) - i * G;
+        if (clear(xr, 40)) return { x: xr, y: 40 };
+        if (clear(xl, 40)) return { x: xl, y: 40 };
       }
-      return { x: sx, y: sy };
+      return { x: snap(right) + 2 * G, y: 40 };
     }
     if (!boards.length || (!over && type !== 'breadboard')) return { x: sx, y: sy };
     if (type === 'breadboard' || !offs.length) return freeSpot();
@@ -669,17 +669,23 @@
         const w = pinWorld(p, h);
         const key = Math.round(w.x) + ',' + Math.round(w.y);
         if (holeAt.has(key)) continue;
-        const row = /^([a-j])/.exec(h.name);
-        holeAt.set(key, { x: Math.round(w.x), y: Math.round(w.y), side: row ? ('abcde'.includes(row[1]) ? 'a' : 'f') : 'rail', bb: p.id });
+        const row = /^([a-j])(\d+)$/.exec(h.name);
+        holeAt.set(key, { x: Math.round(w.x), y: Math.round(w.y), side: row ? ('abcde'.includes(row[1]) ? 'a' : 'f') : 'rail', col: row ? +row[2] : 0, bb: p.id });
       }
     }
     const occupied = new Set();
+    const strips = new Set();
     const footprints = [];
     for (const p of parts) {
       if (p.type === 'breadboard' || p.type === 'label' || !T[p.type]) continue;
       let ps = [];
       try { ps = T[p.type].pins(p) || []; } catch (e) { ps = []; }
-      for (const pin of ps) { const w = pinWorld(p, pin); occupied.add(Math.round(w.x) + ',' + Math.round(w.y)); }
+      for (const pin of ps) {
+        const w = pinWorld(p, pin), key = Math.round(w.x) + ',' + Math.round(w.y);
+        occupied.add(key);
+        const hit = holeAt.get(key);
+        if (hit && hit.side !== 'rail') strips.add(hit.bb + ':' + hit.side + ':' + hit.col);
+      }
       const box = partBox(p); if (box) footprints.push(box);
     }
     const ys = offs.map((o) => o[1]);
@@ -689,7 +695,8 @@
       const sides = new Map();
       for (const [dx, dy] of offs) {
         const key = Math.round(ox + dx) + ',' + Math.round(oy + dy), hit = holeAt.get(key);
-        if (!hit || occupied.has(key)) return false;
+        if (!hit || hit.side === 'rail' || occupied.has(key)) return false;
+        if (strips.has(hit.bb + ':' + hit.side + ':' + hit.col)) return false;
         if (hit.side !== 'rail') {
           const prev = sides.get(hit.bb);
           if (prev && prev !== hit.side) { if (!mayStraddle) return false; sides.set(hit.bb, 'both'); }
@@ -699,10 +706,10 @@
       const box = partBox(Object.assign({}, probe, { x: ox, y: oy }));
       return !(box && footprints.some((b) => hits(box, b)));
     };
-    // Nearest row to the click, then the next rows. On a row, step to the
-    // right of the click first so successive adds walk along the board.
+    // Nearest a–j row, further columns to the right then the left, then the
+    // other half and the rest of the board. Rails are not rows.
     const rows = new Map();
-    for (const h of holeAt.values()) { if (!rows.has(h.y)) rows.set(h.y, []); rows.get(h.y).push(h); }
+    for (const h of holeAt.values()) { if (h.side === 'rail') continue; if (!rows.has(h.y)) rows.set(h.y, []); rows.get(h.y).push(h); }
     const rowYs = [...rows.keys()].sort((a, b) => Math.abs(a - sy) - Math.abs(b - sy) || a - b);
     const pin0 = offs[0];
     for (const rowY of rowYs) {

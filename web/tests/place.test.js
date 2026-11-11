@@ -1,7 +1,7 @@
 // Click-to-add must seat parts in breadboard holes, not the centre channel.
 const test = require('node:test');
 const assert = require('node:assert');
-const { Parts, Examples } = require('./tools/load-parts');
+const { Parts, Examples, Netlist } = require('./tools/load-parts');
 
 function holeMap(parts) {
   const map = new Map();
@@ -147,4 +147,45 @@ test('a new breadboard does not stack on the one already there', () => {
   const sz = Parts.T.breadboard.size({ props: { cols: 63 } });
   const overlap = !(at.x + sz.w < 0 || at.x > sz.w || at.y + sz.h < 0 || at.y > 200);
   assert.strictEqual(overlap, false, JSON.stringify(at));
+});
+
+test('crowded blink: click-add after four LEDs on Blink\'s LED stays off shared strips', () => {
+  const proj = blink();
+  const nudged = [[310, 120], [290, 80], [330, 120], [310, 80]];
+  nudged.forEach(([x, y], i) => proj.parts.push({ id: 'D' + (i + 1), type: 'led', x, y, rot: 0, props: JSON.parse(JSON.stringify(Parts.T.led.props)) }));
+  const added = [];
+  for (const type of ['led', 'resistor']) {
+    const at = Parts.placeNewPart(proj.parts, type, 320, 90, 0);
+    const id = type === 'led' ? 'LEDN' : 'RESN';
+    const pins = seated(proj.parts, type, at);
+    assert.ok(pins.every((q) => q.hole && /^[a-j]\d+$/.test(q.hole)), JSON.stringify(pins));
+    assert.ok(pins.every((q) => q.y <= 80 || q.y >= 110), 'channel ' + JSON.stringify(at));
+    for (const old of proj.parts) {
+      if (old.type === 'breadboard' || old.type === 'label') continue;
+      assert.ok(!overlaps(footprint(type, at), footprint(old.type, old)), id + ' overlaps ' + old.id);
+    }
+    proj.parts.push({ id, type, x: at.x, y: at.y, rot: 0, props: JSON.parse(JSON.stringify(Parts.T[type].props)) });
+    added.push(id);
+  }
+  const nl = Netlist.extract(proj);
+  for (const net of nl.nets) {
+    const ids = [...new Set(net.pins.map((p) => p.split(':')[0]))];
+    const news = ids.filter((id) => added.includes(id) || id.startsWith('D'));
+    assert.ok(!(news.length && ids.length > 1), 'joined ' + net.pins.join(' '));
+  }
+});
+
+test('a full board sends click-add beside the breadboard', () => {
+  const proj = blink();
+  const bb = proj.parts.find((p) => p.type === 'breadboard');
+  let n = 0;
+  for (const h of Parts.T.breadboard.pins(bb)) {
+    if (!/^[af]\d+$/.test(h.name)) continue;
+    const w = Parts.pinWorld(bb, h);
+    proj.parts.push({ id: 'G' + (++n), type: 'ground', x: w.x, y: w.y, rot: 0, props: {} });
+  }
+  const at = Parts.placeNewPart(proj.parts, 'led', 320, 90, 0);
+  const edge = Parts.T.breadboard.size(bb).w + 4;
+  assert.ok(at.x >= edge || at.x < -8, 'still on the board ' + JSON.stringify(at));
+  assert.ok(seated(proj.parts, 'led', at).every((q) => !q.hole), JSON.stringify(at));
 });
