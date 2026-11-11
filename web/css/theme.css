@@ -210,6 +210,7 @@ body.reconnecting #status{border-color:var(--warn);box-shadow:0 0 0 3px rgba(251
 body.view3d #stage{visibility:hidden;pointer-events:none}
 body.view3d .hint{opacity:0}
 body.view3d #minimap{display:none}
+body.view3d #zoomPct{display:none!important}
 body.view3d .canvas-tools .tgl:has(#cbOrtho),body.view3d .wire-color,body.view3d #bRot,body.view3d #bDel{opacity:.35;pointer-events:none}
 /* ---- schematic view (classic symbols, view-only) ---- */
 #stageSch.stage-sch{position:absolute;inset:0;width:100%;height:100%;display:none;z-index:3;background:var(--canvas);touch-action:none}
@@ -299,9 +300,16 @@ body.view3d .canvas-tools,body.view3d .zoom-tools{z-index:12}
 .exit3d:hover{background:rgba(34,211,238,.18)}
 body.view3d .exit3d{display:block}
 
-/* HOTFIX 3D: always-on 2D kill-switch chip in the header (outside #stage, top of every stack) */
-.force2d{position:relative;z-index:2147483647;flex:0 0 auto;height:26px;min-width:38px;padding:0 10px;margin:0 6px;border-radius:13px;border:1px solid rgba(34,211,238,.45);background:#0b1118;color:#cfefff;font:700 12px/24px var(--mono,ui-monospace,monospace);letter-spacing:.08em;cursor:pointer}
+/* Header chip: names the current view. Off the 2D editor it is also the kill-switch back to 2D.
+   It stays an outline, never a filled "selected tab", so "2D" is not read as the mode you are in. */
+.force2d{position:relative;z-index:2147483647;flex:0 0 auto;height:26px;min-width:38px;padding:0 10px;margin:0 6px;border-radius:13px;border:1px solid rgba(34,211,238,.45);background:#0b1118;color:#cfefff;font:700 12px/24px var(--mono,ui-monospace,monospace);letter-spacing:.04em;cursor:pointer;white-space:nowrap}
 .force2d:hover{background:#12202b}
-body.view3d .force2d{background:#0e7490;color:#fff;border-color:#22d3ee}
+body.view3d .force2d,body.viewsch .force2d{background:#0b1118;color:#e7fbff;border-color:rgba(34,211,238,.8)}
+.view3d-load{position:absolute;inset:0;z-index:11;display:flex;align-items:center;justify-content:center;background:#07090d;pointer-events:none}
+.view3d-load[hidden]{display:none!important}
+.view3d-load-card{display:flex;align-items:center;gap:12px;padding:14px 18px;border:1px solid rgba(34,211,238,.45);border-radius:14px;background:rgba(8,12,18,.94);color:#e7fbff;font:600 14px/1.2 var(--mono,ui-monospace,monospace);letter-spacing:.03em;box-shadow:0 12px 40px rgba(0,0,0,.5)}
+.view3d-spin{width:18px;height:18px;border-radius:50%;border:2px solid rgba(207,239,255,.28);border-top-color:#22d3ee;animation:view3dspin .8s linear infinite;flex:0 0 auto}
+@keyframes view3dspin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.view3d-spin{animation:none}}
 /* phones / touch: no 3D entry at all for this hotfix */
 body.no3d #bView3d,body.no3d .exit3d,body.no3d #stage3d{display:none!important}

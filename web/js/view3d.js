@@ -22,19 +22,49 @@
 
   function loadScript(src) {
     return new Promise((res, rej) => {
+      let abs = src;
+      try { abs = new URL(src, document.baseURI).href; } catch (_) {}
+      const existing = [...document.scripts].find((s) => s.src === abs);
+      if (existing) {
+        if (existing.dataset.loaded === '1') return res();
+        existing.addEventListener('load', () => res(), { once: true });
+        existing.addEventListener('error', () => rej(new Error('failed to load ' + src)), { once: true });
+        return;
+      }
       const s = document.createElement('script'); s.src = src; s.async = true;
-      s.onload = () => res(); s.onerror = () => rej(new Error('failed to load ' + src));
+      s.onload = () => { s.dataset.loaded = '1'; res(); };
+      s.onerror = () => rej(new Error('failed to load ' + src));
       document.head.appendChild(s);
     });
   }
+  function t3d(k) {
+    try {
+      const bag = root.__t3d || (root.__t3d = {});
+      if (bag[k] == null) bag[k] = performance.now();
+    } catch (_) {}
+  }
+  // Postprocessing (bloom) is opt-in. The default path never constructs a composer.
+  function wants3dFx(search) {
+    return /[?&]fx3d=1\b/.test(search || '');
+  }
   async function ensureThree() {
-    if (root.THREE) return root.THREE;
     const base = (document.querySelector('script[src*="view3d"]') || { src: 'js/view3d.js' }).src.replace(/js\/view3d[^/]*$/, '');
-    await loadScript(base + 'vendor/three.min.js?v=2');
-    if (!root.THREE) throw new Error('THREE global missing');
-    for (const f of ['CopyShader.js', 'LuminosityHighPassShader.js', 'EffectComposer.js', 'RenderPass.js', 'ShaderPass.js', 'UnrealBloomPass.js']) {
-      try { await loadScript(base + 'vendor/' + f + '?v=2'); } catch (e) { break; }
+    if (!root.THREE) {
+      t3d('threeStart');
+      await loadScript(base + 'vendor/three.min.js?v=2');
+      if (!root.THREE) throw new Error('THREE global missing');
     }
+    t3d('threeEval');
+    // Each bloom file is its own round trip and none of them run unless ?fx3d=1.
+    const q = (root.location && root.location.search) || '';
+    if (wants3dFx(q) && !(root.THREE.EffectComposer && root.THREE.UnrealBloomPass)) {
+      t3d('fxStart');
+      for (const f of ['CopyShader.js', 'LuminosityHighPassShader.js', 'EffectComposer.js', 'RenderPass.js', 'ShaderPass.js', 'UnrealBloomPass.js']) {
+        try { await loadScript(base + 'vendor/' + f + '?v=2'); } catch (e) { break; }
+      }
+      t3d('fxEval');
+    }
+    t3d('scriptsDone');
     return root.THREE;
   }
   function bandsOf(r) {
@@ -42,6 +72,93 @@
     const e = Math.floor(Math.log10(r)) - 1, m = r / Math.pow(10, e), d = Math.max(10, Math.min(99, Math.round(m)));
     const mult = e >= 0 ? (BANDC[e] || 0xffffff) : (e === -1 ? 0xc9a227 : 0xc0c0c0);
     return [BANDC[Math.floor(d / 10)] || 0, BANDC[d % 10] || 0, mult, 0xc9a227];
+  }
+
+  // Place `cam` so every corner of `box` lands inside `margins` (NDC) at the
+  // orbit angle, then center that box in the visible window. Distance comes from
+  // both fields of view: the axis that overflows the visible window wins.
+  function fitCameraToBox(cam, box, opts) {
+    const THREE = root.THREE || globalThis.THREE;
+    opts = opts || {};
+    const theta = (opts.angleDeg != null ? opts.angleDeg : 40) * Math.PI / 180;
+    const phi = opts.phi != null ? opts.phi : 1.10;
+    const margins = opts.margins || { xMin: -0.9, xMax: 0.9, yMin: -0.86, yMax: 0.9 };
+    let target = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const span = Math.max(size.x, size.y, size.z, 1);
+    if (cam.far < span * 20) { cam.far = span * 40; cam.updateProjectionMatrix(); }
+    const corners = [];
+    for (const x of [box.min.x, box.max.x]) for (const y of [box.min.y, box.max.y]) for (const z of [box.min.z, box.max.z]) corners.push(new THREE.Vector3(x, y, z));
+    const ndc = new THREE.Vector3();
+    const place = (r) => {
+      cam.position.set(
+        target.x + r * Math.sin(phi) * Math.sin(theta),
+        target.y + r * Math.cos(phi),
+        target.z + r * Math.sin(phi) * Math.cos(theta)
+      );
+      cam.lookAt(target);
+      cam.updateMatrixWorld(true);
+    };
+    const extents = () => {
+      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, ok = true;
+      for (let i = 0; i < corners.length; i++) {
+        ndc.copy(corners[i]).project(cam);
+        if (!Number.isFinite(ndc.x) || !Number.isFinite(ndc.y) || !Number.isFinite(ndc.z) || ndc.z < -1 || ndc.z > 1) ok = false;
+        if (ndc.x < x0) x0 = ndc.x;
+        if (ndc.x > x1) x1 = ndc.x;
+        if (ndc.y < y0) y0 = ndc.y;
+        if (ndc.y > y1) y1 = ndc.y;
+      }
+      return { x0: x0, x1: x1, y0: y0, y1: y1, ok: ok };
+    };
+    const fitsAt = (e) => e.ok && e.x0 >= margins.xMin - 1e-3 && e.x1 <= margins.xMax + 1e-3 && e.y0 >= margins.yMin - 1e-3 && e.y1 <= margins.yMax + 1e-3;
+    // Reference pose, then scale by whichever field of view is tighter.
+    let r = Math.max(span * 1.2, 80);
+    place(r);
+    const usableX = Math.max(0.25, margins.xMax - margins.xMin);
+    const usableY = Math.max(0.25, margins.yMax - margins.yMin);
+    let e = extents();
+    const sx = e.x1 - e.x0, sy = e.y1 - e.y0;
+    if (sx > 0.02 && sy > 0.02) r *= Math.max(sx / usableX, sy / usableY);
+    place(r);
+    let lo = Math.max(40, r * 0.45), hi = r, guard = 0;
+    while (!fitsAt(extents()) && hi < span * 80 && guard++ < 24) { lo = hi; hi *= 1.35; place(hi); }
+    if (fitsAt(extents())) {
+      for (let i = 0; i < 18; i++) {
+        const mid = (lo + hi) / 2;
+        place(mid);
+        if (fitsAt(extents())) hi = mid; else lo = mid;
+      }
+    }
+    r = hi * 1.02;
+    place(r);
+    // The look-at point is the box center. Shift it so that center lands in the
+    // middle of the visible window (toolbars make that window asymmetric).
+    const wantX = (margins.xMin + margins.xMax) / 2;
+    const wantY = (margins.yMin + margins.yMax) / 2;
+    const vfov = (cam.fov || 40) * Math.PI / 180;
+    for (let i = 0; i < 5; i++) {
+      e = extents();
+      const dx = wantX - (e.x0 + e.x1) / 2;
+      const dy = wantY - (e.y0 + e.y1) / 2;
+      if (Math.abs(dx) < 0.015 && Math.abs(dy) < 0.015) break;
+      const dist = Math.max(1, cam.position.distanceTo(target));
+      const worldY = dist * Math.tan(vfov / 2);
+      const worldX = worldY * Math.max(0.2, cam.aspect || 1);
+      const right = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 0);
+      const up = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 1);
+      target = target.clone().addScaledVector(right, -dx * worldX).addScaledVector(up, -dy * worldY);
+      place(r);
+    }
+    guard = 0;
+    while (!fitsAt(extents()) && r < span * 80 && guard++ < 16) { r *= 1.08; place(r); }
+    return { target: target.clone(), theta: theta, phi: phi, r: r };
+  }
+
+  // Modest margin around the parts and wires. A long breadboard only gains a
+  // sliver; a small loose circuit is not parked inside a huge empty margin.
+  function contentPadding(span) {
+    return Math.min(18, Math.max(8, span * 0.04));
   }
 
   class Orbit {
@@ -113,22 +230,13 @@
       this.cam.position.set(t.x + r * Math.sin(phi) * Math.sin(theta), t.y + r * Math.cos(phi), t.z + r * Math.sin(phi) * Math.cos(theta));
       this.cam.lookAt(t);
     }
-    frameBox(box, angleDeg) {
+    frameBox(box, angleDeg, margins) {
       if (!box || box.isEmpty()) return;
-      const c = new THREE.Vector3(); box.getCenter(c);
-      const size = new THREE.Vector3(); box.getSize(size);
-      const span = Math.max(size.x, size.z, 40);
-      this.goal.target.set(c.x, Math.max(8, Math.min(14, size.y * 0.1 + 5)), c.z);
-      this.goal.theta = (angleDeg != null ? angleDeg : 40) * Math.PI / 180;
-      this.goal.phi = 1.10;
-      const vfov = (this.cam.fov || 40) * Math.PI / 180;
-      // Fit the narrower of vertical/horizontal FOV so portrait phones don't open inside the breadboard
-      const hfov = 2 * Math.atan(Math.tan(vfov * 0.5) * Math.max(0.2, this.cam.aspect || 1));
-      const fov = Math.min(vfov, hfov);
-      const fit = (span * 0.52) / Math.max(0.12, Math.tan(fov * 0.5));
-      this.goal.r = Math.max(110, Math.min(1100, fit * 1.08 + 30));
-      this.sph.theta = this.goal.theta; this.sph.phi = this.goal.phi; this.sph.r = this.goal.r;
-      this.target.copy(this.goal.target); this.apply();
+      const pose = fitCameraToBox(this.cam, box, { angleDeg: angleDeg, phi: 1.10, margins: margins });
+      this.goal.target.copy(pose.target);
+      this.goal.theta = pose.theta; this.goal.phi = pose.phi; this.goal.r = pose.r;
+      this.sph.theta = pose.theta; this.sph.phi = pose.phi; this.sph.r = pose.r;
+      this.target.copy(pose.target); this.apply();
     }
     flyTo(pos, r) {
       this._fly = { t0: performance.now(), dur: RM() ? 1 : 780, fromT: this.target.clone(), toT: pos.clone(), fromR: this.sph.r, toR: r || this.sph.r * 0.62, fromTh: this.sph.theta, fromPh: this.sph.phi };
@@ -263,8 +371,15 @@
       this.root = new THREE.Group(); this.scene.add(this.root);
       this.pulseRoot = new THREE.Group(); this.scene.add(this.pulseRoot);
       this.ready = true;
-      this._onResize = () => this.resize();
+      this._onResize = () => {
+        if (this._resizeRaf) return;
+        this._resizeRaf = requestAnimationFrame(() => { this._resizeRaf = 0; this.resize(); });
+      };
       root.addEventListener('resize', this._onResize);
+      if (typeof ResizeObserver !== 'undefined') {
+        this._ro = new ResizeObserver(() => this._onResize());
+        this._ro.observe(this.wrap);
+      }
       // Interactive parts (buttons, switches, pots) get the pointer before the orbit camera does.
       // Capture-phase listeners on the canvas run before Orbit's own (bubble) listeners.
       this.canvas.addEventListener('pointerdown', (e) => {
@@ -333,15 +448,70 @@
 
     resize() {
       if (!this.ready) return;
-      const w = Math.max(1, this.wrap.clientWidth), h = Math.max(1, this.wrap.clientHeight);
-      this.camera.aspect = w / h; this.camera.updateProjectionMatrix();
-      this.renderer.setPixelRatio(this.dpr); this.renderer.setSize(w, h, false);
-      if (this.composer) this.composer.setSize(w, h);
+      const w = this.wrap.clientWidth, h = this.wrap.clientHeight;
+      if (w < 2 || h < 2) return;
+      const same = w === this._vw && h === this._vh;
+      this._vw = w; this._vh = h;
+      if (!same) {
+        this.camera.aspect = w / h; this.camera.updateProjectionMatrix();
+        this.dpr = Math.min(root.devicePixelRatio || 1, /Mobi|Android/i.test(navigator.userAgent) ? 1.5 : 2);
+        this.renderer.setPixelRatio(this.dpr); this.renderer.setSize(w, h, false);
+        if (this.composer) this.composer.setSize(w, h);
+      }
+      if (this.active && this._fitBox) this._applyFrame();
+    }
+    // Visible canvas, as NDC. A bar insets an edge only when it crosses the middle
+    // of the canvas. A dial or button parked in a corner used to be treated as a
+    // full-width band, which pushed a short window's circuit into a sliver at the top.
+    _safeNdc() {
+      const w = this.wrap.clientWidth || 1, h = this.wrap.clientHeight || 1;
+      const wrap = this.wrap.getBoundingClientRect();
+      let top = Math.max(10, h * 0.03), bot = Math.max(10, h * 0.03), left = Math.max(8, w * 0.03), right = Math.max(8, w * 0.03);
+      let extra = [];
+      try { extra = [...document.querySelectorAll('body.m #mHub, body.m #mIgnite, body.m #mParts')]; } catch (_) {}
+      const nodes = [...this.wrap.querySelectorAll('.projbanner, .canvas-tools, .zoom-tools, .exit3d'), ...extra];
+      const midL = wrap.left + w * 0.3, midR = wrap.right - w * 0.3;
+      const midT = wrap.top + h * 0.3, midB = wrap.bottom - h * 0.3;
+      for (const el of nodes) {
+        if (!el) continue;
+        const cs = getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width < 8 || r.height < 8) continue;
+        const l = Math.max(r.left, wrap.left), ri = Math.min(r.right, wrap.right);
+        const t = Math.max(r.top, wrap.top), b = Math.min(r.bottom, wrap.bottom);
+        if (ri - l < 8 || b - t < 8) continue;
+        const crossesX = ri > midL && l < midR;
+        const crossesY = b > midT && t < midB;
+        const cy = (t + b) / 2, cx = (l + ri) / 2;
+        // A short bar along the top or bottom insets that edge only. It must not
+        // also become a side column just because it reaches the vertical middle.
+        let bar = false;
+        if (crossesX && cy < wrap.top + h * 0.42 && t < wrap.top + h * 0.36) { top = Math.max(top, (b - wrap.top) + 8); bar = true; }
+        else if (crossesX && cy > wrap.bottom - h * 0.42 && b > wrap.bottom - h * 0.4) { bot = Math.max(bot, (wrap.bottom - t) + 8); bar = true; }
+        if (!bar && crossesY && cx < wrap.left + w * 0.28) left = Math.max(left, (ri - wrap.left) + 8);
+        else if (!bar && crossesY && cx > wrap.right - w * 0.28) right = Math.max(right, (wrap.right - l) + 8);
+      }
+      // Chrome may frame the picture. It may not reduce it to a strip.
+      if (top + bot > h * 0.46) { const s = (h * 0.46) / (top + bot); top *= s; bot *= s; }
+      if (left + right > w * 0.4) { const s = (w * 0.4) / (left + right); left *= s; right *= s; }
+      return {
+        xMin: (left / w) * 2 - 1, xMax: 1 - (right / w) * 2,
+        yMin: (bot / h) * 2 - 1, yMax: 1 - (top / h) * 2,
+      };
+    }
+    _applyFrame() {
+      if (!this._fitBox || !this.orbit) return;
+      this.orbit.frameBox(this._fitBox, 40, this._safeNdc());
+      if (this.scene && this.scene.fog && this.scene.fog.isFogExp2) {
+        const r = this.orbit.sph.r;
+        this.scene.fog.density = Math.min(0.00055, 0.45 / Math.max(r, 1));
+      }
     }
     setActive(on) {
       this.active = !!on; this.canvas.classList.toggle('on', this.active);
       this.canvas.style.pointerEvents = this.active ? 'auto' : 'none';
-      if (this.active) { this.resize(); if (this.proj) this.rebuild(true); }
+      if (this.active) { this.resize(); if (this.proj) this.rebuild(true); t3d('rebuild'); }
     }
     setProject(proj) { this.proj = proj; this._sig = ''; if (this.active && this.ready) this.rebuild(true); }
     sync(sim, flow) {
@@ -360,10 +530,13 @@
       while (this.root && this.root.children.length) {
         const o = this.root.children[0]; this.root.remove(o);
         o.traverse((c) => {
-          if (c.geometry) c.geometry.dispose();
+          if (c.geometry && !c.geometry.userData.keep) c.geometry.dispose();
           if (c.material) {
             const ms = Array.isArray(c.material) ? c.material : [c.material];
-            ms.forEach((m) => { if (m.map) m.map.dispose(); m.dispose(); });
+            ms.forEach((m) => {
+              if (m.map && !m.map.userData.keep) m.map.dispose();
+              if (!m.userData.keep) m.dispose();
+            });
           }
         });
       }
@@ -379,6 +552,31 @@
       // no environment map on the safe path: metals would render near-black/grey, so cap metalness
       if (this.softGL) m.metalness = Math.min(m.metalness, 0.3);
       return m;
+    }
+    // Geometries and materials reused across rebuilds. clear() must not dispose them.
+    _keepGeo(key, build) {
+      if (!this._geoCache) this._geoCache = new Map();
+      let g = this._geoCache.get(key);
+      if (!g) { g = build(); g.userData.keep = true; this._geoCache.set(key, g); }
+      return g;
+    }
+    _keepMat(key, build) {
+      if (!this._matCache) this._matCache = new Map();
+      let m = this._matCache.get(key);
+      if (!m) { m = build(); m.userData.keep = true; this._matCache.set(key, m); }
+      return m;
+    }
+    _keepTex(key, build) {
+      if (!this._texCache) this._texCache = new Map();
+      let t = this._texCache.get(key);
+      if (!t) { t = build(); t.userData.keep = true; this._texCache.set(key, t); }
+      return t;
+    }
+    _addSolid(box, obj) {
+      if (!obj) return;
+      obj.updateMatrixWorld(true);
+      const b = this._solidBox(obj);
+      if (b && !b.isEmpty()) box.union(b);
     }
     // Convert sRGB-authored material/light colours to linear once (textures already carry sRGBEncoding).
     _linearize(obj) {
@@ -397,7 +595,7 @@
       const THREE = root.THREE;
       const m = new THREE.Mesh(
         new THREE.CircleGeometry(rad, 24),
-        new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.32, depth: THREE.NormalBlending, depthWrite: false })
+        new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.32, blending: THREE.NormalBlending, depthWrite: false })
       );
       m.rotation.x = -Math.PI / 2; m.position.y = 0.08; m.renderOrder = -1;
       return m;
@@ -406,21 +604,16 @@
     rebuild(fit) {
       if (!this.ready || !this.proj) return;
       const THREE = root.THREE;
+      const tBuild = performance.now(), lap = { t: tBuild };
+      const tick = () => { const n = performance.now(), d = n - lap.t; lap.t = n; return Math.round(d * 10) / 10; };
       this.clear(); this._sig = this._projectSig();
       const gParts = new THREE.Group(), gWires = new THREE.Group(); this.root.add(gParts); this.root.add(gWires);
+      this.root.updateMatrixWorld(true);
       const box = new THREE.Box3();
-      let hasBB = this.proj.parts.some((p) => p.type === 'breadboard');
-
-      // Virtual breadboard / acrylic under floating schematic circuits
-      if (!hasBB) {
-        const virt = this._makeVirtualBoard(this.proj.parts);
-        if (virt) {
-          gParts.add(virt.mesh);
-          box.expandByObject(virt.mesh);
-          this._virtualBB = true;
-          hasBB = true;
-        }
-      }
+      const realBB = this.proj.parts.some((p) => p.type === 'breadboard');
+      // Floating circuits get a stand-in board, so jumpers still rise off the table.
+      // It is sized to the parts and framed by its top, not by its thickness.
+      let hasBB = realBB || this.proj.parts.length > 0;
 
       for (const p of this.proj.parts) {
         const d = root.Parts.T[p.type]; if (!d) continue;
@@ -431,7 +624,7 @@
         mesh.position.set(p.x, 0, p.y);
         mesh.rotation.y = -rot;
         gParts.add(mesh); this.parts.set(p.id, { mesh, part: p });
-        box.expandByObject(mesh);
+        this._addSolid(box, mesh);
         if (p.type !== 'breadboard') {
           try {
             const sz = d.size ? d.size(p) : { w: 24, h: 20 };
@@ -452,75 +645,92 @@
           for (const pin of (d && d.pins ? d.pins(rec.part) : [])) { const q = root.Parts.pinWorld(rec.part, pin), kk = Math.round(q.x) + ',' + Math.round(q.y); this._pinOwners.set(kk, id); this._pinNames.set(kk, pin.name); }
         } catch (_) {}
       }
+      const partMs = tick();
       const plans = this.proj.wires.map((w) => this._planWire(w, hasBB));
       try { this._layoutWires(plans); } catch (e) { console.warn('3D wire layout', e); }
       for (const p of plans) {
         const tube = p && this._buildWire(p);
-        if (tube) { gWires.add(tube.group); this.wires.set(tube.id, tube); box.expandByObject(tube.group); }
+        if (tube) { gWires.add(tube.group); this.wires.set(tube.id, tube); this._addSolid(box, tube.group); }
       }
+      const wireMs = tick();
+      if (!realBB) {
+        const virt = this._makeVirtualBoard(box);
+        if (virt) {
+          gParts.add(virt.mesh); this._virtualBB = true;
+          // The stand-in is part of the picture, but its underside is hidden.
+          const y = box.min.y;
+          box.expandByPoint(new THREE.Vector3(virt.minX, y, virt.minZ));
+          box.expandByPoint(new THREE.Vector3(virt.maxX, y, virt.maxZ));
+        } else hasBB = realBB;
+      }
+      const boardMs = tick();
       if (this.kick && !box.isEmpty()) {
         const c = new THREE.Vector3(); box.getCenter(c); this.kick.position.set(c.x, 70, c.z);
       }
-      if (fit) {
-        const focus = new THREE.Box3();
-        let n = 0;
-        for (const [, rec] of this.parts) {
-          if (rec.part.type === 'breadboard') continue;
-          focus.expandByObject(rec.mesh); n++;
-        }
-        const use = (n > 0 && !focus.isEmpty()) ? focus : box;
-        if (n > 0) { const pad = new THREE.Vector3(55, 20, 55); use.min.sub(pad); use.max.add(pad); }
-        // also expand by virtual board lightly so floor shows
-        this.orbit.frameBox(use, 40);
+      if (fit && !box.isEmpty()) {
+        // Real breadboards are parts, so they are already in `box`. The stand-in's
+        // top was unioned in above; its hidden underside is not.
+        const use = box.clone();
+        const size = use.getSize(new THREE.Vector3());
+        use.expandByScalar(contentPadding(Math.max(size.x, size.z)));
+        this._fitBox = use;
+        this._applyFrame();
       }
       this._linearize(this.root);
       this._updateLive();
+      if (this.active && this.renderer && this.scene && this.camera) {
+        try { this.renderer.compile(this.scene, this.camera); } catch (_) {}
+      }
+      const compileMs = tick();
+      let meshes = 0;
+      this.root.traverse((o) => { if (o.isMesh) meshes++; });
+      this._buildMs = { parts: partMs, wires: wireMs, board: boardMs, compile: compileMs, total: Math.round((performance.now() - tBuild) * 10) / 10, meshes };
     }
 
     /* ---- Virtual acrylic/breadboard for schematic circuits ---- */
-    _makeVirtualBoard(parts) {
+    _makeVirtualBoard(bounds) {
       const THREE = root.THREE;
-      if (!parts.length) return null;
-      let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
-      for (const p of parts) {
-        const d = root.Parts.T[p.type]; if (!d) continue;
-        let w = 40, h = 30;
-        try { const sz = d.size(p); w = sz.w || 40; h = sz.h || 30; } catch (_) {}
-        minX = Math.min(minX, p.x - 20); maxX = Math.max(maxX, p.x + w + 20);
-        minZ = Math.min(minZ, p.y - 20); maxZ = Math.max(maxZ, p.y + h + 20);
-      }
-      // Snap to ~0.1" pitch aesthetic; pad to look like a protoboard
-      const pad = 28;
-      minX -= pad; maxX += pad; minZ -= pad; maxZ += pad;
-      // snap extents to 0.1" pitch
-      minX = Math.floor(minX / 10) * 10; maxX = Math.ceil(maxX / 10) * 10;
-      minZ = Math.floor(minZ / 10) * 10; maxZ = Math.ceil(maxZ / 10) * 10;
+      if (!bounds || bounds.isEmpty()) return null;
+      // Sit just outside the parts. A wide pad made a sparse board, and fitting that
+      // board left the circuit small in the frame.
+      const margin = 8;
+      let minX = Math.floor((bounds.min.x - margin) / 10) * 10;
+      let maxX = Math.ceil((bounds.max.x + margin) / 10) * 10;
+      let minZ = Math.floor((bounds.min.z - margin) / 10) * 10;
+      let maxZ = Math.ceil((bounds.max.z + margin) / 10) * 10;
       const W = maxX - minX, D = maxZ - minZ;
       if (!(W > 40 && D > 40)) return null;
 
       const g = new THREE.Group();
-      const cols = Math.max(12, Math.round(W / 10));
+      const cols = Math.max(8, Math.round(W / 10));
       const tex = this._bbTexture(cols);
       const H = 9.5 * MM;
-      const sideMat = this._mat({ color: 0xe0d8c8, roughness: 0.75, metalness: 0.04 });
-      const body = new THREE.Mesh(new THREE.BoxGeometry(W, H, D), sideMat);
+      const sideMat = this._keepMat('vboard-side', () => this._mat({ color: 0xe0d8c8, roughness: 0.75, metalness: 0.04 }));
+      const body = new THREE.Mesh(this._keepGeo('vboard-body:' + W + 'x' + D, () => new THREE.BoxGeometry(W, H, D)), sideMat);
       body.position.set(minX + W / 2, -H / 2, minZ + D / 2);
       body.castShadow = true; body.receiveShadow = true; g.add(body);
-      // Top face with breadboard texture (UV correct)
       const top = new THREE.Mesh(
         new THREE.PlaneGeometry(W - 0.5, D - 0.5),
         this._mat({ map: tex, color: 0xf7f1e3, roughness: 0.68, metalness: 0.04 })
       );
       top.rotation.x = -Math.PI / 2; top.position.set(minX + W / 2, 0.05, minZ + D / 2); top.receiveShadow = true; g.add(top);
-      // denser recessed holes
-      const holeMat = this._mat({ color: 0x1a1a1c, metalness: 0.5, roughness: 0.4 });
-      const holeGeo = new THREE.CylinderGeometry(1.05, 1.15, 1.6, 8);
-      const step = 10;
-      for (let x = minX + 10; x < maxX; x += step) {
-        for (let z = minZ + 10; z < maxZ; z += step) {
-          const hole = new THREE.Mesh(holeGeo, holeMat);
-          hole.position.set(x, 0.05, z); g.add(hole);
+      const xs = [], zs = [];
+      for (let x = minX + 10; x < maxX - 4; x += 10) xs.push(x);
+      for (let z = minZ + 10; z < maxZ - 4; z += 10) zs.push(z);
+      const n = xs.length * zs.length;
+      if (n > 0) {
+        const holeGeo = this._keepGeo('vhole', () => new THREE.CylinderGeometry(1.05, 1.15, 1.6, 8));
+        const holeMat = this._keepMat('vhole', () => this._mat({ color: 0x1a1a1c, metalness: 0.5, roughness: 0.4 }));
+        const inst = new THREE.InstancedMesh(holeGeo, holeMat, n);
+        const dummy = new THREE.Object3D();
+        let i = 0;
+        for (const x of xs) for (const z of zs) {
+          dummy.position.set(x, 0.05, z); dummy.rotation.set(0, 0, 0); dummy.scale.set(1, 1, 1); dummy.updateMatrix();
+          inst.setMatrixAt(i++, dummy.matrix);
         }
+        inst.instanceMatrix.needsUpdate = true;
+        inst.userData.noSolid = true;
+        g.add(inst);
       }
       g.userData.virtualBB = true;
       return { mesh: g, minX, maxX, minZ, maxZ };
@@ -685,21 +895,25 @@
 
     _glowSprite(color) {
       const THREE = root.THREE;
-      const c = document.createElement('canvas'); c.width = 128; c.height = 128;
-      const g = c.getContext('2d');
       const hex = ((color >>> 0) & 0xffffff);
-      const r = (hex >> 16) & 255, gv = (hex >> 8) & 255, b = hex & 255;
-      const grd = g.createRadialGradient(64, 64, 2, 64, 64, 62);
-      grd.addColorStop(0, 'rgba(255,255,255,1)');
-      grd.addColorStop(0.12, 'rgba(' + r + ',' + gv + ',' + b + ',1)');
-      grd.addColorStop(0.35, 'rgba(' + r + ',' + gv + ',' + b + ',0.7)');
-      grd.addColorStop(0.65, 'rgba(' + Math.floor(r * 0.6) + ',' + Math.floor(gv * 0.35) + ',' + Math.floor(b * 0.35) + ',0.28)');
-      grd.addColorStop(1, 'rgba(0,0,0,0)');
-      g.fillStyle = grd; g.fillRect(0, 0, 128, 128);
-      const tex = new THREE.CanvasTexture(c);
-      // Additive vanishes on white breadboards under soft-GL — use Normal there
       const blend = this.softGL ? THREE.NormalBlending : THREE.AdditiveBlending;
-      const mat = new THREE.SpriteMaterial({ map: tex, color: 0xffffff, transparent: true, blending: blend, depthWrite: false, opacity: 0, depth: blend });
+      const tex = this._keepTex('glow:' + (this.softGL ? 's' : 'h') + ':' + hex, () => {
+        const c = document.createElement('canvas'); c.width = 128; c.height = 128;
+        const g = c.getContext('2d');
+        const r = (hex >> 16) & 255, gv = (hex >> 8) & 255, b = hex & 255;
+        const grd = g.createRadialGradient(64, 64, 2, 64, 64, 62);
+        grd.addColorStop(0, 'rgba(255,255,255,1)');
+        grd.addColorStop(0.12, 'rgba(' + r + ',' + gv + ',' + b + ',1)');
+        grd.addColorStop(0.35, 'rgba(' + r + ',' + gv + ',' + b + ',0.7)');
+        grd.addColorStop(0.65, 'rgba(' + Math.floor(r * 0.6) + ',' + Math.floor(gv * 0.35) + ',' + Math.floor(b * 0.35) + ',0.28)');
+        grd.addColorStop(1, 'rgba(0,0,0,0)');
+        g.fillStyle = grd; g.fillRect(0, 0, 128, 128);
+        const t = new THREE.CanvasTexture(c); t.encoding = THREE.sRGBEncoding;
+        return t;
+      });
+      // Additive vanishes on white breadboards under soft-GL — use Normal there.
+      // One texture per colour; each LED still has its own material so opacity can differ.
+      const mat = new THREE.SpriteMaterial({ map: tex, color: 0xffffff, transparent: true, blending: blend, depthWrite: false, opacity: 0 });
       return new THREE.Sprite(mat);
     }
 
@@ -707,18 +921,19 @@
       const THREE = root.THREE, g = new THREE.Group();
       const col = isIR ? LEDCOL.ir : (LEDCOL[p.props.color] || LEDCOL.red);
       const pitch = 10, leadY = 10;
-      const leadMat = this._mat({ color: 0xc0c4ca, metalness: 0.9, roughness: 0.22 });
+      const leadMat = this._keepMat('led-lead', () => this._mat({ color: 0xc0c4ca, metalness: 0.9, roughness: 0.22 }));
+      const leadGeo = this._keepGeo('led-lead', () => new THREE.CylinderGeometry(0.22 * MM, 0.22 * MM, leadY + 2, 8));
       for (const x of [0, pitch]) {
-        const lead = new THREE.Mesh(new THREE.CylinderGeometry(0.22 * MM, 0.22 * MM, leadY + 2, 8), leadMat);
+        const lead = new THREE.Mesh(leadGeo, leadMat);
         lead.position.set(x, leadY / 2, 0); g.add(lead);
       }
       const R = 2.5 * MM, bodyH = 5.0 * MM;
       const bodyMat = this._mat({ color: col, transparent: true, opacity: 0.78, roughness: 0.15, metalness: 0.05, emissive: col, emissiveIntensity: 0 });
-      const cyl = new THREE.Mesh(new THREE.CylinderGeometry(R, R, bodyH, 28), bodyMat);
+      const cyl = new THREE.Mesh(this._keepGeo('led-cyl', () => new THREE.CylinderGeometry(R, R, bodyH, 28)), bodyMat);
       cyl.position.set(pitch / 2, leadY + bodyH / 2, 0); cyl.castShadow = true; g.add(cyl);
-      const dome = new THREE.Mesh(new THREE.SphereGeometry(R, 28, 18, 0, Math.PI * 2, 0, Math.PI / 2), bodyMat.clone());
+      const dome = new THREE.Mesh(this._keepGeo('led-dome', () => new THREE.SphereGeometry(R, 28, 18, 0, Math.PI * 2, 0, Math.PI / 2)), bodyMat.clone());
       dome.position.set(pitch / 2, leadY + bodyH, 0); g.add(dome);
-      const flat = new THREE.Mesh(new THREE.BoxGeometry(0.35, bodyH * 0.85, R * 1.5), bodyMat.clone());
+      const flat = new THREE.Mesh(this._keepGeo('led-flat', () => new THREE.BoxGeometry(0.35, bodyH * 0.85, R * 1.5)), bodyMat.clone());
       flat.position.set(pitch / 2 - R + 0.12, leadY + bodyH / 2, 0); g.add(flat);
       const die = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.35, 0.8), this._mat({ color: 0xfff8e1, emissive: col, emissiveIntensity: 0.25, roughness: 0.4 }));
       die.position.set(pitch / 2, leadY + 1.3, 0); g.add(die);
@@ -1641,6 +1856,7 @@
           if (this.composer) this.composer.render();
           else this.renderer.render(this.scene, this.camera);
           this._frames = (this._frames || 0) + 1; this._errs = 0;
+          if (this._frames === 1) t3d('firstFrame');
           if (this._probe) this._probe();
         } catch (e) {
           // composer/bloom failures: drop to plain renderer once; persistent errors bail to 2D
@@ -1679,44 +1895,57 @@
       if (this._vbbMesh) { const bb = new THREE.Box3().setFromObject(this._vbbMesh); bb.expandByScalar(4); if (bb.containsPoint(cp)) return true; }
       return cp.y < 6;   // below/inside the board plane
     }
+    // Sample the dark margins, not the cream breadboard (it reads as "near white").
+    // A blank white frame lights the margins up; a framed board leaves them dark.
+    // One edge row instead of the whole drawing buffer — the full readback stalled the first frames.
     _whiteFraction(gl) {
       const W = gl.drawingBufferWidth, H = gl.drawingBufferHeight;
-      const buf = new Uint8Array(W * H * 4);
-      gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+      if (W < 2 || H < 2) return 0;
+      const prev = gl.getParameter(gl.PACK_ALIGNMENT);
+      gl.pixelStorei(gl.PACK_ALIGNMENT, 1);
+      const buf = new Uint8Array(W * 4);
       let n = 0, white = 0;
-      const sx = Math.max(1, Math.floor(W / 48)), sy = Math.max(1, Math.floor(H / 32));
-      for (let y = Math.floor(sy / 2); y < H; y += sy) for (let x = Math.floor(sx / 2); x < W; x += sx) {
-        const i = (y * W + x) * 4, r = buf[i], g = buf[i + 1], b = buf[i + 2];
-        n++; if (Math.min(r, g, b) > 200 && Math.max(r, g, b) - Math.min(r, g, b) < 40) white++;
-      }
+      try {
+        gl.readPixels(0, H - 1, W, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+        const step = Math.max(1, Math.floor(W / 48));
+        for (let x = 0; x < W; x += step) {
+          const i = x * 4, r = buf[i], g = buf[i + 1], b = buf[i + 2];
+          n++; if (Math.min(r, g, b) > 200 && Math.max(r, g, b) - Math.min(r, g, b) < 40) white++;
+        }
+      } finally { gl.pixelStorei(gl.PACK_ALIGNMENT, prev || 4); }
       return n ? white / n : 0;
     }
-    // Resolves {ok} after real frames: fails on lost context, camera inside the board, or a frame
-    // that is >60% near-white (the "white screen").
+    // Resolves {ok} on the first real frame so the loader can drop. The white-frame
+    // readback is deferred to the next frame: doing it here stalled presentation
+    // (~300 ms on SwiftShader) because readPixels waits for the GPU.
     healthCheck(timeout = 3000) {
       return new Promise((res) => {
         if (!this.ready) return res({ ok: false, why: 'not ready' });
         if (this._cameraInsideBoard()) return res({ ok: false, why: 'camera', camera: true });
         const start = this._frames || 0, t0 = performance.now();
         const gl = this.renderer.getContext();
-        let worst = 0, checked = 0;
-        this._probe = () => {
-          if ((this._frames || 0) - start < 2) return;
+        const whiteLater = () => {
+          let worst = 0;
           try {
-            if (gl.isContextLost()) { this._probe = null; return res({ ok: false, why: 'WebGL context lost' }); }
-            worst = Math.max(worst, this._whiteFraction(gl));
-          } catch (_) {}
-          checked++;
+            if (!gl || gl.isContextLost()) { if (this.hooks.onFail) this.hooks.onFail(new Error('WebGL context lost')); return; }
+            worst = this._whiteFraction(gl);
+          } catch (_) { return; }
           this.lastWhite = worst;
-          if (worst > 0.6) { this._probe = null; return res({ ok: false, why: 'white frame', camera: true, white: worst }); }
-          if (checked >= 2) { this._probe = null; res({ ok: true, white: worst }); }
+          if (worst > 0.6 && this.hooks.onFail) { const er = new Error('white frame'); er.camera = true; this.hooks.onFail(er); }
+        };
+        this._probe = () => {
+          if ((this._frames || 0) - start < 1) return;
+          this._probe = null;
+          if (gl && gl.isContextLost()) return res({ ok: false, why: 'WebGL context lost' });
+          res({ ok: true });
+          requestAnimationFrame(whiteLater);
         };
         const wait = () => {
           if (!this._probe) return;
           if (this._lost) { this._probe = null; return res({ ok: false, why: 'WebGL context lost' }); }
           if (performance.now() - t0 > timeout) {
             this._probe = null;
-            return res(gl.isContextLost() ? { ok: false, why: 'WebGL context lost' } : { ok: true, white: worst, noFrames: true });
+            return res(gl && gl.isContextLost() ? { ok: false, why: 'WebGL context lost' } : { ok: true, noFrames: true });
           }
           setTimeout(wait, 100);
         };
@@ -1724,15 +1953,26 @@
       });
     }
     dispose() {
-      cancelAnimationFrame(this._raf); root.removeEventListener('resize', this._onResize);
-      this.clear(); if (this.renderer) this.renderer.dispose();
+      cancelAnimationFrame(this._raf); cancelAnimationFrame(this._resizeRaf);
+      root.removeEventListener('resize', this._onResize);
+      if (this._ro) this._ro.disconnect();
+      this.clear();
+      if (this._geoCache) for (const g of this._geoCache.values()) g.dispose();
+      if (this._matCache) for (const m of this._matCache.values()) m.dispose();
+      if (this._texCache) for (const t of this._texCache.values()) t.dispose();
+      this._geoCache = this._matCache = this._texCache = null;
+      if (this.renderer) this.renderer.dispose();
     }
   }
 
   root.View3D = View3D;
+  root.View3DFit = { fitCameraToBox: fitCameraToBox, contentPadding: contentPadding };
+  root.View3DLoad = { wants3dFx: wants3dFx };
   root.loadView3D = async function loadView3D(wrap, hooks) {
+    t3d('initStart');
     const v = new View3D(wrap, hooks);
     await v.init();
+    t3d('init');
     return v;
   };
 })(typeof window !== 'undefined' ? window : globalThis);
