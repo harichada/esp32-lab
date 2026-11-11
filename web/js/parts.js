@@ -728,8 +728,10 @@
   }
 
   // Drag-and-drop: seat every pin in a row hole (a–j). The channel, the gap
-  // between rows, and the power-rail lines are not seats. A drop on a taken
-  // hole or an overlapping body moves to the nearest free seat.
+  // between rows, and the power-rail lines are not seats. The seat under the
+  // cursor is kept even if its 5-hole strips already hold other pins. A drop
+  // that would cover a hole or a body is nudged to the nearest seat whose
+  // strips are empty and whose body does not overlap.
   function placeDroppedPart(parts, type, x, y, rot) {
     const snap = (v) => Math.round(v / G) * G;
     const sx = snap(x), sy = snap(y), r = rot || 0;
@@ -762,44 +764,60 @@
         const w = pinWorld(p, h);
         const key = Math.round(w.x) + ',' + Math.round(w.y);
         if (holeAt.has(key)) continue;
-        holeAt.set(key, { x: Math.round(w.x), y: Math.round(w.y), side: 'abcde'.includes(m[1]) ? 'a' : 'f', bb: p.id });
+        holeAt.set(key, { x: Math.round(w.x), y: Math.round(w.y), side: 'abcde'.includes(m[1]) ? 'a' : 'f', col: +m[2], bb: p.id });
       }
     }
     const occupied = new Set();
+    const strips = new Set();
     const footprints = [];
     for (const p of parts) {
       if (p.type === 'breadboard' || p.type === 'label' || !T[p.type]) continue;
       let ps = [];
       try { ps = T[p.type].pins(p) || []; } catch (e) { ps = []; }
-      for (const pin of ps) { const w = pinWorld(p, pin); occupied.add(Math.round(w.x) + ',' + Math.round(w.y)); }
+      for (const pin of ps) {
+        const w = pinWorld(p, pin), key = Math.round(w.x) + ',' + Math.round(w.y);
+        occupied.add(key);
+        const hit = holeAt.get(key);
+        if (hit) strips.add(hit.bb + ':' + hit.side + ':' + hit.col);
+      }
       const box = partBox(p); if (box) footprints.push(box);
     }
     const span = Math.max.apply(null, offs.map((o) => o[1])) - Math.min.apply(null, offs.map((o) => o[1]));
     const mayStraddle = span >= 30;
     const hits = (a, b) => a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0;
-    let best = null;
+    const nearer = (a, b) => !b || a.dist < b.dist - 1e-6 || (Math.abs(a.dist - b.dist) <= 1e-6 && (a.x < b.x || (a.x === b.x && a.y < b.y)));
+    let aimed = null, nudge = null;
     const seen = new Set();
     for (const h of holeAt.values()) {
       const ox = h.x - offs[0][0], oy = h.y - offs[0][1], id = ox + ',' + oy;
       if (seen.has(id)) continue; seen.add(id);
-      let ok = true; const sides = new Map(); let taken = false;
+      let ok = true; const sides = new Map(); let taken = false, shared = false;
       for (const [dx, dy] of offs) {
         const key = Math.round(ox + dx) + ',' + Math.round(oy + dy), hit = holeAt.get(key);
         if (!hit) { ok = false; break; }
         if (occupied.has(key)) taken = true;
-        if (hit.side !== 'rail') {
-          const prev = sides.get(hit.bb);
-          if (prev && prev !== hit.side) { if (!mayStraddle) { ok = false; break; } sides.set(hit.bb, 'both'); }
-          else if (!prev) sides.set(hit.bb, hit.side);
-        }
+        if (strips.has(hit.bb + ':' + hit.side + ':' + hit.col)) shared = true;
+        const prev = sides.get(hit.bb);
+        if (prev && prev !== hit.side) { if (!mayStraddle) { ok = false; break; } sides.set(hit.bb, 'both'); }
+        else if (!prev) sides.set(hit.bb, hit.side);
       }
       if (!ok) continue;
       const box = partBox(Object.assign({}, probe, { x: ox, y: oy }));
-      if (taken || (box && footprints.some((b) => hits(box, b)))) continue;
+      const overlap = !!(box && footprints.some((b) => hits(box, b)));
       const dist = Math.hypot(ox - x, oy - y);
-      if (!best || dist < best.dist - 1e-6 || (Math.abs(dist - best.dist) <= 1e-6 && (ox < best.x || (ox === best.x && oy < best.y)))) best = { x: ox, y: oy, dist };
+      const seat = { x: ox, y: oy, dist };
+      if (nearer(seat, aimed)) aimed = seat;
+      // A blocked drop is nudged. The nudge may not share a 5-hole strip or a body.
+      if (!taken && !overlap && !shared && nearer(seat, nudge)) nudge = seat;
     }
-    return best ? { x: best.x, y: best.y } : { x: sx, y: sy };
+    // The seat under the cursor is kept even when its strips already hold pins.
+    if (aimed && !occupiedAt(aimed)) return { x: aimed.x, y: aimed.y };
+    return nudge ? { x: nudge.x, y: nudge.y } : { x: sx, y: sy };
+    function occupiedAt(seat) {
+      for (const [dx, dy] of offs) if (occupied.has(Math.round(seat.x + dx) + ',' + Math.round(seat.y + dy))) return true;
+      const box = partBox(Object.assign({}, probe, { x: seat.x, y: seat.y }));
+      return !!(box && footprints.some((b) => hits(box, b)));
+    }
   }
 
   const api = { T, fmt, parseVal, parseProp, stampResistance, WIRE_R, scopeChannel, bands, espGpio, ESP_TOP, ESP_BOT, INPUT_ONLY, STRAPPING, ADC1, ADC2, rotPt, pinWorld, placeDroppedPart, G, VTH, esc, LEDCOL };

@@ -1,7 +1,7 @@
 // Drag-and-drop must seat every pin in a row hole, never on a rail or between rows.
 const test = require('node:test');
 const assert = require('node:assert');
-const { Parts, Examples } = require('./tools/load-parts');
+const { Parts, Examples, Netlist } = require('./tools/load-parts');
 
 function holeMap(parts) {
   const map = new Map();
@@ -108,4 +108,41 @@ test('a dropped resistor seats both pins in one row', () => {
 test('a drop off the breadboard is not pulled onto it', () => {
   const proj = blink();
   assert.deepStrictEqual(Parts.placeDroppedPart(proj.parts, 'led', -400, 40, 0), { x: -400, y: 40 });
+});
+
+test('an exact drop on a free hole of a shared strip stays there', () => {
+  const proj = blink();
+  const x = 400, top = { id: 'LEDX', type: 'led', x, y: 110, rot: 0, props: JSON.parse(JSON.stringify(Parts.T.led.props)) };
+  proj.parts.push(top);
+  const at = Parts.placeDroppedPart(proj.parts, 'led', x, 150, 0);
+  assert.deepStrictEqual(at, { x, y: 150 });
+  proj.parts.push({ id: 'LEDY', type: 'led', x: at.x, y: at.y, rot: 0, props: JSON.parse(JSON.stringify(Parts.T.led.props)) });
+  const nl = Netlist.extract(proj);
+  const joined = nl.nets.some((net) => net.pins.some((p) => p.startsWith('LEDX:')) && net.pins.some((p) => p.startsWith('LEDY:')));
+  assert.ok(joined, 'same-strip drop is intentional wiring');
+  assert.ok(!overlaps(footprint('led', top), footprint('led', at)));
+});
+
+test('repeated drops on an occupied LED do not join nets or overlap', () => {
+  const proj = blink();
+  const led = proj.parts.find((p) => p.id === 'LED1');
+  const added = [];
+  for (let i = 0; i < 6; i++) {
+    const at = Parts.placeDroppedPart(proj.parts, 'led', led.x, led.y, 0);
+    const id = 'N' + (i + 1);
+    const part = { id, type: 'led', x: at.x, y: at.y, rot: 0, props: JSON.parse(JSON.stringify(Parts.T.led.props)) };
+    rowHoles(seated(proj.parts, 'led', at));
+    proj.parts.push(part);
+    added.push(part);
+  }
+  const nl = Netlist.extract(proj);
+  for (const net of nl.nets) {
+    const ids = [...new Set(net.pins.map((p) => p.split(':')[0]))];
+    const news = ids.filter((id) => added.some((p) => p.id === id));
+    assert.ok(!(news.length && ids.length > 1), 'joined ' + net.pins.join(' '));
+  }
+  const bodies = proj.parts.filter((p) => p.type !== 'breadboard' && p.type !== 'label').map((p) => footprint(p.type, p));
+  for (let i = 0; i < bodies.length; i++) for (let j = i + 1; j < bodies.length; j++) {
+    assert.ok(!overlaps(bodies[i], bodies[j]), JSON.stringify([bodies[i], bodies[j]]));
+  }
 });
