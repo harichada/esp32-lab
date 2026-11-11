@@ -123,6 +123,12 @@
     return { target: target.clone(), theta: theta, phi: phi, r: r };
   }
 
+  // Modest margin around the parts and wires. A long breadboard only gains a
+  // sliver; a small loose circuit is not parked inside a huge empty margin.
+  function contentPadding(span) {
+    return Math.min(18, Math.max(8, span * 0.04));
+  }
+
   class Orbit {
     constructor(cam, el, target) {
       this.cam = cam; this.el = el; this.target = target.clone();
@@ -481,10 +487,13 @@
       while (this.root && this.root.children.length) {
         const o = this.root.children[0]; this.root.remove(o);
         o.traverse((c) => {
-          if (c.geometry) c.geometry.dispose();
+          if (c.geometry && !c.geometry.userData.keep) c.geometry.dispose();
           if (c.material) {
             const ms = Array.isArray(c.material) ? c.material : [c.material];
-            ms.forEach((m) => { if (m.map) m.map.dispose(); m.dispose(); });
+            ms.forEach((m) => {
+              if (m.map && !m.map.userData.keep) m.map.dispose();
+              if (!m.userData.keep) m.dispose();
+            });
           }
         });
       }
@@ -500,6 +509,31 @@
       // no environment map on the safe path: metals would render near-black/grey, so cap metalness
       if (this.softGL) m.metalness = Math.min(m.metalness, 0.3);
       return m;
+    }
+    // Geometries and materials reused across rebuilds. clear() must not dispose them.
+    _keepGeo(key, build) {
+      if (!this._geoCache) this._geoCache = new Map();
+      let g = this._geoCache.get(key);
+      if (!g) { g = build(); g.userData.keep = true; this._geoCache.set(key, g); }
+      return g;
+    }
+    _keepMat(key, build) {
+      if (!this._matCache) this._matCache = new Map();
+      let m = this._matCache.get(key);
+      if (!m) { m = build(); m.userData.keep = true; this._matCache.set(key, m); }
+      return m;
+    }
+    _keepTex(key, build) {
+      if (!this._texCache) this._texCache = new Map();
+      let t = this._texCache.get(key);
+      if (!t) { t = build(); t.userData.keep = true; this._texCache.set(key, t); }
+      return t;
+    }
+    _addSolid(box, obj) {
+      if (!obj) return;
+      obj.updateMatrixWorld(true);
+      const b = this._solidBox(obj);
+      if (b && !b.isEmpty()) box.union(b);
     }
     // Convert sRGB-authored material/light colours to linear once (textures already carry sRGBEncoding).
     _linearize(obj) {
@@ -527,21 +561,16 @@
     rebuild(fit) {
       if (!this.ready || !this.proj) return;
       const THREE = root.THREE;
+      const tBuild = performance.now(), lap = { t: tBuild };
+      const tick = () => { const n = performance.now(), d = n - lap.t; lap.t = n; return Math.round(d * 10) / 10; };
       this.clear(); this._sig = this._projectSig();
       const gParts = new THREE.Group(), gWires = new THREE.Group(); this.root.add(gParts); this.root.add(gWires);
+      this.root.updateMatrixWorld(true);
       const box = new THREE.Box3();
-      let hasBB = this.proj.parts.some((p) => p.type === 'breadboard');
-
-      // Virtual breadboard / acrylic under floating schematic circuits
-      if (!hasBB) {
-        const virt = this._makeVirtualBoard(this.proj.parts);
-        if (virt) {
-          gParts.add(virt.mesh);
-          box.expandByObject(virt.mesh);
-          this._virtualBB = true;
-          hasBB = true;
-        }
-      }
+      const realBB = this.proj.parts.some((p) => p.type === 'breadboard');
+      // Floating circuits get a stand-in board, so jumpers still rise off the table.
+      // It is sized to the parts and framed by its top, not by its thickness.
+      let hasBB = realBB || this.proj.parts.length > 0;
 
       for (const p of this.proj.parts) {
         const d = root.Parts.T[p.type]; if (!d) continue;
@@ -552,7 +581,7 @@
         mesh.position.set(p.x, 0, p.y);
         mesh.rotation.y = -rot;
         gParts.add(mesh); this.parts.set(p.id, { mesh, part: p });
-        box.expandByObject(mesh);
+        this._addSolid(box, mesh);
         if (p.type !== 'breadboard') {
           try {
             const sz = d.size ? d.size(p) : { w: 24, h: 20 };
@@ -573,70 +602,92 @@
           for (const pin of (d && d.pins ? d.pins(rec.part) : [])) { const q = root.Parts.pinWorld(rec.part, pin), kk = Math.round(q.x) + ',' + Math.round(q.y); this._pinOwners.set(kk, id); this._pinNames.set(kk, pin.name); }
         } catch (_) {}
       }
+      const partMs = tick();
       const plans = this.proj.wires.map((w) => this._planWire(w, hasBB));
       try { this._layoutWires(plans); } catch (e) { console.warn('3D wire layout', e); }
       for (const p of plans) {
         const tube = p && this._buildWire(p);
-        if (tube) { gWires.add(tube.group); this.wires.set(tube.id, tube); box.expandByObject(tube.group); }
+        if (tube) { gWires.add(tube.group); this.wires.set(tube.id, tube); this._addSolid(box, tube.group); }
       }
+      const wireMs = tick();
+      if (!realBB) {
+        const virt = this._makeVirtualBoard(box);
+        if (virt) {
+          gParts.add(virt.mesh); this._virtualBB = true;
+          // The stand-in is part of the picture, but its underside is hidden.
+          const y = box.min.y;
+          box.expandByPoint(new THREE.Vector3(virt.minX, y, virt.minZ));
+          box.expandByPoint(new THREE.Vector3(virt.maxX, y, virt.maxZ));
+        } else hasBB = realBB;
+      }
+      const boardMs = tick();
       if (this.kick && !box.isEmpty()) {
         const c = new THREE.Vector3(); box.getCenter(c); this.kick.position.set(c.x, 70, c.z);
       }
       if (fit && !box.isEmpty()) {
-        // Frame the breadboard together with the parts and wires. Fitting only the
-        // parts left the long board running off the right and bottom of the view.
-        const use = box.clone(); use.expandByScalar(10);
+        // Real breadboards are parts, so they are already in `box`. The stand-in's
+        // top was unioned in above; its hidden underside is not.
+        const use = box.clone();
+        const size = use.getSize(new THREE.Vector3());
+        use.expandByScalar(contentPadding(Math.max(size.x, size.z)));
         this._fitBox = use;
         this._applyFrame();
       }
       this._linearize(this.root);
       this._updateLive();
+      if (this.active && this.renderer && this.scene && this.camera) {
+        try { this.renderer.compile(this.scene, this.camera); } catch (_) {}
+      }
+      const compileMs = tick();
+      let meshes = 0;
+      this.root.traverse((o) => { if (o.isMesh) meshes++; });
+      this._buildMs = { parts: partMs, wires: wireMs, board: boardMs, compile: compileMs, total: Math.round((performance.now() - tBuild) * 10) / 10, meshes };
     }
 
     /* ---- Virtual acrylic/breadboard for schematic circuits ---- */
-    _makeVirtualBoard(parts) {
+    _makeVirtualBoard(bounds) {
       const THREE = root.THREE;
-      if (!parts.length) return null;
-      let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
-      for (const p of parts) {
-        const d = root.Parts.T[p.type]; if (!d) continue;
-        let w = 40, h = 30;
-        try { const sz = d.size(p); w = sz.w || 40; h = sz.h || 30; } catch (_) {}
-        minX = Math.min(minX, p.x - 20); maxX = Math.max(maxX, p.x + w + 20);
-        minZ = Math.min(minZ, p.y - 20); maxZ = Math.max(maxZ, p.y + h + 20);
-      }
-      // Snap to ~0.1" pitch aesthetic; pad to look like a protoboard
-      const pad = 28;
-      minX -= pad; maxX += pad; minZ -= pad; maxZ += pad;
-      // snap extents to 0.1" pitch
-      minX = Math.floor(minX / 10) * 10; maxX = Math.ceil(maxX / 10) * 10;
-      minZ = Math.floor(minZ / 10) * 10; maxZ = Math.ceil(maxZ / 10) * 10;
+      if (!bounds || bounds.isEmpty()) return null;
+      // Sit just outside the parts. A wide pad made a sparse board, and fitting that
+      // board left the circuit small in the frame.
+      const margin = 8;
+      let minX = Math.floor((bounds.min.x - margin) / 10) * 10;
+      let maxX = Math.ceil((bounds.max.x + margin) / 10) * 10;
+      let minZ = Math.floor((bounds.min.z - margin) / 10) * 10;
+      let maxZ = Math.ceil((bounds.max.z + margin) / 10) * 10;
       const W = maxX - minX, D = maxZ - minZ;
       if (!(W > 40 && D > 40)) return null;
 
       const g = new THREE.Group();
-      const cols = Math.max(12, Math.round(W / 10));
+      const cols = Math.max(8, Math.round(W / 10));
       const tex = this._bbTexture(cols);
       const H = 9.5 * MM;
-      const sideMat = this._mat({ color: 0xe0d8c8, roughness: 0.75, metalness: 0.04 });
-      const body = new THREE.Mesh(new THREE.BoxGeometry(W, H, D), sideMat);
+      const sideMat = this._keepMat('vboard-side', () => this._mat({ color: 0xe0d8c8, roughness: 0.75, metalness: 0.04 }));
+      const body = new THREE.Mesh(this._keepGeo('vboard-body:' + W + 'x' + D, () => new THREE.BoxGeometry(W, H, D)), sideMat);
       body.position.set(minX + W / 2, -H / 2, minZ + D / 2);
       body.castShadow = true; body.receiveShadow = true; g.add(body);
-      // Top face with breadboard texture (UV correct)
       const top = new THREE.Mesh(
         new THREE.PlaneGeometry(W - 0.5, D - 0.5),
         this._mat({ map: tex, color: 0xf7f1e3, roughness: 0.68, metalness: 0.04 })
       );
       top.rotation.x = -Math.PI / 2; top.position.set(minX + W / 2, 0.05, minZ + D / 2); top.receiveShadow = true; g.add(top);
-      // denser recessed holes
-      const holeMat = this._mat({ color: 0x1a1a1c, metalness: 0.5, roughness: 0.4 });
-      const holeGeo = new THREE.CylinderGeometry(1.05, 1.15, 1.6, 8);
-      const step = 10;
-      for (let x = minX + 10; x < maxX; x += step) {
-        for (let z = minZ + 10; z < maxZ; z += step) {
-          const hole = new THREE.Mesh(holeGeo, holeMat);
-          hole.position.set(x, 0.05, z); g.add(hole);
+      const xs = [], zs = [];
+      for (let x = minX + 10; x < maxX - 4; x += 10) xs.push(x);
+      for (let z = minZ + 10; z < maxZ - 4; z += 10) zs.push(z);
+      const n = xs.length * zs.length;
+      if (n > 0) {
+        const holeGeo = this._keepGeo('vhole', () => new THREE.CylinderGeometry(1.05, 1.15, 1.6, 8));
+        const holeMat = this._keepMat('vhole', () => this._mat({ color: 0x1a1a1c, metalness: 0.5, roughness: 0.4 }));
+        const inst = new THREE.InstancedMesh(holeGeo, holeMat, n);
+        const dummy = new THREE.Object3D();
+        let i = 0;
+        for (const x of xs) for (const z of zs) {
+          dummy.position.set(x, 0.05, z); dummy.rotation.set(0, 0, 0); dummy.scale.set(1, 1, 1); dummy.updateMatrix();
+          inst.setMatrixAt(i++, dummy.matrix);
         }
+        inst.instanceMatrix.needsUpdate = true;
+        inst.userData.noSolid = true;
+        g.add(inst);
       }
       g.userData.virtualBB = true;
       return { mesh: g, minX, maxX, minZ, maxZ };
@@ -801,20 +852,24 @@
 
     _glowSprite(color) {
       const THREE = root.THREE;
-      const c = document.createElement('canvas'); c.width = 128; c.height = 128;
-      const g = c.getContext('2d');
       const hex = ((color >>> 0) & 0xffffff);
-      const r = (hex >> 16) & 255, gv = (hex >> 8) & 255, b = hex & 255;
-      const grd = g.createRadialGradient(64, 64, 2, 64, 64, 62);
-      grd.addColorStop(0, 'rgba(255,255,255,1)');
-      grd.addColorStop(0.12, 'rgba(' + r + ',' + gv + ',' + b + ',1)');
-      grd.addColorStop(0.35, 'rgba(' + r + ',' + gv + ',' + b + ',0.7)');
-      grd.addColorStop(0.65, 'rgba(' + Math.floor(r * 0.6) + ',' + Math.floor(gv * 0.35) + ',' + Math.floor(b * 0.35) + ',0.28)');
-      grd.addColorStop(1, 'rgba(0,0,0,0)');
-      g.fillStyle = grd; g.fillRect(0, 0, 128, 128);
-      const tex = new THREE.CanvasTexture(c);
-      // Additive vanishes on white breadboards under soft-GL — use Normal there
       const blend = this.softGL ? THREE.NormalBlending : THREE.AdditiveBlending;
+      const tex = this._keepTex('glow:' + (this.softGL ? 's' : 'h') + ':' + hex, () => {
+        const c = document.createElement('canvas'); c.width = 128; c.height = 128;
+        const g = c.getContext('2d');
+        const r = (hex >> 16) & 255, gv = (hex >> 8) & 255, b = hex & 255;
+        const grd = g.createRadialGradient(64, 64, 2, 64, 64, 62);
+        grd.addColorStop(0, 'rgba(255,255,255,1)');
+        grd.addColorStop(0.12, 'rgba(' + r + ',' + gv + ',' + b + ',1)');
+        grd.addColorStop(0.35, 'rgba(' + r + ',' + gv + ',' + b + ',0.7)');
+        grd.addColorStop(0.65, 'rgba(' + Math.floor(r * 0.6) + ',' + Math.floor(gv * 0.35) + ',' + Math.floor(b * 0.35) + ',0.28)');
+        grd.addColorStop(1, 'rgba(0,0,0,0)');
+        g.fillStyle = grd; g.fillRect(0, 0, 128, 128);
+        const t = new THREE.CanvasTexture(c); t.encoding = THREE.sRGBEncoding;
+        return t;
+      });
+      // Additive vanishes on white breadboards under soft-GL — use Normal there.
+      // One texture per colour; each LED still has its own material so opacity can differ.
       const mat = new THREE.SpriteMaterial({ map: tex, color: 0xffffff, transparent: true, blending: blend, depthWrite: false, opacity: 0, depth: blend });
       return new THREE.Sprite(mat);
     }
@@ -823,18 +878,19 @@
       const THREE = root.THREE, g = new THREE.Group();
       const col = isIR ? LEDCOL.ir : (LEDCOL[p.props.color] || LEDCOL.red);
       const pitch = 10, leadY = 10;
-      const leadMat = this._mat({ color: 0xc0c4ca, metalness: 0.9, roughness: 0.22 });
+      const leadMat = this._keepMat('led-lead', () => this._mat({ color: 0xc0c4ca, metalness: 0.9, roughness: 0.22 }));
+      const leadGeo = this._keepGeo('led-lead', () => new THREE.CylinderGeometry(0.22 * MM, 0.22 * MM, leadY + 2, 8));
       for (const x of [0, pitch]) {
-        const lead = new THREE.Mesh(new THREE.CylinderGeometry(0.22 * MM, 0.22 * MM, leadY + 2, 8), leadMat);
+        const lead = new THREE.Mesh(leadGeo, leadMat);
         lead.position.set(x, leadY / 2, 0); g.add(lead);
       }
       const R = 2.5 * MM, bodyH = 5.0 * MM;
       const bodyMat = this._mat({ color: col, transparent: true, opacity: 0.78, roughness: 0.15, metalness: 0.05, emissive: col, emissiveIntensity: 0 });
-      const cyl = new THREE.Mesh(new THREE.CylinderGeometry(R, R, bodyH, 28), bodyMat);
+      const cyl = new THREE.Mesh(this._keepGeo('led-cyl', () => new THREE.CylinderGeometry(R, R, bodyH, 28)), bodyMat);
       cyl.position.set(pitch / 2, leadY + bodyH / 2, 0); cyl.castShadow = true; g.add(cyl);
-      const dome = new THREE.Mesh(new THREE.SphereGeometry(R, 28, 18, 0, Math.PI * 2, 0, Math.PI / 2), bodyMat.clone());
+      const dome = new THREE.Mesh(this._keepGeo('led-dome', () => new THREE.SphereGeometry(R, 28, 18, 0, Math.PI * 2, 0, Math.PI / 2)), bodyMat.clone());
       dome.position.set(pitch / 2, leadY + bodyH, 0); g.add(dome);
-      const flat = new THREE.Mesh(new THREE.BoxGeometry(0.35, bodyH * 0.85, R * 1.5), bodyMat.clone());
+      const flat = new THREE.Mesh(this._keepGeo('led-flat', () => new THREE.BoxGeometry(0.35, bodyH * 0.85, R * 1.5)), bodyMat.clone());
       flat.position.set(pitch / 2 - R + 0.12, leadY + bodyH / 2, 0); g.add(flat);
       const die = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.35, 0.8), this._mat({ color: 0xfff8e1, emissive: col, emissiveIntensity: 0.25, roughness: 0.4 }));
       die.position.set(pitch / 2, leadY + 1.3, 0); g.add(die);
@@ -1857,12 +1913,17 @@
       cancelAnimationFrame(this._raf); cancelAnimationFrame(this._resizeRaf);
       root.removeEventListener('resize', this._onResize);
       if (this._ro) this._ro.disconnect();
-      this.clear(); if (this.renderer) this.renderer.dispose();
+      this.clear();
+      if (this._geoCache) for (const g of this._geoCache.values()) g.dispose();
+      if (this._matCache) for (const m of this._matCache.values()) m.dispose();
+      if (this._texCache) for (const t of this._texCache.values()) t.dispose();
+      this._geoCache = this._matCache = this._texCache = null;
+      if (this.renderer) this.renderer.dispose();
     }
   }
 
   root.View3D = View3D;
-  root.View3DFit = { fitCameraToBox: fitCameraToBox };
+  root.View3DFit = { fitCameraToBox: fitCameraToBox, contentPadding: contentPadding };
   root.View3DLoad = { wants3dFx: wants3dFx };
   root.loadView3D = async function loadView3D(wrap, hooks) {
     t3d('initStart');

@@ -5,7 +5,7 @@ const THREE = require('../vendor/three.min.js');
 globalThis.THREE = THREE;
 require('../js/view3d.js');
 require('../js/viewchrome.js');
-const { fitCameraToBox } = globalThis.View3DFit;
+const { fitCameraToBox, contentPadding } = globalThis.View3DFit;
 const { viewChipState, blocks3d } = globalThis.ViewChrome;
 
 // Blink breadboard body in world units (part at the origin): x −6…636, z −14…208, a few mm thick.
@@ -85,6 +85,30 @@ test('reframing after an aspect change keeps the board inside', () => {
   c.updateProjectionMatrix();
   fitCameraToBox(c, board, { angleDeg: 40, margins: MARGIN });
   assert.ok(inside(project(c, board), MARGIN));
+});
+
+test('padding stays a sliver on a breadboard and modest on a small circuit', () => {
+  const small = contentPadding(80), board = contentPadding(640);
+  assert.ok(small >= 8 && small < 12, small);
+  assert.ok(board > small && board <= 18, board);
+});
+
+test('series-sized content frames closer than the old stand-in board', () => {
+  // Measured solid parts of Series vs parallel, versus the stand-in board the camera used to fit.
+  const content = new THREE.Box3(new THREE.Vector3(87, -1, 105), new THREE.Vector3(342, 40, 442));
+  const span = Math.max(342 - 87, 442 - 105);
+  const padded = content.clone().expandByScalar(contentPadding(span));
+  const stand = new THREE.Box3(new THREE.Vector3(40, -47, 90), new THREE.Vector3(352, 59, 490));
+  const cA = cam(956 / 526), cB = cam(956 / 526);
+  const a = fitCameraToBox(cA, padded, { angleDeg: 40, margins: MARGIN });
+  const b = fitCameraToBox(cB, stand, { angleDeg: 40, margins: MARGIN });
+  assert.ok(a.r < b.r * 0.9, a.r + ' vs ' + b.r);
+  assert.ok(inside(project(cA, padded), MARGIN));
+  const board = boardBox();
+  const bp = board.clone().expandByScalar(contentPadding(642));
+  const c = cam(956 / 526);
+  fitCameraToBox(c, bp, { angleDeg: 40, margins: MARGIN });
+  assert.ok(inside(project(c, board), MARGIN), 'blink board still inside after the content pad');
 });
 
 test('a small circuit still frames without the camera sitting inside it', () => {
