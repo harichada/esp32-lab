@@ -81,3 +81,20 @@ test('Projects > + New blank opens the chooser instead of loading the Blink ESP3
   assert.match(src, /e\.target === d\) \{ close\(\)/);
   assert.match(src, /data-a=cancel\]'\)\) close\(\)/);
 });
+
+test('opening or replacing a project clears the selection and empties the Inspector', () => {
+  const src = fs.readFileSync(path.join(WEB, 'js', 'app.js'), 'utf8');
+  const setProject = src.slice(src.indexOf('function setProject'), src.indexOf('async function loadExample'));
+  assert.match(setProject, /app\.editor\.setProject\(app\.proj\)/);
+  assert.match(setProject, /app\.editor\.select\(null\)/);
+  assert.match(setProject, /app\.schematic\.sel = null/);
+  // The Inspector is filled only from this hook, so select(null) is what paints it empty.
+  assert.match(src, /selected:\s*\(s\)\s*=>\s*\{\s*renderInspector\(s\)/);
+  assert.match(src, /function renderInspector\(sel\)[\s\S]*?if \(!sel\) \{ el\.innerHTML = '<p class="muted">Select a part or wire\.<\/p>'/);
+  // Every replace path goes through setProject (New blank and file open via openProject).
+  assert.match(src, /function openProject\(id\)[\s\S]*?setProject\(p\)/);
+  assert.match(src, /async function loadExample\(k\)[\s\S]*?setProject\(ex/);
+  assert.match(src, /function openFile\(f\)[\s\S]*?openProject\(p\.id\)/);
+  const neu = src.split('\n').find((l) => /a === 'new'/.test(l));
+  assert.match(neu, /openProject\(p\.id\)/);
+});

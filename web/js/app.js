@@ -16,7 +16,10 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     stopRun(); app.readOnly = !!(opts && opts.readOnly);
     if (window.Netlist) { try { Netlist.migrate(p); } catch (e) { /* open the board even if its netlist cannot be built */ } }
     app.proj = normalize(p); app.sim = new Sim(app.proj); app.file = 'sketch'; app.world = new Devices.MockWorld(); app.world.onchange = () => (app.devDirty = true); app.world.onlog = (e) => app.netlog.add({ k: 'dev', msg: `${e.proto}: ${e.summary}`, ok: !(e.code < 0 || e.code >= 400) });
-    app.editor.setProject(app.proj); setTimeout(() => app.editor.fit(), 0);
+    app.editor.setProject(app.proj);
+    // Editor.setProject drops the selection without notifying the Inspector.
+    app.editor.select(null);
+    setTimeout(() => app.editor.fit(), 0);
     $('#selMode').value = app.proj.mode; $('#inDefines').value = app.proj.defines.join(','); renderFileTabs(); loadCode(); modeNote();
     $('#cbDiodes').checked = !app.proj.parts.some((q) => q.type === 'diode' && q.props.bypass);
     const hasDev = !!app.proj.devices; document.querySelector('[data-tab=dev]').style.display = hasDev ? '' : 'none';
@@ -26,7 +29,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     app.devDirty = true; setStatus('idle', 'idle'); renderBanner();
     if (window.Bom) Bom.render(document.getElementById('bomView'), app.proj);
     if (app.view3d) app.view3d.setProject(app.proj);
-    if (app.schematic) app.schematic.setProject(app.proj);
+    if (app.schematic) { app.schematic.sel = null; app.schematic.setProject(app.proj); }
   }
   async function loadExample(k) {
     const ex = Examples.EX[k](); ex.example = k;
