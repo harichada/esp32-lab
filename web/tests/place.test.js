@@ -123,6 +123,32 @@ test('an exact drop on a free hole of a shared strip stays there', () => {
   assert.ok(!overlaps(footprint('led', top), footprint('led', at)));
 });
 
+test('click-add skips a strip that a hole-only seat would share', () => {
+  const proj = blink();
+  const x = 400;
+  const top = { id: 'LEDX', type: 'led', x, y: 110, rot: 0, props: JSON.parse(JSON.stringify(Parts.T.led.props)) };
+  proj.parts.push(top);
+  const holeOnly = { x, y: 150 };
+  const holes = seated(proj.parts, 'led', holeOnly);
+  rowHoles(holes);
+  assert.ok(!overlaps(footprint('led', top), footprint('led', holeOnly)));
+  const trial = blink();
+  trial.parts.push(JSON.parse(JSON.stringify(top)));
+  trial.parts.push({ id: 'LEDY', type: 'led', x: holeOnly.x, y: holeOnly.y, rot: 0, props: JSON.parse(JSON.stringify(Parts.T.led.props)) });
+  const wouldJoin = Netlist.extract(trial).nets.some((net) => net.pins.some((p) => p.startsWith('LEDX:')) && net.pins.some((p) => p.startsWith('LEDY:')));
+  assert.ok(wouldJoin, 'hole-only seat on the free holes of that strip joins the LEDs');
+  const at = Parts.placeOnEmptyStrips(proj.parts, 'led', x, holeOnly.y, 0);
+  assert.notDeepStrictEqual(at, holeOnly);
+  rowHoles(seated(proj.parts, 'led', at));
+  proj.parts.push({ id: 'LEDY', type: 'led', x: at.x, y: at.y, rot: 0, props: JSON.parse(JSON.stringify(Parts.T.led.props)) });
+  const nl = Netlist.extract(proj);
+  for (const net of nl.nets) {
+    const ids = [...new Set(net.pins.map((p) => p.split(':')[0]))];
+    assert.ok(!(ids.includes('LEDY') && ids.length > 1), 'joined ' + net.pins.join(' '));
+  }
+  assert.ok(!overlaps(footprint('led', top), footprint('led', at)));
+});
+
 test('repeated drops on an occupied LED do not join nets or overlap', () => {
   const proj = blink();
   const led = proj.parts.find((p) => p.id === 'LED1');

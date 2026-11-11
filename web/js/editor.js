@@ -95,11 +95,11 @@
       const p = { id: pre + n, type, x: snap(x), y: snap(y), rot: 0, props: JSON.parse(JSON.stringify(d.props || {})) };
       this.proj.parts.push(p); this.render(); this.select({ part: p.id }); this.hooks.changed(true); return p;
     }
-    // Palette click and the command palette: the view centre is often the breadboard channel.
+    // Palette click and the command palette. Empty strips, same rule as placeNewPart.seatOk.
     addPartInView(type) {
       const r = this.svg.getBoundingClientRect();
       const x = this.view.x + r.width / this.view.s / 2, y = this.view.y + r.height / this.view.s / 2;
-      const seat = P.placeNewPart ? P.placeNewPart(this.proj.parts, type, x, y, 0) : { x, y };
+      const seat = P.placeOnEmptyStrips ? P.placeOnEmptyStrips(this.proj.parts, type, x, y, 0) : { x, y };
       return this.addPart(type, seat.x, seat.y);
     }
     part(id) { return this.proj.parts.find((p) => p.id === id); }
