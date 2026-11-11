@@ -29,7 +29,7 @@ body.m #main{position:fixed;left:0;right:0;top:var(--mTop);bottom:var(--mBot);he
 body.m #center{position:absolute;inset:0}
 body.m #stageWrap{position:absolute;inset:0;touch-action:none;overscroll-behavior:contain}
 body.m #stage{touch-action:none;-webkit-user-select:none;-webkit-touch-callout:none}
-body.m #dockResizer,body.m #sideResizer,body.m .reopen,body.m #minimap,body.m #legalFoot,body.m #tabs,body.m .panel-h,body.m .zoom-tools #bMap,body.m .canvas-tools :is(.vsep,#bRot,#bDel,select,.tgl){display:none!important}
+body.m #dockResizer,body.m #sideResizer,body.m .reopen,body.m #minimap,body.m #legalFoot,body.m #tabs,body.m .panel-h,body.m .zoom-tools #bMap,body.m .canvas-tools :is(.vsep,#bRot,#bDel,select,.tgl,.wire-color){display:none!important}
 body.m .canvas-tools,body.m .zoom-tools{bottom:calc(112px + env(safe-area-inset-bottom));padding:4px;border-radius:14px;background:var(--glass);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border:1px solid var(--hair);box-shadow:0 10px 30px rgba(0,0,0,.45)}
 body.m .canvas-tools{left:max(12px,env(safe-area-inset-left))}body.m .zoom-tools{right:max(12px,env(safe-area-inset-right))}
 body.m .canvas-tools .iconbtn,body.m .zoom-tools .iconbtn{width:44px;height:44px;border-radius:10px}body.m .canvas-tools .ic,body.m .zoom-tools .ic{width:20px;height:20px}
@@ -101,7 +101,7 @@ body.m .bom-row{padding:10px 12px}body.m .bom-a{padding:8px 12px;font-size:13px}
 body.m .tab .row.wrap label,body.m .tab .row label{font-size:13px}
 /* inspector sheet */
 body.m .insp-body{padding:4px 18px calc(18px + env(safe-area-inset-bottom));font-size:14px}
-body.m #insp h3{font-size:17px}body.m #insp label{font-size:13px;gap:8px}
+body.m #insp h3{font-size:17px}body.m #insp label{font-size:13px;gap:8px}body.m #insp .insp-k{font-size:13px;margin-bottom:8px}
 body.m #insp input:not([type=checkbox]):not([type=range]),body.m #insp select{height:46px;border-radius:12px}
 body.m #insp input[type=range]{height:44px}
 body.m #insp input[type=range]::-webkit-slider-runnable-track{height:6px;border-radius:3px}
@@ -118,6 +118,7 @@ body.m table.pins{font-size:13px}body.m table.pins td{padding:8px}body.m .sw{wid
 .m-list button{height:52px;border:0;border-radius:0;background:none;justify-content:space-between;font-size:15px;padding:0 16px;border-top:1px solid var(--hair)}.m-list button:first-child{border-top:0}
 .m-list button::after{content:'';width:8px;height:8px;border-right:1.6px solid var(--mut);border-top:1.6px solid var(--mut);transform:rotate(45deg)}
 .m-wire{display:flex;flex-direction:column;gap:6px}.m-wire select{height:48px;border-radius:12px}
+.m-wire-cap{font-size:13px;line-height:1.35;color:var(--txt2);margin:0 2px 2px}
 .m-sw{display:flex;align-items:center;justify-content:space-between;flex-direction:row-reverse;min-height:48px;font-size:15px;padding:0 4px}
 .m-sw input[type=checkbox]{appearance:none;width:50px;height:30px;border-radius:15px;background:var(--l4);border:0;position:relative;transition:background .2s;display:block}
 .m-sw input[type=checkbox]::after{content:'';position:absolute;top:3px;left:3px;width:24px;height:24px;border-radius:50%;background:#fff;border:0;transform:none;transition:left .2s;box-shadow:0 2px 4px rgba(0,0,0,.4)}

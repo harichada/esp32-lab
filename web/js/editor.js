@@ -21,10 +21,14 @@
     // ---------- coordinates ----------
     applyView() { const r = this.svg.getBoundingClientRect(); this.svg.setAttribute('viewBox', `${this.view.x} ${this.view.y} ${r.width / this.view.s} ${r.height / this.view.s}`); }
     toWorld(ev) { const r = this.svg.getBoundingClientRect(); return { x: this.view.x + (ev.clientX - r.left) / this.view.s, y: this.view.y + (ev.clientY - r.top) / this.view.s }; }
+    markUserView() { this._autoFit = false; }
     fit() {
-      const bb = this.bounds(); const r = this.svg.getBoundingClientRect(); if (!bb || !r.width) return;
+      const bb = this.bounds(); const r = this.svg.getBoundingClientRect(); if (!bb || r.width < 2 || r.height < 2) return;
       const s = Math.min(3, Math.max(0.2, Math.min(r.width / (bb.w + 80), r.height / (bb.h + 80))));
-      this.view = { s, x: bb.x - 40 - (r.width / s - bb.w - 80) / 2, y: bb.y - 40 - (r.height / s - bb.h - 80) / 2 }; this.applyView();
+      this.view = { s, x: bb.x - 40 - (r.width / s - bb.w - 80) / 2, y: bb.y - 40 - (r.height / s - bb.h - 80) / 2 };
+      this._autoFit = true; this._fitSize = Math.round(r.width) + 'x' + Math.round(r.height); this.applyView();
+      const z = document.getElementById('zoomPct');
+      if (z && !document.body.classList.contains('viewsch') && !document.body.classList.contains('view3d')) z.textContent = Math.round(s * 100) + '%';
     }
     bounds() {
       let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; const add = (x, y) => { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); };
@@ -91,6 +95,13 @@
       const p = { id: pre + n, type, x: snap(x), y: snap(y), rot: 0, props: JSON.parse(JSON.stringify(d.props || {})) };
       this.proj.parts.push(p); this.render(); this.select({ part: p.id }); this.hooks.changed(true); return p;
     }
+    // Palette click and the command palette: the view centre is often the breadboard channel.
+    addPartInView(type) {
+      const r = this.svg.getBoundingClientRect();
+      const x = this.view.x + r.width / this.view.s / 2, y = this.view.y + r.height / this.view.s / 2;
+      const seat = P.placeNewPart ? P.placeNewPart(this.proj.parts, type, x, y, 0) : { x, y };
+      return this.addPart(type, seat.x, seat.y);
+    }
     part(id) { return this.proj.parts.find((p) => p.id === id); }
     rotateSel() { if (!this.sel || !this.sel.part) return; const p = this.part(this.sel.part); this.push(); p.rot = ((p.rot || 0) + 1) & 3; this.render(); this.hooks.changed(true); }
     deleteSel() {
@@ -155,6 +166,21 @@
       svg.addEventListener('drop', (ev) => { ev.preventDefault(); const t = ev.dataTransfer.getData('text/x-part'); if (t && P.T[t]) { const w = this.toWorld(ev); this.addPart(t, w.x, w.y); } });
       svg.addEventListener('pointerleave', () => this.hooks.hover(null));
       window.addEventListener('resize', () => this.applyView());
+      // A fitted desktop zoom (often ~177% on a wide canvas) used to survive a shrink to phone
+      // width, so the breadboard opened clipped. Refit while the view is still the automatic one.
+      if (typeof ResizeObserver !== 'undefined') {
+        let raf = 0;
+        new ResizeObserver(() => {
+          cancelAnimationFrame(raf);
+          raf = requestAnimationFrame(() => {
+            const box = this.svg.getBoundingClientRect();
+            if (box.width < 2 || box.height < 2 || !this.proj) return;
+            const prev = (this._fitSize || '').split('x').map(Number);
+            if (prev.length === 2 && Math.abs(box.width - prev[0]) < 2 && Math.abs(box.height - prev[1]) < 2) return;
+            if (this._autoFit || !this._fitSize) this.fit();
+          });
+        }).observe(this.svg);
+      }
     }
     cancelWire() { if (this.mode && this.mode.k === 'wire') { this.mode = null; this.ovWire.innerHTML = ''; this.highlight(null); this.setHint(); } this.closeMenu(); }
     closeMenu() { if (this.menu) { this.menu.remove(); this.menu = null; } }
@@ -221,7 +247,7 @@
     }
     _move(ev) {
       const w = this.toWorld(ev), m = this.mode;
-      if (m && m.k === 'pan') { this.view.x = m.vx - (ev.clientX - m.sx) / this.view.s; this.view.y = m.vy - (ev.clientY - m.sy) / this.view.s; this.applyView(); return; }
+      if (m && m.k === 'pan') { if (ev.clientX !== m.sx || ev.clientY !== m.sy) this.markUserView(); this.view.x = m.vx - (ev.clientX - m.sx) / this.view.s; this.view.y = m.vy - (ev.clientY - m.sy) / this.view.s; this.applyView(); return; }
       if (m && m.k === 'knob') { const dlt = ((ev.clientX - m.sx) - (ev.clientY - m.sy)) / 150; m.p.props.pos = Math.min(1, Math.max(0, m.pos0 + dlt)); this.hooks.changed(false); this.refreshDynamic(); this.hooks.selected(this.sel); return; }
       if (m && m.k === 'wire') { this._drawWirePreview(w); const t = this.pinNear(w, ev); this.highlight(m.start, t ? [t.pos] : []); this.hooks.hover(t ? { ev, pin: t, part: t.part, world: w, label: this.pinLabel(t) } : null); return; }
       if (m && m.k === 'bend') { const q = { x: snap(w.x), y: snap(w.y) }; const b = m.w.pts[m.i]; if (b.x !== q.x || b.y !== q.y) { b.x = q.x; b.y = q.y; m.moved = true; this.renderWires(); } return; }
@@ -259,6 +285,7 @@
       ev.preventDefault();
       const partEl = ev.target.closest('.part'); const p = partEl && this.part(partEl.dataset.id);
       if (p && P.T[p.type].wheel && !ev.ctrlKey) { if (P.T[p.type].wheel(p, Math.sign(ev.deltaY))) { this.hooks.changed(false); this.refreshDynamic(); this.hooks.selected(this.sel); } return; }
+      this.markUserView();
       const w = this.toWorld(ev), f = Math.exp(-ev.deltaY * 0.0015), s = Math.min(4, Math.max(0.15, this.view.s * f));
       this.view.x = w.x - (w.x - this.view.x) * this.view.s / s; this.view.y = w.y - (w.y - this.view.y) * this.view.s / s; this.view.s = s; this.applyView();
     }
