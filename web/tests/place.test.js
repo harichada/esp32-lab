@@ -123,6 +123,55 @@ test('an exact drop on a free hole of a shared strip stays there', () => {
   assert.ok(!overlaps(footprint('led', top), footprint('led', at)));
 });
 
+test('crowded blink: click-add after four nudged LEDs stays off shared strips', () => {
+  const proj = blink();
+  const nudged = [];
+  for (let i = 0; i < 4; i++) {
+    const at = Parts.placeDroppedPart(proj.parts, 'led', 293, 116, 0);
+    const id = 'D' + (i + 1);
+    proj.parts.push({ id, type: 'led', x: at.x, y: at.y, rot: 0, props: JSON.parse(JSON.stringify(Parts.T.led.props)) });
+    nudged.push(at);
+  }
+  assert.deepStrictEqual(nudged, [{ x: 310, y: 120 }, { x: 290, y: 80 }, { x: 330, y: 120 }, { x: 310, y: 80 }]);
+  const added = [];
+  for (const type of ['led', 'resistor']) {
+    const at = Parts.placeOnEmptyStrips(proj.parts, type, 320, 90, 0);
+    const id = type === 'led' ? 'LEDN' : 'RESN';
+    assert.ok(at.y <= 80 || at.y >= 110, 'channel ' + JSON.stringify(at));
+    assert.ok(![0, 10, 180, 190].includes(at.y), 'rail ' + JSON.stringify(at));
+    rowHoles(seated(proj.parts, type, at));
+    for (const old of proj.parts) {
+      if (old.type === 'breadboard' || old.type === 'label') continue;
+      assert.ok(!overlaps(footprint(type, at), footprint(old.type, old)), id + ' overlaps ' + old.id);
+    }
+    proj.parts.push({ id, type, x: at.x, y: at.y, rot: 0, props: JSON.parse(JSON.stringify(Parts.T[type].props)) });
+    added.push(id);
+  }
+  const nl = Netlist.extract(proj);
+  for (const net of nl.nets) {
+    const ids = [...new Set(net.pins.map((p) => p.split(':')[0]))];
+    const news = ids.filter((id) => added.includes(id) || id.startsWith('D'));
+    assert.ok(!(news.length && ids.length > 1), 'joined ' + net.pins.join(' '));
+  }
+});
+
+test('a full board sends click-add beside the breadboard', () => {
+  const proj = blink();
+  const bb = proj.parts.find((p) => p.type === 'breadboard');
+  const holes = Parts.T.breadboard.pins(bb);
+  let n = 0;
+  for (const h of holes) {
+    if (!/^[af]\d+$/.test(h.name)) continue;
+    const w = Parts.pinWorld(bb, h);
+    proj.parts.push({ id: 'G' + (++n), type: 'ground', x: w.x, y: w.y, rot: 0, props: {} });
+  }
+  const at = Parts.placeOnEmptyStrips(proj.parts, 'led', 320, 90, 0);
+  const edge = Parts.T.breadboard.size(bb).w + 4;
+  assert.ok(at.x >= edge || at.x < -8, 'still on the board ' + JSON.stringify(at));
+  const pins = seated(proj.parts, 'led', at);
+  assert.ok(pins.every((q) => !q.hole), JSON.stringify(pins));
+});
+
 test('click-add skips a strip that a hole-only seat would share', () => {
   const proj = blink();
   const x = 400;

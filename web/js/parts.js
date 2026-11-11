@@ -829,18 +829,21 @@
         if (box && (ctx.boxes.some((b) => hitsBox(box, b)) || ctx.footprints.some((b) => hitsBox(box, b)))) return false;
         return true;
       };
-      if (clearAt(sx, sy)) return { x: sx, y: sy };
-      for (let rad = G; rad <= 400; rad += G) {
-        for (let t = -rad; t <= rad; t += G) {
-          for (const [px, py] of [[sx + t, sy - rad], [sx + rad, sy + t], [sx + t, sy + rad], [sx - rad, sy + t]]) {
-            if (clearAt(px, py)) return { x: px, y: py };
-          }
-        }
+      let right = -1e9, left = 1e9;
+      for (const b of ctx.boxes) { right = Math.max(right, b.x1); left = Math.min(left, b.x0); }
+      const y = 40;
+      for (let i = 2; i <= 40; i++) {
+        const xr = snap(right) + i * G, xl = snap(left) - i * G;
+        if (clearAt(xr, y) && !ctx.inside(xr, y)) return { x: xr, y };
+        if (clearAt(xl, y) && !ctx.inside(xl, y)) return { x: xl, y };
       }
-      return { x: sx, y: sy };
+      return { x: snap(right) + 2 * G, y };
     }
     if (!over && type !== 'breadboard') return { x: sx, y: sy };
     if (!spec) return freeSpot();
+    // Nearest row first, further columns to the right then the left, then the
+    // other half and the rest of the board. Never the channel, a rail, an
+    // overlap, or a shared strip. A full board goes beside it.
     const rows = new Map();
     for (const h of ctx.holes.values()) { if (!rows.has(h.y)) rows.set(h.y, []); rows.get(h.y).push(h); }
     const rowYs = [...rows.keys()].sort((a, b) => Math.abs(a - sy) - Math.abs(b - sy) || a - b);
