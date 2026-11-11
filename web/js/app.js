@@ -881,16 +881,55 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
 
   // ---------------- 2D / 3D view ----------------
   let viewMode = '2d', view3dLoading = null, knob3d = null;
+  const VIEW3D_SRC = 'js/view3d.js?v=49';
+  const THREE_SRC = 'vendor/three.min.js?v=2';
+  function loadScriptOnce(src) {
+    return new Promise((res, rej) => {
+      let abs = src;
+      try { abs = new URL(src, document.baseURI).href; } catch (_) {}
+      const existing = [...document.scripts].find((s) => s.src === abs);
+      if (existing) {
+        if (existing.dataset.loaded === '1') return res();
+        existing.addEventListener('load', () => res(), { once: true });
+        existing.addEventListener('error', () => rej(new Error('failed to load ' + src)), { once: true });
+        return;
+      }
+      const s = document.createElement('script'); s.src = src; s.async = true;
+      s.onload = () => { s.dataset.loaded = '1'; res(); };
+      s.onerror = () => rej(new Error('failed to load ' + src));
+      document.head.appendChild(s);
+    });
+  }
+  // Start view3d.js and three.min.js together. The click path used to wait for
+  // view3d.js to parse before it even requested three.js. Real script tags, not
+  // <link rel=preload>: a cache-disabled load still shares the in-flight request.
+  function preload3dScripts() {
+    loadScriptOnce(VIEW3D_SRC).catch((e) => console.warn(e));
+    loadScriptOnce(THREE_SRC).catch((e) => console.warn(e));
+  }
+  async function prefetch3dScripts() {
+    if (window.__3dPrefetching || window.__3dPrefetchDone) return;
+    window.__3dPrefetching = true;
+    try {
+      await Promise.all([loadScriptOnce(VIEW3D_SRC), loadScriptOnce(THREE_SRC)]);
+      window.__3dPrefetchDone = true;
+    } catch (e) { console.warn('3D prefetch failed', e); }
+    finally { window.__3dPrefetching = false; }
+  }
+  function schedule3dPrefetch() {
+    if (no3dDevice()) return;
+    let q = '';
+    try { q = location.search || ''; } catch (_) {}
+    if (/[?&]noprefetch=1\b/.test(q)) return;
+    const run = () => { prefetch3dScripts(); };
+    if (window.requestIdleCallback) requestIdleCallback(run, { timeout: 1500 });
+    else setTimeout(run, 500);
+  }
   async function ensureView3d() {
     if (app.view3d) return app.view3d;
     if (view3dLoading) return view3dLoading;
     view3dLoading = (async () => {
-      if (!window.loadView3D) {
-        await new Promise((res, rej) => {
-          const s = document.createElement('script'); s.src = 'js/view3d.js?v=48'; s.async = true;
-          s.onload = res; s.onerror = () => rej(new Error('view3d load failed')); document.head.appendChild(s);
-        });
-      }
+      if (!window.loadView3D) await loadScriptOnce(VIEW3D_SRC);
       const v = await window.loadView3D($('#stageWrap'), {
         onWire: (id, f, ev) => {
           const w = app.proj.wires.find((q) => q.id === id); if (!w) return;
@@ -1002,8 +1041,9 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     }
     leaveSchematic();
     show3dLoad(true);
+    preload3dScripts();
     try {
-      await paintFrame(); // let the spinner paint before three.js parses and the scene builds
+      await paintFrame(); // spinner paints while the preloads are already in flight
       if (seq !== viewSeq || viewMode !== '3d') return;
       const v = await ensureView3d();
       if (seq !== viewSeq || viewMode !== '3d') return;       // user went back to 2D while loading
@@ -1028,6 +1068,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const f2 = $('#bForce2d'); if (f2) f2.onclick = () => { if (viewMode === '2d') return; setViewMode('2d'); toast('2D editor'); };
     applyNo3d();
     applyViewChrome();
+    schedule3dPrefetch();
     window.addEventListener('resize', () => { applyNo3d(); applyViewChrome(); });
     window.addEventListener('orientationchange', () => setTimeout(applyNo3d, 300));
   }

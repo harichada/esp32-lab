@@ -22,19 +22,49 @@
 
   function loadScript(src) {
     return new Promise((res, rej) => {
+      let abs = src;
+      try { abs = new URL(src, document.baseURI).href; } catch (_) {}
+      const existing = [...document.scripts].find((s) => s.src === abs);
+      if (existing) {
+        if (existing.dataset.loaded === '1') return res();
+        existing.addEventListener('load', () => res(), { once: true });
+        existing.addEventListener('error', () => rej(new Error('failed to load ' + src)), { once: true });
+        return;
+      }
       const s = document.createElement('script'); s.src = src; s.async = true;
-      s.onload = () => res(); s.onerror = () => rej(new Error('failed to load ' + src));
+      s.onload = () => { s.dataset.loaded = '1'; res(); };
+      s.onerror = () => rej(new Error('failed to load ' + src));
       document.head.appendChild(s);
     });
   }
+  function t3d(k) {
+    try {
+      const bag = root.__t3d || (root.__t3d = {});
+      if (bag[k] == null) bag[k] = performance.now();
+    } catch (_) {}
+  }
+  // Postprocessing (bloom) is opt-in. The default path never constructs a composer.
+  function wants3dFx(search) {
+    return /[?&]fx3d=1\b/.test(search || '');
+  }
   async function ensureThree() {
-    if (root.THREE) return root.THREE;
     const base = (document.querySelector('script[src*="view3d"]') || { src: 'js/view3d.js' }).src.replace(/js\/view3d[^/]*$/, '');
-    await loadScript(base + 'vendor/three.min.js?v=2');
-    if (!root.THREE) throw new Error('THREE global missing');
-    for (const f of ['CopyShader.js', 'LuminosityHighPassShader.js', 'EffectComposer.js', 'RenderPass.js', 'ShaderPass.js', 'UnrealBloomPass.js']) {
-      try { await loadScript(base + 'vendor/' + f + '?v=2'); } catch (e) { break; }
+    if (!root.THREE) {
+      t3d('threeStart');
+      await loadScript(base + 'vendor/three.min.js?v=2');
+      if (!root.THREE) throw new Error('THREE global missing');
     }
+    t3d('threeEval');
+    // Each bloom file is its own round trip and none of them run unless ?fx3d=1.
+    const q = (root.location && root.location.search) || '';
+    if (wants3dFx(q) && !(root.THREE.EffectComposer && root.THREE.UnrealBloomPass)) {
+      t3d('fxStart');
+      for (const f of ['CopyShader.js', 'LuminosityHighPassShader.js', 'EffectComposer.js', 'RenderPass.js', 'ShaderPass.js', 'UnrealBloomPass.js']) {
+        try { await loadScript(base + 'vendor/' + f + '?v=2'); } catch (e) { break; }
+      }
+      t3d('fxEval');
+    }
+    t3d('scriptsDone');
     return root.THREE;
   }
   function bandsOf(r) {
@@ -432,7 +462,7 @@
     setActive(on) {
       this.active = !!on; this.canvas.classList.toggle('on', this.active);
       this.canvas.style.pointerEvents = this.active ? 'auto' : 'none';
-      if (this.active) { this.resize(); if (this.proj) this.rebuild(true); }
+      if (this.active) { this.resize(); if (this.proj) this.rebuild(true); t3d('rebuild'); }
     }
     setProject(proj) { this.proj = proj; this._sig = ''; if (this.active && this.ready) this.rebuild(true); }
     sync(sim, flow) {
@@ -1727,6 +1757,7 @@
           if (this.composer) this.composer.render();
           else this.renderer.render(this.scene, this.camera);
           this._frames = (this._frames || 0) + 1; this._errs = 0;
+          if (this._frames === 1) t3d('firstFrame');
           if (this._probe) this._probe();
         } catch (e) {
           // composer/bloom failures: drop to plain renderer once; persistent errors bail to 2D
@@ -1765,44 +1796,57 @@
       if (this._vbbMesh) { const bb = new THREE.Box3().setFromObject(this._vbbMesh); bb.expandByScalar(4); if (bb.containsPoint(cp)) return true; }
       return cp.y < 6;   // below/inside the board plane
     }
+    // Sample the dark margins, not the cream breadboard (it reads as "near white").
+    // A blank white frame lights the margins up; a framed board leaves them dark.
+    // One edge row instead of the whole drawing buffer — the full readback stalled the first frames.
     _whiteFraction(gl) {
       const W = gl.drawingBufferWidth, H = gl.drawingBufferHeight;
-      const buf = new Uint8Array(W * H * 4);
-      gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+      if (W < 2 || H < 2) return 0;
+      const prev = gl.getParameter(gl.PACK_ALIGNMENT);
+      gl.pixelStorei(gl.PACK_ALIGNMENT, 1);
+      const buf = new Uint8Array(W * 4);
       let n = 0, white = 0;
-      const sx = Math.max(1, Math.floor(W / 48)), sy = Math.max(1, Math.floor(H / 32));
-      for (let y = Math.floor(sy / 2); y < H; y += sy) for (let x = Math.floor(sx / 2); x < W; x += sx) {
-        const i = (y * W + x) * 4, r = buf[i], g = buf[i + 1], b = buf[i + 2];
-        n++; if (Math.min(r, g, b) > 200 && Math.max(r, g, b) - Math.min(r, g, b) < 40) white++;
-      }
+      try {
+        gl.readPixels(0, H - 1, W, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+        const step = Math.max(1, Math.floor(W / 48));
+        for (let x = 0; x < W; x += step) {
+          const i = x * 4, r = buf[i], g = buf[i + 1], b = buf[i + 2];
+          n++; if (Math.min(r, g, b) > 200 && Math.max(r, g, b) - Math.min(r, g, b) < 40) white++;
+        }
+      } finally { gl.pixelStorei(gl.PACK_ALIGNMENT, prev || 4); }
       return n ? white / n : 0;
     }
-    // Resolves {ok} after real frames: fails on lost context, camera inside the board, or a frame
-    // that is >60% near-white (the "white screen").
+    // Resolves {ok} on the first real frame so the loader can drop. The white-frame
+    // readback is deferred to the next frame: doing it here stalled presentation
+    // (~300 ms on SwiftShader) because readPixels waits for the GPU.
     healthCheck(timeout = 3000) {
       return new Promise((res) => {
         if (!this.ready) return res({ ok: false, why: 'not ready' });
         if (this._cameraInsideBoard()) return res({ ok: false, why: 'camera', camera: true });
         const start = this._frames || 0, t0 = performance.now();
         const gl = this.renderer.getContext();
-        let worst = 0, checked = 0;
-        this._probe = () => {
-          if ((this._frames || 0) - start < 2) return;
+        const whiteLater = () => {
+          let worst = 0;
           try {
-            if (gl.isContextLost()) { this._probe = null; return res({ ok: false, why: 'WebGL context lost' }); }
-            worst = Math.max(worst, this._whiteFraction(gl));
-          } catch (_) {}
-          checked++;
+            if (!gl || gl.isContextLost()) { if (this.hooks.onFail) this.hooks.onFail(new Error('WebGL context lost')); return; }
+            worst = this._whiteFraction(gl);
+          } catch (_) { return; }
           this.lastWhite = worst;
-          if (worst > 0.6) { this._probe = null; return res({ ok: false, why: 'white frame', camera: true, white: worst }); }
-          if (checked >= 2) { this._probe = null; res({ ok: true, white: worst }); }
+          if (worst > 0.6 && this.hooks.onFail) { const er = new Error('white frame'); er.camera = true; this.hooks.onFail(er); }
+        };
+        this._probe = () => {
+          if ((this._frames || 0) - start < 1) return;
+          this._probe = null;
+          if (gl && gl.isContextLost()) return res({ ok: false, why: 'WebGL context lost' });
+          res({ ok: true });
+          requestAnimationFrame(whiteLater);
         };
         const wait = () => {
           if (!this._probe) return;
           if (this._lost) { this._probe = null; return res({ ok: false, why: 'WebGL context lost' }); }
           if (performance.now() - t0 > timeout) {
             this._probe = null;
-            return res(gl.isContextLost() ? { ok: false, why: 'WebGL context lost' } : { ok: true, white: worst, noFrames: true });
+            return res(gl && gl.isContextLost() ? { ok: false, why: 'WebGL context lost' } : { ok: true, noFrames: true });
           }
           setTimeout(wait, 100);
         };
@@ -1819,9 +1863,12 @@
 
   root.View3D = View3D;
   root.View3DFit = { fitCameraToBox: fitCameraToBox };
+  root.View3DLoad = { wants3dFx: wants3dFx };
   root.loadView3D = async function loadView3D(wrap, hooks) {
+    t3d('initStart');
     const v = new View3D(wrap, hooks);
     await v.init();
+    t3d('init');
     return v;
   };
 })(typeof window !== 'undefined' ? window : globalThis);

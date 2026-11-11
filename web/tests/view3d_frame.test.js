@@ -118,6 +118,24 @@ test('header chip names the active view and how to get back to 2D', () => {
   assert.ok(compact.text.length < d3.text.length);
 });
 
+test('bloom scripts stay off the default 3D path', () => {
+  const { wants3dFx } = globalThis.View3DLoad;
+  assert.strictEqual(wants3dFx(''), false);
+  assert.strictEqual(wants3dFx('?ex=blink'), false);
+  assert.strictEqual(wants3dFx('?fx3d=1'), true);
+  assert.strictEqual(wants3dFx('?ex=blink&fx3d=1'), true);
+  assert.strictEqual(wants3dFx('?fx3d=10'), false);
+});
+
+test('3D hides the 2D zoom readout stylesheet rule', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const theme = fs.readFileSync(path.join(__dirname, '../css/theme.css'), 'utf8');
+  const mobile = fs.readFileSync(path.join(__dirname, '../css/mobile.css'), 'utf8');
+  assert.match(theme, /body\.view3d #zoomPct\{display:none!important\}/);
+  assert.match(mobile, /body\.m\.view3d #zoomPct\{display:none!important\}/);
+});
+
 test('3D stays available at phone width on a desktop pointer', () => {
   assert.strictEqual(blocks3d({ coarse: false, fine: true, touchUA: false, width: 390 }), false);
   assert.strictEqual(blocks3d({ coarse: true, fine: true, touchUA: false, width: 400 }), false);

@@ -210,6 +210,7 @@ body.reconnecting #status{border-color:var(--warn);box-shadow:0 0 0 3px rgba(251
 body.view3d #stage{visibility:hidden;pointer-events:none}
 body.view3d .hint{opacity:0}
 body.view3d #minimap{display:none}
+body.view3d #zoomPct{display:none!important}
 body.view3d .canvas-tools .tgl:has(#cbOrtho),body.view3d .wire-color,body.view3d #bRot,body.view3d #bDel{opacity:.35;pointer-events:none}
 /* ---- schematic view (classic symbols, view-only) ---- */
 #stageSch.stage-sch{position:absolute;inset:0;width:100%;height:100%;display:none;z-index:3;background:var(--canvas);touch-action:none}

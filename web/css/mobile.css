@@ -244,6 +244,7 @@ body.m.m-wiring #mParts{opacity:0;pointer-events:none}
   body.m #mIgnite{bottom:calc(10px + env(safe-area-inset-bottom))}body.m .canvas-tools,body.m .zoom-tools{bottom:12px}body.m .zoom-tools{right:110px}body.m .hint{display:none}body.m #mSel{bottom:70px}}
 
 /* ---- mobile 3D ---- */
+body.m.view3d #zoomPct{display:none!important}
 body.m .view-toggle{height:36px;border-radius:10px}
 body.m .view-toggle .seg{height:36px;padding:0 12px;font-size:12.5px}
 body.m #stage3d.on{z-index:4}
