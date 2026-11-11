@@ -163,7 +163,7 @@
       svg.addEventListener('dblclick', (ev) => { { const pg = ev.target.closest && ev.target.closest('.part'), pp = pg && this.part(pg.dataset.id); if (pp && P.T[pp.type].dblclick) { this.push(); if (P.T[pp.type].dblclick(pp)) { this.render(); this.hooks.changed(true); this.hooks.selected(this.sel); } return; } } const t = document.elementFromPoint(ev.clientX, ev.clientY) || ev.target, wEl = t.closest && t.closest('.wire'); if (wEl && !(this.mode && this.mode.k === 'wire') && !(Date.now() - (this._dblBend || 0) < 600)) this.addBend(wEl.dataset.wid, this.toWorld(ev)); });
       window.addEventListener('pointerdown', (ev) => { if (this.menu && !this.menu.contains(ev.target)) this.closeMenu(); }, true);
       svg.addEventListener('dragover', (ev) => ev.preventDefault());
-      svg.addEventListener('drop', (ev) => { ev.preventDefault(); const t = ev.dataTransfer.getData('text/x-part'); if (t && P.T[t]) { const w = this.toWorld(ev); this.addPart(t, w.x, w.y); } });
+      svg.addEventListener('drop', (ev) => { ev.preventDefault(); const t = ev.dataTransfer.getData('text/x-part'); if (t && P.T[t]) { const w = this.toWorld(ev); const seat = P.placeDroppedPart ? P.placeDroppedPart(this.proj.parts, t, w.x, w.y, 0) : w; this.addPart(t, seat.x, seat.y); } });
       svg.addEventListener('pointerleave', () => this.hooks.hover(null));
       window.addEventListener('resize', () => this.applyView());
       // A fitted desktop zoom (often ~177% on a wide canvas) used to survive a shrink to phone

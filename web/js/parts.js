@@ -727,7 +727,82 @@
     return freeSpot();
   }
 
-  const api = { T, fmt, parseVal, parseProp, stampResistance, WIRE_R, scopeChannel, bands, espGpio, ESP_TOP, ESP_BOT, INPUT_ONLY, STRAPPING, ADC1, ADC2, rotPt, pinWorld, placeNewPart, G, VTH, esc, LEDCOL };
+  // Drag-and-drop: seat every pin in a row hole (a–j). The channel, the gap
+  // between rows, and the power-rail lines are not seats. A drop on a taken
+  // hole or an overlapping body moves to the nearest free seat.
+  function placeDroppedPart(parts, type, x, y, rot) {
+    const snap = (v) => Math.round(v / G) * G;
+    const sx = snap(x), sy = snap(y), r = rot || 0;
+    const d = T[type];
+    parts = parts || [];
+    if (!d || type === 'label' || type === 'breadboard') return { x: sx, y: sy };
+    const probe = { id: '_drop', type, x: 0, y: 0, rot: r, props: JSON.parse(JSON.stringify(d.props || {})) };
+    let localPins = [];
+    try { localPins = d.pins(probe) || []; } catch (e) { localPins = []; }
+    const offs = localPins.map((pin) => rotPt(pin.x, pin.y, r));
+    if (!offs.length) return { x: sx, y: sy };
+    const boards = parts.filter((p) => p.type === 'breadboard' && T.breadboard);
+    if (!boards.length) return { x: sx, y: sy };
+    const boxes = boards.map((p) => {
+      const sz = T.breadboard.size(p);
+      let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+      for (const [a, b] of [[-8, -16], [sz.w + 4, -16], [sz.w + 4, sz.h + 16], [-8, sz.h + 16]]) {
+        const [rx, ry] = rotPt(a, b, p.rot || 0);
+        x0 = Math.min(x0, p.x + rx); y0 = Math.min(y0, p.y + ry); x1 = Math.max(x1, p.x + rx); y1 = Math.max(y1, p.y + ry);
+      }
+      return { x0, y0, x1, y1 };
+    });
+    const inside = (px, py) => boxes.some((b) => px >= b.x0 && px <= b.x1 && py >= b.y0 && py <= b.y1);
+    if (!inside(x, y) && !inside(sx, sy)) return { x: sx, y: sy };
+    const holeAt = new Map();
+    for (const p of boards) {
+      for (const h of T.breadboard.pins(p)) {
+        const m = /^([a-j])(\d+)$/.exec(h.name);
+        if (!m) continue;
+        const w = pinWorld(p, h);
+        const key = Math.round(w.x) + ',' + Math.round(w.y);
+        if (holeAt.has(key)) continue;
+        holeAt.set(key, { x: Math.round(w.x), y: Math.round(w.y), side: 'abcde'.includes(m[1]) ? 'a' : 'f', bb: p.id });
+      }
+    }
+    const occupied = new Set();
+    const footprints = [];
+    for (const p of parts) {
+      if (p.type === 'breadboard' || p.type === 'label' || !T[p.type]) continue;
+      let ps = [];
+      try { ps = T[p.type].pins(p) || []; } catch (e) { ps = []; }
+      for (const pin of ps) { const w = pinWorld(p, pin); occupied.add(Math.round(w.x) + ',' + Math.round(w.y)); }
+      const box = partBox(p); if (box) footprints.push(box);
+    }
+    const span = Math.max.apply(null, offs.map((o) => o[1])) - Math.min.apply(null, offs.map((o) => o[1]));
+    const mayStraddle = span >= 30;
+    const hits = (a, b) => a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0;
+    let best = null;
+    const seen = new Set();
+    for (const h of holeAt.values()) {
+      const ox = h.x - offs[0][0], oy = h.y - offs[0][1], id = ox + ',' + oy;
+      if (seen.has(id)) continue; seen.add(id);
+      let ok = true; const sides = new Map(); let taken = false;
+      for (const [dx, dy] of offs) {
+        const key = Math.round(ox + dx) + ',' + Math.round(oy + dy), hit = holeAt.get(key);
+        if (!hit) { ok = false; break; }
+        if (occupied.has(key)) taken = true;
+        if (hit.side !== 'rail') {
+          const prev = sides.get(hit.bb);
+          if (prev && prev !== hit.side) { if (!mayStraddle) { ok = false; break; } sides.set(hit.bb, 'both'); }
+          else if (!prev) sides.set(hit.bb, hit.side);
+        }
+      }
+      if (!ok) continue;
+      const box = partBox(Object.assign({}, probe, { x: ox, y: oy }));
+      if (taken || (box && footprints.some((b) => hits(box, b)))) continue;
+      const dist = Math.hypot(ox - x, oy - y);
+      if (!best || dist < best.dist - 1e-6 || (Math.abs(dist - best.dist) <= 1e-6 && (ox < best.x || (ox === best.x && oy < best.y)))) best = { x: ox, y: oy, dist };
+    }
+    return best ? { x: best.x, y: best.y } : { x: sx, y: sy };
+  }
+
+  const api = { T, fmt, parseVal, parseProp, stampResistance, WIRE_R, scopeChannel, bands, espGpio, ESP_TOP, ESP_BOT, INPUT_ONLY, STRAPPING, ADC1, ADC2, rotPt, pinWorld, placeDroppedPart, G, VTH, esc, LEDCOL };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.Parts = api;
 })(typeof window !== 'undefined' ? window : globalThis);
