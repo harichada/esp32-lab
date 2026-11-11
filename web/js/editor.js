@@ -109,6 +109,18 @@
       if (this.sel.part) this.proj.parts = this.proj.parts.filter((p) => p.id !== this.sel.part);
       if (this.sel.wire) this.proj.wires = this.proj.wires.filter((w) => w.id !== this.sel.wire);
       this.sel = null; this.render(); this.hooks.changed(true); this.hooks.selected(null);
+      // Inspector and phone-sheet Delete leave focus in a value field, which swallows Ctrl+Z.
+      this.focusCanvas();
+    }
+    focusCanvas() {
+      const svg = this.svg; if (!svg || typeof svg.focus !== 'function') return;
+      try {
+        const ae = document.activeElement;
+        if (ae && ae !== svg && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName || '') && typeof ae.blur === 'function') ae.blur();
+      } catch (e) { /* focus is a convenience */ }
+      try { if (typeof svg.hasAttribute !== 'function' || !svg.hasAttribute('tabindex')) svg.setAttribute('tabindex', '-1'); } catch (e) { /* */ }
+      try { if (svg.style) svg.style.outline = 'none'; svg.focus({ preventScroll: true }); }
+      catch (e) { try { svg.focus(); } catch (e2) { /* shortcut still works when focus is already on the page */ } }
     }
     setWireColor(c) { this.wireColor = c; if (this.sel && this.sel.wire) { const w = this.proj.wires.find((q) => q.id === this.sel.wire); if (w) { this.push(); w.color = c; this.renderWires(); } } }
     pinIndex() {   // world positions of every pin (non-breadboard first so they win ties with the hole underneath)
@@ -125,8 +137,11 @@
       const el = ev.target && ev.target.closest && ev.target.closest('[data-pin]');
       if (el) { const g = el.closest('.part'); const p = g && this.part(g.dataset.id); const pin = p && P.T[p.type].pins(p).find((q) => q.name === el.dataset.pin); if (pin) { const near = this.pinNear(this.toWorld(ev), ev); if (near && !near.bb && near.part !== p) return near; return { part: p, pin, pos: P.pinWorld(p, pin), bb: p.type === 'breadboard' }; } }
       if (ev.target && ev.target.closest && ev.target.closest('.w-bend')) return null;
-      const pg = ev.target && ev.target.closest && ev.target.closest('.part'), body = (pg && (this.part(pg.dataset.id) || {}).type !== 'breadboard') || (ev.target.closest && ev.target.closest('.wire'));
-      return this.pinNear(this.toWorld(ev), ev, body ? 5 : 14);   // over a part's body: only snap when really close to a leg, so the body stays draggable
+      const pg = ev.target && ev.target.closest && ev.target.closest('.part'), part = pg && this.part(pg.dataset.id);
+      // A part body, lead, or label selects the part. It must not snap to a nearby leg and start a wire.
+      if (part && part.type !== 'breadboard') return null;
+      const onWire = ev.target && ev.target.closest && ev.target.closest('.wire');
+      return this.pinNear(this.toWorld(ev), ev, onWire ? 5 : 14);
     }
     pinLabel(h) {
       if (!h) return ''; const p = h.part, n = h.pin.name, d = P.T[p.type] || {};
@@ -148,7 +163,11 @@
       this.ovHl.innerHTML = s;
     }
     setHint(t) { if (!this.hintEl) return; if (document.body.classList.contains('viewsch')) { this.hintEl.textContent = 'Schematic is view-only — switch to 2D to add, move, or wire · drag to pan · scroll to zoom'; return; } this.hintEl.textContent = t || this.defaultHint(); }
-    defaultHint() { return this.sel && this.sel.wire ? 'Wire selected: Delete/Backspace removes · right-click for colour · double-click adds a bend · drag bends' : 'Click a pin, then click another pin to wire (drag works too) · hover a pin to see its net · Esc cancels · right-click a wire for options · wheel/pinch = zoom · drag background = pan'; }
+    defaultHint() {
+      if (this.sel && this.sel.wire) return 'Wire selected: Delete/Backspace removes · right-click for colour · double-click adds a bend · drag bends';
+      if (document.body.classList.contains('m')) return 'Tap a part to select it. Tap a pin, then another pin, to wire';
+      return 'Click a part to select it. Click a pin, then another pin, to wire (drag from a pin works too)';
+    }
     // ---------- interaction ----------
     _bind() {
       const svg = this.svg;
@@ -202,7 +221,12 @@
     _down(ev) {
       if (ev.button === 1 || (ev.button === 0 && ev.altKey && !this.pinAtEvent(ev))) { this.mode = { k: 'pan', sx: ev.clientX, sy: ev.clientY, vx: this.view.x, vy: this.view.y }; return; }
       if (ev.button !== 0) return;
-      const w = this.toWorld(ev), pin = this.pinAtEvent(ev);
+      const partEl = ev.target.closest && ev.target.closest('.part'); const p = partEl && this.part(partEl.dataset.id);
+      const pinEl = ev.target.closest && ev.target.closest('[data-pin]');
+      const onBody = !!(p && p.type !== 'breadboard' && !pinEl);
+      // A body tap selects, even mid-wire. It must not drop a bend or land the wire on a nearby pin.
+      if (onBody && this.mode && this.mode.k === 'wire') this.cancelWire();
+      const w = this.toWorld(ev), pin = onBody ? null : this.pinAtEvent(ev);
       if (this.mode && this.mode.k === 'wire') {
         const m = this.mode;
         if (pin) { if (pin.pos.x === m.a.x && pin.pos.y === m.a.y && !m.pts.length) { this.cancelWire(); return; } this._finishWire(pin.pos, pin); return; }
@@ -212,9 +236,7 @@
       }
       const bEl = ev.target.closest && ev.target.closest('.w-bend');
       if (bEl) { const wid = bEl.closest('.wire').dataset.wid; this.push(); this.mode = { k: 'bend', w: this.wire(wid), i: +bEl.dataset.bend }; svg_capture(this.svg, ev); return; }
-      const partEl = ev.target.closest('.part'); const p = partEl && this.part(partEl.dataset.id);
-      const onPart = p && p.type !== 'breadboard' && !pin;
-      if (pin && !(p && p.type === 'breadboard' && ev.shiftKey) && !(onPart && false)) { this.closeMenu(); this.mode = { k: 'wire', a: pin.pos, pts: [], start: pin, t0: Date.now() }; this._drawWirePreview(w); this.highlight(pin); this.setHint(`Wiring from ${this.pinLabel(pin)} — click the target pin · click empty space to add a bend · Esc / right-click cancels`); return; }
+      if (pin && !(p && p.type === 'breadboard' && ev.shiftKey)) { this.closeMenu(); this.mode = { k: 'wire', a: pin.pos, pts: [], start: pin, t0: Date.now() }; this._drawWirePreview(w); this.highlight(pin); this.setHint(`Wiring from ${this.pinLabel(pin)} — click the target pin · click empty space to add a bend · Esc / right-click cancels`); return; }
       const wEl = ev.target.closest('.wire');
       if (wEl) { const dbl = this._lastWireDown && this._lastWireDown.id === wEl.dataset.wid && Date.now() - this._lastWireDown.t < 450; this._lastWireDown = { id: wEl.dataset.wid, t: Date.now() };
         if (dbl && this.sel && this.sel.wire === wEl.dataset.wid) { this._lastWireDown = null; this._dblBend = Date.now(); this.addBend(wEl.dataset.wid, w); return; } this.select({ wire: wEl.dataset.wid }); return; }
@@ -291,5 +313,21 @@
     }
   }
   function svg_capture(svg, ev) { try { svg.setPointerCapture(ev.pointerId); } catch (e) { /* ignore */ } }
+  // Ctrl/Cmd+Z undo, Ctrl/Cmd+Y and Ctrl/Cmd+Shift+Z redo. z/Z and y/Y so Caps Lock still matches.
+  // A value field (input, textarea, select) returns null: the browser keeps native text undo.
+  function editChord(e) {
+    if (!e) return null;
+    const tag = (e.target && e.target.tagName) || '';
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(tag)) return null;
+    if (!(e.ctrlKey || e.metaKey)) return null;
+    const k = String(e.key || '').toLowerCase();
+    const z = k === 'z' || e.code === 'KeyZ';
+    const y = k === 'y' || e.code === 'KeyY';
+    if (z && e.shiftKey) return 'redo';
+    if (z) return 'undo';
+    if (y) return 'redo';
+    return null;
+  }
+  Editor.editChord = editChord;
   root.Editor = Editor; root.WIRE_COLORS = WIRE_COLORS;
 })(window);
