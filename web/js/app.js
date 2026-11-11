@@ -625,12 +625,16 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (p.type === 'esp32') h += `<label>Power<select data-k="power"><option ${p.props.power === 'usb' ? 'selected' : ''}>usb</option><option ${p.props.power !== 'usb' ? 'selected' : ''}>external</option></select></label>`;
     const sch = document.body.classList.contains('viewsch');
     const physical = P.canPhysicalFlip(p);
-    const flipOk = sch || physical;
-    const tipH = sch ? 'Mirror this symbol horizontally (F)' : (physical ? 'Turn this part end for end (F)' : P.NO_FLIP_TIP);
-    const tipV = sch ? 'Mirror this symbol vertically' : (physical ? 'Turn this part end for end (F)' : P.NO_FLIP_TIP);
-    const onH = sch ? !!p.schFlipX : !!(p.flipX || (physical && p.flipY));
-    const onV = sch ? !!p.schFlipY : onH;
-    h += `<p id="ro" class="ro"></p><div class="row"><button id="iRot">⟳ Rotate</button><button id="iFlipH" class="${onH ? 'on' : ''} ${flipOk ? '' : 'is-off'}" aria-disabled="${flipOk ? 'false' : 'true'}" title="${P.esc(tipH)}">↔ Flip H</button><button id="iFlipV" class="${onV ? 'on' : ''} ${flipOk ? '' : 'is-off'}" aria-disabled="${flipOk ? 'false' : 'true'}" title="${P.esc(tipV)}">↕ Flip V</button><button id="iDel">🗑 Delete</button></div><div id="pinTable"></div>`;
+    let flipBtns;
+    if (sch) {
+      const tipH = 'Mirror this symbol horizontally (F)', tipV = 'Mirror this symbol vertically';
+      flipBtns = `<button id="iFlipH" class="${p.schFlipX ? 'on' : ''}" title="${P.esc(tipH)}">↔ Flip H</button><button id="iFlipV" class="${p.schFlipY ? 'on' : ''}" title="${P.esc(tipV)}">↕ Flip V</button>`;
+    } else {
+      const on = !!(p.flipX || p.flipY);
+      const tip = physical ? 'Turn this part end for end (F)' : P.NO_FLIP_TIP;
+      flipBtns = `<button id="iFlip" class="${on ? 'on' : ''} ${physical ? '' : 'is-off'}" aria-disabled="${physical ? 'false' : 'true'}" title="${P.esc(tip)}">↔ Flip</button>`;
+    }
+    h += `<p id="ro" class="ro"></p><div class="row"><button id="iRot">⟳ Rotate</button>${flipBtns}<button id="iDel">🗑 Delete</button></div><div id="pinTable"></div>`;
     el.innerHTML = h;
     el.querySelectorAll('[data-k]').forEach((inp) => {
       const k = inp.dataset.k, ev = inp.type === 'range' ? 'input' : 'change';
@@ -642,13 +646,18 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       });
     });
     $('#iRot').onclick = () => app.editor.rotateSel();
-    const flipClick = (axis) => { const b = axis === 'y' ? $('#iFlipV') : $('#iFlipH'); if (b.getAttribute('aria-disabled') === 'true') return; app.editor.flipSel(axis); };
-    $('#iFlipH').onclick = () => flipClick('x'); $('#iFlipV').onclick = () => flipClick('y');
+    const wireFlip = (id, axis) => { const b = $('#' + id); if (!b || b.getAttribute('aria-disabled') === 'true') return; app.editor.flipSel(axis); };
+    const iFlip = $('#iFlip'); if (iFlip) iFlip.onclick = () => wireFlip('iFlip', 'x');
+    const iFlipH = $('#iFlipH'); if (iFlipH) iFlipH.onclick = () => wireFlip('iFlipH', 'x');
+    const iFlipV = $('#iFlipV'); if (iFlipV) iFlipV.onclick = () => wireFlip('iFlipV', 'y');
     $('#iDel').onclick = () => app.editor.deleteSel();
     updateReadouts();
   }
   function updateReadouts() {
     const sel = app.editor.sel, ro = $('#ro'); if (!sel || !ro) return;
+    // settle() rebuilds the nets but skips measure(), so a flipped LED would
+    // keep the previous current until the next animation frame. Measure once.
+    if (app.sim && app.sim.needsRebuild && app.sim.needsRebuild()) { try { app.sim.settle(); app.sim._after(0); } catch (e) { /* the last solved readout stays until the next tick */ } }
     if (sel.wire) { const w = app.proj.wires.find((q) => q.id === sel.wire); if (w) { const f = (app.sim._wireFlow || {})[w.id] || { i: 0, v: app.sim.nodeVoltage(app.sim.netAt(w.a.x, w.a.y)) }; ro.textContent = `V ${P.fmt(f.v, 'V')} · I ${P.fmt(f.i, 'A')}`; } return; }
     const p = app.editor.part(sel.part); if (!p) return;
     ro.textContent = app.sim.readout(p) || '';
@@ -1036,7 +1045,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const seq = ++viewSeq;
     viewMode = mode === '3d' ? '3d' : mode === 'schematic' ? 'schematic' : '2d';
     applyViewChrome();
-    try { if (app.editor) { renderInspector(app.editor.sel); app.editor.setHint(); } } catch (_) {}
+    try { if (app.editor) { if (app.editor.hooks.selected) app.editor.hooks.selected(app.editor.sel); else renderInspector(app.editor.sel); app.editor.setHint(); } } catch (_) {}
     if (viewMode !== '3d') {
       show3dLoad(false);
       try { if (app.view3d) app.view3d.setActive(false); } catch (e) { console.error(e); }

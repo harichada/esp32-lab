@@ -13,9 +13,20 @@
       this._bind();
     }
     setProject(proj) { this.proj = proj; this.sel = null; this.undoS = []; this.redoS = []; this.render(); }
-    snapshot() { return JSON.stringify({ parts: this.proj.parts, wires: this.proj.wires }); }
+    snapshot() { return JSON.stringify({ parts: this.proj.parts, wires: this.proj.wires, sel: this.sel || null }); }
     push() { if (this.hooks.beforeEdit) this.hooks.beforeEdit(); this.undoS.push(this.snapshot()); if (this.undoS.length > 200) this.undoS.shift(); this.redoS = []; }
-    _restore(s) { const o = JSON.parse(s); this.proj.parts = o.parts; this.proj.wires = o.wires; this.sel = null; this.render(); this.hooks.changed(true); }
+    // The snapshot replaces part objects. Put the selection back on the id it
+    // had when the edit was made, then tell the Inspector. Otherwise Delete
+    // clears the selection, Flip clicks after undo do nothing, and the panel
+    // keeps showing the pre-undo part.
+    _restore(s) {
+      const o = JSON.parse(s); this.proj.parts = o.parts; this.proj.wires = o.wires;
+      const keep = o.sel !== undefined ? o.sel : this.sel;
+      const partOk = keep && keep.part && this.part(keep.part);
+      const wireOk = keep && keep.wire && this.wire(keep.wire);
+      this.sel = partOk ? { part: keep.part } : wireOk ? { wire: keep.wire } : null;
+      this.render(); this.hooks.changed(true); if (this.hooks.selected) this.hooks.selected(this.sel);
+    }
     undo() { if (!this.undoS.length) return; this.redoS.push(this.snapshot()); this._restore(this.undoS.pop()); }
     redo() { if (!this.redoS.length) return; this.undoS.push(this.snapshot()); this._restore(this.redoS.pop()); }
     // ---------- coordinates ----------
@@ -103,7 +114,7 @@
       return this.addPart(type, seat.x, seat.y);
     }
     part(id) { return this.proj.parts.find((p) => p.id === id); }
-    rotateSel() { if (!this.sel || !this.sel.part) return; const p = this.part(this.sel.part); this.push(); p.rot = ((p.rot || 0) + 1) & 3; this.render(); this.hooks.changed(true); }
+    rotateSel() { if (!this.sel || !this.sel.part) return; const p = this.part(this.sel.part); if (!p) return; this.push(); p.rot = ((p.rot || 0) + 1) & 3; this.render(); this.hooks.changed(true); if (this.hooks.selected) this.hooks.selected(this.sel); }
     // axis 'x' or 'y'. On the breadboard a two-terminal part turns 180° (either
     // axis — there is only one real flip). In the schematic, H and V are display-only.
     flipSel(axis) {

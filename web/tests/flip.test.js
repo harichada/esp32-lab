@@ -163,3 +163,100 @@ test('a reversed blink LED does not light', () => {
   assert.ok(on.i > 0.004 && on.bright > 0.2, 'forward LED lights, i=' + on.i);
   assert.ok(off.i < 1e-5 && off.bright < 0.05, 'reversed LED stays dark, i=' + off.i);
 });
+
+// Editor selection, undo, and flip share one part id. A tiny DOM is enough:
+// undo used to drop the selection and leave the Inspector pointing at the
+// pre-undo object, so later Flip clicks were ignored.
+function DomNode() {
+  this.attrs = {}; this.dataset = {}; this.children = []; this.style = {};
+  this.classList = { toggle() {}, add() {}, remove() {} };
+}
+DomNode.prototype.setAttribute = function (k, v) { this.attrs[k] = String(v); };
+DomNode.prototype.getAttribute = function (k) { return Object.prototype.hasOwnProperty.call(this.attrs, k) ? this.attrs[k] : null; };
+DomNode.prototype.appendChild = function (c) { this.children.push(c); return c; };
+Object.defineProperty(DomNode.prototype, 'innerHTML', { set() { this.children = []; }, get() { return ''; } });
+DomNode.prototype.querySelector = function () { return null; };
+DomNode.prototype.querySelectorAll = function () { return []; };
+DomNode.prototype.addEventListener = function () {};
+DomNode.prototype.getBoundingClientRect = function () { return { width: 800, height: 600, left: 0, top: 0 }; };
+DomNode.prototype.remove = function () {};
+DomNode.prototype.contains = function () { return false; };
+
+function editorHarness() {
+  const g = globalThis;
+  g.window = g;
+  g.addEventListener = () => {};
+  g.document = {
+    body: { classList: { contains: () => false } },
+    createElementNS: () => new DomNode(),
+    getElementById: () => null,
+    addEventListener: () => {},
+  };
+  delete g.ResizeObserver;
+  require('../js/editor.js');
+  const layers = { '#lParts': new DomNode(), '#lWires': new DomNode(), '#lOver': new DomNode() };
+  const svg = new DomNode();
+  svg.querySelector = (sel) => layers[sel] || null;
+  svg.parentElement = new DomNode();
+  const seen = [];
+  const saves = [];
+  const ed = new g.Editor(svg, {
+    beforeEdit() {},
+    changed() { saves.push(ed.sel && (ed.sel.part || ed.sel.wire)); },
+    selected(s) { seen.push(s ? (s.part || s.wire) : null); },
+    state() { return null; },
+    hover() {},
+    running() { return false; },
+  });
+  return { ed, seen, saves };
+}
+
+test('select A, flip A, select B, Delete removes B only, including after undo', () => {
+  const { ed, seen } = editorHarness();
+  const led = { id: 'LED3', type: 'led', x: 240, y: 320, rot: 0, props: { color: 'green' } };
+  const q = { id: 'Q1', type: 'npn', x: 300, y: 300, rot: 0, props: {} };
+  ed.setProject({ parts: [led, q], wires: [] });
+  ed.select({ part: 'LED3' });
+  ed.flipSel('x');
+  assert.equal(ed.part('LED3').flipX, true);
+  ed.select({ part: 'Q1' });
+  assert.equal(seen[seen.length - 1], 'Q1');
+  ed.deleteSel();
+  assert.deepEqual(ed.proj.parts.map((p) => p.id), ['LED3']);
+  assert.equal(ed.part('LED3').flipX, true);
+  ed.undo();
+  assert.deepEqual(ed.proj.parts.map((p) => p.id).sort(), ['LED3', 'Q1']);
+  assert.equal(ed.sel.part, 'Q1', 'undo keeps the selected id');
+  assert.equal(seen[seen.length - 1], 'Q1');
+  assert.equal(ed.part('Q1'), ed.proj.parts.find((p) => p.id === 'Q1'));
+  ed.deleteSel();
+  assert.deepEqual(ed.proj.parts.map((p) => p.id), ['LED3']);
+});
+
+test('Flip V, undo, then Flip H three times leaves the part flipped and saved', () => {
+  const { ed, seen, saves } = editorHarness();
+  const led = { id: 'LED3', type: 'led', x: 240, y: 320, rot: 0, props: { color: 'green', vf: 2.1 } };
+  ed.setProject({ parts: [led], wires: [] });
+  ed.select({ part: 'LED3' });
+  const anode = () => pin(ed.part('LED3'), 'A').x;
+  const forward = anode();
+  ed.flipSel('y');
+  assert.equal(ed.part('LED3').flipX, true);
+  assert.equal(ed.part('LED3').flipY, false);
+  assert.notEqual(anode(), forward);
+  const savesAtUndo = saves.length;
+  ed.undo();
+  const live = ed.part('LED3');
+  assert.equal(!!live.flipX, false);
+  assert.equal(anode(), forward);
+  assert.equal(ed.sel.part, 'LED3');
+  assert.equal(seen[seen.length - 1], 'LED3');
+  ed.flipSel('x');
+  ed.flipSel('x');
+  ed.flipSel('x');
+  assert.equal(ed.part('LED3'), live, 'flips mutate the restored part, not a detached one');
+  assert.equal(live.flipX, true);
+  assert.equal(!!live.flipY, false);
+  assert.notEqual(anode(), forward);
+  assert.equal(saves.length - savesAtUndo, 4, 'undo and each Flip notify a save');
+});

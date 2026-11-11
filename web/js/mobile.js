@@ -137,9 +137,9 @@
     $('#mConn').className = $('#connDot').className;
     // selection actions floating over the canvas
     const sel = document.createElement('div'); sel.id = 'mSel'; sel.className = 'm-only';
-    sel.innerHTML = `<button data-a="rot" aria-label="Rotate">${ic('i-rotate')}</button><button data-a="flipH" aria-label="Flip horizontal">↔</button><button data-a="flipV" aria-label="Flip vertical">↕</button><button data-a="props" aria-label="Properties">${ic('m-sliders')}<span>Properties</span></button><button data-a="del" class="danger" aria-label="Delete">${ic('i-trash')}</button>`;
+    sel.innerHTML = `<button data-a="rot" aria-label="Rotate">${ic('i-rotate')}</button><button data-a="flip" aria-label="Flip">Flip</button><button data-a="flipH" aria-label="Flip horizontal" hidden>Flip H</button><button data-a="flipV" aria-label="Flip vertical" hidden>Flip V</button><button data-a="props" aria-label="Properties">${ic('m-sliders')}<span>Properties</span></button><button data-a="del" class="danger" aria-label="Delete">${ic('i-trash')}</button>`;
     $('#stageWrap').appendChild(sel);
-    sel.onclick = (e) => { const b = e.target.closest('[data-a]'); if (!b || b.getAttribute('aria-disabled') === 'true') return; if (document.body.classList.contains('viewsch') && (b.dataset.a === 'rot' || b.dataset.a === 'del')) return; if (b.dataset.a === 'rot') ed.rotateSel(); else if (b.dataset.a === 'flipH') ed.flipSel('x'); else if (b.dataset.a === 'flipV') ed.flipSel('y'); else if (b.dataset.a === 'del') ed.deleteSel(); else setSheet('insp'); };
+    sel.onclick = (e) => { const b = e.target.closest('[data-a]'); if (!b || b.getAttribute('aria-disabled') === 'true') return; if (document.body.classList.contains('viewsch') && (b.dataset.a === 'rot' || b.dataset.a === 'del')) return; if (b.dataset.a === 'rot') ed.rotateSel(); else if (b.dataset.a === 'flip' || b.dataset.a === 'flipH') ed.flipSel('x'); else if (b.dataset.a === 'flipV') ed.flipSel('y'); else if (b.dataset.a === 'del') ed.deleteSel(); else setSheet('insp'); };
     const hs = ed.hooks.selected; ed.hooks.selected = (s) => {
       hs(s);
       const has = !!(s && (s.part || s.wire));
@@ -147,14 +147,17 @@
       sel.querySelector('[data-a=rot]').hidden = !(s && s.part);
       const sch = document.body.classList.contains('viewsch');
       const part = s && s.part && ed.part(s.part);
-      const flipOk = !!(part && (sch || (window.Parts && Parts.canPhysicalFlip(part))));
+      const physical = !!(part && window.Parts && Parts.canPhysicalFlip(part));
       const tip = (window.Parts && Parts.NO_FLIP_TIP) || "Real parts can't be mirrored; rotate instead";
-      for (const a of ['flipH', 'flipV']) {
-        const b = sel.querySelector('[data-a=' + a + ']');
-        b.hidden = !(s && s.part);
-        b.setAttribute('aria-disabled', flipOk ? 'false' : 'true');
-        b.title = flipOk ? (sch ? (a === 'flipV' ? 'Mirror symbol vertically' : 'Mirror symbol horizontally') : 'Turn end for end') : tip;
-      }
+      const show = !!(s && s.part);
+      const one = sel.querySelector('[data-a=flip]');
+      one.hidden = !show || sch;
+      one.setAttribute('aria-disabled', physical ? 'false' : 'true');
+      one.title = physical ? 'Turn end for end' : tip;
+      const fh = sel.querySelector('[data-a=flipH]'), fv = sel.querySelector('[data-a=flipV]');
+      fh.hidden = !show || !sch; fv.hidden = !show || !sch;
+      fh.setAttribute('aria-disabled', 'false'); fv.setAttribute('aria-disabled', 'false');
+      fh.title = 'Mirror symbol horizontally'; fv.title = 'Mirror symbol vertically';
       // A wire used to leave only the trash button: Properties was part-only, and nothing opened the sheet.
       sel.querySelector('[data-a=props]').hidden = !(s && (s.part || s.wire));
       if (s && s.wire && document.body.classList.contains('m')) setSheet('insp');
@@ -257,11 +260,11 @@
     const m = document.createElement('div'); m.id = 'mPartMenu'; m.className = 'm-only';
     const flipOk = P.canPhysicalFlip(p);
     const tip = P.NO_FLIP_TIP;
-    m.innerHTML = `<div class="m-pm-t">${P.esc(label)} <small>${P.esc(p.id)}</small></div><button data-a="rot">${ic('i-rotate')}<span>Rotate 90°</span></button><button data-a="flipH" aria-disabled="${flipOk ? 'false' : 'true'}" title="${P.esc(flipOk ? 'Turn end for end' : tip)}"><span>↔ Flip H</span></button><button data-a="flipV" aria-disabled="${flipOk ? 'false' : 'true'}" title="${P.esc(flipOk ? 'Turn end for end' : tip)}"><span>↕ Flip V</span></button><button data-a="props">${ic('m-sliders')}<span>Properties</span></button><button data-a="del" class="danger">${ic('i-trash')}<span>Delete</span></button>`;
+    m.innerHTML = `<div class="m-pm-t">${P.esc(label)} <small>${P.esc(p.id)}</small></div><button data-a="rot">${ic('i-rotate')}<span>Rotate 90°</span></button><button data-a="flip" aria-disabled="${flipOk ? 'false' : 'true'}" title="${P.esc(flipOk ? 'Turn end for end' : tip)}"><span>↔ Flip</span></button><button data-a="props">${ic('m-sliders')}<span>Properties</span></button><button data-a="del" class="danger">${ic('i-trash')}<span>Delete</span></button>`;
     document.body.appendChild(m);
     const close = () => { m.remove(); document.removeEventListener('pointerdown', away, true); };
     const away = (e) => { if (!m.contains(e.target)) close(); }; setTimeout(() => document.addEventListener('pointerdown', away, true), 0);
-    m.onclick = (e) => { const b = e.target.closest('[data-a]'); if (!b || b.getAttribute('aria-disabled') === 'true') return; close(); if (b.dataset.a === 'rot') ed.rotateSel(); else if (b.dataset.a === 'flipH') ed.flipSel('x'); else if (b.dataset.a === 'flipV') ed.flipSel('y'); else if (b.dataset.a === 'del') ed.deleteSel(); else setSheet('insp'); };
+    m.onclick = (e) => { const b = e.target.closest('[data-a]'); if (!b || b.getAttribute('aria-disabled') === 'true') return; close(); if (b.dataset.a === 'rot') ed.rotateSel(); else if (b.dataset.a === 'flip') ed.flipSel('x'); else if (b.dataset.a === 'del') ed.deleteSel(); else setSheet('insp'); };
   }
 
   // sheets must live at <body> level on phones (so they stack above the canvas and scrim); put them back for desktop
