@@ -2,8 +2,11 @@
  * Same project as the 2D breadboard and the 3D view — nothing here writes parts, wires, or props.
  * When the project carries a netlist, pin connectivity comes from those nets. Otherwise it is the
  * union-find of breadboard strips and wires (breadboard body omitted). Layout then places parts
- * from the MCU / IC / highest-degree part, aligns passives to the pin they talk to, and routes
- * with an orthogonal A*. Power nets of 3+ pins and GND are flags / ground symbols, not long wires.
+ * from the MCU / IC / highest-degree part, or from the battery when the circuit is only
+ * passives, aligns passives to the pin they talk to, and routes with an orthogonal A*.
+ * A supply that feeds a chip or transistor stays a flag once it has 3+ pins. A battery
+ * that only feeds discrete branches is drawn as wires, so parallel strings stay visible.
+ * GND is a ground symbol, not a long wire.
  * A ground part on a net that already has another pin is omitted; that pin draws the GND symbol.
  * Only a part whose every pin is open is parked, under a "Not connected" caption.
  * A* searches the whole board before a straight-line fallback, and a fallback is logged with the net.
@@ -15,6 +18,8 @@
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const SRC = new Set(['battery', 'battery9v', 'aapack', 'coincell', 'cell18650', 'bench', 'vcc33', 'vcc5', 'buck', 'ldo']);
   const SKIP = new Set(['breadboard', 'label']);
+  // These parts are why a supply rail is a flag. A circuit of only passives is drawn with wires.
+  const ACTIVE = new Set(['ESP', 'DIP', 'BOX', 'NPN', 'PNP', 'NMOS']);
   const GROUND_PINS = { ground: [['GND', 4]], esp32: [['GND.1', 3], ['GND.2', 3]], vcc33: [['GND', 2]], vcc5: [['GND', 2]], battery: [['-', 1]] };
 
   class UF {
@@ -136,7 +141,7 @@
     return terms.filter((t) => t.net !== undefined);
   }
 
-  function netKind(net, terms) {
+  function netKind(net, terms, drawSupply) {
     if (net === 0) return { rail: 'gnd', name: 'GND', wire: false };
     if (terms.length < 2) return { rail: null, name: '', wire: false };
     const names = terms.map((t) => String(t.name).toUpperCase());
@@ -154,8 +159,43 @@
       else name = '+V';
     } else if (names.includes('V+')) name = '+V';
     if (!name) return { rail: null, name: '', wire: true };
-    if (terms.length >= 3) return { rail: 'flag', name, wire: false };
+    // A chip supply with 3+ pins is a flag. A discrete battery feeding several
+    // branches is drawn, otherwise those branches look like separate circuits.
+    if (terms.length >= 3 && !drawSupply) return { rail: 'flag', name, wire: false };
     return { rail: null, name, wire: true };
+  }
+
+  // How many parts a net is from a source output. GND stays unranked.
+  function netRank(netTerms) {
+    const bySid = new Map();
+    for (const terms of netTerms.values()) for (const t of terms) {
+      if (!bySid.has(t.sid)) bySid.set(t.sid, []);
+      bySid.get(t.sid).push(t);
+    }
+    const rank = new Map();
+    const q = [];
+    const push = (net, r) => {
+      if (net === 0 || net === undefined) return;
+      const cur = rank.get(net);
+      if (cur !== undefined && cur <= r) return;
+      rank.set(net, r);
+      q.push(net);
+    };
+    for (const [net, terms] of netTerms) {
+      if (terms.some((t) => SRC.has(t.type) && /^(\+|VOUT)$/.test(t.name))) push(net, 0);
+    }
+    let qi = 0;
+    while (qi < q.length && qi < 8000) {
+      const net = q[qi++];
+      const r = rank.get(net);
+      const seen = new Set();
+      for (const t of netTerms.get(net) || []) {
+        if (seen.has(t.sid)) continue;
+        seen.add(t.sid);
+        for (const o of bySid.get(t.sid) || []) push(o.net, r + 1);
+      }
+    }
+    return rank;
   }
 
   function snap(v) { return Math.round(v / GS) * GS; }
@@ -205,7 +245,8 @@
       netTerms.get(t.net).push(t);
     }
     const meta = new Map();
-    for (const [net, terms] of netTerms) meta.set(net, netKind(net, terms));
+    const drawSupply = !symbols.some((s) => ACTIVE.has(s.kind));
+    for (const [net, terms] of netTerms) meta.set(net, netKind(net, terms, drawSupply));
     // Two different nets must not share a supply name. A repeated "VCC" or "3V3"
     // would read as one rail. The first net keeps the name; the others are drawn
     // as wires with no supply label.
@@ -281,7 +322,15 @@
     for (const [net, terms] of netTerms) {
       const m = meta.get(net);
       if (!m || !m.wire) continue;
-      const ids = [...new Set(terms.map((t) => t.sid))];
+      const wired = terms.filter((t) => t.wire);
+      const ids = [...new Set(wired.map((t) => t.sid))];
+      // A battery bus is a star from the source. Linking every load to every
+      // other load made the middle of a series string look like the hub.
+      const src = m.name && wired.find((t) => SRC.has(t.type) && /^(\+|VOUT)$/.test(t.name));
+      if (src && ids.length > 2) {
+        for (const id of ids) if (id !== src.sid) { adj.get(src.sid).add(id); adj.get(id).add(src.sid); }
+        continue;
+      }
       for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) { adj.get(ids[i]).add(ids[j]); adj.get(ids[j]).add(ids[i]); }
     }
     const seen = new Set();
@@ -343,11 +392,19 @@
     }
     compList = mergeBags(compList);
     const parkedIds = symbols.filter((s) => !seen.has(s.id)).map((s) => s.id);
+    const rank = netRank(netTerms);
 
     let compTop = 0;
     compList.forEach((bag, ci) => {
       const ids = [...bag];
-      const root = ids.find((id) => byId.get(id).kind === 'ESP') || ids.find((id) => byId.get(id).kind === 'DIP') || ids.slice().sort((a, b) => adj.get(b).size - adj.get(a).size)[0];
+      const ranked = ids.slice().sort((a, b) => adj.get(b).size - adj.get(a).size);
+      const device = ids.find((id) => byId.get(id).kind === 'ESP') || ids.find((id) => byId.get(id).kind === 'DIP');
+      const passive = ids.every((id) => !ACTIVE.has(byId.get(id).kind));
+      const src = ranked.find((id) => SRC.has(byId.get(id).part.type) && adj.get(id).size > 0);
+      const wideSupply = ids.some((id) => byId.get(id).terms.some((t) => t.wire && t.netName && (netTerms.get(t.net) || []).filter((u) => u.wire).length >= 3));
+      // Prefer the battery only when several discrete branches share it. A single
+      // series chain still starts at its highest-degree part, as before.
+      const root = device || (passive && wideSupply && src) || ranked[0];
       const layer = new Map();
       const q = [[root, 0]]; layer.set(root, 0);
       while (q.length) {
@@ -400,7 +457,12 @@
           arr.sort((a, b) => score.get(a) - score.get(b) || String(a).localeCompare(String(b)));
         }
       }
-      for (const id of ids) buildGeom(byId.get(id), { neighLayers, flow, bag });
+      // Parallel branches are compared with the breadboard. Keep that layer in the
+      // breadboard's top-to-bottom order.
+      if (passive && wideSupply) {
+        for (const arr of idsByL.values()) arr.sort((a, b) => (byId.get(a).part.y - byId.get(b).part.y) || (byId.get(a).part.x - byId.get(b).part.x) || String(a).localeCompare(String(b)));
+      }
+      for (const id of ids) buildGeom(byId.get(id), { neighLayers, flow, bag, rank, passive: drawSupply });
       placeComp(ids.map((id) => byId.get(id)), flow, idsByL);
       let minY = Infinity, maxY = -Infinity;
       for (const id of ids) {
@@ -603,6 +665,22 @@
       };
       put(ts[0], da); put(ts[1], db);
       if (ts[0].lx === ts[1].lx && ts[0].ly === ts[1].ly) put(ts[1], opp(da));
+      // A series LED points from the supply toward the load. Layering can fold a
+      // string around the middle part and leave the cathode on the battery side.
+      if (ctx.passive && ctx.rank && (s.kind === 'LED' || s.kind === 'D')) {
+        const anode = ts.find((t) => t.name === 'A' || t.name === '+');
+        const cath = anode && ts.find((t) => t !== anode);
+        if (anode && cath) {
+          const ra = ctx.rank.get(anode.net);
+          const rc = ctx.rank.get(cath.net);
+          const up = sideOf(flow, 'up');
+          const anodeCloser = ra !== undefined && (rc === undefined || ra < rc);
+          if (anodeCloser && anode.dir !== up && (anode.dir === 'l' || anode.dir === 'r')) {
+            if (cath.rail === 'gnd') put(anode, up);
+            else if (cath.dir === 'l' || cath.dir === 'r') { put(anode, up); put(cath, opp(up)); }
+          }
+        }
+      }
       return;
     }
     s.w = 100; s.h = 30 + Math.ceil(ts.length / 2) * 20;
@@ -674,9 +752,86 @@
       }
     }
     alignOutward(syms, idsByL);
+    openChainRows(syms);
     packOverlaps(syms);
     packHorizontal(syms);
     for (const s of syms) { s.x = snap(s.x); s.y = snap(s.y); }
+  }
+
+  // Parallel branches off one battery are separate series chains. Give every part in a
+  // chain the chain's row height so a ground symbol on the LED does not collide with
+  // the branch below, then line each chain up on its series pins.
+  function openChainRows(syms) {
+    if (!syms.length || syms.some((s) => ACTIVE.has(s.kind))) return;
+    const busCount = new Map();
+    for (const s of syms) for (const t of s.terms) if (t.wire && t.netName) busCount.set(t.net, (busCount.get(t.net) || 0) + 1);
+    if (![...busCount.values()].some((n) => n >= 3)) return;
+    const parent = new Map(syms.map((s) => [s.id, s.id]));
+    const find = (id) => {
+      let p = parent.get(id);
+      if (p !== id) { p = find(p); parent.set(id, p); }
+      return p;
+    };
+    const unite = (a, b) => { const ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra, rb); };
+    const netPins = new Map();
+    for (const s of syms) for (const t of s.terms) {
+      if (!t.wire) continue;
+      if (!netPins.has(t.net)) netPins.set(t.net, []);
+      netPins.get(t.net).push({ s, t });
+    }
+    for (const pins of netPins.values()) {
+      const ids = [...new Set(pins.map((p) => p.s.id))];
+      if (ids.length === 2) unite(ids[0], ids[1]);
+    }
+    const slotOf = (s) => { const p = s.pad || pads(s); return p.T + s.h + p.B; };
+    const groups = new Map();
+    for (const s of syms) {
+      const r = find(s.id);
+      if (!groups.has(r)) groups.set(r, []);
+      groups.get(r).push(s);
+    }
+    const pitch = new Map();
+    for (const g of groups.values()) {
+      const h = Math.max(...g.map(slotOf));
+      for (const s of g) pitch.set(s.id, h);
+    }
+    const byL = new Map();
+    for (const s of syms) {
+      const L = s.layer || 0;
+      if (!byL.has(L)) byL.set(L, []);
+      byL.get(L).push(s);
+    }
+    for (const col of byL.values()) {
+      col.sort((a, b) => a.y - b.y || String(a.id).localeCompare(String(b.id)));
+      const top = col[0];
+      let y = top.y - ((top.pad && top.pad.T) || 0);
+      for (const s of col) {
+        const p = s.pad || pads(s);
+        s.y = y + p.T;
+        y += Math.max(slotOf(s), pitch.get(s.id) || 0) + 20;
+      }
+    }
+    const layers = [...byL.keys()].sort((a, b) => Math.abs(a) - Math.abs(b) || a - b);
+    const done = new Set((byL.get(0) || []).map((s) => s.id));
+    for (const L of layers) {
+      if (L === 0) continue;
+      const col = (byL.get(L) || []).slice().sort((a, b) => a.y - b.y);
+      for (const s of col) {
+        let shift = null;
+        for (const t of s.terms) {
+          if (!t.wire) continue;
+          const pins = netPins.get(t.net) || [];
+          if (new Set(pins.map((p) => p.s.id)).size !== 2) continue;
+          const mates = pins.filter((m) => m.s !== s && done.has(m.s.id));
+          if (!mates.length) continue;
+          const m = mates[0];
+          const sh = (m.s.y + m.t.ly) - (s.y + t.ly);
+          if (shift === null || Math.abs(sh) < Math.abs(shift)) shift = sh;
+        }
+        if (shift) s.y += Math.round(shift / GS) * GS;
+        done.add(s.id);
+      }
+    }
   }
 
   function alignOutward(syms, idsByL) {
@@ -692,11 +847,21 @@
       if (L === 0) continue;
       for (const id of idsByL.get(L) || []) {
         const s = byId.get(id); if (!s) continue;
+        const hasSeries = s.terms.some((t) => {
+          if (!t.wire) return false;
+          const n = new Set((netPins.get(t.net) || []).map((m) => m.s.id));
+          return n.size === 2;
+        });
         let shift = null;
         for (const t of s.terms) {
           if (!t.wire) continue;
-          const mates = (netPins.get(t.net) || []).filter((m) => m.s !== s && done.has(m.s.id));
+          const all = netPins.get(t.net) || [];
+          const mates = all.filter((m) => m.s !== s && done.has(m.s.id));
           if (!mates.length) continue;
+          // A shared supply bus is not a series partner. Keep each branch on its
+          // own row instead of stacking every load on the battery pin.
+          const wired = all.filter((m) => m.t.wire);
+          if (hasSeries && wired.length > 2 && t.netName) continue;
           const ty = mates.reduce((a, m) => a + m.s.y + m.t.ly, 0) / mates.length;
           const my = s.y + t.ly;
           const sh = ty - my;
@@ -1428,14 +1593,19 @@
     const anode = sym.terms.find((t) => t.name === 'A' || t.name === '+') || sym.terms[0];
     const cath = sym.terms.find((t) => t !== anode) || sym.terms[1];
     const y = axisY(sym);
-    const pointingRight = anode.x >= (cath ? cath.x : anode.x);
-    const tip = pointingRight ? sym.x + sym.w - 18 : sym.x + 18;
+    // Conventional current: the triangle points at the cathode bar.
+    const anodeRight = !!(cath && anode.x >= cath.x);
+    const pointingRight = !anodeRight;
+    const tip = pointingRight ? sym.x + sym.w - 22 : sym.x + 22;
     const base = pointingRight ? tip - 16 : tip + 16;
-    const bar = base;
+    const bar = pointingRight ? tip + 5 : tip - 5;
     let d = `M${base} ${y - 10} L${tip} ${y} L${base} ${y + 10} Z M${bar} ${y - 10} V${y + 10}`;
-    d += ' ' + stub(anode, tip, y);
+    d += ' ' + stub(anode, base, y);
     if (cath) d += ' ' + stub(cath, bar, y);
-    if (sym.kind === 'Z') d += ` M${bar} ${y - 10} l${pointingRight ? -4 : 4} -3 M${bar} ${y + 10} l${pointingRight ? 4 : -4} 3`;
+    if (sym.kind === 'Z') {
+      const back = pointingRight ? -4 : 4;
+      d += ` M${bar} ${y - 10} l${back} -3 M${bar} ${y + 10} l${-back} 3`;
+    }
     if (sym.kind === 'LED') {
       const col = sym.led || '#ff2a2a';
       d += ` M${tip - 2} ${y - 16} l8 -8 M${tip - 6} ${y - 12} l8 -8 M${tip + 4} ${y - 22} l-3 1 m3 -1 l-1 3 M${tip} ${y - 18} l-3 1 m3 -1 l-1 3`;
