@@ -794,6 +794,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       changed: (topo) => {
         if (window.Netlist && app.proj) { try { Netlist.syncFromWires(app.proj); } catch (e) { /* the wires stay; the next load rebuilds the netlist */ } }
         if (topo) app.sim.topoDirty = true; app.sim.dirty = true; invalidateGpio(); autosave(); if (app.schematic) app.schematic.invalidate();
+        if (window.Bom) Bom.sync(document.getElementById('bomView'), app.proj);
       }, beforeEdit,
       netKey: (x, y) => { app.sim.netAt(x, y); return app.sim.uf.find(Math.round(x) + ',' + Math.round(y)); },
       selected: (s) => { renderInspector(s); if (s) { /* keep current tab */ } },
