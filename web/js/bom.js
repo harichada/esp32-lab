@@ -48,29 +48,50 @@
     multimeter: () => ({ key: 'dmm', name: 'Digital multimeter', q: 'digital multimeter' }),
     dht22: () => ({ key: 'dht', name: 'DHT22 / AM2302 temp/humidity', q: 'DHT22 AM2302 sensor module' }),
   };
+  // Placement searches build temporary parts with these ids. They are not on the board.
+  const PROBE = new Set(['_seat', '_new']);
   function list(proj) {
     const m = new Map(); const add = (e, n = 1) => { const o = m.get(e.key); if (o) o.qty += n; else m.set(e.key, Object.assign({ qty: n }, e)); };
     const parts = (proj && proj.parts) || [];
-    for (const p of parts) { const f = C[p.type]; if (f) add(f(p.props || {})); }
+    const seen = new Set();
+    let hasEsp = false, hasBb = false;
+    for (const p of parts) {
+      if (!p || PROBE.has(p.id)) continue;
+      if (p.type === 'esp32') hasEsp = true;
+      if (p.type === 'breadboard') hasBb = true;
+      if (p.id && seen.has(p.id)) continue;
+      if (p.id) seen.add(p.id);
+      const f = C[p.type]; if (f) add(f(p.props || {}));
+    }
+    // Match the part type, not the catalog key. An ESP32 or breadboard entry
+    // whose key is not 'esp32' / 'bb' must not add a second line of each.
     if (parts.length) {
-      if (!m.has('esp32') && proj.mode !== 'circuit') add(C.esp32());
-      if (!m.has('bb')) add(C.breadboard());
+      if (!hasEsp && proj.mode !== 'circuit') add(C.esp32());
+      if (!hasBb) add(C.breadboard());
       const w = ((proj && proj.wires) || []).length;
       add({ key: 'jw', name: 'Jumper wires (M-M / M-F assortment)', q: 'breadboard jumper wires dupont kit', note: w ? '~' + w + ' wires in this circuit' : '' }, 1);
     }
     return [...m.values()].map((e) => Object.assign(e, { url: AZ(e.q) }));
   }
+  function componentCount(rows) { return (rows || []).reduce((a, e) => a + (e.key === 'jw' ? 0 : e.qty), 0); }
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
   function text(proj) { return 'Parts list — ' + ((proj && proj.name) || 'project') + '\n' + list(proj).map((e) => `${e.qty} × ${e.name}${e.note ? ' (' + e.note + ')' : ''} — ${e.url}`).join('\n'); }
+  // Re-render only while the Parts list tab is the open one. `open` is passed by tests;
+  // the editor omits it and the tab panel decides.
+  function sync(el, proj, open) {
+    if (open === undefined && typeof document !== 'undefined') { const tab = document.getElementById('tab-bom'); open = !!(tab && tab.classList.contains('on')); }
+    if (!open) return false;
+    render(el, proj); return true;
+  }
   function render(el, proj) {
     if (!el) return; const L = list(proj);
-    const total = L.reduce((a, e) => a + (e.key === 'jw' ? 0 : e.qty), 0);
+    const total = componentCount(L);
     el.innerHTML = `<div class="bom-h"><div><div class="bom-t">${esc((proj && proj.name) || 'Project')}</div><div class="muted small">${L.length} line items · ${total} components + jumper wires</div></div><button id="bBomCopy" type="button">Copy list</button></div>` +
       (L.length ? `<div class="bom-list" role="table">${L.map((e) => `<div class="bom-row" role="row"><span class="bom-q mono" role="cell">${e.qty}×</span><span class="bom-n" role="cell">${esc(e.name)}${e.note ? `<small>${esc(e.note)}</small>` : ''}</span><a class="bom-a" role="cell" href="${esc(e.url)}" target="_blank" rel="noopener noreferrer">Buy on Amazon ↗</a></div>`).join('')}</div>` : '<p class="muted">No physical parts in this project yet.</p>') +
       '<p class="muted small">Links open an Amazon search for a matching part; check pinout/voltage (3.3 V logic) before buying. Supplies, ground symbols, meters and scope probes are virtual and not listed.</p>';
     const b = el.querySelector('#bBomCopy');
     b.onclick = async () => { const t = text(proj); try { await navigator.clipboard.writeText(t); } catch (e) { const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); } catch (_) {} ta.remove(); } b.textContent = 'Copied ✓'; setTimeout(() => { b.textContent = 'Copy list'; }, 1500); };
   }
-  root.Bom = { list, text, render, CATALOG: C };
+  root.Bom = { list, text, render, sync, componentCount, CATALOG: C };
   if (typeof module !== 'undefined') module.exports = root.Bom;
 })(typeof window !== 'undefined' ? window : globalThis);
