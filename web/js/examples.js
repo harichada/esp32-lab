@@ -432,6 +432,19 @@ void loop() {
       notes: 'The unmodified firmware/remote.ino (+ remote_logic.h) built with its own -DSIM flag. WiFi.begin() brings up real lwIP on QEMU’s open_eth NIC; HTTP (TCP) and Eco UDP packets travel through lwIP and are bridged to the mock TV/Roku/Eco devices (the 802.11 radio itself is not emulated). Matrix scanning runs in GPIO lock-step with the solver, so diode/ghosting behaviour is physical. Keyboard: 1/2 = Sony on/off, = - m i, arrows, Enter, Backspace, h, s, r, b, o = Mode, e = Eco.' };
   };
   EX.blank = () => ({ name: 'Blank (ESP32 on breadboard)', mode: 'qemu', code: 'void setup() {\n  Serial.begin(115200);\n  Serial.println("hello from QEMU");\n}\n\nvoid loop() {\n  delay(1000);\n}\n', parts: Object.values(espOnBoard()), wires: [] });
+  // "+ New blank" (Projects dialog): the user picks a Basic circuit or an ESP32 project.
+  // Basic = a bare breadboard in circuit mode (no board, no firmware, nothing to compile);
+  // ESP32 = the DevKit V1 on a breadboard with an empty sketch, run as real firmware (QEMU).
+  const EMPTY_INO = 'void setup() {}\nvoid loop() {}\n';
+  const BASIC_CODE = '// Basic circuit — no ESP32, no code. Press Run (or just interact): the circuit is simulated live.\n';
+  const BLANK_KINDS = {
+    basic: { label: 'Basic circuit', build: () => ({ name: 'New circuit', mode: 'circuit', code: BASIC_CODE, parts: [part('breadboard', 0, 0, { cols: 63 }, 0, 'bb1')], wires: [] }) },
+    esp32: { label: 'ESP32', build: () => ({ name: 'New ESP32 project', mode: 'qemu', code: EMPTY_INO, parts: Object.values(espOnBoard()), wires: [] }) },
+  };
+  function newBlank(kind) {
+    const k = BLANK_KINDS[kind]; if (!k) throw new Error('unknown blank kind: ' + kind);
+    return k.build();
+  }
   // ---- BEGIN fun projects ----
   const TRAFFIC_INO = `// Traffic light with pedestrian crossing.
 // Car lights: red D27, yellow D26, green D25.  Pedestrian: WALK (green) D33, DON'T WALK (red) D32.
@@ -1744,7 +1757,7 @@ void loop() {
   };
   // ---- END fun projects ----
   const LIST = [['blink', 'Blink'], ['button', 'Button + LED'], ['pot', 'Potentiometer → LED PWM'], ['potjs', 'Pot → PWM (JS sketch)'], ['fade', 'LED fade (LEDC)'], ['i2c', 'I2C OLED + BME280 + MPU6050'], ['spi', 'SPI TFT + MCP3008 + SD card'], ['rc', 'RC charging (scope)'], ['transistor', 'Transistor switch'], ['remote', 'Wi-Fi/IR TV Remote'], ['traffic', '★ Traffic light + pedestrian button'], ['reaction', '🎮 Reaction-time game (OLED)'], ['simon', '🎮 Simon memory game'], ['weather', '★ OLED weather station (BME280)'], ['dice', '🎮 Electronic dice (OLED + shake)'], ['stopwatch', '★ OLED stopwatch with laps'], ['vumeter', '★ LED bar-graph VU meter'], ['morse', '★ Morse code transceiver'], ['snake', '🎮 Snake game (OLED)'], ['pong', '🎮 Pong vs the ESP32 (OLED + pot)'], ['level', '★ Bubble spirit level (MPU6050)'], ['servo', '★ Servo knob + radar sweep'], ['neoring', '★ NeoPixel ring light show'], ['lcdclock', '★ 16×2 LCD clock + menu'], ['thermostat', '★ DHT22 thermostat (LCD)'], ['keylock', '★ Keypad door lock (4×4 keypad + LCD + servo)'], ['blank', 'Blank']];
-  const api = { EX, LIST, BLINK, BUTTON };
+  const api = { EX, LIST, BLINK, BUTTON, EMPTY_INO, BLANK_KINDS: Object.keys(BLANK_KINDS), newBlank };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.Examples = api;
 })(typeof window !== 'undefined' ? window : globalThis);
