@@ -595,7 +595,7 @@
       const THREE = root.THREE;
       const m = new THREE.Mesh(
         new THREE.CircleGeometry(rad, 24),
-        new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.32, depth: THREE.NormalBlending, depthWrite: false })
+        new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.32, blending: THREE.NormalBlending, depthWrite: false })
       );
       m.rotation.x = -Math.PI / 2; m.position.y = 0.08; m.renderOrder = -1;
       return m;
@@ -913,7 +913,7 @@
       });
       // Additive vanishes on white breadboards under soft-GL — use Normal there.
       // One texture per colour; each LED still has its own material so opacity can differ.
-      const mat = new THREE.SpriteMaterial({ map: tex, color: 0xffffff, transparent: true, blending: blend, depthWrite: false, opacity: 0, depth: blend });
+      const mat = new THREE.SpriteMaterial({ map: tex, color: 0xffffff, transparent: true, blending: blend, depthWrite: false, opacity: 0 });
       return new THREE.Sprite(mat);
     }
 

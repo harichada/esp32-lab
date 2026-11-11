@@ -199,6 +199,13 @@ test('3D hides the 2D zoom readout stylesheet rule', () => {
   assert.match(mobile, /body\.m \.zoom-tools\{bottom:80px/);
 });
 
+test('material params do not pass an unknown depth key', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const src = fs.readFileSync(path.join(__dirname, '../js/view3d.js'), 'utf8');
+  assert.doesNotMatch(src, /Material\(\{[^}]*\bdepth\s*:/);
+});
+
 test('3D stays available at phone width on a desktop pointer', () => {
   assert.strictEqual(blocks3d({ coarse: false, fine: true, touchUA: false, width: 390 }), false);
   assert.strictEqual(blocks3d({ coarse: true, fine: true, touchUA: false, width: 400 }), false);
