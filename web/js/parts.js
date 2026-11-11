@@ -235,7 +235,7 @@
         s += `<rect x="-3" y="-9.5" width="16" height="2.4" rx=".8" class="led-rim" style="fill:${burned ? '#333' : col}"/>`;
         if (isIR) { s += `<text x="5" y="-30" class="plbl">IR</text>`; if (b > 0.02 && !burned) s += `<g class="ir-arcs" style="opacity:${0.3 + 0.7 * b}">${[0, 1, 2].map((k) => `<path d="M${13 + k * 5} ${-26 - k * 4} a${8 + k * 5} ${8 + k * 5} 0 0 1 0 ${12 + k * 8}" style="animation-delay:${k * 0.18}s"/>`).join('')}</g>`; }
         if (burned) s += `<g class="smoke"><circle cx="5" cy="-32" r="5"/><circle cx="9" cy="-42" r="6"/><circle cx="3" cy="-52" r="7"/></g>`;
-        return s + pinDots(this.pins(p)) + `<text x="-4" y="9" class="plbl small">A</text><text x="14" y="9" class="plbl small">C</text>`;
+        return s + pinDots(this.pins(p)) + `<text x="0" y="8" class="plbl small">A</text><text x="10" y="8" class="plbl small">C</text>`;
       },
       stamp(p, cx) {
         if (cx.state(p).burned) return;
@@ -560,9 +560,91 @@
 
   function pinDots(pins) { return pins.map((q) => `<circle cx="${q.x}" cy="${q.y}" r="2.6" class="pin" data-pin="${esc(q.name)}"/>`).join(''); }
 
+  // Physical flip. Two-terminal parts (resistor, LED, diode, capacitor, …)
+  // swap end for end: the legs exchange holes and the body stays on the same
+  // side of the row. That is a half-turn about the pin centre along the lead
+  // axis. The artwork is drawn beside the holes, so a full 180° of the drawing
+  // would swing the body onto the other side of the row; reflecting through
+  // the perpendicular bisector swaps the legs and leaves the body seated.
+  // Printed text is drawn upright afterwards, and colour bands reverse order.
+  // Parts with 3 or more pins — transistors, regulators, ICs, modules, the
+  // ESP32 — and the breadboard only rotate. A mirrored pinout is not a part
+  // you can buy. Set this true to allow those mirrors later.
+  const ALLOW_MIRROR_MULTIPIN = false;
+  const NO_FLIP_TIP = "Real parts can't be mirrored; rotate instead";
+
   // rotation helpers (rot: 0..3, 90° steps clockwise)
   function rotPt(x, y, r) { switch (r & 3) { case 1: return [-y, x]; case 2: return [-x, -y]; case 3: return [y, -x]; default: return [x, y]; } }
-  function pinWorld(p, pin) { const [x, y] = rotPt(pin.x, pin.y, p.rot || 0); return { x: p.x + x, y: p.y + y }; }
+  function localPinsOf(part) {
+    const spec = part && T[part.type];
+    if (!spec || !spec.pins) return [];
+    try { return spec.pins(part) || []; } catch (e) { return []; }
+  }
+  function isTwoTerminal(part) { return localPinsOf(part).length === 2; }
+  // Breadboard and text labels never flip. Multi-pin parts flip only when the flag is on.
+  function canPhysicalFlip(part) {
+    if (!part || part.type === 'breadboard' || part.type === 'label') return false;
+    if (isTwoTerminal(part)) return true;
+    return !!ALLOW_MIRROR_MULTIPIN;
+  }
+  function pinCenter(pins) {
+    let x = 0, y = 0;
+    for (const pin of pins) { x += pin.x; y += pin.y; }
+    return { x: x / pins.length, y: y / pins.length };
+  }
+  // Swap the component of (x, y) that lies along the two leads. The part of
+  // the point that sticks out beside the leads stays put, so a body drawn
+  // next to the holes does not jump to the other side of the row.
+  function endSwap(x, y, pins) {
+    const c = pinCenter(pins);
+    const dx = pins[1].x - pins[0].x, dy = pins[1].y - pins[0].y;
+    const len2 = dx * dx + dy * dy;
+    if (len2 < 1e-6) return [2 * c.x - x, 2 * c.y - y];
+    const vx = x - c.x, vy = y - c.y;
+    const t = (vx * dx + vy * dy) / len2;
+    return [c.x + vx - 2 * t * dx, c.y + vy - 2 * t * dy];
+  }
+  // Local point, then the part's flip, then rotation. Shared by rendering,
+  // hit-testing, seating, snap and the netlist (pinWorld).
+  function orientPt(x, y, part) {
+    let px = x, py = y;
+    if (part && part.type !== 'breadboard' && part.type !== 'label') {
+      const pins = localPinsOf(part);
+      if (pins.length >= 2) {
+        const c = pinCenter(pins), fx = !!part.flipX, fy = !!part.flipY;
+        if (pins.length === 2 && !ALLOW_MIRROR_MULTIPIN) {
+          if (fx || fy) { const s = endSwap(x, y, pins); px = s[0]; py = s[1]; }
+        } else if (ALLOW_MIRROR_MULTIPIN) {
+          if (fx) px = 2 * c.x - px;
+          if (fy) py = 2 * c.y - py;
+        }
+      }
+    }
+    return rotPt(px, py, (part && part.rot) || 0);
+  }
+  function pinWorld(p, pin) { const [x, y] = orientPt(pin.x, pin.y, p); return { x: p.x + x, y: p.y + y }; }
+  // 180° turn, or a true mirror when the flag allows it. null when unflipped.
+  function bodySpin(part) {
+    if (!part || part.type === 'breadboard' || part.type === 'label') return null;
+    const pins = localPinsOf(part);
+    if (pins.length < 2 || (!part.flipX && !part.flipY)) return null;
+    const c = pinCenter(pins);
+    if (pins.length === 2 && !ALLOW_MIRROR_MULTIPIN) {
+      const dx = pins[1].x - pins[0].x, dy = pins[1].y - pins[0].y;
+      const alongX = Math.abs(dx) >= Math.abs(dy);
+      return { cx: c.x, cy: c.y, turn: false, flipX: alongX, flipY: !alongX };
+    }
+    if (!ALLOW_MIRROR_MULTIPIN) return null;
+    return { cx: c.x, cy: c.y, turn: false, flipX: !!part.flipX, flipY: !!part.flipY };
+  }
+  function partTransform(part) {
+    let t = `translate(${part.x},${part.y}) rotate(${((part.rot || 0) * 90)})`;
+    const s = bodySpin(part);
+    if (!s) return t;
+    if (s.turn) return t + ` translate(${s.cx},${s.cy}) rotate(180) translate(${-s.cx},${-s.cy})`;
+    const sx = s.flipX ? -1 : 1, sy = s.flipY ? -1 : 1;
+    return t + ` translate(${s.cx},${s.cy}) scale(${sx},${sy}) translate(${-s.cx},${-s.cy})`;
+  }
 
   // Bounds of the part body in world space. Single-row parts draw their body
   // above the leg line, so the box reaches back across that artwork; a part
@@ -583,7 +665,7 @@
     else { x0 -= 6; y0 -= 6; x1 += 6; y1 += 6; }
     let wx0 = 1e9, wy0 = 1e9, wx1 = -1e9, wy1 = -1e9;
     for (const [a, b] of [[x0, y0], [x1, y0], [x0, y1], [x1, y1]]) {
-      const [rx, ry] = rotPt(a, b, part.rot || 0);
+      const [rx, ry] = orientPt(a, b, part);
       wx0 = Math.min(wx0, part.x + rx); wy0 = Math.min(wy0, part.y + ry);
       wx1 = Math.max(wx1, part.x + rx); wy1 = Math.max(wy1, part.y + ry);
     }
@@ -597,23 +679,23 @@
   // A footprint at least 0.3" across (DIP ICs, tactile buttons, the DevKit)
   // may bridge the channel. Off the board — or when nothing free remains —
   // return a spot that does not sit on the breadboard body.
-  function placeNewPart(parts, type, x, y, rot) {
+  function placeNewPart(parts, type, x, y, rot, flip) {
     const snap = (v) => Math.round(v / G) * G;
     const sx = snap(x), sy = snap(y), r = rot || 0;
     const d = T[type];
     parts = parts || [];
     if (!d || type === 'label') return { x: sx, y: sy };
-    const probe = { id: '_new', type, x: 0, y: 0, rot: r, props: JSON.parse(JSON.stringify(d.props || {})) };
+    const probe = { id: '_new', type, x: 0, y: 0, rot: r, flipX: !!(flip && flip.flipX), flipY: !!(flip && flip.flipY), props: JSON.parse(JSON.stringify(d.props || {})) };
     let localPins = [];
     try { localPins = d.pins(probe) || []; } catch (e) { localPins = []; }
-    const offs = localPins.map((pin) => rotPt(pin.x, pin.y, r));
+    const offs = localPins.map((pin) => orientPt(pin.x, pin.y, probe));
     const boards = parts.filter((p) => p.type === 'breadboard' && T.breadboard);
     const boxes = boards.map((p) => {
       const sz = T.breadboard.size(p);
       const corners = [[-8, -16], [sz.w + 4, -16], [sz.w + 4, sz.h + 16], [-8, sz.h + 16]];
       let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
       for (const [a, b] of corners) {
-        const [rx, ry] = rotPt(a, b, p.rot || 0);
+        const [rx, ry] = orientPt(a, b, p);
         x0 = Math.min(x0, p.x + rx); y0 = Math.min(y0, p.y + ry); x1 = Math.max(x1, p.x + rx); y1 = Math.max(y1, p.y + ry);
       }
       return { x0, y0, x1, y1 };
@@ -626,7 +708,7 @@
       try { sz = d.size(Object.assign({}, probe, { x: px, y: py })) || sz; } catch (e) { /* keep default */ }
       let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
       const acc = (qx, qy) => { x0 = Math.min(x0, qx); y0 = Math.min(y0, qy); x1 = Math.max(x1, qx); y1 = Math.max(y1, qy); };
-      for (const [a, b] of [[0, 0], [sz.w, 0], [0, sz.h], [sz.w, sz.h]]) { const [rx, ry] = rotPt(a, b, r); acc(px + rx, py + ry); }
+      for (const [a, b] of [[0, 0], [sz.w, 0], [0, sz.h], [sz.w, sz.h]]) { const [rx, ry] = orientPt(a, b, probe); acc(px + rx, py + ry); }
       for (const [dx, dy] of offs) acc(px + dx, py + dy);
       if (!(x0 <= x1)) return { x0: px, y0: py, x1: px + G, y1: py + G };
       return { x0, y0, x1, y1 };
@@ -639,7 +721,7 @@
         try { sz = T[p.type].size(p) || sz; } catch (e) { /* keep default */ }
         let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
         for (const [a, b] of [[0, 0], [sz.w, 0], [0, sz.h], [sz.w, sz.h]]) {
-          const [rx, ry] = rotPt(a, b, p.rot || 0);
+          const [rx, ry] = orientPt(a, b, p);
           x0 = Math.min(x0, p.x + rx); y0 = Math.min(y0, p.y + ry); x1 = Math.max(x1, p.x + rx); y1 = Math.max(y1, p.y + ry);
         }
         others.push({ x0, y0, x1, y1 });
@@ -674,7 +756,7 @@
       }
     }
     // Same rule as a drop nudge and as palette click-add: empty a–j strips, no overlap, rails are not seats.
-    const seatOk = (ox, oy) => seating(parts).clear(type, ox, oy, r);
+    const seatOk = (ox, oy) => seating(parts).clear(type, ox, oy, r, flip);
     // Nearest a–j row, further columns to the right then the left, then the
     // other half and the rest of the board. Rails are not rows.
     const rows = new Map();
@@ -709,7 +791,7 @@
       const sz = T.breadboard.size(p);
       let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
       for (const [a, b] of [[-8, -16], [sz.w + 4, -16], [sz.w + 4, sz.h + 16], [-8, sz.h + 16]]) {
-        const [rx, ry] = rotPt(a, b, p.rot || 0);
+        const [rx, ry] = orientPt(a, b, p);
         x0 = Math.min(x0, p.x + rx); y0 = Math.min(y0, p.y + ry); x1 = Math.max(x1, p.x + rx); y1 = Math.max(y1, p.y + ry);
       }
       return { x0, y0, x1, y1 };
@@ -740,54 +822,57 @@
       }
       const box = partBox(p); if (box) footprints.push(box);
     }
-    function spec(type, rot) {
+    function spec(type, rot, flip) {
       const d = T[type];
       if (!d || type === 'label' || type === 'breadboard') return null;
       const r = rot || 0;
       const props = JSON.parse(JSON.stringify(d.props || {}));
+      const pose = { id: '_seat', type, x: 0, y: 0, rot: r, flipX: !!(flip && flip.flipX), flipY: !!(flip && flip.flipY), props };
       let localPins = [];
-      try { localPins = d.pins({ id: '_seat', type, x: 0, y: 0, rot: r, props }) || []; } catch (e) { localPins = []; }
-      const offs = localPins.map((pin) => rotPt(pin.x, pin.y, r));
+      try { localPins = d.pins(pose) || []; } catch (e) { localPins = []; }
+      const offs = localPins.map((pin) => orientPt(pin.x, pin.y, pose));
       if (!offs.length) return null;
       const ys = offs.map((o) => o[1]);
-      return { props, offs, mayStraddle: Math.max.apply(null, ys) - Math.min.apply(null, ys) >= 30 };
+      return { props, offs, pose, mayStraddle: Math.max.apply(null, ys) - Math.min.apply(null, ys) >= 30 };
     }
-    function judge(type, ox, oy, rot) {
-      const s = spec(type, rot);
+    function judge(type, ox, oy, rot, flip) {
+      const s = spec(type, rot, flip);
       if (!s) return null;
       let taken = false, shared = false;
       const sides = new Map();
+      const mine = new Set();
       for (const [dx, dy] of s.offs) {
         const key = Math.round(ox + dx) + ',' + Math.round(oy + dy), hit = holes.get(key);
         if (!hit) return null;
+        mine.add(hit.bb + ':' + hit.side + ':' + hit.col);
         if (occupied.has(key)) taken = true;
         if (strips.has(hit.bb + ':' + hit.side + ':' + hit.col)) shared = true;
         const prev = sides.get(hit.bb);
         if (prev && prev !== hit.side) { if (!s.mayStraddle) return null; sides.set(hit.bb, 'both'); }
         else if (!prev) sides.set(hit.bb, hit.side);
       }
-      const box = partBox({ id: '_seat', type, x: ox, y: oy, rot: rot || 0, props: s.props });
+      const box = partBox(Object.assign({}, s.pose, { x: ox, y: oy }));
       const overlap = !!(box && footprints.some((b) => hitsBox(box, b)));
-      return { x: ox, y: oy, taken, shared, overlap, clear: !taken && !shared && !overlap };
+      return { x: ox, y: oy, taken, shared, overlap, strips: mine, clear: !taken && !shared && !overlap };
     }
     return {
       holes, occupied, strips, footprints, boxes, spec, judge,
       inside(px, py) { return boxes.some((b) => px >= b.x0 && px <= b.x1 && py >= b.y0 && py <= b.y1); },
-      clear(type, ox, oy, rot) { const s = judge(type, ox, oy, rot); return !!(s && s.clear); },
+      clear(type, ox, oy, rot, flip) { const s = judge(type, ox, oy, rot, flip); return !!(s && s.clear); },
     };
   }
 
   // Drag-and-drop. The seat under the cursor is kept even if its strips
   // already hold other pins. A drop that would cover a hole or a body is
   // nudged with seating().clear (empty strip, no overlap, no rail).
-  function placeDroppedPart(parts, type, x, y, rot) {
+  function placeDroppedPart(parts, type, x, y, rot, flip) {
     const snap = (v) => Math.round(v / G) * G;
     const sx = snap(x), sy = snap(y), r = rot || 0;
     const d = T[type];
     parts = parts || [];
     if (!d || type === 'label' || type === 'breadboard') return { x: sx, y: sy };
     const ctx = seating(parts);
-    const spec = ctx.spec(type, r);
+    const spec = ctx.spec(type, r, flip);
     if (!spec || !ctx.boxes.length) return { x: sx, y: sy };
     if (!ctx.inside(x, y) && !ctx.inside(sx, sy)) return { x: sx, y: sy };
     const nearer = (a, b) => !b || a.dist < b.dist - 1e-6 || (Math.abs(a.dist - b.dist) <= 1e-6 && (a.x < b.x || (a.x === b.x && a.y < b.y)));
@@ -796,7 +881,7 @@
     for (const h of ctx.holes.values()) {
       const ox = h.x - spec.offs[0][0], oy = h.y - spec.offs[0][1], id = ox + ',' + oy;
       if (seen.has(id)) continue; seen.add(id);
-      const seat = ctx.judge(type, ox, oy, r);
+      const seat = ctx.judge(type, ox, oy, r, flip);
       if (!seat) continue;
       seat.dist = Math.hypot(ox - x, oy - y);
       if (nearer(seat, aimed)) aimed = seat;
@@ -809,14 +894,14 @@
   // Palette click and the command palette. Always the nudge rule: every pin
   // in an empty a–j strip, body clear. Same walk as placeNewPart, whose
   // seatOk calls seating(parts).clear so both share one rule.
-  function placeOnEmptyStrips(parts, type, x, y, rot) {
+  function placeOnEmptyStrips(parts, type, x, y, rot, flip) {
     const snap = (v) => Math.round(v / G) * G;
     const sx = snap(x), sy = snap(y), r = rot || 0;
     const d = T[type];
     parts = parts || [];
     if (!d || type === 'label') return { x: sx, y: sy };
     const ctx = seating(parts);
-    const spec = ctx.spec(type, r);
+    const spec = ctx.spec(type, r, flip);
     if (!ctx.boxes.length) return { x: sx, y: sy };
     const offs = spec ? spec.offs : [];
     const over = ctx.inside(sx, sy) || offs.some(([dx, dy]) => ctx.inside(sx + dx, sy + dy));
@@ -824,7 +909,7 @@
       const clearAt = (px, py) => {
         if (offs.length ? offs.some(([dx, dy]) => ctx.inside(px + dx, py + dy)) : ctx.inside(px, py)) return false;
         const props = spec ? spec.props : JSON.parse(JSON.stringify(d.props || {}));
-        const box = partBox({ id: '_seat', type, x: px, y: py, rot: r, props });
+        const box = partBox({ id: '_seat', type, x: px, y: py, rot: r, flipX: !!(flip && flip.flipX), flipY: !!(flip && flip.flipY), props });
         if (box && (ctx.boxes.some((b) => hitsBox(box, b)) || ctx.footprints.some((b) => hitsBox(box, b)))) return false;
         return true;
       };
@@ -856,13 +941,34 @@
       }
       xs.sort((a, b) => a - b);
       for (const ox of xs.filter((v) => v >= sx).concat(xs.filter((v) => v < sx).reverse())) {
-        if (ctx.clear(type, ox, oy, r)) return { x: ox, y: oy };
+        if (ctx.clear(type, ox, oy, r, flip)) return { x: ox, y: oy };
       }
     }
     return freeSpot();
   }
 
-  const api = { T, fmt, parseVal, parseProp, stampResistance, WIRE_R, scopeChannel, bands, espGpio, ESP_TOP, ESP_BOT, INPUT_ONLY, STRAPPING, ADC1, ADC2, rotPt, pinWorld, seating, placeNewPart, placeDroppedPart, placeOnEmptyStrips, G, VTH, esc, LEDCOL };
+  // After a flip, keep the turn. If the new body overlaps another part, or a
+  // pin lands in a strip it did not already use, nudge with the empty-strip
+  // rule. A 180° end-swap occupies the same holes, so an already-wired part
+  // stays put. Off the board, leave it where it is.
+  function reseat(parts, part) {
+    if (!part || part.type === 'breadboard' || part.type === 'label') return { x: part.x, y: part.y, moved: false };
+    const others = (parts || []).filter((p) => p.id !== part.id);
+    const ctx = seating(others);
+    const rot = part.rot || 0;
+    const flip = { flipX: !!part.flipX, flipY: !!part.flipY };
+    const now = ctx.judge(part.type, part.x, part.y, rot, flip);
+    if (!now) return { x: part.x, y: part.y, moved: false };
+    const plain = ctx.judge(part.type, part.x, part.y, rot, null);
+    const before = (plain && plain.strips) || new Set();
+    let newJoin = false;
+    if (now.strips) for (const s of now.strips) if (!before.has(s) && ctx.strips.has(s)) newJoin = true;
+    if (!now.overlap && !newJoin) return { x: part.x, y: part.y, moved: false };
+    const seat = placeOnEmptyStrips(others, part.type, part.x, part.y, rot, flip);
+    return { x: seat.x, y: seat.y, moved: seat.x !== part.x || seat.y !== part.y };
+  }
+
+  const api = { T, fmt, parseVal, parseProp, stampResistance, WIRE_R, scopeChannel, bands, espGpio, ESP_TOP, ESP_BOT, INPUT_ONLY, STRAPPING, ADC1, ADC2, rotPt, orientPt, pinWorld, bodySpin, partTransform, canPhysicalFlip, isTwoTerminal, ALLOW_MIRROR_MULTIPIN, NO_FLIP_TIP, seating, placeNewPart, placeDroppedPart, placeOnEmptyStrips, reseat, G, VTH, esc, LEDCOL };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.Parts = api;
 })(typeof window !== 'undefined' ? window : globalThis);

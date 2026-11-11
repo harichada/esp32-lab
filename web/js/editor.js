@@ -13,9 +13,20 @@
       this._bind();
     }
     setProject(proj) { this.proj = proj; this.sel = null; this.undoS = []; this.redoS = []; this.render(); }
-    snapshot() { return JSON.stringify({ parts: this.proj.parts, wires: this.proj.wires }); }
+    snapshot() { return JSON.stringify({ parts: this.proj.parts, wires: this.proj.wires, sel: this.sel || null }); }
     push() { if (this.hooks.beforeEdit) this.hooks.beforeEdit(); this.undoS.push(this.snapshot()); if (this.undoS.length > 200) this.undoS.shift(); this.redoS = []; }
-    _restore(s) { const o = JSON.parse(s); this.proj.parts = o.parts; this.proj.wires = o.wires; this.sel = null; this.render(); this.hooks.changed(true); }
+    // The snapshot replaces part objects. Put the selection back on the id it
+    // had when the edit was made, then tell the Inspector. Otherwise Delete
+    // clears the selection, Flip clicks after undo do nothing, and the panel
+    // keeps showing the pre-undo part.
+    _restore(s) {
+      const o = JSON.parse(s); this.proj.parts = o.parts; this.proj.wires = o.wires;
+      const keep = o.sel !== undefined ? o.sel : this.sel;
+      const partOk = keep && keep.part && this.part(keep.part);
+      const wireOk = keep && keep.wire && this.wire(keep.wire);
+      this.sel = partOk ? { part: keep.part } : wireOk ? { wire: keep.wire } : null;
+      this.render(); this.hooks.changed(true); if (this.hooks.selected) this.hooks.selected(this.sel);
+    }
     undo() { if (!this.undoS.length) return; this.redoS.push(this.snapshot()); this._restore(this.undoS.pop()); }
     redo() { if (!this.redoS.length) return; this.undoS.push(this.snapshot()); this._restore(this.redoS.pop()); }
     // ---------- coordinates ----------
@@ -32,7 +43,7 @@
     }
     bounds() {
       let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; const add = (x, y) => { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); };
-      for (const p of this.proj.parts) { const d = P.T[p.type]; if (!d) continue; const sz = d.size(p); const c = [[-30, -50], [sz.w + 30, sz.h + 30]]; for (const [a, b] of c) { const [rx, ry] = P.rotPt(a, b, p.rot || 0); add(p.x + rx, p.y + ry); } }
+      for (const p of this.proj.parts) { const d = P.T[p.type]; if (!d) continue; const sz = d.size(p); const c = [[-30, -50], [sz.w + 30, sz.h + 30]]; for (const [a, b] of c) { const [rx, ry] = P.orientPt(a, b, p); add(p.x + rx, p.y + ry); } }
       for (const w of this.proj.wires) { add(w.a.x, w.a.y); add(w.b.x, w.b.y); for (const q of w.pts || []) add(q.x, q.y); }
       return x0 > x1 ? null : { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
     }
@@ -44,8 +55,8 @@
       for (const p of sorted) {
         if (!P.T[p.type]) continue;
         const g = document.createElementNS(NS, 'g'); g.setAttribute('class', 'part' + (this.sel && this.sel.part === p.id ? ' sel' : '') + (P.T[p.type].interactive || P.T[p.type].click ? ' inter' : '')); g.dataset.id = p.id;
-        g.setAttribute('transform', `translate(${p.x},${p.y}) rotate(${(p.rot || 0) * 90})`);
-        const html = this.partSvg(p); g.innerHTML = html; this.svgCache.set(p.id, html);
+        g.setAttribute('transform', P.partTransform(p));
+        const html = this.partSvg(p); g.innerHTML = html; this._upright(g, p); this.svgCache.set(p.id, html);
         this.lParts.appendChild(g); this.partEls.set(p.id, g);
       }
       this.renderWires();
@@ -84,7 +95,7 @@
     refreshDynamic() {
       for (const p of this.proj.parts) {
         const g = this.partEls.get(p.id); if (!g || p.type === 'breadboard') continue;
-        const html = this.partSvg(p); if (this.svgCache.get(p.id) !== html) { g.innerHTML = html; this.svgCache.set(p.id, html); }
+        const html = this.partSvg(p); if (this.svgCache.get(p.id) !== html) { g.innerHTML = html; this._upright(g, p); this.svgCache.set(p.id, html); }
       }
     }
     select(s) { this.sel = s; for (const [id, g] of this.partEls) g.classList.toggle('sel', !!(s && s.part === id)); this.renderWires(); this.hooks.selected(s); if (!this.mode) this.setHint(); }
@@ -103,7 +114,38 @@
       return this.addPart(type, seat.x, seat.y);
     }
     part(id) { return this.proj.parts.find((p) => p.id === id); }
-    rotateSel() { if (!this.sel || !this.sel.part) return; const p = this.part(this.sel.part); this.push(); p.rot = ((p.rot || 0) + 1) & 3; this.render(); this.hooks.changed(true); }
+    rotateSel() { if (!this.sel || !this.sel.part) return; const p = this.part(this.sel.part); if (!p) return; this.push(); p.rot = ((p.rot || 0) + 1) & 3; this.render(); this.hooks.changed(true); if (this.hooks.selected) this.hooks.selected(this.sel); }
+    // axis 'x' or 'y'. On the breadboard a two-terminal part turns 180° (either
+    // axis — there is only one real flip). In the schematic, H and V are display-only.
+    flipSel(axis) {
+      if (!this.sel || !this.sel.part) return;
+      const p = this.part(this.sel.part); if (!p) return;
+      const sch = document.body.classList.contains('viewsch');
+      if (sch) {
+        this.push();
+        if (axis === 'y') p.schFlipY = !p.schFlipY; else p.schFlipX = !p.schFlipX;
+        this.hooks.changed(true); this.hooks.selected(this.sel); return;
+      }
+      if (!P.canPhysicalFlip(p)) return;
+      this.push();
+      if (P.ALLOW_MIRROR_MULTIPIN && !P.isTwoTerminal(p)) {
+        if (axis === 'y') p.flipY = !p.flipY; else p.flipX = !p.flipX;
+      } else { p.flipX = !p.flipX; p.flipY = false; }
+      const seat = P.reseat(this.proj.parts, p);
+      if (seat) { p.x = seat.x; p.y = seat.y; }
+      this.render(); this.hooks.changed(true); this.hooks.selected(this.sel);
+    }
+    // A 180° body turn would invert lettering. Spin each label back about its
+    // own anchor so it stays upright and unmirrored. Geometry still turns.
+    _upright(g, p) {
+      const s = P.bodySpin(p); if (!s) return;
+      g.querySelectorAll('text').forEach((el) => {
+        const x = parseFloat(el.getAttribute('x')) || 0, y = parseFloat(el.getAttribute('y')) || 0;
+        const prev = el.getAttribute('transform') || '';
+        const fix = s.turn ? `rotate(180 ${x} ${y})` : `translate(${x} ${y}) scale(${s.flipX ? -1 : 1} ${s.flipY ? -1 : 1}) translate(${-x} ${-y})`;
+        el.setAttribute('transform', prev ? fix + ' ' + prev : fix);
+      });
+    }
     deleteSel() {
       if (!this.sel) return; this.push();
       if (this.sel.part) this.proj.parts = this.proj.parts.filter((p) => p.id !== this.sel.part);
@@ -162,11 +204,11 @@
       if (h) mark(h.pos, 'hl-pin'); for (const q of extra || []) mark(q, 'hl-pin');
       this.ovHl.innerHTML = s;
     }
-    setHint(t) { if (!this.hintEl) return; if (document.body.classList.contains('viewsch')) { this.hintEl.textContent = 'Schematic is view-only — switch to 2D to add, move, or wire · drag to pan · scroll to zoom'; return; } this.hintEl.textContent = t || this.defaultHint(); }
+    setHint(t) { if (!this.hintEl) return; if (document.body.classList.contains('viewsch')) { this.hintEl.textContent = 'F mirrors the symbol (drawing only, wiring unchanged)'; return; } this.hintEl.textContent = t || this.defaultHint(); }
     defaultHint() {
       if (this.sel && this.sel.wire) return 'Wire selected: Delete/Backspace removes · right-click for colour · double-click adds a bend · drag bends';
       if (document.body.classList.contains('m')) return 'Tap a part to select it. Tap a pin, then another pin, to wire';
-      return 'Click a part to select it. Click a pin, then another pin, to wire (drag from a pin works too)';
+      return 'Click a part to select it. Click a pin, then another pin, to wire · R rotate · F flip';
     }
     // ---------- interaction ----------
     _bind() {
@@ -276,7 +318,7 @@
       if (m && m.k === 'drag') {
         const nx = snap(m.ox + w.x - m.sx), ny = snap(m.oy + w.y - m.sy);
         if (nx !== m.p.x || ny !== m.p.y) {
-          if (!m.moved) { this.push(); m.moved = true; } m.p.x = nx; m.p.y = ny; this._pinIdx = null; const g = this.partEls.get(m.p.id); g.setAttribute('transform', `translate(${nx},${ny}) rotate(${(m.p.rot || 0) * 90})`);
+          if (!m.moved) { this.push(); m.moved = true; } m.p.x = nx; m.p.y = ny; this._pinIdx = null; const g = this.partEls.get(m.p.id); g.setAttribute('transform', P.partTransform(m.p));
           if (m.p.type !== 'breadboard') {   // show which breadboard holes/strips the part's legs will land in
             const holes = []; for (const pin of P.T[m.p.type].pins(m.p)) { const pw = P.pinWorld(m.p, pin); const h = this.pinIndex().find((q) => q.bb && q.pos.x === pw.x && q.pos.y === pw.y); if (h) holes.push(h.pos); }
             this.highlight(null, holes);
