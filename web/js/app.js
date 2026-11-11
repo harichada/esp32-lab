@@ -609,7 +609,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (!sel) { el.innerHTML = '<p class="muted">Select a part or wire.</p>'; return; }
     if (sel.wire) {
       const w = app.proj.wires.find((q) => q.id === sel.wire); if (!w) return;
-      el.innerHTML = `<h3>Wire ${w.id}</h3><div class="row wrap">${Object.keys(window.WIRE_COLORS).map((c) => `<button class="sw ${w.color === c ? 'on' : ''}" data-col="${c}" style="background:${window.WIRE_COLORS[c]}" title="${c}"></button>`).join('')}</div><p id="ro" class="ro"></p><div class="row probe-row"><button class="probe-b" data-probe='${JSON.stringify({ kind: 'wire', wire: w.id })}'>⌁ Probe on scope</button><button class="probe-b" data-watch='${JSON.stringify({ kind: 'wire', wire: w.id })}'>📌 Telemetry</button></div><button id="iDel">Delete wire</button>`;
+      el.innerHTML = `<h3>Wire ${w.id}</h3><div class="insp-k">Colour</div><div class="row wrap">${Object.keys(window.WIRE_COLORS).map((c) => `<button class="sw ${w.color === c ? 'on' : ''}" data-col="${c}" style="background:${window.WIRE_COLORS[c]}" title="${c}"></button>`).join('')}</div><p id="ro" class="ro"></p><div class="row probe-row"><button class="probe-b" data-probe='${JSON.stringify({ kind: 'wire', wire: w.id })}'>⌁ Probe on scope</button><button class="probe-b" data-watch='${JSON.stringify({ kind: 'wire', wire: w.id })}'>📌 Telemetry</button></div><button id="iDel">Delete wire</button>`;
       el.querySelectorAll('[data-col]').forEach((b) => b.onclick = () => { app.editor.setWireColor(b.dataset.col); renderInspector(sel); });
       $('#iDel').onclick = () => app.editor.deleteSel(); return;
     }

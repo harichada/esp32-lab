@@ -101,7 +101,7 @@ body.m .bom-row{padding:10px 12px}body.m .bom-a{padding:8px 12px;font-size:13px}
 body.m .tab .row.wrap label,body.m .tab .row label{font-size:13px}
 /* inspector sheet */
 body.m .insp-body{padding:4px 18px calc(18px + env(safe-area-inset-bottom));font-size:14px}
-body.m #insp h3{font-size:17px}body.m #insp label{font-size:13px;gap:8px}
+body.m #insp h3{font-size:17px}body.m #insp label{font-size:13px;gap:8px}body.m #insp .insp-k{font-size:13px;margin-bottom:8px}
 body.m #insp input:not([type=checkbox]):not([type=range]),body.m #insp select{height:46px;border-radius:12px}
 body.m #insp input[type=range]{height:44px}
 body.m #insp input[type=range]::-webkit-slider-runnable-track{height:6px;border-radius:3px}

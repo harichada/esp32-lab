@@ -47,6 +47,58 @@ test('LED clicked at the fitted centre seats in one row, not the centre channel'
   assert.ok(pins.every((q) => !used.has(q.x + ',' + q.y)), 'stacked on an existing leg');
 });
 
+function footprint(type, origin) {
+  const spec = Parts.T[type];
+  const p = { id: '_', type, x: origin.x, y: origin.y, rot: origin.rot || 0, props: JSON.parse(JSON.stringify(spec.props || {})) };
+  const pins = spec.pins(p);
+  const sz = spec.size(p) || { w: 10, h: 10 };
+  let x0 = 0, y0 = 0, x1 = sz.w || 0, y1 = 0;
+  for (const pin of pins) {
+    x0 = Math.min(x0, pin.x); y0 = Math.min(y0, pin.y);
+    x1 = Math.max(x1, pin.x); y1 = Math.max(y1, pin.y);
+  }
+  if (y1 - y0 < 20) { y0 = Math.min(y0, -(Math.max(sz.h || 10, 16))); y1 = Math.max(y1, 6); }
+  else { x0 -= 6; y0 -= 6; x1 += 6; y1 += 6; }
+  let wx0 = 1e9, wy0 = 1e9, wx1 = -1e9, wy1 = -1e9;
+  for (const [a, b] of [[x0, y0], [x1, y0], [x0, y1], [x1, y1]]) {
+    const [rx, ry] = Parts.rotPt(a, b, p.rot || 0);
+    wx0 = Math.min(wx0, p.x + rx); wy0 = Math.min(wy0, p.y + ry);
+    wx1 = Math.max(wx1, p.x + rx); wy1 = Math.max(wy1, p.y + ry);
+  }
+  return { x0: wx0, y0: wy0, x1: wx1, y1: wy1 };
+}
+function overlaps(a, b) {
+  return a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0;
+}
+
+test('consecutive click-adds step along the row and do not overlap', () => {
+  const proj = blink();
+  const prior = proj.parts.filter((p) => p.type !== 'breadboard' && p.type !== 'label').map((p) => footprint(p.type, p));
+  const types = ['led', 'resistor', 'led'];
+  const placed = [];
+  for (const type of types) {
+    const at = Parts.placeNewPart(proj.parts, type, 320, 90, 0);
+    const pins = seated(proj.parts, type, at);
+    assert.ok(pins.every((q) => q.hole), type + ' ' + JSON.stringify({ at, pins }));
+    assert.ok(pins.every((q) => q.y <= 80 || q.y >= 110), type + ' in the trough');
+    const spec = Parts.T[type];
+    proj.parts.push({ id: type + placed.length, type, x: at.x, y: at.y, rot: 0, props: JSON.parse(JSON.stringify(spec.props || {})) });
+    placed.push({ type, at, pins, box: footprint(type, at) });
+  }
+  assert.ok(placed.every((p) => p.at.y === placed[0].at.y), JSON.stringify(placed.map((p) => p.at)));
+  assert.ok(placed[0].at.x < placed[1].at.x && placed[1].at.x < placed[2].at.x, JSON.stringify(placed.map((p) => p.at)));
+  const used = new Set();
+  for (let i = 0; i < placed.length; i++) {
+    for (const pin of placed[i].pins) {
+      const k = pin.x + ',' + pin.y;
+      assert.ok(!used.has(k), 'shared hole ' + k);
+      used.add(k);
+    }
+    for (let j = 0; j < i; j++) assert.ok(!overlaps(placed[i].box, placed[j].box), JSON.stringify([placed[i].at, placed[j].at]));
+    for (const old of prior) assert.ok(!overlaps(placed[i].box, old), JSON.stringify([placed[i].at, old]));
+  }
+});
+
 test('a second LED does not reuse the first LED\'s holes', () => {
   const proj = blink();
   const a = Parts.placeNewPart(proj.parts, 'led', 320, 90, 0);

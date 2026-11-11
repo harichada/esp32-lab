@@ -564,13 +564,39 @@
   function rotPt(x, y, r) { switch (r & 3) { case 1: return [-y, x]; case 2: return [-x, -y]; case 3: return [y, -x]; default: return [x, y]; } }
   function pinWorld(p, pin) { const [x, y] = rotPt(pin.x, pin.y, p.rot || 0); return { x: p.x + x, y: p.y + y }; }
 
+  // Bounds of the part body in world space. Single-row parts draw their body
+  // above the leg line, so the box reaches back across that artwork; a part
+  // whose pins already span rows (a DIP, the DevKit) just pads the pin box.
+  function partBox(part) {
+    const spec = T[part.type];
+    if (!spec || part.type === 'breadboard' || part.type === 'label') return null;
+    let pins = [];
+    try { pins = spec.pins(part) || []; } catch (e) { pins = []; }
+    let sz = { w: 10, h: 10 };
+    try { sz = spec.size(part) || sz; } catch (e) { /* keep default */ }
+    let x0 = 0, y0 = 0, x1 = sz.w || 0, y1 = 0;
+    for (const pin of pins) {
+      x0 = Math.min(x0, pin.x); y0 = Math.min(y0, pin.y);
+      x1 = Math.max(x1, pin.x); y1 = Math.max(y1, pin.y);
+    }
+    if (y1 - y0 < 20) { y0 = Math.min(y0, -(Math.max(sz.h || 10, 16))); y1 = Math.max(y1, 6); }
+    else { x0 -= 6; y0 -= 6; x1 += 6; y1 += 6; }
+    let wx0 = 1e9, wy0 = 1e9, wx1 = -1e9, wy1 = -1e9;
+    for (const [a, b] of [[x0, y0], [x1, y0], [x0, y1], [x1, y1]]) {
+      const [rx, ry] = rotPt(a, b, part.rot || 0);
+      wx0 = Math.min(wx0, part.x + rx); wy0 = Math.min(wy0, part.y + ry);
+      wx1 = Math.max(wx1, part.x + rx); wy1 = Math.max(wy1, part.y + ry);
+    }
+    return { x0: wx0, y0: wy0, x1: wx1, y1: wy1 };
+  }
+
   // Click-to-add aims at the view centre. A fitted breadboard's centre is the
-  // plastic channel (no holes), so a new LED used to land in the trough and
-  // look connected when it wasn't. If that point is over a breadboard, return
-  // an origin whose every pin sits in a hole. A footprint at least 0.3" across
-  // (DIP ICs, tactile buttons, the DevKit) may bridge the channel; a single-row
-  // part may not. Off the board — or when nothing free remains — return a spot
-  // that does not sit on the breadboard body.
+  // plastic channel, so the first part sits on the nearest row and each later
+  // click steps along that row to the next free seat. A seat is free when
+  // every pin is in an empty hole and the body does not cover another part.
+  // A footprint at least 0.3" across (DIP ICs, tactile buttons, the DevKit)
+  // may bridge the channel. Off the board — or when nothing free remains —
+  // return a spot that does not sit on the breadboard body.
   function placeNewPart(parts, type, x, y, rot) {
     const snap = (v) => Math.round(v / G) * G;
     const sx = snap(x), sy = snap(y), r = rot || 0;
@@ -648,35 +674,49 @@
       }
     }
     const occupied = new Set();
+    const footprints = [];
     for (const p of parts) {
       if (p.type === 'breadboard' || p.type === 'label' || !T[p.type]) continue;
       let ps = [];
       try { ps = T[p.type].pins(p) || []; } catch (e) { ps = []; }
       for (const pin of ps) { const w = pinWorld(p, pin); occupied.add(Math.round(w.x) + ',' + Math.round(w.y)); }
+      const box = partBox(p); if (box) footprints.push(box);
     }
     const ys = offs.map((o) => o[1]);
     const span = ys.length ? Math.max.apply(null, ys) - Math.min.apply(null, ys) : 0;
     const mayStraddle = span >= 30;
-    let best = null; const seen = new Set();
-    for (const h of holeAt.values()) {
-      const ox = h.x - offs[0][0], oy = h.y - offs[0][1], id = ox + ',' + oy;
-      if (seen.has(id)) continue; seen.add(id);
-      let ok = true, occ = 0; const sides = new Map();
+    const seatOk = (ox, oy) => {
+      const sides = new Map();
       for (const [dx, dy] of offs) {
-        const key = (ox + dx) + ',' + (oy + dy), hit = holeAt.get(key);
-        if (!hit) { ok = false; break; }
-        if (occupied.has(key)) occ++;
+        const key = Math.round(ox + dx) + ',' + Math.round(oy + dy), hit = holeAt.get(key);
+        if (!hit || occupied.has(key)) return false;
         if (hit.side !== 'rail') {
           const prev = sides.get(hit.bb);
-          if (prev && prev !== hit.side) { if (!mayStraddle) { ok = false; break; } sides.set(hit.bb, 'both'); }
+          if (prev && prev !== hit.side) { if (!mayStraddle) return false; sides.set(hit.bb, 'both'); }
           else if (!prev) sides.set(hit.bb, hit.side);
         }
       }
-      if (!ok) continue;
-      const score = occ * 1e6 + Math.hypot(ox - sx, oy - sy);
-      if (!best || score < best.score) best = { x: ox, y: oy, score, occ };
+      const box = partBox(Object.assign({}, probe, { x: ox, y: oy }));
+      return !(box && footprints.some((b) => hits(box, b)));
+    };
+    // Nearest row to the click, then the next rows. On a row, step to the
+    // right of the click first so successive adds walk along the board.
+    const rows = new Map();
+    for (const h of holeAt.values()) { if (!rows.has(h.y)) rows.set(h.y, []); rows.get(h.y).push(h); }
+    const rowYs = [...rows.keys()].sort((a, b) => Math.abs(a - sy) - Math.abs(b - sy) || a - b);
+    const pin0 = offs[0];
+    for (const rowY of rowYs) {
+      const oy = rowY - pin0[1];
+      const xs = []; const seenX = new Set();
+      for (const h of rows.get(rowY)) {
+        const ox = h.x - pin0[0];
+        if (seenX.has(ox)) continue; seenX.add(ox); xs.push(ox);
+      }
+      xs.sort((a, b) => a - b);
+      for (const ox of xs.filter((x) => x >= sx).concat(xs.filter((x) => x < sx).reverse())) {
+        if (seatOk(ox, oy)) return { x: ox, y: oy };
+      }
     }
-    if (best && best.occ === 0) return { x: best.x, y: best.y };
     return freeSpot();
   }
 
