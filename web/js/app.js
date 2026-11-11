@@ -627,7 +627,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const physical = P.canPhysicalFlip(p);
     let flipBtns;
     if (sch) {
-      const tipH = 'Mirror this symbol horizontally (F)', tipV = 'Mirror this symbol vertically';
+      const tipH = 'Mirror the symbol (drawing only)', tipV = 'Mirror the symbol (drawing only)';
       flipBtns = `<button id="iFlipH" class="${p.schFlipX ? 'on' : ''}" title="${P.esc(tipH)}">↔ Flip H</button><button id="iFlipV" class="${p.schFlipY ? 'on' : ''}" title="${P.esc(tipV)}">↕ Flip V</button>`;
     } else {
       const on = !!(p.flipX || p.flipY);

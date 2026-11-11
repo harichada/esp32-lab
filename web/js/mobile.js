@@ -157,7 +157,7 @@
       const fh = sel.querySelector('[data-a=flipH]'), fv = sel.querySelector('[data-a=flipV]');
       fh.hidden = !show || !sch; fv.hidden = !show || !sch;
       fh.setAttribute('aria-disabled', 'false'); fv.setAttribute('aria-disabled', 'false');
-      fh.title = 'Mirror symbol horizontally'; fv.title = 'Mirror symbol vertically';
+      fh.title = 'Mirror the symbol (drawing only)'; fv.title = 'Mirror the symbol (drawing only)';
       // A wire used to leave only the trash button: Properties was part-only, and nothing opened the sheet.
       sel.querySelector('[data-a=props]').hidden = !(s && (s.part || s.wire));
       if (s && s.wire && document.body.classList.contains('m')) setSheet('insp');

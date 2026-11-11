@@ -1756,7 +1756,7 @@
       if (hint) {
         if (this.active) {
           if (!this._hint0) this._hint0 = hint.textContent;
-          hint.textContent = 'Schematic — F mirrors the symbol · Flip H / Flip V in the inspector · drag to pan · scroll to zoom';
+          hint.textContent = 'F mirrors the symbol (drawing only, wiring unchanged)';
         } else if (this._hint0) hint.textContent = this._hint0;
       }
       if (this.active) this.rebuild(true);
