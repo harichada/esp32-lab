@@ -807,9 +807,8 @@
   }
 
   // Palette click and the command palette. Always the nudge rule: every pin
-  // in an empty a–j strip, body clear. Walks the nearest row first and steps
-  // to the right, which is the search placeNewPart uses on PR #10. After that
-  // PR merges, point its seatOk at seating(parts).clear and keep one walk.
+  // in an empty a–j strip, body clear. Same walk as placeNewPart, whose
+  // seatOk calls seating(parts).clear so both share one rule.
   function placeOnEmptyStrips(parts, type, x, y, rot) {
     const snap = (v) => Math.round(v / G) * G;
     const sx = snap(x), sy = snap(y), r = rot || 0;
