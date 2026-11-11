@@ -523,7 +523,7 @@
     }
     _projectSig() {
       if (!this.proj) return '';
-      return this.proj.parts.map((p) => p.id + ':' + p.type + ':' + p.x + ',' + p.y + ',' + (p.rot || 0) + ':' + JSON.stringify(p.props || {})).join('|')
+      return this.proj.parts.map((p) => p.id + ':' + p.type + ':' + p.x + ',' + p.y + ',' + (p.rot || 0) + ':' + (p.flipX ? 1 : 0) + (p.flipY ? 1 : 0) + ':' + JSON.stringify(p.props || {})).join('|')
         + '#' + this.proj.wires.map((w) => w.id + ':' + w.color + ':' + w.a.x + ',' + w.a.y + '>' + w.b.x + ',' + w.b.y + ':' + (w.pts || []).map((q) => q.x + ',' + q.y).join(';')).join('|');
     }
     clear() {
@@ -591,6 +591,34 @@
         }
       });
     }
+    // Same pose as Parts.bodySpin. A two-terminal end-swap yaws 180° about the
+    // pin centre (the model sits on z = 0, so the body stays between the leads).
+    // Applied in local space, before the part's yaw, so pins match pinWorld.
+    _spinBody(mesh, p) {
+      const s = root.Parts.bodySpin && root.Parts.bodySpin(p);
+      if (!s) return;
+      const THREE = root.THREE;
+      const pivot = new THREE.Group();
+      pivot.position.set(s.cx, 0, s.cy);
+      // A horizontal end-swap is a yaw about the pin centre. Models sit on
+      // z = 0, so the body stays between the holes and the leads exchange.
+      if (s.turn || (s.flipX && !s.flipY)) pivot.rotation.y = Math.PI;
+      else {
+        if (s.flipX) pivot.scale.x = -1;
+        if (s.flipY) pivot.scale.z = -1;
+        pivot.traverse((o) => {
+          if (!o.material) return;
+          const list = Array.isArray(o.material) ? o.material : [o.material];
+          o.material = list.map((m) => { const c = m.clone(); c.side = THREE.DoubleSide; return c; });
+        });
+      }
+      for (const k of [...mesh.children]) {
+        mesh.remove(k);
+        k.position.x -= s.cx; k.position.z -= s.cy;
+        pivot.add(k);
+      }
+      mesh.add(pivot);
+    }
     _shadowDisc(rad) {
       const THREE = root.THREE;
       const m = new THREE.Mesh(
@@ -624,13 +652,14 @@
         mesh.position.set(p.x, 0, p.y);
         mesh.rotation.y = -rot;
         gParts.add(mesh); this.parts.set(p.id, { mesh, part: p });
-        this._addSolid(box, mesh);
         if (p.type !== 'breadboard') {
           try {
             const sz = d.size ? d.size(p) : { w: 24, h: 20 };
             mesh.add(this._shadowDisc(Math.max(6, Math.max(sz.w || 20, sz.h || 20) * 0.32)));
           } catch (_) { mesh.add(this._shadowDisc(10)); }
         }
+        this._spinBody(mesh, p);
+        this._addSolid(box, mesh);
       }
       this._partBoxes = []; this._pinOwners = new Map(); this._pinNames = new Map();
       for (const [, rec] of this.parts) if (rec.part.type === 'breadboard') {

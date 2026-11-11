@@ -623,7 +623,14 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       else h += `<label>${e.label}<input data-k="${e.k}" value="${P.esc(v)}" data-t="${e.t}"></label>`;
     }
     if (p.type === 'esp32') h += `<label>Power<select data-k="power"><option ${p.props.power === 'usb' ? 'selected' : ''}>usb</option><option ${p.props.power !== 'usb' ? 'selected' : ''}>external</option></select></label>`;
-    h += `<p id="ro" class="ro"></p><div class="row"><button id="iRot">⟳ Rotate</button><button id="iDel">🗑 Delete</button></div><div id="pinTable"></div>`;
+    const sch = document.body.classList.contains('viewsch');
+    const physical = P.canPhysicalFlip(p);
+    const flipOk = sch || physical;
+    const tipH = sch ? 'Mirror this symbol horizontally (F)' : (physical ? 'Turn this part end for end (F)' : P.NO_FLIP_TIP);
+    const tipV = sch ? 'Mirror this symbol vertically' : (physical ? 'Turn this part end for end (F)' : P.NO_FLIP_TIP);
+    const onH = sch ? !!p.schFlipX : !!(p.flipX || (physical && p.flipY));
+    const onV = sch ? !!p.schFlipY : onH;
+    h += `<p id="ro" class="ro"></p><div class="row"><button id="iRot">⟳ Rotate</button><button id="iFlipH" class="${onH ? 'on' : ''} ${flipOk ? '' : 'is-off'}" aria-disabled="${flipOk ? 'false' : 'true'}" title="${P.esc(tipH)}">↔ Flip H</button><button id="iFlipV" class="${onV ? 'on' : ''} ${flipOk ? '' : 'is-off'}" aria-disabled="${flipOk ? 'false' : 'true'}" title="${P.esc(tipV)}">↕ Flip V</button><button id="iDel">🗑 Delete</button></div><div id="pinTable"></div>`;
     el.innerHTML = h;
     el.querySelectorAll('[data-k]').forEach((inp) => {
       const k = inp.dataset.k, ev = inp.type === 'range' ? 'input' : 'change';
@@ -634,7 +641,10 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
         p.props[k] = v; app.sim.dirty = true; app.editor.refreshDynamic(); if (inp.type !== 'range') app.editor.render(); autosave();
       });
     });
-    $('#iRot').onclick = () => app.editor.rotateSel(); $('#iDel').onclick = () => app.editor.deleteSel();
+    $('#iRot').onclick = () => app.editor.rotateSel();
+    const flipClick = (axis) => { const b = axis === 'y' ? $('#iFlipV') : $('#iFlipH'); if (b.getAttribute('aria-disabled') === 'true') return; app.editor.flipSel(axis); };
+    $('#iFlipH').onclick = () => flipClick('x'); $('#iFlipV').onclick = () => flipClick('y');
+    $('#iDel').onclick = () => app.editor.deleteSel();
     updateReadouts();
   }
   function updateReadouts() {
@@ -734,7 +744,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
 <li>❌ Not modelled: I²C/SPI devices, touch, DAC, hall sensor, deep-sleep currents, Bluetooth, analog behaviour of the ESP32 die beyond a 40 Ω driver / 45 kΩ pulls.</li>
 </ul>
 <h3>Circuit solver</h3><p>Modified nodal analysis with Newton–Raphson (diode/LED Shockley, zener breakdown, Ebers–Moll BJT, square-law MOSFET, LDO), backward-Euler transient for capacitors. LEDs burn out above 2× their rating; supply/GPIO shorts are flagged.</p>
-<h3>Shortcuts</h3><p>Ctrl+Enter run · click pin → click pin to wire · R rotate · Del/Backspace delete · right-click wire for menu · double-click wire adds a bend · Ctrl+Z / Ctrl+Y undo/redo · Ctrl+S save (examples: makes a copy) · F fit · Esc cancel · keys/buttons respond to their labelled keyboard key while running.</p>`;
+<h3>Shortcuts</h3><p>Ctrl+Enter run · click pin → click pin to wire · R rotate · F flip (two-lead parts, or the schematic symbol) · Shift+F fit · Del/Backspace delete · right-click wire for menu · double-click wire adds a bend · Ctrl+Z / Ctrl+Y undo/redo · Ctrl+S save (examples: makes a copy) · Esc cancel · keys/buttons respond to their labelled keyboard key while running.</p>`;
   }
   function keyPart(k) { const kp = app.proj.parts.find((q) => q.type === 'keypad' && P.T.keypad.keyAt(q, k) >= 0); if (kp) { kp._kidx = P.T.keypad.keyAt(kp, k); return kp; } return app.proj.parts.find((q) => P.T[q.type] && P.T[q.type].interactive && q.props.key && (q.props.key === k || q.props.key.toLowerCase() === String(k).toLowerCase())); }
   const MIN_SCANS = 400, MAX_LATCH_MS = 6000;   // ~400 GPIO updates ≈ 30+ matrix scans ≈ well past the firmware's 30 ms debounce
@@ -865,7 +875,10 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       else if (viewMode === 'schematic' && (e.key === 'Delete' || e.key === 'Backspace' || e.key === 'r' || e.key === 'R')) { if (e.key === 'Delete' || e.key === 'Backspace') e.preventDefault(); }
       else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); app.editor.deleteSel(); }
       else if (e.key === 'r' || e.key === 'R') app.editor.rotateSel();
-      else if (e.key === 'f' || e.key === 'F') { if (viewMode === 'schematic' && app.schematic) app.schematic.fit(); else app.editor.fit(); }
+      else if (e.key === 'f' || e.key === 'F') {
+        if (e.shiftKey) { if (viewMode === 'schematic' && app.schematic) app.schematic.fit(); else app.editor.fit(); }
+        else app.editor.flipSel('x');
+      }
     });
     window.addEventListener('keyup', (e) => { if (typing(e)) return; const kp = keyPart(e.key); if (kp && app.sim.partState(kp).pressed) press(kp, false); });
     // start-up: ?p=<project> > ?ex=<example, read-only> > last open project > legacy single-slot save > Blink example
@@ -883,7 +896,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
 
   // ---------------- 2D / 3D view ----------------
   let viewMode = '2d', view3dLoading = null, knob3d = null;
-  const VIEW3D_SRC = 'js/view3d.js?v=54';
+  const VIEW3D_SRC = 'js/view3d.js?v=55';
   const THREE_SRC = 'vendor/three.min.js?v=2';
   function loadScriptOnce(src) {
     return new Promise((res, rej) => {
@@ -1023,6 +1036,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const seq = ++viewSeq;
     viewMode = mode === '3d' ? '3d' : mode === 'schematic' ? 'schematic' : '2d';
     applyViewChrome();
+    try { if (app.editor) { renderInspector(app.editor.sel); app.editor.setHint(); } } catch (_) {}
     if (viewMode !== '3d') {
       show3dLoad(false);
       try { if (app.view3d) app.view3d.setActive(false); } catch (e) { console.error(e); }

@@ -463,6 +463,7 @@
         for (const arr of idsByL.values()) arr.sort((a, b) => (byId.get(a).part.y - byId.get(b).part.y) || (byId.get(a).part.x - byId.get(b).part.x) || String(a).localeCompare(String(b)));
       }
       for (const id of ids) buildGeom(byId.get(id), { neighLayers, flow, bag, rank, passive: drawSupply });
+      for (const id of ids) applySchMirror(byId.get(id));
       placeComp(ids.map((id) => byId.get(id)), flow, idsByL);
       let minY = Infinity, maxY = -Infinity;
       for (const id of ids) {
@@ -489,6 +490,7 @@
         const s = byId.get(id);
         s.parked = true; s.flow = 1; s.layer = 0; s.comp = -1; s.root = id;
         buildGeom(s, { neighLayers: () => [], flow: 1, bag: new Set([id]) });
+        applySchMirror(s);
         const p = pads(s);
         s.pad = p;
         const slot = p.L + s.w + p.R;
@@ -522,6 +524,17 @@
   }
 
   function opp(dir) { return { l: 'r', r: 'l', t: 'b', b: 't' }[dir] || 'r'; }
+  // KiCad-style symbol mirror. Display only: pin names keep their nets, so the
+  // breadboard and the netlist do not change. Text is drawn upright afterwards.
+  function applySchMirror(s) {
+    const part = s && s.part;
+    if (!part || (!part.schFlipX && !part.schFlipY) || !s.w) return;
+    const fx = !!part.schFlipX, fy = !!part.schFlipY;
+    for (const t of s.terms || []) {
+      if (fx) { t.lx = s.w - t.lx; if (t.dir === 'l' || t.dir === 'r') t.dir = opp(t.dir); }
+      if (fy) { t.ly = s.h - t.ly; if (t.dir === 't' || t.dir === 'b') t.dir = opp(t.dir); }
+    }
+  }
   function sideOf(flow, which) { // which: 'up' (toward lower layer) | 'down' (toward higher layer)
     if (which === 'up') return flow > 0 ? 'l' : 'r';
     return flow > 0 ? 'r' : 'l';
@@ -1743,7 +1756,7 @@
       if (hint) {
         if (this.active) {
           if (!this._hint0) this._hint0 = hint.textContent;
-          hint.textContent = 'Schematic is view-only — switch to 2D to add, move, or wire · drag to pan · scroll to zoom';
+          hint.textContent = 'Schematic — F mirrors the symbol · Flip H / Flip V in the inspector · drag to pan · scroll to zoom';
         } else if (this._hint0) hint.textContent = this._hint0;
       }
       if (this.active) this.rebuild(true);
@@ -1883,7 +1896,7 @@
 
   function signature(proj) {
     return JSON.stringify({
-      p: (proj.parts || []).map((q) => [q.id, q.type, q.x, q.y, q.rot, q.props]),
+      p: (proj.parts || []).map((q) => [q.id, q.type, q.x, q.y, q.rot, q.schFlipX ? 1 : 0, q.schFlipY ? 1 : 0, q.props]),
       w: (proj.wires || []).map((w) => [Math.round(w.a.x), Math.round(w.a.y), Math.round(w.b.x), Math.round(w.b.y)]),
     });
   }

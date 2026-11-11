@@ -137,14 +137,24 @@
     $('#mConn').className = $('#connDot').className;
     // selection actions floating over the canvas
     const sel = document.createElement('div'); sel.id = 'mSel'; sel.className = 'm-only';
-    sel.innerHTML = `<button data-a="rot" aria-label="Rotate">${ic('i-rotate')}</button><button data-a="props" aria-label="Properties">${ic('m-sliders')}<span>Properties</span></button><button data-a="del" class="danger" aria-label="Delete">${ic('i-trash')}</button>`;
+    sel.innerHTML = `<button data-a="rot" aria-label="Rotate">${ic('i-rotate')}</button><button data-a="flipH" aria-label="Flip horizontal">↔</button><button data-a="flipV" aria-label="Flip vertical">↕</button><button data-a="props" aria-label="Properties">${ic('m-sliders')}<span>Properties</span></button><button data-a="del" class="danger" aria-label="Delete">${ic('i-trash')}</button>`;
     $('#stageWrap').appendChild(sel);
-    sel.onclick = (e) => { const b = e.target.closest('[data-a]'); if (!b) return; if (document.body.classList.contains('viewsch') && (b.dataset.a === 'rot' || b.dataset.a === 'del')) return; if (b.dataset.a === 'rot') ed.rotateSel(); else if (b.dataset.a === 'del') ed.deleteSel(); else setSheet('insp'); };
+    sel.onclick = (e) => { const b = e.target.closest('[data-a]'); if (!b || b.getAttribute('aria-disabled') === 'true') return; if (document.body.classList.contains('viewsch') && (b.dataset.a === 'rot' || b.dataset.a === 'del')) return; if (b.dataset.a === 'rot') ed.rotateSel(); else if (b.dataset.a === 'flipH') ed.flipSel('x'); else if (b.dataset.a === 'flipV') ed.flipSel('y'); else if (b.dataset.a === 'del') ed.deleteSel(); else setSheet('insp'); };
     const hs = ed.hooks.selected; ed.hooks.selected = (s) => {
       hs(s);
       const has = !!(s && (s.part || s.wire));
       document.body.classList.toggle('m-has-sel', has);
       sel.querySelector('[data-a=rot]').hidden = !(s && s.part);
+      const sch = document.body.classList.contains('viewsch');
+      const part = s && s.part && ed.part(s.part);
+      const flipOk = !!(part && (sch || (window.Parts && Parts.canPhysicalFlip(part))));
+      const tip = (window.Parts && Parts.NO_FLIP_TIP) || "Real parts can't be mirrored; rotate instead";
+      for (const a of ['flipH', 'flipV']) {
+        const b = sel.querySelector('[data-a=' + a + ']');
+        b.hidden = !(s && s.part);
+        b.setAttribute('aria-disabled', flipOk ? 'false' : 'true');
+        b.title = flipOk ? (sch ? (a === 'flipV' ? 'Mirror symbol vertically' : 'Mirror symbol horizontally') : 'Turn end for end') : tip;
+      }
       // A wire used to leave only the trash button: Properties was part-only, and nothing opened the sheet.
       sel.querySelector('[data-a=props]').hidden = !(s && (s.part || s.wire));
       if (s && s.wire && document.body.classList.contains('m')) setSheet('insp');
@@ -162,7 +172,7 @@
     const dw = ed._down.bind(ed); ed._down = function (ev) { const was = this.mode && this.mode.k; dw(ev); if (document.body.classList.contains('m') && was !== 'wire' && this.mode && this.mode.k === 'wire') { haptic(6); sound(520); } };
     const av = ed.applyView.bind(ed); ed.applyView = function () { av(); const w = $('#stageWrap'); if (w) { w.style.setProperty('--px', (-this.view.x * 0.08 % 400).toFixed(1) + 'px'); w.style.setProperty('--py', (-this.view.y * 0.08 % 400).toFixed(1) + 'px'); } };
     // hint text for phones
-    ed.setHint = function (t) { if (!this.hintEl) return; if (document.body.classList.contains('viewsch')) { this.hintEl.textContent = 'Schematic is view-only — switch to 2D to add, move, or wire · drag to pan · scroll to zoom'; return; } this.hintEl.textContent = t || (document.body.classList.contains('m') ? 'Tap a part to select it. Tap a pin, then another pin, to wire' : this.defaultHint()); };
+    ed.setHint = function (t) { if (!this.hintEl) return; if (document.body.classList.contains('viewsch')) { this.hintEl.textContent = 'F mirrors the symbol (drawing only, wiring unchanged)'; return; } this.hintEl.textContent = t || (document.body.classList.contains('m') ? 'Tap a part to select it. Tap a pin, then another pin, to wire' : this.defaultHint()); };
     window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && sheet && document.body.classList.contains('m')) setSheet(null); });
   }
 
@@ -245,11 +255,13 @@
     $('#mPartMenu') && $('#mPartMenu').remove();
     const P = window.Parts, label = (P.T[p.type] && P.T[p.type].label) || p.type;
     const m = document.createElement('div'); m.id = 'mPartMenu'; m.className = 'm-only';
-    m.innerHTML = `<div class="m-pm-t">${P.esc(label)} <small>${P.esc(p.id)}</small></div><button data-a="rot">${ic('i-rotate')}<span>Rotate 90°</span></button><button data-a="props">${ic('m-sliders')}<span>Properties</span></button><button data-a="del" class="danger">${ic('i-trash')}<span>Delete</span></button>`;
+    const flipOk = P.canPhysicalFlip(p);
+    const tip = P.NO_FLIP_TIP;
+    m.innerHTML = `<div class="m-pm-t">${P.esc(label)} <small>${P.esc(p.id)}</small></div><button data-a="rot">${ic('i-rotate')}<span>Rotate 90°</span></button><button data-a="flipH" aria-disabled="${flipOk ? 'false' : 'true'}" title="${P.esc(flipOk ? 'Turn end for end' : tip)}"><span>↔ Flip H</span></button><button data-a="flipV" aria-disabled="${flipOk ? 'false' : 'true'}" title="${P.esc(flipOk ? 'Turn end for end' : tip)}"><span>↕ Flip V</span></button><button data-a="props">${ic('m-sliders')}<span>Properties</span></button><button data-a="del" class="danger">${ic('i-trash')}<span>Delete</span></button>`;
     document.body.appendChild(m);
     const close = () => { m.remove(); document.removeEventListener('pointerdown', away, true); };
     const away = (e) => { if (!m.contains(e.target)) close(); }; setTimeout(() => document.addEventListener('pointerdown', away, true), 0);
-    m.onclick = (e) => { const b = e.target.closest('[data-a]'); if (!b) return; close(); if (b.dataset.a === 'rot') ed.rotateSel(); else if (b.dataset.a === 'del') ed.deleteSel(); else setSheet('insp'); };
+    m.onclick = (e) => { const b = e.target.closest('[data-a]'); if (!b || b.getAttribute('aria-disabled') === 'true') return; close(); if (b.dataset.a === 'rot') ed.rotateSel(); else if (b.dataset.a === 'flipH') ed.flipSel('x'); else if (b.dataset.a === 'flipV') ed.flipSel('y'); else if (b.dataset.a === 'del') ed.deleteSel(); else setSheet('insp'); };
   }
 
   // sheets must live at <body> level on phones (so they stack above the canvas and scrim); put them back for desktop
