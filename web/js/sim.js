@@ -145,7 +145,7 @@
         add: (e, p) => { C.add(e); owner.set(e, p.id); if (e.main) mains.set(p.id, e); if (e.kind === 'C') { const k = p.id + ':' + (e.idx = (e.idx || 0)); e._key = p.id; e.vprev = self._capV.get(p.id) || 0; } return e; },
         join() {}, markGround() {},
         esp: (p) => self.espRuntime(p), state: (p) => self.partState(p),
-        probe: (p, node) => { self.probes[p.props.ch || 1] = node; },
+        probe: (p, node) => { self.probes[P.scopeChannel(p.props.ch)] = node; },
       };
       if (root.PartsReg) root.PartsReg.beforeBuild(this);   // add-on parts (js/parts/): decode ESP32 pin activity
       for (const p of this.project.parts) { const d = P.T[p.type]; if (d && d.stamp) d.stamp(p, cx); }
@@ -183,7 +183,7 @@
     }
     _sample() {
       if (root.Instruments && root.Instruments.sample) root.Instruments.sample(this);
-      for (const ch in this.probes) { const a = this.scope[ch]; a.push([this.t, this.circuit.v(this.probes[ch])]); if (a.length > 20000) a.splice(0, a.length - 16000); }
+      for (const ch in this.probes) { const a = this.scope[P.scopeChannel(ch)]; if (!a) continue; a.push([this.t, this.circuit.v(this.probes[ch])]); if (a.length > 20000) a.splice(0, a.length - 16000); }
     }
     _after(dt, quiet) {
       const C = this.circuit, self = this;

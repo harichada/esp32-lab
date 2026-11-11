@@ -43,10 +43,20 @@
       s += `<ellipse cx="3" cy="-15" rx="3" ry="1.6" fill="#fff" opacity=".35" pointer-events="none"/>` + t(5, -10.6, capCode(c), 3.8, mlcc ? '#e8f1fb' : '#3b2203');
       return s + dots(this.pins(p)) + `<text x="5" y="-21" class="plbl">${esc(fmt(c, 'F'))}</text>`;
     },
-    stamp(p, cx) { const ps = this.pins(p); cx.add({ kind: 'C', a: cx.node(p, ps[0].name), b: cx.node(p, ps[1].name), c: pv(p.props.c) || 1e-9, main: true }, p); },
+    stamp(p, cx) { const ps = this.pins(p); const fallback = pv(def0); cx.add({ kind: 'C', a: cx.node(p, ps[0].name), b: cx.node(p, ps[1].name), c: (P.parseProp ? P.parseProp(p.props.c, fallback) : { value: pv(p.props.c) || fallback }).value, main: true }, p); },
     measure(p, cx) { const e = cx.main(p); if (e && kind === 'electrolytic') cx.state(p).rev = cx.V(e.a) - cx.V(e.b) < -1.5; },
     readout(p, cx) { const e = cx.main(p); return e ? `V=${fmt(cx.V(e.a) - cx.V(e.b), 'V')}` : ''; },
-    warn(p, cx) { const e = cx.main(p); if (!e) return; const v = cx.V(e.a) - cx.V(e.b); if (kind === 'electrolytic' && v < -0.7) return 'electrolytic reverse-biased!'; if (Math.abs(v) > +p.props.v) return `over voltage rating (${fmt(Math.abs(v), 'V')} > ${p.props.v} V)`; },
+    warn(p, cx) {
+      const fallback = pv(def0);
+      const used = P.parseProp ? P.parseProp(p.props.c, fallback) : { value: fallback, ok: true };
+      const msgs = [];
+      if (!used.ok) msgs.push(`invalid capacitance ${JSON.stringify(p.props.c)}, using ${fmt(fallback, 'F')}`);
+      const e = cx.main(p); if (!e) return msgs.join('; ') || undefined;
+      const v = cx.V(e.a) - cx.V(e.b);
+      if (kind === 'electrolytic' && v < -0.7) msgs.push('electrolytic reverse-biased!');
+      if (Math.abs(v) > +p.props.v) msgs.push(`over voltage rating (${fmt(Math.abs(v), 'V')} > ${p.props.v} V)`);
+      return msgs.join('; ') || undefined;
+    },
   }, { bom: (pp) => ({ key: type + pp.c, name: `${kind === 'electrolytic' ? 'Electrolytic' : 'Ceramic'} capacitor ${fmt(pv(pp.c), 'F')} ${pp.v} V`, q: `${fmtq(pv(pp.c), 'F')} ${kind === 'electrolytic' ? 'electrolytic' : 'ceramic'} capacitor ${pp.v}V` }) });
   capDef('ccap', 'Ceramic capacitor', 'ceramic', CER, '100n', 'ceramic capacitor disc mlcc 104 decoupling bypass');
   capDef('ecap', 'Electrolytic capacitor', 'electrolytic', ELE, '10u', 'electrolytic capacitor polarized aluminium bulk');
