@@ -854,9 +854,11 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     window.addEventListener('keydown', (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); startRun(); return; }
       if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); save(); return; }
+      // Value fields keep native text undo. Delete moves focus back to the canvas first, so Ctrl+Z still undoes that delete.
       if (typing(e)) return;
-      if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); app.editor.undo(); return; }
-      if ((e.ctrlKey || e.metaKey) && e.key === 'y') { e.preventDefault(); app.editor.redo(); return; }
+      const chord = Editor.editChord(e);
+      if (chord === 'undo') { e.preventDefault(); app.editor.undo(); return; }
+      if (chord === 'redo') { e.preventDefault(); app.editor.redo(); return; }
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       const kp = app.run ? keyPart(e.key) : null; if (kp) { e.preventDefault(); if (!e.repeat) press(kp, true); return; }   // labelled keys only act as buttons while running
       if (e.key === 'Escape') { app.editor.cancelWire(); app.editor.select(null); if (app.schematic) app.schematic.select(null); }

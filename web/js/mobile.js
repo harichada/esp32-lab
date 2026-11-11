@@ -162,7 +162,7 @@
     const dw = ed._down.bind(ed); ed._down = function (ev) { const was = this.mode && this.mode.k; dw(ev); if (document.body.classList.contains('m') && was !== 'wire' && this.mode && this.mode.k === 'wire') { haptic(6); sound(520); } };
     const av = ed.applyView.bind(ed); ed.applyView = function () { av(); const w = $('#stageWrap'); if (w) { w.style.setProperty('--px', (-this.view.x * 0.08 % 400).toFixed(1) + 'px'); w.style.setProperty('--py', (-this.view.y * 0.08 % 400).toFixed(1) + 'px'); } };
     // hint text for phones
-    ed.setHint = function (t) { if (!this.hintEl) return; if (document.body.classList.contains('viewsch')) { this.hintEl.textContent = 'Schematic is view-only — switch to 2D to add, move, or wire · drag to pan · scroll to zoom'; return; } this.hintEl.textContent = t || (document.body.classList.contains('m') ? 'Tap pin → tap pin to wire · hold part for options' : this.defaultHint()); };
+    ed.setHint = function (t) { if (!this.hintEl) return; if (document.body.classList.contains('viewsch')) { this.hintEl.textContent = 'Schematic is view-only — switch to 2D to add, move, or wire · drag to pan · scroll to zoom'; return; } this.hintEl.textContent = t || (document.body.classList.contains('m') ? 'Tap a part to select it. Tap a pin, then another pin, to wire' : this.defaultHint()); };
     window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && sheet && document.body.classList.contains('m')) setSheet(null); });
   }
 

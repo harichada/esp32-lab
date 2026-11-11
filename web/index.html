@@ -9,7 +9,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>ESP32 Circuit Lab — real-firmware ESP32 + electronics simulator</title>
 <style>html,body{background:#08090b}html[data-theme=light],html[data-theme=light] body{background:#eef0f3}</style>
-<link rel="stylesheet" href="css/app.css?v=40">
+<link rel="stylesheet" href="css/app.css?v=41">
 <link rel="stylesheet" href="css/theme.css?v=53">
 <link rel="stylesheet" href="css/mobile.css?v=51">
 <script>try{const t=localStorage.getItem('esp32lab.theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
@@ -49,7 +49,7 @@
   </aside>
   <section id="center">
     <section id="stageWrap">
-      <svg id="stage" xmlns="http://www.w3.org/2000/svg"><defs>
+      <svg id="stage" tabindex="-1" xmlns="http://www.w3.org/2000/svg"><defs>
       <pattern id="grid" width="10" height="10" patternUnits="userSpaceOnUse"><circle cx="0" cy="0" r="0.75" class="grid-dot"/></pattern>
       <pattern id="grid5" width="50" height="50" patternUnits="userSpaceOnUse"><circle cx="0" cy="0" r="1.1" class="grid-dot2"/></pattern>
       <linearGradient id="gPcb" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1f2b3d"/><stop offset="1" stop-color="#131b28"/></linearGradient>
@@ -73,7 +73,7 @@
         <div class="view3d-load-card"><span class="view3d-spin" aria-hidden="true"></span><span>Loading 3D view…</span></div>
       </div>
       <div class="canvas-tools">
-        <button id="bUndo" class="iconbtn" title="Undo (Ctrl+Z)"><svg class="ic"><use href="#i-undo"/></svg></button><button id="bRedo" class="iconbtn" title="Redo (Ctrl+Y)"><svg class="ic"><use href="#i-redo"/></svg></button>
+        <button id="bUndo" class="iconbtn" title="Undo (Ctrl+Z)"><svg class="ic"><use href="#i-undo"/></svg></button><button id="bRedo" class="iconbtn" title="Redo (Ctrl+Shift+Z or Ctrl+Y)"><svg class="ic"><use href="#i-redo"/></svg></button>
         <span class="vsep"></span><button id="bRot" class="iconbtn" title="Rotate selection (R)"><svg class="ic"><use href="#i-rotate"/></svg></button><button id="bDel" class="iconbtn" title="Delete selection (Del)"><svg class="ic"><use href="#i-trash"/></svg></button>
         <span class="vsep"></span><label class="wire-color" title="Colour of the next wire you draw. Does not change the selected part — part colour is in the inspector."><svg class="ic" aria-hidden="true"><use href="#i-wire"/></svg><span>Wire</span><select id="selWireColor" aria-label="New wire colour" title="Colour of the next wire you draw. Does not change the selected part."></select></label>
         <label class="tgl" title="Route new wires with right-angle bends"><input type="checkbox" id="cbOrtho" checked><span>90°</span></label>
@@ -89,7 +89,7 @@
         <button id="bZoomOut" class="iconbtn" title="Zoom out (−)"><svg class="ic"><use href="#i-minus"/></svg></button><span id="zoomPct" class="mono">100%</span><button id="bZoomIn" class="iconbtn" title="Zoom in (+)"><svg class="ic"><use href="#i-plus"/></svg></button><button id="bFit" class="iconbtn" title="Fit to view (F)"><svg class="ic"><use href="#i-fit"/></svg></button><button id="bMap" class="iconbtn" title="Toggle minimap"><svg class="ic"><use href="#i-map"/></svg></button>
       </div>
       <canvas id="minimap" width="200" height="130" title="Minimap — click to move the view"></canvas>
-      <div class="hint">Click a pin, then click another pin to wire · Esc cancels · right-click a wire for options</div>
+      <div class="hint">Click a part to select it. Click a pin, then another pin, to wire</div>
     </section>
     <div id="dockResizer" class="resizer-h" title="Drag to resize"></div>
     <section id="dock" class="panel">
@@ -175,14 +175,14 @@
 <script src="js/parts/semis.js?v=40"></script>
 <script src="js/parts/examples-actuators.js?v=40"></script>
 <script src="js/projects.js?v=40"></script>
-<script src="js/editor.js?v=50"></script>
+<script src="js/editor.js?v=51"></script>
 <script src="js/codeview.js?v=40"></script>
 <script src="js/ui.js?v=50"></script>
 <script src="js/netlist.js?v=51"></script>
 <script src="js/schematic.js?v=54"></script>
 <script src="js/viewchrome.js?v=1"></script>
-<script src="js/app.js?v=56"></script>
-<script src="js/mobile.js?v=50"></script>
+<script src="js/app.js?v=57"></script>
+<script src="js/mobile.js?v=51"></script>
 <footer id="legalFoot"><span>Simulator for ESP32 &middot; &copy; 2026 Hari Kishore Chada. Not affiliated with or endorsed by Espressif Systems, Arduino SA, or Wokwi. ESP32, Arduino and Wokwi are trademarks of their respective owners.</span> <a href="notices.html" target="_blank" rel="noopener">Open-source notices</a></footer>
 </body>
 </html>
