@@ -632,26 +632,36 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       el.style.setProperty('--wdir', f.i >= 0 ? 'normal' : 'reverse');
     }
   }
+  function collectWarnings() {
+    return ((app.sim && app.sim.warnings) || []).concat((app.editor && app.editor.warnings) || []);
+  }
+  function renderWarnings() {
+    const w = collectWarnings();
+    const list = $('#warnList'); if (list) list.innerHTML = w.length ? w.map((x) => `<div class="w">⚠ ${x.id ? '<b>' + x.id + '</b>: ' : ''}${P.esc(x.msg)}</div>`).join('') : 'none';
+    const box = $('#warnBox'); if (box) { box.hidden = !w.length; box.innerHTML = w.slice(0, 4).map((x) => `⚠ ${x.id || ''} ${P.esc(x.msg)}`).join('<br>'); }
+    if (app.editor) for (const [id, g] of app.editor.partEls) g.classList.toggle('warn', w.some((x) => x.id === id));
+  }
   function updatePanels() {
     const r = app.run; $('#stTime').textContent = r ? ` · ${(r.kind === 'js' ? r.sketch.now : (performance.now() - (r.tq || r.t0)) / 1000).toFixed(1)} s` : '';
-    const w = app.sim.warnings || [];
-    $('#warnList').innerHTML = w.length ? w.map((x) => `<div class="w">⚠ ${x.id ? '<b>' + x.id + '</b>: ' : ''}${P.esc(x.msg)}</div>`).join('') : 'none';
-    const box = $('#warnBox'); box.hidden = !w.length; box.innerHTML = w.slice(0, 4).map((x) => `⚠ ${x.id || ''} ${P.esc(x.msg)}`).join('<br>');
-    for (const [id, g] of app.editor.partEls) g.classList.toggle('warn', w.some((x) => x.id === id));
+    renderWarnings();
     if (!document.body.classList.contains('c-side')) updateReadouts();
     if (app.devDirty || frame % 30 === 0) { if ($('#tab-dev').classList.contains('on')) renderDevices(); }
   }
   // ---------------- inspector ----------------
+  // The part currently drawn in the Inspector. Delete uses this, not a selection
+  // that still names a part from before the last undo.
+  let shownPartId = null;
   function renderInspector(sel) {
     const el = $('#insp');
+    shownPartId = null;
     if (!sel) { el.innerHTML = '<p class="muted">Select a part or wire.</p>'; return; }
     if (sel.wire) {
-      const w = app.proj.wires.find((q) => q.id === sel.wire); if (!w) return;
+      const w = app.proj.wires.find((q) => q.id === sel.wire); if (!w) { el.innerHTML = '<p class="muted">Select a part or wire.</p>'; return; }
       el.innerHTML = `<h3>Wire ${w.id}</h3><div class="insp-k">Colour</div><div class="row wrap">${Object.keys(window.WIRE_COLORS).map((c) => `<button class="sw ${w.color === c ? 'on' : ''}" data-col="${c}" style="background:${window.WIRE_COLORS[c]}" title="${c}"></button>`).join('')}</div><p id="ro" class="ro"></p><div class="row probe-row"><button class="probe-b" data-probe='${JSON.stringify({ kind: 'wire', wire: w.id })}'>⌁ Probe on scope</button><button class="probe-b" data-watch='${JSON.stringify({ kind: 'wire', wire: w.id })}'>📌 Telemetry</button></div><button id="iDel">Delete wire</button>`;
       el.querySelectorAll('[data-col]').forEach((b) => b.onclick = () => { app.editor.setWireColor(b.dataset.col); renderInspector(sel); });
       $('#iDel').onclick = () => app.editor.deleteSel(); return;
     }
-    const p = app.editor.part(sel.part); if (!p) return; const d = P.T[p.type];
+    const p = app.editor.part(sel.part); if (!p) { el.innerHTML = '<p class="muted">Select a part or wire.</p>'; return; } shownPartId = p.id; const d = P.T[p.type];
     let h = `<h3>${P.esc(d.label)} <small>${p.id}</small></h3>`;
     for (const e of d.edit || []) {
       const v = p.props[e.k];
@@ -867,6 +877,8 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       }, beforeEdit,
       netKey: (x, y) => { app.sim.netAt(x, y); return app.sim.uf.find(Math.round(x) + ',' + Math.round(y)); },
       selected: (s) => { renderInspector(s); if (s) { /* keep current tab */ } },
+      shownPart: () => shownPartId,
+      warnings: () => renderWarnings(),
       hover, state: (p) => app.sim ? app.sim.partState(p) : null, running: () => !!app.run || !espPart(), press,
     });
     buildPalette(); about();

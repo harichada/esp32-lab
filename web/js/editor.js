@@ -7,24 +7,28 @@
   class Editor {
     constructor(svg, hooks) {
       this.svg = svg; this.hooks = hooks; this.lParts = svg.querySelector('#lParts'); this.lWires = svg.querySelector('#lWires'); this.lOver = svg.querySelector('#lOver');
-      this.view = { x: -40, y: -40, s: 1 }; this.sel = null; this.undoS = []; this.redoS = []; this.mode = null; this.wireColor = 'auto'; this.partEls = new Map(); this.svgCache = new Map(); this.ortho = true; this._pinIdx = null; this.hoverPin = null;
+      this.view = { x: -40, y: -40, s: 1 }; this.sel = null; this.undoS = []; this.redoS = []; this.mode = null; this.wireColor = 'auto'; this.partEls = new Map(); this.svgCache = new Map(); this.ortho = true; this._pinIdx = null; this.hoverPin = null; this.warnings = [];
       this.lOver.innerHTML = '<g class="ov-hl"></g><g class="ov-wire"></g>'; this.ovHl = this.lOver.firstChild; this.ovWire = this.lOver.lastChild;
       this.hintEl = svg.parentElement && svg.parentElement.querySelector('.hint'); this.menu = null;
       this._bind();
     }
-    setProject(proj) { this.proj = proj; this.sel = null; this.undoS = []; this.redoS = []; this.render(); }
+    setProject(proj) { this.proj = proj; this.sel = null; this.undoS = []; this.redoS = []; this.mode = null; this._setWarnings([]); this.render(); }
     snapshot() { return JSON.stringify({ parts: this.proj.parts, wires: this.proj.wires, sel: this.sel || null }); }
     push() { if (this.hooks.beforeEdit) this.hooks.beforeEdit(); this.undoS.push(this.snapshot()); if (this.undoS.length > 200) this.undoS.shift(); this.redoS = []; }
-    // The snapshot replaces part objects. Put the selection back on the id it
-    // had when the edit was made, then tell the Inspector. Otherwise Delete
-    // clears the selection, Flip clicks after undo do nothing, and the panel
-    // keeps showing the pre-undo part.
+    // The snapshot replaces part objects. Gestures and the pin index were holding
+    // the old objects, so the next click missed the part the pointer was on and
+    // Delete still removed whatever the Inspector had drawn. Drop those handles,
+    // put the selection back on its id, and tell the Inspector.
     _restore(s) {
       const o = JSON.parse(s); this.proj.parts = o.parts; this.proj.wires = o.wires;
+      this.mode = null; this._pinIdx = null;
+      if (this.ovWire) this.ovWire.innerHTML = '';
+      if (this.ovHl) this.ovHl.innerHTML = '';
       const keep = o.sel !== undefined ? o.sel : this.sel;
       const partOk = keep && keep.part && this.part(keep.part);
       const wireOk = keep && keep.wire && this.wire(keep.wire);
       this.sel = partOk ? { part: keep.part } : wireOk ? { wire: keep.wire } : null;
+      this._setWarnings([]);
       this.render(); this.hooks.changed(true); if (this.hooks.selected) this.hooks.selected(this.sel);
     }
     undo() { if (!this.undoS.length) return; this.redoS.push(this.snapshot()); this._restore(this.undoS.pop()); }
@@ -34,6 +38,8 @@
     toWorld(ev) { const r = this.svg.getBoundingClientRect(); return { x: this.view.x + (ev.clientX - r.left) / this.view.s, y: this.view.y + (ev.clientY - r.top) / this.view.s }; }
     markUserView() { this._autoFit = false; }
     fit() {
+      // Phone layout calls this from a timer that can run before the example is loaded.
+      if (!this.proj) return;
       const bb = this.bounds(); const r = this.svg.getBoundingClientRect(); if (!bb || r.width < 2 || r.height < 2) return;
       const frame = root.Pinch.frameOf(this.svg);
       const limits = { min: 0.15, max: 3 };
@@ -46,6 +52,7 @@
       if (z && !document.body.classList.contains('viewsch') && !document.body.classList.contains('view3d')) z.textContent = Math.round(s * 100) + '%';
     }
     bounds() {
+      if (!this.proj || !this.proj.parts) return null;
       let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; const add = (x, y) => { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); };
       for (const p of this.proj.parts) { const d = P.T[p.type]; if (!d) continue; const sz = d.size(p); const c = [[-30, -50], [sz.w + 30, sz.h + 30]]; for (const [a, b] of c) { const [rx, ry] = P.orientPt(a, b, p); add(p.x + rx, p.y + ry); } }
       for (const w of this.proj.wires) { add(w.a.x, w.a.y); add(w.b.x, w.b.y); for (const q of w.pts || []) add(q.x, q.y); }
@@ -58,7 +65,7 @@
       const sorted = [...this.proj.parts].sort((a, b) => ((P.T[a.type] || {}).layer ?? 2) - ((P.T[b.type] || {}).layer ?? 2));
       for (const p of sorted) {
         if (!P.T[p.type]) continue;
-        const g = document.createElementNS(NS, 'g'); g.setAttribute('class', 'part' + (this.sel && this.sel.part === p.id ? ' sel' : '') + (P.T[p.type].interactive || P.T[p.type].click ? ' inter' : '')); g.dataset.id = p.id;
+        const g = document.createElementNS(NS, 'g'); g.setAttribute('class', 'part' + (this.sel && this.sel.part === p.id ? ' sel' : '') + (P.T[p.type].interactive || P.T[p.type].click ? ' inter' : '')); g.setAttribute('data-id', p.id); g.dataset.id = p.id;
         g.setAttribute('transform', P.partTransform(p));
         const html = this.partSvg(p); g.innerHTML = html; this._upright(g, p); this.svgCache.set(p.id, html);
         this.lParts.appendChild(g); this.partEls.set(p.id, g);
@@ -117,8 +124,69 @@
       const seat = P.placeOnEmptyStrips ? P.placeOnEmptyStrips(this.proj.parts, type, x, y, 0) : { x, y };
       return this.addPart(type, seat.x, seat.y);
     }
-    part(id) { return this.proj.parts.find((p) => p.id === id); }
-    rotateSel() { if (!this.sel || !this.sel.part) return; const p = this.part(this.sel.part); if (!p) return; this.push(); p.rot = ((p.rot || 0) + 1) & 3; this.render(); this.hooks.changed(true); if (this.hooks.selected) this.hooks.selected(this.sel); }
+    part(id) { return this.proj && this.proj.parts.find((p) => p.id === id); }
+    // Id on the element, not a part object cached before the last undo.
+    _partIdOf(el) { return el && (el.dataset.id || (el.getAttribute && el.getAttribute('data-id'))) || ''; }
+    _pinKey(x, y) { return Math.round(x) + ',' + Math.round(y); }
+    _pinWorlds(p) {
+      const d = P.T[p.type]; if (!d || !d.pins) return [];
+      let pins = []; try { pins = d.pins(p) || []; } catch (e) { return []; }
+      return pins.map((pin) => ({ name: pin.name, ...P.pinWorld(p, pin) }));
+    }
+    _setWarnings(list) {
+      this.warnings = list || [];
+      if (this.hooks.warnings) this.hooks.warnings(this.warnings);
+    }
+    // Move wire ends that sit on this part's pins to the pins' new positions.
+    // An end that also meets another part cannot move without breaking that
+    // joint: leave it and say so, instead of quietly leaving the pin open.
+    _followWires(part, before) {
+      const warnings = [];
+      const oldAt = new Map();
+      for (const pin of before) {
+        const k = this._pinKey(pin.x, pin.y);
+        if (!oldAt.has(k)) oldAt.set(k, []);
+        oldAt.get(k).push(pin.name);
+      }
+      const others = new Map();
+      for (const q of this.proj.parts) {
+        if (q.id === part.id) continue;
+        for (const pin of this._pinWorlds(q)) {
+          const k = this._pinKey(pin.x, pin.y);
+          if (!others.has(k)) others.set(k, []);
+          others.get(k).push(q.id + '.' + pin.name);
+        }
+      }
+      const now = new Map(this._pinWorlds(part).map((pin) => [pin.name, pin]));
+      const ends = [];
+      for (const w of this.proj.wires) ends.push({ w, end: 'a', x: w.a.x, y: w.a.y }, { w, end: 'b', x: w.b.x, y: w.b.y });
+      for (const e of ends) {
+        const names = oldAt.get(this._pinKey(e.x, e.y));
+        if (!names) continue;
+        const share = others.get(this._pinKey(e.x, e.y)) || [];
+        if (names.length !== 1 || share.length) {
+          const who = names.map((n) => part.id + '.' + n).join(', ');
+          warnings.push({ id: part.id, msg: share.length ? `wire ${e.w.id} cannot follow ${who} — that point also connects ${share.join(', ')}` : `wire ${e.w.id} cannot follow ${who} — those pins no longer share one point` });
+          continue;
+        }
+        const np = now.get(names[0]); if (!np) continue;
+        e.w[e.end].x = np.x; e.w[e.end].y = np.y;
+      }
+      return warnings;
+    }
+    rotateSel() {
+      if (!this.sel || !this.sel.part) return;
+      const p = this.part(this.sel.part); if (!p) return;
+      const before = this._pinWorlds(p);
+      this.push();
+      p.rot = ((p.rot || 0) + 1) & 3;
+      const warnings = this._followWires(p, before);
+      this._pinIdx = null;
+      this.render();
+      this._setWarnings(warnings);
+      this.hooks.changed(true);
+      if (this.hooks.selected) this.hooks.selected(this.sel);
+    }
     // axis 'x' or 'y'. On the breadboard a two-terminal part turns 180° (either
     // axis — there is only one real flip). In the schematic, H and V are display-only.
     flipSel(axis) {
@@ -131,13 +199,18 @@
         this.hooks.changed(true); this.hooks.selected(this.sel); return;
       }
       if (!P.canPhysicalFlip(p)) return;
+      const before = this._pinWorlds(p);
       this.push();
       if (P.ALLOW_MIRROR_MULTIPIN && !P.isTwoTerminal(p)) {
         if (axis === 'y') p.flipY = !p.flipY; else p.flipX = !p.flipX;
       } else { p.flipX = !p.flipX; p.flipY = false; }
       const seat = P.reseat(this.proj.parts, p);
       if (seat) { p.x = seat.x; p.y = seat.y; }
-      this.render(); this.hooks.changed(true); this.hooks.selected(this.sel);
+      const warnings = this._followWires(p, before);
+      this._pinIdx = null;
+      this.render();
+      this._setWarnings(warnings);
+      this.hooks.changed(true); this.hooks.selected(this.sel);
     }
     // A 180° body turn would invert lettering. Spin each label back about its
     // own anchor so it stays upright and unmirrored. Geometry still turns.
@@ -151,9 +224,24 @@
       });
     }
     deleteSel() {
-      if (!this.sel) return; this.push();
-      if (this.sel.part) this.proj.parts = this.proj.parts.filter((p) => p.id !== this.sel.part);
-      if (this.sel.wire) this.proj.wires = this.proj.wires.filter((w) => w.id !== this.sel.wire);
+      if (!this.sel) return;
+      if (this.sel.wire && !this.sel.part) {
+        if (!this.wire(this.sel.wire)) return;
+        this.push();
+        this.proj.wires = this.proj.wires.filter((w) => w.id !== this.sel.wire);
+        this.sel = null; this.render(); this.hooks.changed(true); this.hooks.selected(null);
+        this.focusCanvas();
+        return;
+      }
+      // A selection whose part was replaced or removed must not delete whatever
+      // happens to be left. The Inspector's part wins when it disagrees, so
+      // Delete removes the part on screen.
+      if (!this.sel.part || !this.part(this.sel.part)) return;
+      let id = this.sel.part;
+      const shown = this.hooks.shownPart && this.hooks.shownPart();
+      if (shown && shown !== id) { if (!this.part(shown)) return; id = shown; }
+      this.push();
+      this.proj.parts = this.proj.parts.filter((p) => p.id !== id);
       this.sel = null; this.render(); this.hooks.changed(true); this.hooks.selected(null);
       // Inspector and phone-sheet Delete leave focus in a value field, which swallows Ctrl+Z.
       this.focusCanvas();
@@ -170,6 +258,7 @@
     }
     setWireColor(c) { this.wireColor = c; if (this.sel && this.sel.wire) { const w = this.proj.wires.find((q) => q.id === this.sel.wire); if (w) { this.push(); w.color = c; this.renderWires(); } } }
     pinIndex() {   // world positions of every pin (non-breadboard first so they win ties with the hole underneath)
+      if (!this.proj) return [];
       if (this._pinIdx) return this._pinIdx; const a = [];
       for (const p of this.proj.parts) { const d = P.T[p.type]; if (!d) continue; for (const pin of d.pins(p)) a.push({ part: p, pin, pos: P.pinWorld(p, pin), bb: p.type === 'breadboard' }); }
       a.sort((x, y) => x.bb - y.bb); return (this._pinIdx = a);
@@ -181,9 +270,9 @@
     }
     pinAtEvent(ev) {
       const el = ev.target && ev.target.closest && ev.target.closest('[data-pin]');
-      if (el) { const g = el.closest('.part'); const p = g && this.part(g.dataset.id); const pin = p && P.T[p.type].pins(p).find((q) => q.name === el.dataset.pin); if (pin) { const near = this.pinNear(this.toWorld(ev), ev); if (near && !near.bb && near.part !== p) return near; return { part: p, pin, pos: P.pinWorld(p, pin), bb: p.type === 'breadboard' }; } }
+      if (el) { const g = el.closest('.part'); const p = g && this.part(this._partIdOf(g)); const pin = p && P.T[p.type].pins(p).find((q) => q.name === el.dataset.pin); if (pin) { const near = this.pinNear(this.toWorld(ev), ev); if (near && !near.bb && near.part && near.part.id !== p.id) return near; return { part: p, pin, pos: P.pinWorld(p, pin), bb: p.type === 'breadboard' }; } }
       if (ev.target && ev.target.closest && ev.target.closest('.w-bend')) return null;
-      const pg = ev.target && ev.target.closest && ev.target.closest('.part'), part = pg && this.part(pg.dataset.id);
+      const pg = ev.target && ev.target.closest && ev.target.closest('.part'), part = pg && this.part(this._partIdOf(pg));
       // A part body, lead, or label selects the part. It must not snap to a nearby leg and start a wire.
       if (part && part.type !== 'breadboard') return null;
       const onWire = ev.target && ev.target.closest && ev.target.closest('.wire');
@@ -265,9 +354,12 @@
       wrap.appendChild(m); this.menu = m;
     }
     _down(ev) {
+      // A drag started before undo still points at the replaced part object.
+      if (this.mode && this.mode.p && !this.proj.parts.includes(this.mode.p)) this.mode = null;
+      if (this.mode && this.mode.w && !this.proj.wires.includes(this.mode.w)) this.mode = null;
       if (ev.button === 1 || (ev.button === 0 && ev.altKey && !this.pinAtEvent(ev))) { this.mode = { k: 'pan', sx: ev.clientX, sy: ev.clientY, vx: this.view.x, vy: this.view.y }; return; }
       if (ev.button !== 0) return;
-      const partEl = ev.target.closest && ev.target.closest('.part'); const p = partEl && this.part(partEl.dataset.id);
+      const partEl = ev.target.closest && ev.target.closest('.part'); const p = partEl && this.part(this._partIdOf(partEl));
       const pinEl = ev.target.closest && ev.target.closest('[data-pin]');
       const onBody = !!(p && p.type !== 'breadboard' && !pinEl);
       // A body tap selects, even mid-wire. It must not drop a bend or land the wire on a nearby pin.
@@ -314,6 +406,8 @@
       this.renderWires(); this.hooks.changed(true);
     }
     _move(ev) {
+      if (this.mode && this.mode.p && this.proj && !this.proj.parts.includes(this.mode.p)) this.mode = null;
+      if (this.mode && this.mode.w && this.proj && !this.proj.wires.includes(this.mode.w)) this.mode = null;
       const w = this.toWorld(ev), m = this.mode;
       if (m && m.k === 'pan') { if (ev.clientX !== m.sx || ev.clientY !== m.sy) this.markUserView(); this.view.x = m.vx - (ev.clientX - m.sx) / this.view.s; this.view.y = m.vy - (ev.clientY - m.sy) / this.view.s; this.applyView(); return; }
       if (m && m.k === 'knob') { const dlt = ((ev.clientX - m.sx) - (ev.clientY - m.sy)) / 150; m.p.props.pos = Math.min(1, Math.max(0, m.pos0 + dlt)); this.hooks.changed(false); this.refreshDynamic(); this.hooks.selected(this.sel); return; }
