@@ -470,17 +470,62 @@ class NetstackTests(unittest.TestCase):
     def test_cached_build_log_reports_this_request_not_the_original_duration(self):
         stored = (
             'Building network stack (first time, about 40 s)...\n'
+            'Using cached network stack...\n'
             'Compiling sketch...\n'
             'Linking...\n'
             '[41.4s] compile (+QemuEth: open_eth + lwIP)\n'
         )
         text = diskkeep.cached_build_log(stored, 0.02)
-        self.assertTrue(text.startswith('[0.0s] cached (originally built in 41.4 s) (+QemuEth: open_eth + lwIP)\n'))
+        self.assertEqual(text, '[0.0s] cached (originally built in 41.4 s) (+QemuEth: open_eth + lwIP)\n')
         self.assertNotIn('[41.4s] compile', text)
-        self.assertIn('Compiling sketch...', text)
+        for stage in ('Building network stack', 'Using cached network stack', 'Compiling sketch', 'Linking'):
+            self.assertNotIn(stage, text)
         blink = diskkeep.cached_build_log('[5.3s] compile\n', 0.004)
         self.assertEqual(blink, '[0.0s] cached (originally built in 5.3 s)\n')
-        self.assertTrue(diskkeep.cached_build_log('no timing\n', 1.24).endswith('[1.2s] cached\n'))
+        self.assertEqual(diskkeep.cached_build_log('no timing\n', 1.24), '[1.2s] cached\n')
+
+    def test_netstack_warm_uses_the_browser_defines(self):
+        js = (Path(__file__).resolve().parents[1] / 'js' / 'examples.js').read_text(encoding='utf-8')
+        browser = diskkeep.defines_from_examples_js(js)
+        self.assertEqual(browser, ['SIM'])
+        # /api/compile sanitizes the posted list with the same function. The warm-up
+        # key is that list, so a browser compile of the remote example looks up the
+        # archive startup builds.
+        posted = diskkeep.sanitize_defines(browser)
+        self.assertEqual(posted, ['SIM'])
+        self.assertEqual(
+            diskkeep.sanitize_defines(['SIM', 'bad define', 3, 'SIM_SONY_HOST="h"']),
+            ['SIM', 'SIM_SONY_HOST="h"'])
+        common = dict(toolchain='esp32 3.3.12|gcc| /tools/xtensa-esp32-elf-g++', core='3.3.12',
+                      shim_hash='abc123', fqbn='esp32:esp32:esp32doit-devkit-v1')
+        lookup = diskkeep.netstack_key(**common, defines=tuple(posted))
+        plan = diskkeep.plan_netstack_warm({}, js, cache_present=False, **common)
+        self.assertEqual(plan['action'], 'build')
+        self.assertEqual(plan['defines'], ('SIM',))
+        self.assertEqual(plan['key'], lookup)
+        skipped = diskkeep.plan_netstack_warm({'SIM_NETSTACK_WARM': '1'}, js, cache_present=True, **common)
+        self.assertEqual(skipped['action'], 'skip')
+        self.assertEqual(skipped['key'], lookup)
+        off = diskkeep.plan_netstack_warm({'SIM_NETSTACK_WARM': '0'}, js, cache_present=False, **common)
+        self.assertEqual(off['action'], 'off')
+        self.assertIsNone(off['key'])
+        self.assertTrue(diskkeep.netstack_warm_enabled({}))
+        self.assertFalse(diskkeep.netstack_warm_enabled({'SIM_NETSTACK_WARM': '0'}))
+        # A second user compile is 429. The startup warm-up holds the same lock, and
+        # that request waits instead of answering 429.
+        self.assertEqual(diskkeep.compile_gate(locked=True, queue=False, warm_running=False), 'retry')
+        self.assertEqual(diskkeep.compile_gate(locked=True, queue=False, warm_running=True), 'wait')
+        self.assertEqual(diskkeep.compile_gate(locked=False, queue=False, warm_running=True), 'go')
+        self.assertEqual(diskkeep.compile_gate(locked=True, queue=True, warm_running=False), 'go')
+        # Toolchain, core, FQBN, and the QemuEth hash still miss. SIM_NO_LAN_REMAP
+        # changes qemu_eth.cpp, so user defines stay in the key.
+        self.assertNotEqual(lookup, diskkeep.netstack_key(**{**common, 'toolchain': 'other'}, defines=tuple(posted)))
+        self.assertNotEqual(lookup, diskkeep.netstack_key(**{**common, 'core': '9.9.9'}, defines=tuple(posted)))
+        self.assertNotEqual(lookup, diskkeep.netstack_key(**{**common, 'fqbn': 'esp32:esp32:other'}, defines=tuple(posted)))
+        self.assertNotEqual(lookup, diskkeep.netstack_key(**{**common, 'shim_hash': 'fff'}, defines=tuple(posted)))
+        self.assertNotEqual(lookup, diskkeep.netstack_key(**common, defines=('SIM', 'SIM_NO_LAN_REMAP')))
+        missing = diskkeep.plan_netstack_warm({}, 'no defines here', cache_present=False, **common)
+        self.assertEqual(missing['action'], 'missing')
 
 
 if __name__ == '__main__':
