@@ -1836,6 +1836,8 @@
         return;
       }
       if (r.width < 2 || r.height < 2) return;
+      // Center the sheet in the largest clear rectangle: the header, hint and
+      // toolbars stay blocked, and the zoom stack only blocks its own box.
       const frame = root.Pinch.frameOf(this.svg);
       const limits = { min: 0.12, max: 2.4 };
       const clear = root.Pinch.resolveClear(frame, b, 14, limits);

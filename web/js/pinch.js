@@ -163,6 +163,8 @@
     }
     return rects;
   }
+  // Scale the bounds would get inside clear, before the min/max clamp.
+  // A clamp would make a sliver look as good as a rect the circuit actually fits.
   function rawScale(bounds, clear, pad) {
     const C = box(clear);
     if (!C || !bounds) return 0;
@@ -171,6 +173,10 @@
     if (availW <= 1 || availH <= 1) return 0;
     return Math.min(availW / Math.max(bounds.w, 1e-6), availH / Math.max(bounds.h, 1e-6));
   }
+  // Pick the empty rectangle that gives this circuit the larger scale.
+  // The old full-height column is one candidate, so a tall circuit that already
+  // fits beside the stack does not move. A wide sheet can use the full width
+  // under the stack instead of staying in that column.
   function bestClear(stage, blockers, bounds, gap, pad, limits) {
     const g = gap == null ? 8 : gap;
     const legacy = clearRect(stage, blockers, g);

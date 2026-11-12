@@ -6,7 +6,8 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       QEMU_ROM_DIR (dir with esp32-v3-rom.bin), ARDUINO_CLI, ESP32_FQBN
       Disk bounds (web/README.md): SIM_MIN_FREE_MB, SIM_BUILD_CACHE_DIR,
       SIM_IMAGE_CACHE_MAX_MB, SIM_CORE_CACHE_MAX_MB, SIM_SKETCH_CACHE_MAX_MB,
-      SIM_ORPHAN_MAX_AGE_S and the matching *_MAX_AGE_S knobs.
+      SIM_NETSTACK_CACHE_DIR, SIM_NETSTACK_CACHE_MAX_MB, SIM_ORPHAN_MAX_AGE_S
+      and the matching *_MAX_AGE_S knobs.
 """
 import asyncio, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, argparse
 import diskkeep
@@ -45,7 +46,7 @@ _compile_lock = asyncio.Lock()
 # ---------------- public-exposure hardening ----------------
 TOKEN = os.environ.get('SIM_TOKEN', '')
 MAX_BODY = 200 * 1024; COMPILE_TIMEOUT = int(os.environ.get('SIM_COMPILE_TIMEOUT', '300'))
-PROGRESS = {'active': False, 'log': '', 't0': 0.0}
+PROGRESS = {'active': False, 'log': '', 't0': 0.0, 'stage': '', 'stages': '', 'compiler': ''}
 RUN_CAP = float(os.environ.get('SIM_RUN_CAP', '0'))          # seconds; 0 = unlimited
 RESUME_GRACE = float(os.environ.get('SIM_RESUME_GRACE', '1800'))  # 0 = keep forever (until user stops / QEMU exits)
 STOP_ON_1001 = os.environ.get('SIM_STOP_ON_1001', '0') == '1'   # old behaviour: a 1001 'going away' close ends the run
@@ -133,9 +134,35 @@ def merged_image(outdir: Path) -> Path:
         return p
     raise RuntimeError('no merged image produced')
 
+def _begin_progress():
+    PROGRESS.update(active=True, log='', t0=time.time(), stage='', stages='', compiler='')
+
+def _stage(msg: str):
+    """Append a stage line the UI can show while arduino-cli is still running."""
+    PROGRESS['stage'] = msg
+    line = msg.rstrip() + '\n'
+    if line not in PROGRESS['stages']:
+        PROGRESS['stages'] += line
+    PROGRESS['log'] = PROGRESS['stages'] + PROGRESS['compiler']
+
+def _compiler_log(text: str):
+    PROGRESS['compiler'] = text
+    PROGRESS['log'] = PROGRESS['stages'] + text
+
+def _note_compiler_line(line: str):
+    if 'xtensa-esp32-elf-g' not in line:
+        return
+    if '--start-group' in line:
+        _stage('Linking...')
+    elif ' -c ' in line and ' -E ' not in line and 'sketch.ino.cpp' in line:
+        _stage('Compiling sketch...')
+
 @app.get('/api/compile/progress')
 async def compile_progress():
-    return {'active': PROGRESS['active'], 'elapsed': round(time.time() - PROGRESS['t0'], 1) if PROGRESS['active'] else 0, 'log': PROGRESS['log'][-20000:]}
+    # Keep the stage lines even when the compiler tail is long.
+    log = (PROGRESS.get('stages') or '') + (PROGRESS.get('compiler') or '')[-20000:]
+    return {'active': PROGRESS['active'], 'elapsed': round(time.time() - PROGRESS['t0'], 1) if PROGRESS['active'] else 0,
+            'log': log, 'stage': PROGRESS.get('stage') or ''}
 
 def _cache_roots():
     return diskkeep.cache_roots_from_env()
@@ -144,7 +171,8 @@ def _cache_roots():
 async def _prewarm():
     try:
         summary = diskkeep.startup(builds=BUILDS, cache_roots=_cache_roots(),
-                                   temp_roots=[Path(tempfile.gettempdir())], limits=diskkeep.Limits.from_env())
+                                   temp_roots=[Path(tempfile.gettempdir())], limits=diskkeep.Limits.from_env(),
+                                   netstack_root=diskkeep.netstack_root_from_env())
         print('disk startup', summary, flush=True)
     except Exception as e:
         print('disk startup failed:', repr(e), flush=True)
@@ -182,7 +210,8 @@ async def compile_(req: dict):
         roots = _cache_roots()
         try:
             diskkeep.prepare_for_compile(builds=BUILDS, cache_roots=roots, temp_roots=[Path(tempfile.gettempdir())],
-                                         limits=diskkeep.Limits.from_env(), keep_images=set(_live_images))
+                                         limits=diskkeep.Limits.from_env(), keep_images=set(_live_images),
+                                         netstack_root=diskkeep.netstack_root_from_env())
         except diskkeep.LowDisk as e:
             return JSONResponse({'ok': False, 'log': e.message}, 507)
         # .last-used is stamped when arduino-cli starts; a couple of seconds of slack covers that.
@@ -196,11 +225,174 @@ async def compile_(req: dict):
             PROGRESS['active'] = False
 
 def _cached_compile(key, bdir, net, netmode):
+    t0 = time.perf_counter()
     try: diskkeep.touch_firmware(bdir / 'flash.bin')
     except OSError: pass
     try: log = sanitize((bdir / 'log.txt').read_text())
     except OSError: log = ''
+    log = diskkeep.cached_build_log(log, time.perf_counter() - t0)
     return {'ok': True, 'id': key, 'cached': True, 'log': log, 'netShim': net, 'net': netmode}
+
+_TC = None
+_HEADERS = None
+_NET_LIBS = ('QemuEth', 'Network', 'HTTPClient', 'NetworkClientSecure')
+
+def _arduino_data() -> Path:
+    for c in (os.environ.get('ARDUINO_DIRECTORIES_DATA'), os.environ.get('ARDUINO_DATA_DIR'),
+              str(HOME / '.arduino15'), str(HOME / '.esp32lab' / 'arduino15')):
+        if c and (Path(c) / 'packages' / 'esp32').is_dir():
+            return Path(c)
+    return HOME / '.arduino15'
+
+def _toolchain():
+    """esp32 core version, a fingerprint that changes when the compiler moves, and gcc-ar."""
+    global _TC
+    if _TC is not None:
+        return _TC or None
+    data = _arduino_data()
+    plats = sorted((data / 'packages/esp32/hardware/esp32').glob('*/platform.txt'))
+    gccs = sorted((data / 'packages/esp32/tools/esp-x32').glob('*/bin/xtensa-esp32-elf-g++'))
+    if not plats or not gccs:
+        _TC = False
+        return None
+    core = ''
+    for line in plats[-1].read_text(errors='replace').splitlines():
+        if line.startswith('version='):
+            core = line.split('=', 1)[1].strip()
+            break
+    gcc = gccs[-1]
+    ar = gcc.parent / 'xtensa-esp32-elf-gcc-ar'
+    try:
+        ver = subprocess.check_output([str(gcc), '--version'], text=True, timeout=30).splitlines()[0].strip()
+    except (OSError, subprocess.SubprocessError):
+        _TC = False
+        return None
+    if not ar.is_file() or not core:
+        _TC = False
+        return None
+    _TC = {'core': core, 'fingerprint': f'{core}|{ver}|{gcc}', 'ar': ar}
+    return _TC
+
+def _collect_headers(lib: Path) -> set:
+    src = lib / 'src' if (lib / 'src').is_dir() else lib
+    names = set()
+    if not src.is_dir():
+        return names
+    for header in src.rglob('*'):
+        if header.is_file() and not header.is_symlink() and header.suffix.lower() in {'.h', '.hpp', '.hh'}:
+            names.add(header.name)
+    return names
+
+def _header_index():
+    """Headers the network archive provides, and headers that belong to some other library."""
+    global _HEADERS
+    if _HEADERS is not None:
+        return _HEADERS
+    net, other = set(), set()
+    roots = list((_arduino_data() / 'packages/esp32/hardware/esp32').glob('*/libraries'))
+    roots.append(Path(os.environ.get('ARDUINO_DIRECTORIES_USER') or HOME / 'Arduino') / 'libraries')
+    roots.append(SHIMS)
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for lib in root.iterdir():
+            if not lib.is_dir() or lib.is_symlink():
+                continue
+            headers = _collect_headers(lib)
+            if lib.name in _NET_LIBS:
+                net |= headers
+            else:
+                other |= headers
+    _HEADERS = (net, other - net)
+    return _HEADERS
+
+def _netstack_covers(sketch: str, files: dict) -> bool:
+    """True when every included library header is part of the prebuilt network stack."""
+    _net, other = _header_index()
+    for match in INC_RE.finditer(sketch + ''.join(files.values())):
+        arg = match.group(1).strip()
+        found = re.match(r'^[<"]([^<>"]+)[>"]', arg)
+        if not found:
+            continue
+        if found.group(1).rsplit('/', 1)[-1] in other:
+            return False
+    return True
+
+def _netstack_identity(defines):
+    tc = _toolchain()
+    shim = SHIMS / 'QemuEth'
+    if not tc or not shim.is_dir():
+        return None
+    return {'toolchain': tc['fingerprint'], 'core': tc['core'], 'shim_hash': diskkeep.source_tree_hash(shim),
+            'fqbn': FQBN, 'defines': tuple(defines)}
+
+def _seed_libraries_cache(sketch_dir: Path, payload: bytes) -> None:
+    folder = diskkeep.arduino_build_cache_dir() / 'sketches' / diskkeep.request_sketch_hash(sketch_dir)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / 'libraries.cache').write_bytes(payload)
+
+def _extract_netstack(entry: Path, dest: Path) -> list:
+    tc = _toolchain()
+    manifest = json.loads((entry / 'manifest.json').read_text())
+    dest.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.run([str(tc['ar']), 'x', str(entry / 'libnetstack.a')], cwd=dest,
+                          capture_output=True, text=True, timeout=60)
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or 'ar x failed')[-400:])
+    paths = []
+    for name in manifest.get('objects') or []:
+        obj = dest / name
+        if not obj.is_file():
+            raise FileNotFoundError(name)
+        paths.append(obj.resolve())
+    if not paths:
+        raise RuntimeError('empty netstack archive')
+    return paths
+
+def _harvest_netstack(sketch_dir: Path, defines):
+    """Archive the QemuEth/Network/HTTPClient/NetworkClientSecure objects from this compile."""
+    ident = _netstack_identity(defines)
+    tc = _toolchain()
+    if not ident or not tc:
+        return None
+    build = diskkeep.arduino_build_cache_dir() / 'sketches' / diskkeep.request_sketch_hash(sketch_dir)
+    libs = build / 'libraries'
+    cache_file = build / 'libraries.cache'
+    if not libs.is_dir() or not cache_file.is_file():
+        return None
+    extra = [p.name for p in libs.iterdir() if p.is_dir() and p.name not in _NET_LIBS]
+    if extra:
+        return None
+    objects = []
+    for name in _NET_LIBS:
+        folder = libs / name
+        if folder.is_dir():
+            objects.extend(sorted(folder.glob('*.o')))
+    if not objects:
+        return None
+    key = diskkeep.netstack_key(**ident)
+    root = diskkeep.netstack_root_from_env()
+    staging = root / f'.{key}.objs'
+    if staging.exists():
+        shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True)
+    try:
+        staged = []
+        for obj in objects:
+            dest = staging / obj.name
+            shutil.copyfile(obj, dest)
+            staged.append(dest)
+        archive = staging / 'libnetstack.a'
+        proc = subprocess.run([str(tc['ar']), 'rcs', str(archive), *[str(p) for p in staged]],
+                              capture_output=True, text=True, timeout=60)
+        if proc.returncode != 0 or not archive.is_file():
+            print('netstack archive failed:', (proc.stderr or '')[-400:])
+            return None
+        manifest = {'objects': [p.name for p in staged], 'core': ident['core'], 'shim': ident['shim_hash'],
+                    'fqbn': ident['fqbn'], 'defines': list(ident['defines'])}
+        return diskkeep.publish_netstack(root, key, archive, cache_file.read_bytes(), manifest)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 async def _compile_in(work, bdir, key, sketch, files, defines, net, netmode, simlibs):
     """Run arduino-cli with --output-dir inside `work`. The caller deletes `work` and the sketch build tree."""
@@ -212,34 +404,78 @@ async def _compile_in(work, bdir, key, sketch, files, defines, net, netmode, sim
             (sk / name).write_text(content)
     # --build-path is intentionally not set. On arduino-cli 1.x it disables the core cache and
     # rebuilds the ESP32 core on every sketch (minutes, not the ~8 s warm Blink).
+    _begin_progress()
+    use_stack = False
+    objs = []
+    covered = netmode == 'lwip' and _netstack_covers(sketch, files)
+    if covered:
+        ident = _netstack_identity(defines)
+        hit = None
+        if ident:
+            hit = diskkeep.find_netstack(diskkeep.netstack_root_from_env(), diskkeep.netstack_key(**ident))
+        if hit:
+            try:
+                objs = _extract_netstack(hit, work / 'netobjs')
+                _seed_libraries_cache(sk, (hit / 'libraries.cache').read_bytes())
+                use_stack = True
+                _stage('Using cached network stack...')
+            except (OSError, RuntimeError, json.JSONDecodeError, FileNotFoundError) as e:
+                print('netstack cache unusable:', repr(e))
+        if not use_stack:
+            _stage('Building network stack (first time, about 40 s)...')
+    else:
+        _stage('Compiling sketch...')
     cmd = [CLI, 'compile', '-b', FQBN, '--output-dir', str(out), '--warnings', 'none']
     if defines:
         cmd += ['--build-property', 'compiler.cpp.extra_flags=' + ' '.join('-D' + d for d in defines),
                 '--build-property', 'compiler.c.extra_flags=' + ' '.join('-D' + d for d in defines)]
     if netmode == 'lwip':
-        cmd += ['--library', str(SHIMS / 'QemuEth'), '--build-property', 'compiler.c.elf.extra_flags=-Wl,--wrap=lwip_getaddrinfo,--wrap=lwip_connect']
+        # Object files go in compiler.c.elf.extra_flags, which the link recipe places before
+        # --start-group and core.a. build.extra_libs is after core.a and lets core.a win weak
+        # symbols (the image grew by about 76 bytes). One libstdc++ COMDAT,
+        # basic_string::_M_dispose, can still differ by a few bytes from a full link.
+        link = '-Wl,--wrap=lwip_getaddrinfo,--wrap=lwip_connect'
+        if use_stack:
+            link += ' ' + ' '.join(str(p) for p in objs)
+        cmd += ['--library', str(SHIMS / 'QemuEth'), '--build-property', 'compiler.c.elf.extra_flags=' + link]
     elif net: cmd += ['--library', str(SHIMS / 'QemuNet')]
     for n in simlibs: cmd += ['--library', str(SHIMS / n)]   # simulator back ends: NeoPixel show() -> UART frame, DHT read() -> lock-step bits
+    if use_stack:
+        # Library discovery would rebuild QemuEth, Network, HTTPClient and NetworkClientSecure
+        # into the sketch tree, which is deleted after every compile.
+        cmd += ['--skip-libraries-discovery']
     cmd.append(str(sk))
-    t0 = time.time()
+    t0 = PROGRESS['t0']
     cmd[2:2] = ['-v', '--no-color']
     p = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-    buf = []; PROGRESS.update(active=True, log='', t0=t0)
+    buf = []
     async def _pump():
         async for ln in p.stdout:
             t = ln.decode(errors='replace'); buf.append(t)
-            PROGRESS['log'] = sanitize(''.join(buf[-200:]).replace(str(sk) + '/', ''))
+            _note_compiler_line(t)
+            _compiler_log(sanitize(''.join(buf[-200:]).replace(str(sk) + '/', '')))
         await p.wait()
     try:
         await asyncio.wait_for(_pump(), COMPILE_TIMEOUT)
     except asyncio.TimeoutError:
         p.kill(); await p.wait()
-        return JSONResponse({'ok': False, 'log': sanitize(''.join(buf[-200:])) + f'\ncompile timed out ({COMPILE_TIMEOUT}s) - the first build after a restart compiles the ESP32 core; press Run again.'})
-    log = ''.join(buf[-300:]) if len(buf) > 300 else ''.join(buf).replace(str(sk) + '/', '')
-    log = sanitize(log)
-    log += f'\n[{time.time() - t0:.1f}s] compile {"(+QemuEth: open_eth + lwIP)" if netmode == "lwip" else "(+QemuNet shim)" if net else ""}\n'
+        return JSONResponse({'ok': False, 'log': PROGRESS['stages'] + sanitize(''.join(buf[-200:])) + f'\ncompile timed out ({COMPILE_TIMEOUT}s) - the first build after a restart compiles the ESP32 core; press Run again.'})
+    body = ''.join(buf[-300:]) if len(buf) > 300 else ''.join(buf).replace(str(sk) + '/', '')
+    log = PROGRESS['stages'] + sanitize(body)
+    if netmode == 'lwip' and use_stack:
+        tag = '(+QemuEth: open_eth + lwIP, cached network stack)'
+    elif netmode == 'lwip':
+        tag = '(+QemuEth: open_eth + lwIP)'
+    elif net:
+        tag = '(+QemuNet shim)'
+    else:
+        tag = ''
+    log += f'\n[{time.time() - t0:.1f}s] compile{(" " + tag) if tag else ""}\n'
     if p.returncode != 0:
         return JSONResponse({'ok': False, 'log': log, 'netShim': net, 'net': netmode})
+    if covered and not use_stack:
+        try: _harvest_netstack(sk, defines)
+        except Exception as e: print('netstack harvest failed:', repr(e))
     try:
         produced = merged_image(out)
     except RuntimeError as e:
