@@ -281,7 +281,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     let res;
     try {
       const bl = $('#buildLog'); bl.textContent = 'compiling…\n';
-      run.poll = setInterval(async () => { try { const q = await (await fetch('api/compile/progress')).json(); if (app.run !== run || !run.poll) return; if (q.unpacking) setStatus('busy', `unpacking toolchain… ${Math.round((q.unpackProgress || 0) * 100)}%`); else if (q.active) { bl.textContent = `compiling… ${q.elapsed}s\n` + q.log; bl.scrollTop = bl.scrollHeight; setStatus('busy', `compiling… ${Math.round(q.elapsed)}s`); } } catch (e) {} }, 1000);
+      run.poll = setInterval(async () => { try { const q = await (await fetch('api/compile/progress')).json(); if (app.run !== run || !run.poll) return; if (q.unpacking) setStatus('busy', `unpacking toolchain… ${Math.round((q.unpackProgress || 0) * 100)}%`); else if (q.active) { const stage = q.stage || 'compiling…'; bl.textContent = q.log || (stage + '\n'); bl.scrollTop = bl.scrollHeight; setStatus('busy', `${stage} ${Math.round(q.elapsed)}s`); } } catch (e) {} }, 400);
       const r = await fetchRetry('api/compile', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sketch: app.proj.code, files: app.proj.files, defines: app.proj.defines }) });
       clearInterval(run.poll); run.poll = null;
       res = await r.json();

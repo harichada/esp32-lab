@@ -7,6 +7,8 @@ The default cache is ``~/.cache/arduino``. Its own purge still targets ``$TMP/ar
 every 10th compile. Sketch trees therefore accumulate for as long as the process
 lives. This module deletes the per-request build directory and that sketch tree,
 and only size/age-caps the core and library archives the next compile reuses.
+The QemuEth/lwIP objects are a separate archive under ``<cache>/netstack/<key>/``.
+Sketch deletion and the orphan sweep keep that directory; it has its own size and age cap.
 
 Installed cores and libraries (``~/.arduino15``, ``~/Arduino``, or the
 ``ARDUINO_DIRECTORIES_*`` overrides) are never touched.
@@ -15,6 +17,7 @@ Installed cores and libraries (``~/.arduino15``, ``~/Arduino``, or the
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -27,10 +30,15 @@ from pathlib import Path
 SKETCH_DIRS = ('sketches', 'sketch')
 # Compiled archives only. Installed library sources live outside this cache.
 CORE_DIRS = ('cores', 'core', 'libraries')
+# Prebuilt QemuEth + lwIP shim archive. Not a sketch tree and not an orphan prefix, so the
+# per-compile sketch wipe and the startup orphan sweep leave it in place. Capped on its own.
+NETSTACK_DIR = 'netstack'
 ORPHAN_PREFIXES = ('esp32build-', 'esp32run-', 'arduino-sketch-')
 IMAGE_KEEP = ('flash.bin', 'log.txt', 'net.txt')
 _YAML_KEY = re.compile(r'^([A-Za-z0-9_.-]+)\s*:\s*$')
 _YAML_PATH = re.compile(r'^\s+path:\s*(.*?)\s*$')
+_COMPILE_LINE = re.compile(r'^\[(\d+(?:\.\d+)?)s\] compile(.*)$', re.M)
+_NETSTACK_KEY = re.compile(r'^[0-9a-f]{16,64}$')
 
 
 class LowDisk(Exception):
@@ -207,11 +215,14 @@ def forget_sketch_builds_since(roots, started: float) -> EvictResult:
 
     arduino-cli keys the sketch directory by the sketch *path*. The server's sketch path
     is a fresh temp directory, so the tree is never reused; leaving it is the per-compile leak.
+    The network-stack archive (``netstack/<key>/``) is not a sketch tree and is not deleted here.
     """
     result = EvictResult()
     for root in roots:
         for entry in cache_entries(root):
             if entry.kind != 'sketch' or entry.used < started:
+                continue
+            if preserves_netstack(entry.path):
                 continue
             if _rmtree(entry.path):
                 result.removed.append(entry.path)
@@ -248,6 +259,8 @@ def reclaim_firmware_tree(builds: Path) -> EvictResult:
         return result
     for child in list(builds.iterdir()):
         if not child.is_dir() or child.is_symlink():
+            continue
+        if preserves_netstack(child):
             continue
         image = child / 'flash.bin'
         if not image.is_file():
@@ -348,6 +361,8 @@ def sweep_orphans(roots, *, max_age_s: float, now: float | None = None,
         for child in list(root.iterdir()):
             if not child.is_dir() or child.is_symlink():
                 continue
+            if preserves_netstack(child):
+                continue
             if not child.name.startswith(prefixes):
                 continue
             key = str(child)
@@ -441,6 +456,9 @@ class Limits:
     sketch_max_age_s: float = 3600
     core_max_bytes: int = 512 * 1024 * 1024
     core_max_age_s: float = 30 * 24 * 3600
+    # One QemuEth/lwIP archive is about 2.6 MB. A few keys (defines, FQBN, core) fit under 64 MB.
+    netstack_max_bytes: int = 64 * 1024 * 1024
+    netstack_max_age_s: float = 30 * 24 * 3600
 
     @classmethod
     def from_env(cls, env=None) -> 'Limits':
@@ -458,6 +476,8 @@ class Limits:
             sketch_max_age_s=_env_float(env, 'SIM_SKETCH_CACHE_MAX_AGE_S', 3600),
             core_max_bytes=mib('SIM_CORE_CACHE_MAX_MB', 512),
             core_max_age_s=_env_float(env, 'SIM_CORE_CACHE_MAX_AGE_S', 30 * 24 * 3600),
+            netstack_max_bytes=mib('SIM_NETSTACK_CACHE_MAX_MB', 64),
+            netstack_max_age_s=_env_float(env, 'SIM_NETSTACK_CACHE_MAX_AGE_S', 30 * 24 * 3600),
         )
 
 
@@ -528,9 +548,158 @@ def _read_cli_yaml(env, home: Path) -> str | None:
     return None
 
 
+def preserves_netstack(path: Path) -> bool:
+    """True for the network-stack cache and for an entry that holds ``libnetstack.a``.
+
+    Sketch-tree deletion, firmware reclaim, and the orphan sweep all call this so a
+    directory that is the netstack cache — or was named like a temp build but already
+    holds the archive — is not removed. Size and age limits go through ``evict_netstack``.
+    """
+    path = Path(path)
+    if path.name == NETSTACK_DIR:
+        return True
+    try:
+        return (path / 'libnetstack.a').is_file()
+    except OSError:
+        return False
+
+
+def netstack_entries(root: Path | None) -> list[Entry]:
+    root = Path(root) if root is not None else None
+    if root is None or not root.is_dir():
+        return []
+    out = []
+    for child in root.iterdir():
+        if child.is_dir() and not child.is_symlink() and (child / 'libnetstack.a').is_file():
+            out.append(Entry(child, 'netstack', dir_size(child), last_used(child)))
+    return out
+
+
+def evict_netstack(root, *, max_bytes: int, max_age_s: float, now: float | None = None,
+                   keep_newest: int = 1) -> EvictResult:
+    """Cap ``netstack/<key>/`` entries. The newest archive survives a tight cap, same as core.a."""
+    now = time.time() if now is None else now
+    if root is None:
+        return EvictResult()
+    return evict_entries(
+        netstack_entries(root), max_bytes=max(0, max_bytes), max_age_s=max_age_s, now=now,
+        keep_newest=max(0, keep_newest), drop_oversize_newest=False)
+
+
+def netstack_key(*, toolchain: str, core: str, shim_hash: str, fqbn: str, defines=()) -> str:
+    """Cache key for one prebuilt network stack.
+
+    ``shim_hash`` is the QemuEth source hash. ``toolchain`` is the compiler version (and path,
+    so a relocated install misses). ``core`` is the esp32 platform version. ``defines`` are the
+    ``-D`` flags applied to every translation unit, because those change the objects.
+    """
+    parts = [toolchain.strip(), core.strip(), shim_hash.strip(), fqbn.strip(), *sorted(defines)]
+    return hashlib.sha256('\n'.join(parts).encode()).hexdigest()[:24]
+
+
+def source_tree_hash(root: Path) -> str:
+    """Stable short hash of every file under ``root``. Symlinks are ignored."""
+    digest = hashlib.sha256()
+    root = Path(root)
+    if not root.is_dir():
+        return digest.hexdigest()[:16]
+    files = [p for p in root.rglob('*') if p.is_file() and not p.is_symlink()]
+    for path in sorted(files, key=lambda p: p.relative_to(root).as_posix()):
+        digest.update(path.relative_to(root).as_posix().encode())
+        digest.update(b'\0')
+        digest.update(path.read_bytes())
+        digest.update(b'\0')
+    return digest.hexdigest()[:16]
+
+
+def publish_netstack(root: Path, key: str, archive: Path, libraries_cache: bytes, manifest: dict) -> Path:
+    """Publish one archive. The directory appears only after ``libnetstack.a`` is in place."""
+    if not _NETSTACK_KEY.fullmatch(key):
+        raise ValueError('bad netstack key')
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    tmp = root / f'.{key}.partial'
+    if tmp.exists():
+        shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    shutil.copyfile(archive, tmp / 'libnetstack.a')
+    (tmp / 'libraries.cache').write_bytes(libraries_cache)
+    (tmp / 'manifest.json').write_text(json.dumps(manifest, sort_keys=True))
+    (tmp / '.last-used').write_bytes(b'')
+    dest = root / key
+    if dest.exists():
+        shutil.rmtree(dest, ignore_errors=True)
+    tmp.rename(dest)
+    return dest
+
+
+def find_netstack(root: Path, key: str) -> Path | None:
+    """Return the archive directory for ``key``, or None. A hit refreshes ``.last-used``."""
+    if not _NETSTACK_KEY.fullmatch(key or ''):
+        return None
+    dest = Path(root) / key
+    if not (dest / 'libnetstack.a').is_file() or not (dest / 'libraries.cache').is_file():
+        return None
+    now = time.time()
+    stamp = dest / '.last-used'
+    try:
+        if not stamp.exists():
+            stamp.write_bytes(b'')
+        os.utime(stamp, (now, now))
+        os.utime(dest, (now, now))
+    except OSError:
+        pass
+    return dest
+
+
+def arduino_build_cache_dir(env=None, home: Path | None = None, tmp: Path | None = None,
+                            yaml_text: str | None = None) -> Path:
+    """The build cache arduino-cli 1.5.1 writes, skipping the legacy ``$TMP/arduino`` scan path."""
+    env = os.environ if env is None else env
+    tmp = Path(tempfile.gettempdir()) if tmp is None else Path(tmp)
+    legacy = tmp / 'arduino'
+    for root in cache_roots_from_env(env, home=home, tmp=tmp, yaml_text=yaml_text):
+        if root != legacy:
+            return root
+    return legacy
+
+
+def netstack_root_from_env(env=None, home: Path | None = None, tmp: Path | None = None,
+                           yaml_text: str | None = None) -> Path:
+    """Directory of ``<key>/libnetstack.a`` entries. ``SIM_NETSTACK_CACHE_DIR`` overrides it."""
+    env = os.environ if env is None else env
+    override = env.get('SIM_NETSTACK_CACHE_DIR')
+    if override:
+        return Path(override)
+    return arduino_build_cache_dir(env, home=home, tmp=tmp, yaml_text=yaml_text) / NETSTACK_DIR
+
+
+def cached_build_log(log: str, elapsed_s: float) -> str:
+    """A firmware-cache hit must not replay the original compile duration as this request's time.
+
+    The first line is ``[0.0s] cached (originally built in 41.4 s) ...`` using ``elapsed_s`` for
+    this request. The stored ``[41.4s] compile`` summary is removed so the log does not look
+    like a fresh build.
+    """
+    elapsed = f'{max(0.0, float(elapsed_s)):.1f}'
+    matches = list(_COMPILE_LINE.finditer(log or ''))
+    if not matches:
+        suffix = '' if (not log or log.endswith('\n')) else '\n'
+        return f'{log or ""}{suffix}[{elapsed}s] cached\n'
+    match = matches[-1]
+    orig = match.group(1)
+    rest = match.group(2).strip()
+    end = match.end()
+    if end < len(log) and log[end] == '\n':
+        end += 1
+    body = log[:match.start()] + log[end:]
+    header = f'[{elapsed}s] cached (originally built in {orig} s)' + (f' {rest}' if rest else '') + '\n'
+    return header + body.lstrip('\n')
+
+
 def prepare_for_compile(*, builds: Path, cache_roots, temp_roots, limits: Limits,
                         keep_images: set[str] | None = None, now: float | None = None,
-                        stat=None) -> dict:
+                        stat=None, netstack_root: Path | None = None) -> dict:
     """Apply cache caps, then refuse to compile when free space stays under the floor."""
     now = time.time() if now is None else now
     keep_images = set(keep_images or ())
@@ -540,21 +709,29 @@ def prepare_for_compile(*, builds: Path, cache_roots, temp_roots, limits: Limits
     caches = evict_build_cache(
         cache_roots, sketch_max_bytes=limits.sketch_max_bytes, sketch_max_age_s=limits.sketch_max_age_s,
         core_max_bytes=limits.core_max_bytes, core_max_age_s=limits.core_max_age_s, now=now)
+    stacks = evict_netstack(netstack_root, max_bytes=limits.netstack_max_bytes,
+                            max_age_s=limits.netstack_max_age_s, now=now, keep_newest=1)
 
     def emergency() -> None:
         # Firmware images and sketch trees are reproducible. Extra core archives go too.
-        # The newest core archive is kept so the next compile does not rebuild the ESP32 core.
+        # The newest core archive and the newest network-stack archive are kept so the next
+        # compile does not rebuild the ESP32 core or the QemuEth/lwIP objects.
         evict_firmware(builds, max_bytes=0, max_age_s=0, keep=keep_images, now=now)
         evict_build_cache(
             cache_roots, sketch_max_bytes=0, sketch_max_age_s=0,
             core_max_bytes=0, core_max_age_s=0, now=now, keep_newest_cores=1)
+        evict_netstack(netstack_root, max_bytes=0, max_age_s=0, now=now, keep_newest=1)
 
     check = [builds, *cache_roots, *temp_roots]
+    if netstack_root is not None:
+        check.append(netstack_root)
     free = guard_free_space(check, limits.min_free_bytes, emergency, stat=stat)
-    return {'reclaimed': reclaimed.freed, 'images': images.freed, 'caches': caches.freed, 'free': free}
+    return {'reclaimed': reclaimed.freed, 'images': images.freed, 'caches': caches.freed,
+            'netstack': stacks.freed, 'free': free}
 
 
-def startup(*, builds: Path, cache_roots, temp_roots, limits: Limits, now: float | None = None) -> dict:
+def startup(*, builds: Path, cache_roots, temp_roots, limits: Limits, now: float | None = None,
+            netstack_root: Path | None = None) -> dict:
     """Sweep orphans, strip pre-fix build trees, and apply the same caps a compile would."""
     now = time.time() if now is None else now
     orphans = sweep_orphans(list(temp_roots) + [builds], max_age_s=limits.orphan_max_age_s, now=now)
@@ -563,9 +740,12 @@ def startup(*, builds: Path, cache_roots, temp_roots, limits: Limits, now: float
     caches = evict_build_cache(
         cache_roots, sketch_max_bytes=limits.sketch_max_bytes, sketch_max_age_s=limits.sketch_max_age_s,
         core_max_bytes=limits.core_max_bytes, core_max_age_s=limits.core_max_age_s, now=now)
+    stacks = evict_netstack(netstack_root, max_bytes=limits.netstack_max_bytes,
+                            max_age_s=limits.netstack_max_age_s, now=now, keep_newest=1)
     return {
         'orphans': [str(p) for p in orphans],
         'reclaimed_bytes': reclaimed.freed,
         'image_bytes': images.freed,
         'cache_bytes': caches.freed,
+        'netstack_bytes': stacks.freed,
     }
