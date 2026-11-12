@@ -140,6 +140,18 @@
     });
     return terms.filter((t) => t.net !== undefined);
   }
+  function termPins(part, term) {
+    const d = P.T[part.type];
+    if (!d || !d.groups) return [term.name];
+    let groups = [];
+    try { groups = d.groups(part) || []; } catch (e) { groups = []; }
+    for (const g of groups) {
+      if (!g || !g.length) continue;
+      const name = String(g[0]).replace(/\.[lr]$/i, '') || g[0];
+      if (name === term.name) return g.slice();
+    }
+    return [term.name];
+  }
 
   function netKind(net, terms, drawSupply) {
     if (net === 0) return { rail: 'gnd', name: 'GND', wire: false };
@@ -265,9 +277,11 @@
       const alone = (netTerms.get(t.net) || []).length < 2;
       // A supply flag only exists when this pin's net really is that supply.
       // An open pin is a no-connect: no rail, no wire, no invented "VCC" label.
-      t.nc = alone;
-      t.netName = alone || !m.name ? '' : m.name;
-      if (alone || (m.rail === 'flag' && !m.name)) {
+      // Ground is the exception: a single pin on net 0 still gets the GND symbol.
+      const isGnd = m.rail === 'gnd';
+      t.nc = alone && !isGnd;
+      t.netName = (alone && !isGnd) || !m.name ? '' : m.name;
+      if ((alone && !isGnd) || (m.rail === 'flag' && !m.name)) {
         t.rail = null; t.wire = false;
       } else {
         t.rail = (s.kind === 'GND' && m.rail === 'gnd') ? null : m.rail;
@@ -314,6 +328,27 @@
         }
         byId.clear();
         for (const s of symbols) byId.set(s.id, s);
+      }
+    }
+
+    // The simulator's ground net is the one that is actually 0 V. A stored netlist
+    // can disagree with the wires, and a lone ground pin used to be drawn as a
+    // no-connect. Any non-ground symbol pin the solver calls ground gets a symbol.
+    if (root.SimCore && root.SimCore.Sim) {
+      let sim = null;
+      try { sim = new root.SimCore.Sim(proj); sim.topology(); } catch (e) { sim = null; }
+      if (sim && sim.pinNet) {
+        for (const s of symbols) {
+          if (!s.part || s.kind === 'GND' || s.part.type === 'ground') continue;
+          for (const t of s.terms) {
+            const pins = termPins(s.part, t);
+            if (!pins.some((n) => sim.pinNet.get(s.part.id + ':' + n) === 0)) continue;
+            t.nc = false;
+            t.rail = 'gnd';
+            t.wire = false;
+            t.netName = 'GND';
+          }
+        }
       }
     }
 
@@ -1789,20 +1824,34 @@
       const z = document.getElementById('zoomPct');
       if (z && this.active) z.textContent = Math.round(this.view.s * 100) + '%';
     }
-    fit() {
+    fit(attempt) {
       if (!this.model) return;
+      const n = attempt || 0;
       const b = this.model.bounds, r = this.svg.getBoundingClientRect();
+      // Opening the view toggles display in the same turn. The first box can
+      // still be the hidden size, which left the sheet at the breadboard zoom.
+      if ((r.width < 2 || r.height < 2) && n < 8 && typeof requestAnimationFrame === 'function') {
+        const gen = this._fitGen;
+        requestAnimationFrame(() => { if (this.active && this._fitGen === gen) this.fit(n + 1); });
+        return;
+      }
       if (r.width < 2 || r.height < 2) return;
       // Center the sheet in the largest clear rectangle: the header, hint and
       // toolbars stay blocked, and the zoom stack only blocks its own box.
       const frame = root.Pinch.frameOf(this.svg);
       const limits = { min: 0.12, max: 2.4 };
       const clear = root.Pinch.resolveClear(frame, b, 14, limits);
-      const fit = root.Pinch.fitView(b, frame.stage, clear, 14, limits);
-      this.view.s = fit.s; this.view.x = fit.x; this.view.y = fit.y;
+      const fitted = root.Pinch.fitView(b, frame.stage, clear, 14, limits);
+      this.view.s = fitted.s; this.view.x = fitted.x; this.view.y = fitted.y;
       this.apply();
+      if (n === 0 && typeof requestAnimationFrame === 'function') {
+        this._fitGen = (this._fitGen || 0) + 1;
+        const gen = this._fitGen;
+        requestAnimationFrame(() => { if (this.active && this._fitGen === gen) this.fit(1); });
+      }
     }
     zoomBy(f, client) {
+      this._fitGen = (this._fitGen || 0) + 1;
       const frame = root.Pinch.frameOf(this.svg);
       const limits = { min: 0.12, max: 2.4 };
       const clear = this.model ? root.Pinch.resolveClear(frame, this.model.bounds, 14, limits) : frame.clear;
@@ -1834,6 +1883,7 @@
       // toolbar. This only drops the one-finger pan/select session that already started.
       this.cancelTouch = () => { gesture += 1; this._pinchLock = true; };
       svg.addEventListener('pointerdown', (e) => {
+        this._fitGen = (this._fitGen || 0) + 1;
         if (e.button != null && e.button !== 0) return;
         if (this._pinchLock) { e.preventDefault(); return; }
         const token = gesture;

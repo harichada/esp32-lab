@@ -192,7 +192,8 @@ async def compile_(req: dict):
     files = {k: v for k, v in files.items() if re.fullmatch(r'[A-Za-z0-9_.-]+\.(h|hpp|c|cpp|ino)', k) and k != 'sketch.ino'}
     err = check_sources([sketch, *files.values()], set(files))
     if err: return JSONResponse({'ok': False, 'log': 'rejected: ' + err})
-    if _compile_lock.locked(): return JSONResponse({'ok': False, 'log': 'another compile is running, retry shortly'}, 429)
+    if _compile_lock.locked():
+        return JSONResponse({'ok': False, 'log': 'another compile is running, retry shortly'}, 429, headers={'Retry-After': '3'})
     defines = [d for d in (req.get('defines') or []) if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*(=[A-Za-z0-9_."]*)?', d)]
     net = bool(req.get('netShim', False)) or bool(re.search(r'#include\s*[<"](WiFi|HTTPClient|WiFiUdp)\.h', sketch + ''.join(files.values())))
     netmode = (req.get('net') if req.get('net') in ('lwip', 'shim') else 'lwip') if net else None
