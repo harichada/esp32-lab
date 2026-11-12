@@ -331,6 +331,8 @@ sketch:
         self.assertEqual(limits.core_max_bytes, 128 * 1024 * 1024)
         self.assertEqual(limits.sketch_max_bytes, 0)
         self.assertEqual(limits.orphan_max_age_s, 3600)
+        self.assertEqual(limits.netstack_max_bytes, 64 * 1024 * 1024)
+        self.assertEqual(limits.netstack_max_age_s, 30 * 24 * 3600)
 
     def test_sketch_hash_matches_cli_md5(self):
         import hashlib
@@ -339,6 +341,146 @@ sketch:
             sketch.mkdir()
             digest = hashlib.md5(str(sketch.resolve()).encode()).hexdigest().upper()
             self.assertEqual(diskkeep.request_sketch_hash(sketch), digest)
+
+
+class NetstackTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.now = 5_000_000.0
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _publish(self, key: str, size: int, payload: bytes = b'a') -> Path:
+        archive = self.root / f'{key}.a'
+        archive.write_bytes(payload * size)
+        return diskkeep.publish_netstack(
+            self.root / 'netstack', key, archive, b'["/include"]',
+            {'objects': ['qemu_eth.cpp.o'], 'shim': key})
+
+    def test_archive_survives_sketch_cleanup_orphan_sweep_and_reclaim(self):
+        key = 'a' * 24
+        entry = self._publish(key, 40, b'N')
+        sketch = _entry(self.root / 'cache', 'sketches/THIS', 30, self.now)
+        core = _entry(self.root / 'cache', 'cores/esp32', 30, self.now)
+        # A temp dir that looks like an abandoned build but already holds the archive.
+        held = self.root / 'tmp' / 'esp32build-hold'
+        held.mkdir(parents=True)
+        (held / 'libnetstack.a').write_bytes(b'kept')
+        _stamp(held, self.now - 10_000)
+        named = self.root / 'tmp' / 'netstack'
+        named.mkdir()
+        (named / 'keep.txt').write_bytes(b'k')
+        _stamp(named, self.now - 10_000)
+        junk = self.root / 'tmp' / 'esp32build-junk'
+        junk.mkdir()
+        (junk / 'flash.bin').write_bytes(b'x' * 20)
+        _stamp(junk, self.now - 10_000)
+        # Firmware reclaim must not treat the cache directory as a failed build.
+        builds = self.root / 'builds'
+        builds.mkdir()
+        (builds / 'netstack').mkdir()
+        (builds / 'netstack' / 'libnetstack.a').write_bytes(b'image-tree')
+        failed = builds / ('b' * 16)
+        failed.mkdir()
+        (failed / 'out').mkdir()
+
+        diskkeep.forget_sketch_builds_since([self.root / 'cache'], self.now - 2)
+        diskkeep.evict_build_cache(
+            [self.root / 'cache'], sketch_max_bytes=0, sketch_max_age_s=0,
+            core_max_bytes=0, core_max_age_s=0, now=self.now, keep_newest_cores=0)
+        removed = diskkeep.sweep_orphans(
+            [self.root / 'tmp'], max_age_s=3600, now=self.now, prefixes=('esp32build-', 'net'))
+        diskkeep.reclaim_firmware_tree(builds)
+        limits = diskkeep.Limits(orphan_max_age_s=3600, image_max_bytes=10**9, image_max_age_s=10**9,
+                                 sketch_max_bytes=0, core_max_bytes=0, netstack_max_bytes=10**9,
+                                 netstack_max_age_s=10**9)
+        diskkeep.startup(builds=builds, cache_roots=[self.root / 'cache'], temp_roots=[self.root / 'tmp'],
+                         limits=limits, now=self.now, netstack_root=self.root / 'netstack')
+
+        self.assertFalse(sketch.exists())
+        self.assertFalse(core.exists())
+        self.assertFalse(junk.exists())
+        self.assertFalse(failed.exists())
+        self.assertTrue((entry / 'libnetstack.a').is_file())
+        self.assertEqual((entry / 'libnetstack.a').read_bytes(), b'N' * 40)
+        self.assertTrue((held / 'libnetstack.a').is_file())
+        self.assertTrue((named / 'keep.txt').is_file())
+        self.assertTrue((builds / 'netstack' / 'libnetstack.a').is_file())
+        self.assertNotIn(held, removed)
+        self.assertNotIn(named, removed)
+
+    def test_cap_evicts_oldest_and_keeps_newest(self):
+        old_key = 'b' * 24
+        new_key = 'c' * 24
+        old = self._publish(old_key, 1000, b'o')
+        new = self._publish(new_key, 1000, b'n')
+        _stamp(old / '.last-used', self.now - 500)
+        _stamp(new / '.last-used', self.now - 5)
+        # Each entry is the archive plus the small sidecars. Cap fits the newer one only.
+        old_size = diskkeep.dir_size(old)
+        result = diskkeep.evict_netstack(
+            self.root / 'netstack', max_bytes=old_size + 50, max_age_s=10_000,
+            now=self.now, keep_newest=1)
+        self.assertFalse(old.exists())
+        self.assertTrue((new / 'libnetstack.a').is_file())
+        self.assertGreaterEqual(result.freed, old_size)
+        # Age drops an expired entry when nothing is protected.
+        _stamp(new / '.last-used', self.now - 5000)
+        diskkeep.evict_netstack(
+            self.root / 'netstack', max_bytes=10**9, max_age_s=1000, now=self.now, keep_newest=0)
+        self.assertFalse(new.exists())
+
+    def test_newest_archive_survives_a_zero_cap(self):
+        key = 'd' * 24
+        entry = self._publish(key, 80, b'z')
+        _stamp(entry / '.last-used', self.now - 10)
+        diskkeep.evict_netstack(
+            self.root / 'netstack', max_bytes=0, max_age_s=0, now=self.now, keep_newest=1)
+        self.assertTrue((entry / 'libnetstack.a').is_file())
+
+    def test_shim_hash_change_misses_and_root_is_not_the_legacy_tmp_cache(self):
+        shim = self.root / 'QemuEth'
+        (shim / 'src').mkdir(parents=True)
+        (shim / 'src' / 'qemu_eth.cpp').write_text('int a = 1;\n')
+        common = dict(toolchain='esp32 3.3.12|gcc| /tools/xtensa-esp32-elf-g++', core='3.3.12',
+                      fqbn='esp32:esp32:esp32doit-devkit-v1', defines=('SIM',))
+        first = diskkeep.source_tree_hash(shim)
+        key_a = diskkeep.netstack_key(shim_hash=first, **common)
+        (shim / 'src' / 'qemu_eth.cpp').write_text('int a = 2;\n')
+        second = diskkeep.source_tree_hash(shim)
+        key_b = diskkeep.netstack_key(shim_hash=second, **common)
+        self.assertNotEqual(first, second)
+        self.assertNotEqual(key_a, key_b)
+        # Define order does not matter; a different define does.
+        self.assertEqual(key_a, diskkeep.netstack_key(shim_hash=first, **{**common, 'defines': ('SIM',)}))
+        self.assertNotEqual(key_a, diskkeep.netstack_key(shim_hash=first, **{**common, 'defines': ('SIM', 'SIM_NO_LAN_REMAP')}))
+        entry = self._publish(key_a, 10, b'Q')
+        self.assertEqual(diskkeep.find_netstack(self.root / 'netstack', key_a), entry)
+        self.assertIsNone(diskkeep.find_netstack(self.root / 'netstack', key_b))
+        root = diskkeep.netstack_root_from_env(
+            {}, home=Path('/home/sim'), tmp=Path('/tmp'), yaml_text='')
+        self.assertEqual(root, Path('/home/sim/.cache/arduino/netstack'))
+        self.assertEqual(
+            diskkeep.netstack_root_from_env({'SIM_NETSTACK_CACHE_DIR': '/var/lab/netstack'},
+                                            home=Path('/home/sim'), tmp=Path('/tmp'), yaml_text=''),
+            Path('/var/lab/netstack'))
+
+    def test_cached_build_log_reports_this_request_not_the_original_duration(self):
+        stored = (
+            'Building network stack (first time, about 40 s)...\n'
+            'Compiling sketch...\n'
+            'Linking...\n'
+            '[41.4s] compile (+QemuEth: open_eth + lwIP)\n'
+        )
+        text = diskkeep.cached_build_log(stored, 0.02)
+        self.assertTrue(text.startswith('[0.0s] cached (originally built in 41.4 s) (+QemuEth: open_eth + lwIP)\n'))
+        self.assertNotIn('[41.4s] compile', text)
+        self.assertIn('Compiling sketch...', text)
+        blink = diskkeep.cached_build_log('[5.3s] compile\n', 0.004)
+        self.assertEqual(blink, '[0.0s] cached (originally built in 5.3 s)\n')
+        self.assertTrue(diskkeep.cached_build_log('no timing\n', 1.24).endswith('[1.2s] cached\n'))
 
 
 if __name__ == '__main__':

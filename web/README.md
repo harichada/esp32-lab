@@ -87,8 +87,9 @@ A QEMU run copies `flash.bin` to `$TMPDIR/esp32run-<random>/flash.bin` (4,194,30
 What happens now:
 
 - Each compile uses a fresh `esp32build-*` directory for the sketch and for `--output-dir`. It is deleted in a `finally` block after `flash.bin` is published, or the compile fails, or it times out. The matching `sketches/<MD5>` tree is deleted in that same `finally`. `--build-path` is not passed: on arduino-cli 1.x that flag turns off the core cache and rebuilds the ESP32 core every time.
-- The published entry is only `flash.bin`, `log.txt`, and `net.txt` (about 4.2 MB for Blink). Repeat runs of the same source are still a cache hit.
+- The published entry is only `flash.bin`, `log.txt`, and `net.txt` (about 4.2 MB for Blink). Repeat runs of the same source are still a cache hit. The build log for a hit uses this request's elapsed time and names the original duration, for example `[0.0s] cached (originally built in 41.4 s)`, instead of replaying the stored `[41.4s] compile` line.
 - The core archive stays. It is capped by size and age, least-recently-used, and the newest archive is kept even when it is the only one over the cap. Compiled library archives under the same cache (`libraries/`), if present, are capped the same way. The installed core and library sources are never deleted.
+- A network sketch (QemuEth + the Arduino `Network`, `HTTPClient` and `NetworkClientSecure` objects) used to recompile those files on every edit. arduino-cli puts them in the sketch tree, and that tree is deleted after each compile, so the ~40 s cost came back on every cache miss. The first such compile now archives those objects as `<arduino-cache>/netstack/<key>/libnetstack.a` (about 2.6 MB) plus the `libraries.cache` include list. A later edit links that archive (`--skip-libraries-discovery`) instead of rebuilding it. The key is the toolchain version and path, the esp32 core version, the FQBN, the `-D` defines, and a hash of the QemuEth sources, so a compiler or shim change misses. Sketch deletion, firmware reclaim, and the orphan sweep leave `netstack/` in place. It has its own size and age cap; the newest archive is kept when the cap is tight, same as `core.a`.
 - On startup, orphan `esp32build-*`, `esp32run-*`, and `arduino-sketch-*` directories older than an hour are removed, and existing `out/` and `sketch/` directories left by older servers are stripped off any published image. That reclaims the historical leak without throwing away `flash.bin`.
 - QEMU's private directory is removed when the run ends: stop, QEMU exit, the resume grace after a disconnect, or a failed start. It is not removed while QEMU is still running for a reconnect, because the drive file has to stay.
 - If free space on the build or cache filesystem is under `SIM_MIN_FREE_MB`, the server drops firmware images and sketch trees (and extra core archives) first. A filesystem smaller than that floor, such as a small `/tmp` tmpfs, only has to keep 32 MB free. If the disk is still short, `/api/compile` returns `low disk: … Compile was not started.` and does not launch arduino-cli.
@@ -107,10 +108,13 @@ On this machine the same Blink took 7.8 s with an empty core cache, 4.2 s once `
 | `SIM_SKETCH_CACHE_MAX_AGE_S` | `3600` | Max age of a sketch tree when the byte cap is non-zero. |
 | `SIM_CORE_CACHE_MAX_MB` | `512` | Cap on `cores/` and compiled `libraries/` archives. The newest archive is always kept. |
 | `SIM_CORE_CACHE_MAX_AGE_S` | `2592000` | Max age of a core archive (30 days). The newest one is kept past this age. |
+| `SIM_NETSTACK_CACHE_DIR` | `<arduino-cache>/netstack` | Prebuilt QemuEth/lwIP archive. Not deleted by the sketch wipe or the orphan sweep. |
+| `SIM_NETSTACK_CACHE_MAX_MB` | `64` | Cap on `netstack/<key>/` entries. The newest archive is always kept. |
+| `SIM_NETSTACK_CACHE_MAX_AGE_S` | `2592000` | Max age of a network-stack archive (30 days). The newest one is kept past this age. |
 
 ## Tests
 - `node --test tests/*.test.js`: solver, JS-sketch runner, remote logic and the network log.
-- `python3 tests/diskkeep_test.py`: firmware-image reclaim, sketch/core LRU eviction, orphan sweep, and the low-disk guard.
+- `python3 tests/diskkeep_test.py`: firmware-image reclaim, sketch/core LRU eviction, orphan sweep, the low-disk guard, and the network-stack cache (it survives sketch cleanup and the orphan sweep, the size cap evicts the oldest entry, a shim-hash change misses, and a firmware-cache hit reports the original build time).
 - `node --test` also covers the project store (`tests/projects.test.js`).
 - `python3 tests/ui/projects_wiring_ui.py [url]`: copy-on-edit, My Projects persistence and server copy, click-click wiring, hover labels, net highlight, Delete/Backspace, right-click menu, double-click bend, Esc, undo.
 - `python3 tests/ui/remote_net_ui.py [url]`: remote example end to end in Chrome (80 ms key taps, virtual TV/Roku/Eco change, Network tab content). Tests read the token from `SIM_TOKEN` or `/tmp/sim_token`.
