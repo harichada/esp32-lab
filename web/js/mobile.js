@@ -281,7 +281,10 @@
       if (!pts.has(e.pointerId)) return; pts.set(e.pointerId, { x: e.clientX, y: e.clientY, t: Date.now() });
       P().expireQuiet(book, pts, Date.now(), e.pointerId, 1000);
       if (pts.size < 2) g = null;
-      if (lp && Math.hypot(e.clientX - lp.x, e.clientY - lp.y) > 10) { clearTimeout(lp.t); lp = null; }
+      if (lp && Math.hypot(e.clientX - lp.x, e.clientY - lp.y) > 10) {
+        clearTimeout(lp.t); lp = null;
+        const menu = $('#mPartMenu'); if (menu) menu.remove();
+      }
       if (!(g && pts.size >= 2)) return;
       e.stopPropagation(); e.preventDefault();
       const m = mid();
@@ -328,7 +331,8 @@
   }
   function longPress(l) {
     if (!l || ed.mode && ed.mode.k === 'wire') return; const p = ed.part(l.id); if (!p) return;
-    if (ed.mode && ed.mode.k === 'drag') { if (ed.mode.moved) return; ed.mode = null; }
+    // An unmoved drag stays armed. Holding still, then moving, must drag the part.
+    if (ed.mode && ed.mode.k === 'drag' && ed.mode.moved) return;
     ed.select({ part: p.id }); if (navigator.vibrate) try { navigator.vibrate(12); } catch (e) { /* */ }
     $('#mPartMenu') && $('#mPartMenu').remove();
     const P = window.Parts, label = (P.T[p.type] && P.T[p.type].label) || p.type;

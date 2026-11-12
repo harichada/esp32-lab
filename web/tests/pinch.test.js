@@ -445,11 +445,17 @@ test('a finger missing from the touch list, or quiet for a second, is gone', () 
 
   const held = new Map([[7, { x: 10, y: 10, t: 500 }], [8, { x: 80, y: 80, t: 1200 }]]);
   assert.deepEqual(Pinch.expireQuiet(book, held, 1200, 8, 1000), []);
-  const quiet = new Map([[7, { x: 10, y: 10, t: 0 }], [8, { x: 80, y: 80, t: 1200 }]]);
+  // Still in the touch list after five seconds with no moves: a real held finger.
+  const still = new Map([[7, { x: 40, y: 180, t: 0 }], [8, { x: 140, y: 240, t: 5000 }]]);
   book.touchToPointer.set(9, 7);
-  assert.deepEqual(Pinch.expireQuiet(book, quiet, 1200, 8, 1000), [7]);
+  assert.deepEqual(Pinch.expireQuiet(book, still, 5000, 8, 1000), []);
+  assert.equal(still.has(7), true);
+  assert.equal(book.touchToPointer.get(9), 7);
+  // Quiet and absent from the touch list: a ghost, so it goes.
+  const quiet = new Map([[7, { x: 10, y: 10, t: 0 }], [8, { x: 80, y: 80, t: 1200 }]]);
+  const bare = Pinch.createPointerBook();
+  assert.deepEqual(Pinch.expireQuiet(bare, quiet, 1200, 8, 1000), [7]);
   assert.equal(quiet.has(7), false);
-  assert.equal(book.touchToPointer.has(9), false);
 
   // An up that does arrive drops the tap even when its target is the new toolbar.
   const up = Pinch.createPointerBook();
@@ -458,6 +464,24 @@ test('a finger missing from the touch list, or quiet for a second, is gone', () 
   Pinch.notePointerUp(up, 4);
   assert.equal(up.pending.length, 0);
   assert.equal(up.touchToPointer.size, 0);
+});
+
+test('a finger held still for five seconds still starts a pinch', () => {
+  const book = Pinch.createPointerBook();
+  const state = { pts: new Map(), anchorSel: null };
+  Pinch.notePointerDown(book, 4, { isPrimary: true });
+  Pinch.trackPinchPointer(state, { id: 4, x: 40, y: 180, track: true, sel: { part: 'LED1' }, now: 0 });
+  Pinch.syncPointers(book, state.pts, [{ identifier: 0 }], [{ identifier: 0 }]);
+  assert.deepEqual(Pinch.notePointerDown(book, 9, { isPrimary: false }), []);
+  assert.deepEqual(Pinch.expireQuiet(book, state.pts, 5000, 9, 1000), []);
+  const second = Pinch.trackPinchPointer(state, { id: 9, x: 150, y: 230, track: true, sel: { part: 'LED1' }, now: 5000 });
+  Pinch.syncPointers(book, state.pts, [{ identifier: 0 }, { identifier: 1 }], [{ identifier: 1 }]);
+  assert.equal(second.start, true);
+  assert.equal(state.pts.has(4), true);
+  assert.equal(state.pts.size, 2);
+  const before = 1.081;
+  const zoomed = Pinch.applyView({ s: before, dist: 80, wx: 10, wy: 20 }, { x: 100, y: 200 }, 160, { left: 0, top: 0 }, { min: 0.15, max: 4 });
+  assert.ok(Math.abs(zoomed.s - before * 2) < 0.001);
 });
 
 test('a finger on the properties sheet plus a finger on the board starts a pinch', () => {

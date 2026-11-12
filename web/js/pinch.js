@@ -215,14 +215,18 @@
     book.pending = book.pending.filter((id) => id !== pointerId);
     for (const [tid, pid] of book.touchToPointer) if (pid === pointerId) book.touchToPointer.delete(tid);
   }
-  // A finger that has not moved for about a second is not a held pinch contact.
-  // The pointer currently sending the event is always kept.
+  // A quiet pointer is dropped only when the browser is not still reporting that
+  // touch. A finger held still has no moves and no pointerup, and it stays in
+  // the touch list, so a pinch a few seconds later can still use it. The pointer
+  // sending the current event is always kept.
   function expireQuiet(book, pts, now, exceptId, maxAge) {
     const dropped = [];
     if (!pts) return dropped;
     const age = maxAge == null ? 1000 : maxAge;
+    const live = new Set();
+    if (book && book.touchToPointer) for (const pid of book.touchToPointer.values()) live.add(pid);
     for (const [id, p] of pts) {
-      if (id === exceptId) continue;
+      if (id === exceptId || live.has(id)) continue;
       if (!p || p.t == null || now - p.t <= age) continue;
       pts.delete(id);
       dropped.push(id);
