@@ -6,8 +6,8 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       QEMU_ROM_DIR (dir with esp32-v3-rom.bin), ARDUINO_CLI, ESP32_FQBN
       Disk bounds (web/README.md): SIM_MIN_FREE_MB, SIM_BUILD_CACHE_DIR,
       SIM_IMAGE_CACHE_MAX_MB, SIM_CORE_CACHE_MAX_MB, SIM_SKETCH_CACHE_MAX_MB,
-      SIM_NETSTACK_CACHE_DIR, SIM_NETSTACK_CACHE_MAX_MB, SIM_ORPHAN_MAX_AGE_S
-      and the matching *_MAX_AGE_S knobs.
+      SIM_NETSTACK_CACHE_DIR, SIM_NETSTACK_CACHE_MAX_MB, SIM_NETSTACK_WARM,
+      SIM_ORPHAN_MAX_AGE_S and the matching *_MAX_AGE_S knobs.
 """
 import asyncio, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, argparse
 import diskkeep
@@ -43,6 +43,7 @@ app = FastAPI(title='ESP32 sim backend')
 runs = {}
 _live_images = set()   # firmware ids a QEMU process still has open
 _compile_lock = asyncio.Lock()
+_netstack_warm_task = None   # startup task building the browser's network archive, if any
 # ---------------- public-exposure hardening ----------------
 TOKEN = os.environ.get('SIM_TOKEN', '')
 MAX_BODY = 200 * 1024; COMPILE_TIMEOUT = int(os.environ.get('SIM_COMPILE_TIMEOUT', '300'))
@@ -176,13 +177,95 @@ async def _prewarm():
         print('disk startup', summary, flush=True)
     except Exception as e:
         print('disk startup failed:', repr(e), flush=True)
-    async def go():
-        try: await compile_({'sketch': 'void setup(){}\nvoid loop(){}'}); print('prewarm compile done', flush=True)
-        except Exception as e: print('prewarm failed:', repr(e), flush=True)
-    if os.environ.get('SIM_PREWARM', '1') == '1': asyncio.get_event_loop().create_task(go())
+    if os.environ.get('SIM_PREWARM', '1') == '1' or diskkeep.netstack_warm_enabled():
+        asyncio.get_event_loop().create_task(_startup_compiles())
+
+async def _startup_compiles():
+    """Blink core warm, then the browser's network archive. Neither blocks startup."""
+    if os.environ.get('SIM_PREWARM', '1') == '1':
+        try:
+            await _compile_request({'sketch': 'void setup(){}\nvoid loop(){}'})
+            print('prewarm compile done', flush=True)
+        except Exception as e:
+            print('prewarm failed:', repr(e), flush=True)
+    try:
+        await _warm_netstack()
+    except Exception as e:
+        print('netstack warm failed:', repr(e), flush=True)
+
+def _example_js() -> str:
+    try:
+        return (SITE / 'js' / 'examples.js').read_text(encoding='utf-8')
+    except OSError:
+        return ''
+
+def _browser_network_request():
+    """The compile body the page sends for the Wi-Fi remote: its sources plus its defines.
+
+    Defines are read from examples.js and then sanitized by the same function a POST uses.
+    """
+    defines = diskkeep.defines_from_examples_js(_example_js())
+    if not defines:
+        return None
+    root = SITE / 'examples' / 'remote'
+    try:
+        sketch = (root / 'remote.ino').read_text(encoding='utf-8')
+        header = (root / 'remote_logic.h').read_text(encoding='utf-8')
+    except OSError as e:
+        print('netstack warm sources missing:', repr(e), flush=True)
+        return None
+    return {'sketch': sketch, 'files': {'remote_logic.h': header}, 'defines': defines}
+
+async def _warm_netstack():
+    """Build the network archive for the defines a browser compile looks up.
+
+    Background, and a no-op when ``SIM_NETSTACK_WARM`` is off or the archive is already there.
+    A compile that arrives while this is running waits for it instead of starting a second one.
+    """
+    global _netstack_warm_task
+    if not diskkeep.netstack_warm_enabled():
+        print('netstack warm off', flush=True)
+        return
+    _netstack_warm_task = asyncio.current_task()
+    try:
+        req = _browser_network_request()
+        if not req:
+            print('netstack warm skipped: browser defines not found', flush=True)
+            return
+        ident = _netstack_identity(req['defines'])
+        if not ident:
+            print('netstack warm skipped: toolchain or shim missing', flush=True)
+            return
+        present = _netstack_cached(req['defines'])
+        plan = diskkeep.plan_netstack_warm(
+            os.environ, _example_js(), cache_present=present,
+            toolchain=ident['toolchain'], core=ident['core'],
+            shim_hash=ident['shim_hash'], fqbn=ident['fqbn'])
+        if plan['action'] != 'build':
+            print('netstack warm', plan['action'], plan.get('key') or '', flush=True)
+            return
+        # plan['defines'] is the sanitized list a browser POST of the example looks up.
+        req = {**req, 'defines': list(plan['defines'])}
+        print('netstack warm building', plan['key'], 'defines', list(plan['defines']), flush=True)
+        t0 = time.perf_counter()
+        await _compile_request(req, queue=True, rebuild_netstack=True)
+        ready = _netstack_cached(req['defines'])
+        print('netstack warm', 'ready' if ready else 'not archived', plan['key'],
+              f'{time.perf_counter() - t0:.1f}s', flush=True)
+    finally:
+        _netstack_warm_task = None
 
 @app.post('/api/compile')
 async def compile_(req: dict):
+    task = _netstack_warm_task
+    if task is not None and task is not asyncio.current_task() and not task.done():
+        try:
+            await asyncio.wait_for(asyncio.shield(task), COMPILE_TIMEOUT)
+        except asyncio.TimeoutError:
+            return JSONResponse({'ok': False, 'log': 'network stack is still warming, retry shortly'}, 429)
+    return await _compile_request(req)
+
+async def _compile_request(req: dict, *, queue: bool = False, rebuild_netstack: bool = False):
     sketch = req.get('sketch', '')
     files = req.get('files', {}) or {}
     if not isinstance(sketch, str) or not isinstance(files, dict) or not all(isinstance(v, str) for v in files.values()):
@@ -192,8 +275,9 @@ async def compile_(req: dict):
     files = {k: v for k, v in files.items() if re.fullmatch(r'[A-Za-z0-9_.-]+\.(h|hpp|c|cpp|ino)', k) and k != 'sketch.ino'}
     err = check_sources([sketch, *files.values()], set(files))
     if err: return JSONResponse({'ok': False, 'log': 'rejected: ' + err})
-    if _compile_lock.locked(): return JSONResponse({'ok': False, 'log': 'another compile is running, retry shortly'}, 429)
-    defines = [d for d in (req.get('defines') or []) if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*(=[A-Za-z0-9_."]*)?', d)]
+    if _compile_lock.locked() and not queue:
+        return JSONResponse({'ok': False, 'log': 'another compile is running, retry shortly'}, 429)
+    defines = diskkeep.sanitize_defines(req.get('defines'))
     net = bool(req.get('netShim', False)) or bool(re.search(r'#include\s*[<"](WiFi|HTTPClient|WiFiUdp)\.h', sketch + ''.join(files.values())))
     netmode = (req.get('net') if req.get('net') in ('lwip', 'shim') else 'lwip') if net else None
     allsrc = sketch + ''.join(files.values())
@@ -201,10 +285,12 @@ async def compile_(req: dict):
     key = hashlib.sha256(json.dumps([sketch, files, defines, net, netmode, FQBN, SHIM_VER if (net or simlibs) else '', simlibs], sort_keys=True).encode()).hexdigest()[:16]
     bdir = BUILDS / key
     img = bdir / 'flash.bin'
-    if img.exists():
+    # A warm rebuild ignores a firmware hit only while the network archive for these
+    # defines is missing. The defines are the same list a browser POST is sanitized to.
+    if img.exists() and not rebuild_netstack:
         return _cached_compile(key, bdir, net, netmode)
     async with _compile_lock:
-        if img.exists():
+        if img.exists() and not (rebuild_netstack and not _netstack_cached(defines)):
             return _cached_compile(key, bdir, net, netmode)
         roots = _cache_roots()
         try:
@@ -322,8 +408,16 @@ def _netstack_identity(defines):
     shim = SHIMS / 'QemuEth'
     if not tc or not shim.is_dir():
         return None
+    # Same sanitizer a browser POST goes through, so a warm-up and a later lookup share one key.
     return {'toolchain': tc['fingerprint'], 'core': tc['core'], 'shim_hash': diskkeep.source_tree_hash(shim),
-            'fqbn': FQBN, 'defines': tuple(defines)}
+            'fqbn': FQBN, 'defines': tuple(diskkeep.sanitize_defines(defines))}
+
+def _netstack_cached(defines) -> bool:
+    ident = _netstack_identity(defines)
+    if not ident:
+        return False
+    root = diskkeep.netstack_root_from_env()
+    return diskkeep.find_netstack(root, diskkeep.netstack_key(**ident)) is not None
 
 def _seed_libraries_cache(sketch_dir: Path, payload: bytes) -> None:
     folder = diskkeep.arduino_build_cache_dir() / 'sketches' / diskkeep.request_sketch_hash(sketch_dir)

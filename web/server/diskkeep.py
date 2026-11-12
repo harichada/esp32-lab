@@ -39,6 +39,10 @@ _YAML_KEY = re.compile(r'^([A-Za-z0-9_.-]+)\s*:\s*$')
 _YAML_PATH = re.compile(r'^\s+path:\s*(.*?)\s*$')
 _COMPILE_LINE = re.compile(r'^\[(\d+(?:\.\d+)?)s\] compile(.*)$', re.M)
 _NETSTACK_KEY = re.compile(r'^[0-9a-f]{16,64}$')
+# Same filter /api/compile applies to the defines array the browser posts.
+_DEFINE_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*(=[A-Za-z0-9_."]*)?$')
+_REMOTE_DEFINES = re.compile(
+    r"Wi-Fi/IR TV Remote[\s\S]{0,2000}?defines\s*:\s*\[([^\]]*)\]")
 
 
 class LowDisk(Exception):
@@ -591,10 +595,53 @@ def netstack_key(*, toolchain: str, core: str, shim_hash: str, fqbn: str, define
 
     ``shim_hash`` is the QemuEth source hash. ``toolchain`` is the compiler version (and path,
     so a relocated install misses). ``core`` is the esp32 platform version. ``defines`` are the
-    ``-D`` flags applied to every translation unit, because those change the objects.
+    ``-D`` flags applied to every translation unit. ``SIM_NO_LAN_REMAP`` changes ``qemu_eth.cpp``,
+    so a different define list is a different archive.
     """
     parts = [toolchain.strip(), core.strip(), shim_hash.strip(), fqbn.strip(), *sorted(defines)]
     return hashlib.sha256('\n'.join(parts).encode()).hexdigest()[:24]
+
+
+def sanitize_defines(raw) -> list[str]:
+    """Keep the ``-D`` tokens ``/api/compile`` will actually pass to the compiler."""
+    if not raw:
+        return []
+    return [d for d in raw if isinstance(d, str) and _DEFINE_RE.fullmatch(d)]
+
+
+def defines_from_examples_js(text: str) -> list[str]:
+    """Defines the Wi-Fi remote example posts.
+
+    ``web/js/examples.js`` is what the page loads. The remote example is the network
+    sketch, and its ``defines`` array is the body field ``/api/compile`` sanitizes.
+    """
+    match = _REMOTE_DEFINES.search(text or '')
+    if not match:
+        return []
+    raw = re.findall(r"""['"]([^'"]*)['"]""", match.group(1))
+    return sanitize_defines(raw)
+
+
+def netstack_warm_enabled(env=None) -> bool:
+    """Prebuild the browser's network archive at startup. Default on; ``SIM_NETSTACK_WARM=0`` turns it off."""
+    env = os.environ if env is None else env
+    return env.get('SIM_NETSTACK_WARM', '1') == '1'
+
+
+def plan_netstack_warm(env, example_js, *, cache_present: bool, toolchain: str, core: str,
+                       shim_hash: str, fqbn: str) -> dict:
+    """What a startup warm does with the defines a browser compile of the remote example posts.
+
+    ``action`` is ``off`` (flag), ``missing`` (the example has no defines), ``skip`` (archive
+    already there), or ``build``. ``key`` is the archive a later compile looks up for those defines.
+    """
+    if not netstack_warm_enabled(env):
+        return {'action': 'off', 'defines': (), 'key': None}
+    defines = tuple(defines_from_examples_js(example_js))
+    if not defines:
+        return {'action': 'missing', 'defines': (), 'key': None}
+    key = netstack_key(toolchain=toolchain, core=core, shim_hash=shim_hash, fqbn=fqbn, defines=defines)
+    return {'action': 'skip' if cache_present else 'build', 'defines': defines, 'key': key}
 
 
 def source_tree_hash(root: Path) -> str:
@@ -675,26 +722,21 @@ def netstack_root_from_env(env=None, home: Path | None = None, tmp: Path | None 
 
 
 def cached_build_log(log: str, elapsed_s: float) -> str:
-    """A firmware-cache hit must not replay the original compile duration as this request's time.
+    """A firmware-cache hit is one line, not a replay of the build that filled the cache.
 
-    The first line is ``[0.0s] cached (originally built in 41.4 s) ...`` using ``elapsed_s`` for
-    this request. The stored ``[41.4s] compile`` summary is removed so the log does not look
-    like a fresh build.
+    Stage lines from that build (``Building network stack...``, ``Compiling sketch...``,
+    ``Linking...``) are dropped. The line uses ``elapsed_s`` for this request and names the
+    original duration, for example ``[0.0s] cached (originally built in 41.4 s)``.
     """
     elapsed = f'{max(0.0, float(elapsed_s)):.1f}'
     matches = list(_COMPILE_LINE.finditer(log or ''))
     if not matches:
-        suffix = '' if (not log or log.endswith('\n')) else '\n'
-        return f'{log or ""}{suffix}[{elapsed}s] cached\n'
+        return f'[{elapsed}s] cached\n'
     match = matches[-1]
     orig = match.group(1)
     rest = match.group(2).strip()
-    end = match.end()
-    if end < len(log) and log[end] == '\n':
-        end += 1
-    body = log[:match.start()] + log[end:]
-    header = f'[{elapsed}s] cached (originally built in {orig} s)' + (f' {rest}' if rest else '') + '\n'
-    return header + body.lstrip('\n')
+    header = f'[{elapsed}s] cached (originally built in {orig} s)' + (f' {rest}' if rest else '')
+    return header + '\n'
 
 
 def prepare_for_compile(*, builds: Path, cache_roots, temp_roots, limits: Limits,

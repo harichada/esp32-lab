@@ -261,6 +261,16 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (r.sketch) r.sketch.stop();
     const e = espPart(); if (e) app.sim.espRuntime(e).reset(); app.sim.dirty = true; setStatus('idle', 'stopped');
   }
+  // A firmware-cache hit must not keep the stage lines a previous build (or this
+  // request's progress poll) wrote into the log. One summary line replaces them.
+  function cachedCompileLog(log) {
+    const lines = String(log || '').split('\n').map((ln) => ln.trim()).filter(Boolean);
+    const stage = /^(?:Building network stack\b.*|Using cached network stack\.\.\.|Compiling sketch\.\.\.|Linking\.\.\.|compiling…)$/;
+    const hit = lines.find((ln) => /^\[\d+(?:\.\d+)?s\] cached\b/.test(ln));
+    if (hit) return hit + '\n';
+    const rest = lines.filter((ln) => !stage.test(ln));
+    return rest.length ? rest.join('\n') + '\n' : '';
+  }
   async function startRun() {
     syncCode(); stopRun(); app.proj.defines = $('#inDefines').value.split(',').map((s) => s.trim()).filter(Boolean);
     const esp = espPart();
@@ -281,13 +291,14 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     let res;
     try {
       const bl = $('#buildLog'); bl.textContent = 'compiling…\n';
-      run.poll = setInterval(async () => { try { const q = await (await fetch('api/compile/progress')).json(); if (app.run !== run || !run.poll) return; if (q.unpacking) setStatus('busy', `unpacking toolchain… ${Math.round((q.unpackProgress || 0) * 100)}%`); else if (q.active) { const stage = q.stage || 'compiling…'; bl.textContent = q.log || (stage + '\n'); bl.scrollTop = bl.scrollHeight; setStatus('busy', `${stage} ${Math.round(q.elapsed)}s`); } } catch (e) {} }, 400);
+      run.poll = setInterval(async () => { try { const q = await (await fetch('api/compile/progress')).json(); if (app.run !== run || !run.poll || run.settled) return; if (q.unpacking) setStatus('busy', `unpacking toolchain… ${Math.round((q.unpackProgress || 0) * 100)}%`); else if (q.active) { const stage = q.stage || 'compiling…'; bl.textContent = q.log || (stage + '\n'); bl.scrollTop = bl.scrollHeight; setStatus('busy', `${stage} ${Math.round(q.elapsed)}s`); } } catch (e) {} }, 400);
       const r = await fetchRetry('api/compile', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sketch: app.proj.code, files: app.proj.files, defines: app.proj.defines }) });
       clearInterval(run.poll); run.poll = null;
       res = await r.json();
+      run.settled = true;
     } catch (e) { clearInterval(run.poll); run.poll = null; setStatus('err', 'backend unreachable'); serialAppend('\n[backend] cannot reach /api/compile — start server/server.py (see README) or switch to JS sketch mode.\n'); app.run = null; return; }
     if (app.run !== run) return;
-    $('#buildLog').textContent = res.log || ''; if (app.codeview) app.codeview.setLog(res.ok ? '' : (res.log || ''));
+    $('#buildLog').textContent = res.cached ? cachedCompileLog(res.log) : (res.log || ''); if (app.codeview) app.codeview.setLog(res.ok ? '' : (res.log || ''));
     if (!res.ok) { setStatus('err', 'compile error'); $('#buildDet').open = true; document.querySelector('[data-tab=build]').click(); if (app.codeview) app.codeview.setLog(res.log || ''); serialAppend('\n[compile failed — see build log in Code tab]\n'); app.run = null; return; }
     serialAppend(`\n[compiled ${res.cached ? '(cached)' : ''}${res.netShim ? ' + QemuNet shim' : ''}; starting QEMU]\n`);
     run.bid = res.id; run.lastN = 0; run.tries = 0; connectRun(run);
