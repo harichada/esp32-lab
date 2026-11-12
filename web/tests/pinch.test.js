@@ -325,6 +325,165 @@ test('a blocker that would collapse the window is ignored', () => {
   assert.ok(onlyCopy.top >= 50);
 });
 
+function node(id, parent, tag) {
+  const n = {
+    id: id || '', nodeType: 1, tagName: tag || 'DIV', parent: parent || null,
+    closest(sel) {
+      const want = sel.split(',').map((s) => s.trim());
+      for (let p = this; p; p = p.parent) {
+        if (want.some((s) => (s[0] === '#' ? p.id === s.slice(1) : p.tagName === s.toUpperCase()))) return p;
+      }
+      return null;
+    },
+  };
+  return n;
+}
+
+test('selection chrome is part of a pinch, and the code dock is not', () => {
+  const wrap = node('stageWrap');
+  const stage = node('stage', wrap);
+  const grid = node('', stage);
+  const bar = node('mSel', wrap);
+  const props = node('', bar, 'BUTTON');
+  const sheet = node('side');
+  const scrim = node('mScrim');
+  const dock = node('dock');
+  const code = node('', dock, 'TEXTAREA');
+  assert.equal(Pinch.isPinchSurface(grid), true);
+  assert.equal(Pinch.isPinchSurface(props), true);
+  assert.equal(Pinch.isPinchSurface(sheet), true);
+  assert.equal(Pinch.isPinchSurface(scrim), true);
+  assert.equal(Pinch.isPinchSurface(code), false);
+  assert.equal(Pinch.isPinchSurface(node('', node('palette'))), false);
+});
+
+test('pinch after selection tracks both toolbar fingers when pointer ids differ from touch ids', () => {
+  const wrap = node('stageWrap');
+  const bar = node('mSel', wrap);
+  const props = node('', bar, 'BUTTON');
+  const del = node('', bar, 'BUTTON');
+  const book = Pinch.createPointerBook();
+  const state = { pts: new Map() };
+  // A selection tap whose pointerup never arrived. Its pointer id is not a touch id.
+  state.pts.set(7, { x: 180, y: 220 });
+  book.pending.push(7);
+  Pinch.notePointerDown(book, 5);
+  const first = Pinch.trackPinchPointer(state, {
+    id: 5, x: 150, y: 620, track: Pinch.isPinchSurface(props), sel: { part: 'LED1' },
+  });
+  Pinch.syncPointers(book, state.pts, [{ identifier: 0 }], [{ identifier: 0 }]);
+  assert.equal(state.pts.has(7), false, 'the selection tap is not a third finger');
+  assert.equal(state.pts.has(5), true, 'the new finger stays even though its touch id is 0');
+  assert.equal(state.pts.size, 1);
+  assert.deepEqual(first.anchorSel, { part: 'LED1' });
+  Pinch.notePointerDown(book, 6);
+  const second = Pinch.trackPinchPointer(state, {
+    id: 6, x: 230, y: 630, track: Pinch.isPinchSurface(del), sel: { part: 'LED1' },
+  });
+  assert.equal(second.start, true);
+  Pinch.syncPointers(book, state.pts, [{ identifier: 0 }, { identifier: 1 }], [{ identifier: 1 }]);
+  assert.equal(state.pts.size, 2);
+  assert.equal(state.pts.has(5) && state.pts.has(6), true);
+  assert.deepEqual(second.anchorSel, { part: 'LED1' });
+  Pinch.syncPointers(book, state.pts, [], []);
+  assert.equal(state.pts.size, 0, 'lifting every finger clears a pointer the browser already released');
+});
+
+test('a lost selection pointerup does not turn the next one-finger swipe into a pinch', () => {
+  const book = Pinch.createPointerBook();
+  const state = { pts: new Map(), anchorSel: null };
+  const props = node('', node('mSel'), 'BUTTON');
+  // The tap selects the part. pointerup then hits the toolbar, or the part node
+  // that select() just replaced, and never reaches the pinch listener.
+  assert.deepEqual(Pinch.notePointerDown(book, 4, { isPrimary: true }), []);
+  Pinch.trackPinchPointer(state, { id: 4, x: 200, y: 420, track: true, sel: null, now: 1000 });
+  Pinch.syncPointers(book, state.pts, [{ identifier: 0 }], [{ identifier: 0 }]);
+  assert.equal(state.pts.size, 1);
+  assert.equal(Pinch.isPinchSurface(props), true);
+
+  // The swipe is a new primary contact. The ghost at the tap must not be finger two.
+  const ghosts = Pinch.notePointerDown(book, 11, { isPrimary: true });
+  for (const id of ghosts) state.pts.delete(id);
+  const swipe = Pinch.trackPinchPointer(state, {
+    id: 11, x: 36, y: 200, track: true, sel: { part: 'LED1' }, now: 1300,
+  });
+  Pinch.syncPointers(book, state.pts, [{ identifier: 1 }], [{ identifier: 1 }]);
+  state.pts.get(11).y = 80;
+  assert.deepEqual(ghosts, [4]);
+  assert.equal(swipe.start, false);
+  assert.equal(state.pts.size, 1, 'one finger is a pan, so the scale cannot change');
+  assert.equal(state.pts.has(4), false);
+
+  // A second real finger, including one that lands on the toolbar, still pinches.
+  assert.deepEqual(Pinch.notePointerDown(book, 12, { isPrimary: false }), []);
+  const second = Pinch.trackPinchPointer(state, {
+    id: 12, x: 160, y: 250, track: Pinch.isPinchSurface(props), sel: { part: 'LED1' }, now: 1450,
+  });
+  Pinch.syncPointers(book, state.pts, [{ identifier: 1 }, { identifier: 2 }], [{ identifier: 2 }]);
+  assert.equal(second.start, true);
+  assert.equal(state.pts.size, 2);
+  assert.deepEqual(second.anchorSel, { part: 'LED1' });
+  const zoomed = Pinch.applyView({ s: 1, dist: 70, wx: 0, wy: 0 }, { x: 90, y: 160 }, 140, { left: 0, top: 0 }, { min: 0.15, max: 4 });
+  assert.ok(zoomed.s > 1 && zoomed.s < 4);
+});
+
+test('a finger missing from the touch list, or quiet for a second, is gone', () => {
+  const book = Pinch.createPointerBook();
+  const pts = new Map([
+    [4, { x: 200, y: 420, t: 0 }],
+    [11, { x: 36, y: 200, t: 1100 }],
+  ]);
+  book.pending = [11];
+  book.touchToPointer.set(0, 4);
+  // touchmove/touchend carry only the live finger. The selection tap is not in e.touches.
+  Pinch.syncPointers(book, pts, [{ identifier: 1 }], [{ identifier: 1 }]);
+  assert.equal(pts.has(4), false);
+  assert.equal(pts.has(11), true);
+  assert.equal(pts.size, 1);
+  assert.equal(book.touchToPointer.has(0), false);
+  assert.equal(book.touchToPointer.get(1), 11);
+
+  const held = new Map([[7, { x: 10, y: 10, t: 500 }], [8, { x: 80, y: 80, t: 1200 }]]);
+  assert.deepEqual(Pinch.expireQuiet(book, held, 1200, 8, 1000), []);
+  const quiet = new Map([[7, { x: 10, y: 10, t: 0 }], [8, { x: 80, y: 80, t: 1200 }]]);
+  book.touchToPointer.set(9, 7);
+  assert.deepEqual(Pinch.expireQuiet(book, quiet, 1200, 8, 1000), [7]);
+  assert.equal(quiet.has(7), false);
+  assert.equal(book.touchToPointer.has(9), false);
+
+  // An up that does arrive drops the tap even when its target is the new toolbar.
+  const up = Pinch.createPointerBook();
+  up.touchToPointer.set(0, 4);
+  up.pending = [4];
+  Pinch.notePointerUp(up, 4);
+  assert.equal(up.pending.length, 0);
+  assert.equal(up.touchToPointer.size, 0);
+});
+
+test('a finger on the properties sheet plus a finger on the board starts a pinch', () => {
+  const wrap = node('stageWrap');
+  const stage = node('stage', wrap);
+  const sheet = node('side');
+  const book = Pinch.createPointerBook();
+  const state = { pts: new Map() };
+  Pinch.notePointerDown(book, 8);
+  const onSheet = Pinch.trackPinchPointer(state, {
+    id: 8, x: 200, y: 700, track: Pinch.isPinchSurface(sheet), sel: { part: 'R1' },
+  });
+  Pinch.syncPointers(book, state.pts, [{ identifier: 4 }], [{ identifier: 4 }]);
+  assert.equal(onSheet.start, false);
+  assert.equal(state.pts.size, 1);
+  Pinch.notePointerDown(book, 9);
+  const onBoard = Pinch.trackPinchPointer(state, {
+    id: 9, x: 40, y: 200, track: Pinch.isPinchSurface(stage), sel: { part: 'R1' },
+  });
+  Pinch.syncPointers(book, state.pts, [{ identifier: 4 }, { identifier: 5 }], [{ identifier: 5 }]);
+  assert.equal(onBoard.start, true);
+  assert.equal(state.pts.size, 2);
+  assert.equal(book.touchToPointer.get(4), 8);
+  assert.equal(book.touchToPointer.get(5), 9);
+});
+
 test('schematic hint on touch does not mention the F key', () => {
   const touch = Pinch.schematicHint(true);
   const desk = Pinch.schematicHint(false);

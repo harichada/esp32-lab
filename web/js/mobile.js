@@ -229,54 +229,98 @@
     else ed.fit();
   }
   function touch() {
-    const wrap = $('#stageWrap'), st = $('#stage'); const pts = new Map(); let g = null, lp = null, gestureSel = null;
+    const st = $('#stage'); const pts = new Map(); let g = null, lp = null, gestureSel = null, swallowClick = false;
     const P = () => window.Pinch;
-    const mid = () => { const [a, b] = [...pts.values()]; return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, d: Math.hypot(a.x - b.x, a.y - b.y) }; };
+    const book = P().createPointerBook();
     const on = () => document.body.classList.contains('m');
     const showZoom = (s) => { const z = $('#zoomPct'); if (z && !document.body.classList.contains('viewsch') && !document.body.classList.contains('view3d')) z.textContent = Math.round(s * 100) + '%'; };
-    wrap.addEventListener('pointerdown', (e) => {
-      if (!on() || e.pointerType !== 'touch' || !st.contains(e.target)) return;
-      if (pts.size === 0) gestureSel = P() ? P().cloneSel(ed.sel) : (ed.sel ? { ...ed.sel } : null);
-      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      if (pts.size === 1) {   // long-press on a part -> action menu
-        const pg = e.target.closest && e.target.closest('.part'); clearTimeout(lp && lp.t);
-        if (pg) lp = { x: e.clientX, y: e.clientY, id: pg.dataset.id, t: setTimeout(() => longPress(lp), 480) }; else lp = null;
-      }
-      if (pts.size >= 2) {
-        e.stopPropagation(); e.preventDefault(); clearTimeout(lp && lp.t); lp = null;
-        // The first finger may already have selected, dragged or started a wire. Cancel it
-        // the moment the second finger lands — including a wire that has been up for a while.
+    const kind = () => (document.body.classList.contains('view3d') && app.view3d && app.view3d.active) ? '3d'
+      : (document.body.classList.contains('viewsch') && app.schematic && app.schematic.active) ? 'sch' : '2d';
+    const viewBox = () => kind() === 'sch' && app.schematic ? app.schematic.svg : st;
+    const view = () => kind() === 'sch' && app.schematic ? app.schematic.view : ed.view;
+    const mid = () => { const [a, b] = [...pts.values()]; return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, d: Math.hypot(a.x - b.x, a.y - b.y) }; };
+    const unlock = () => { if (pts.size) return; ed._pinchLock = false; if (app.schematic) app.schematic._pinchLock = false; };
+    const begin = (e) => {
+      e.stopPropagation(); e.preventDefault();
+      swallowClick = true; clearTimeout(lp && lp.t); lp = null;
+      const k = kind();
+      if (k === 'sch' && app.schematic && app.schematic.cancelTouch) app.schematic.cancelTouch();
+      else if (k !== '3d') {
         ed._pinchLock = true;
         if (P()) P().cancelEditorGesture(ed, gestureSel);
         else { if (ed.mode && ed.mode.k === 'wire') ed.cancelWire(); ed.mode = null; }
-        const m = mid(), r = st.getBoundingClientRect();
-        const w = P() ? P().worldAt(ed.view, m, r) : { x: ed.view.x + (m.x - r.left) / ed.view.s, y: ed.view.y + (m.y - r.top) / ed.view.s };
-        g = { dist: Math.max(m.d, 1), s: ed.view.s, wx: w.x, wy: w.y };
       }
+      const m = mid(), r = viewBox().getBoundingClientRect(), v = view();
+      const w = P() ? P().worldAt(v, m, r) : { x: v.x + (m.x - r.left) / v.s, y: v.y + (m.y - r.top) / v.s };
+      g = { dist: Math.max(m.d, 1), s: v.s, wx: w.x, wy: w.y, k: k, last: Math.max(m.d, 1) };
+    };
+    // Capture on document, not only #stage. The selection toolbar, the properties
+    // sheet and the scrim are outside the SVG, and a finger landing there used to
+    // be ignored — the other finger then panned, or the browser scaled the page.
+    document.addEventListener('pointerdown', (e) => {
+      if (!on() || e.pointerType !== 'touch' || !P()) return;
+      const el = e.target;
+      if (document.body.classList.contains('view3d') && el.closest && el.closest('#stage3d, canvas.stage3d')) return;
+      const track = P().isPinchSurface(el);
+      const ghosts = P().notePointerDown(book, e.pointerId, { isPrimary: !!e.isPrimary });
+      for (const id of ghosts) pts.delete(id);
+      // The selection tap never pointerup'd, so its drag or wire is still the editor's
+      // current mode. Clear that before this swipe, and keep the selection.
+      if (ghosts.length && ed.mode) P().cancelEditorGesture(ed, ed.sel);
+      P().expireQuiet(book, pts, Date.now(), e.pointerId, 1000);
+      const hit = P().trackPinchPointer({ pts: pts, anchorSel: gestureSel }, { id: e.pointerId, x: e.clientX, y: e.clientY, track: track, sel: ed.sel, now: Date.now() });
+      gestureSel = hit.anchorSel;
+      if (!track) return;
+      if (pts.size === 1 && st.contains(el)) {
+        const pg = el.closest && el.closest('.part'); clearTimeout(lp && lp.t);
+        if (pg) lp = { x: e.clientX, y: e.clientY, id: pg.dataset.id, t: setTimeout(() => longPress(lp), 480) }; else lp = null;
+      }
+      if (hit.start) begin(e);
     }, true);
-    wrap.addEventListener('pointermove', (e) => {
-      if (!pts.has(e.pointerId)) return; pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    document.addEventListener('pointermove', (e) => {
+      if (!pts.has(e.pointerId)) return; pts.set(e.pointerId, { x: e.clientX, y: e.clientY, t: Date.now() });
+      P().expireQuiet(book, pts, Date.now(), e.pointerId, 1000);
+      if (pts.size < 2) g = null;
       if (lp && Math.hypot(e.clientX - lp.x, e.clientY - lp.y) > 10) { clearTimeout(lp.t); lp = null; }
-      if (g && pts.size >= 2) {
-        e.stopPropagation(); e.preventDefault();
-        const m = mid(), r = st.getBoundingClientRect();
-        const next = P().applyView(g, m, m.d, r, { min: 0.15, max: 4 });
-        ed.markUserView && ed.markUserView();
-        ed.view.s = next.s; ed.view.x = next.x; ed.view.y = next.y; ed.applyView(); showZoom(next.s);
+      if (!(g && pts.size >= 2)) return;
+      e.stopPropagation(); e.preventDefault();
+      const m = mid();
+      if (g.k === '3d' && app.view3d && app.view3d.zoomBy) {
+        const step = m.d / Math.max(g.last, 1); g.last = m.d;
+        if (Math.abs(step - 1) > 0.001) app.view3d.zoomBy(step);
+        return;
       }
+      const r = viewBox().getBoundingClientRect();
+      const next = P().applyView(g, m, m.d, r, g.k === 'sch' ? { min: 0.12, max: 4 } : { min: 0.15, max: 4 });
+      if (g.k === 'sch' && app.schematic) { app.schematic.view.s = next.s; app.schematic.view.x = next.x; app.schematic.view.y = next.y; app.schematic.apply(); }
+      else { ed.markUserView && ed.markUserView(); ed.view.s = next.s; ed.view.x = next.x; ed.view.y = next.y; ed.applyView(); showZoom(next.s); }
     }, true);
     const up = (e) => {
+      P().notePointerUp(book, e.pointerId);
       if (!pts.has(e.pointerId)) return; pts.delete(e.pointerId);
       if (lp) { clearTimeout(lp.t); lp = null; }
-      if (pts.size < 2) {
-        // One finger still down must not resume the drag, the wire, or a pan from the old origin.
-        if (g) { e.stopPropagation(); e.preventDefault(); }
-        g = null;
-      }
-      if (pts.size === 0) ed._pinchLock = false;
+      if (pts.size < 2) g = null;
+      unlock();
+      // The click that follows the last finger is the toolbar button under it.
+      // Swallow that one, then arm the buttons again.
+      if (!pts.size && swallowClick) setTimeout(() => { swallowClick = false; }, 0);
     };
-    wrap.addEventListener('pointerup', up, true); wrap.addEventListener('pointercancel', up, true);
-    wrap.addEventListener('touchmove', (e) => { if (e.touches && e.touches.length >= 2) e.preventDefault(); }, { passive: false });
+    document.addEventListener('pointerup', up, true);
+    document.addEventListener('pointercancel', up, true);
+    document.addEventListener('lostpointercapture', up, true);
+    document.addEventListener('click', (e) => { if (!swallowClick) return; e.preventDefault(); e.stopPropagation(); }, true);
+    const remember = (e) => {
+      if (!on() || !e.touches || !P()) return;
+      const changed = e.type === 'touchstart' ? [...e.changedTouches].map((t) => ({ identifier: t.identifier })) : [];
+      P().syncPointers(book, pts, [...e.touches].map((t) => ({ identifier: t.identifier })), changed);
+      if (pts.size < 2) g = null;
+      unlock();
+      if (!e.touches.length && swallowClick) setTimeout(() => { swallowClick = false; }, 0);
+    };
+    document.addEventListener('touchstart', remember, true);
+    document.addEventListener('touchmove', remember, true);
+    document.addEventListener('touchend', remember, true);
+    document.addEventListener('touchcancel', remember, true);
     st.addEventListener('contextmenu', (e) => { if (on() && e.target.closest('.part')) e.preventDefault(); });
     // iOS Safari pinch-zooms the page unless the gesture is cancelled. The canvas zoom is our own.
     ['gesturestart', 'gesturechange', 'gestureend'].forEach((n) => document.addEventListener(n, (e) => e.preventDefault(), { passive: false }));

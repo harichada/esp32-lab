@@ -179,9 +179,103 @@
       ? 'View only. Tap a part to inspect it. Edit wiring in 2D.'
       : 'F mirrors the symbol (drawing only, wiring unchanged)';
   }
+  // A finger on the selection toolbar, the properties sheet, or the scrim is still
+  // part of a pinch. Those nodes sit outside #stage, so a hit-test that only
+  // accepts the SVG drops the finger and the other finger pans. The code dock
+  // and the parts tray keep their own scrolling.
+  function isPinchSurface(node) {
+    const el = node && node.nodeType === 1 ? node : (node && node.parentElement);
+    if (!el || typeof el.closest !== 'function') return false;
+    if (el.closest('#dock, #palette, #mMore')) return false;
+    return !!el.closest('#stageWrap, #mSel, #mPartMenu, #mScrim, #side, .ctxmenu');
+  }
+  // Chrome does not use the touch identifier as the pointer id: the mouse keeps
+  // pointer id 1, and each new contact gets the next pointer id. Pruning the
+  // pointer map with Touch.identifier deletes the finger that just landed.
+  function createPointerBook() { return { touchToPointer: new Map(), pending: [] }; }
+  // A new primary contact means the browser has ended every previous touch of
+  // this type. Anything still stored is the selection tap whose pointerup landed
+  // on a node that was removed or covered when the toolbar appeared, so it never
+  // reached the listener. Returns those ghost ids; the caller drops them.
+  function notePointerDown(book, pointerId, info) {
+    const dropped = [];
+    if (!book) return dropped;
+    if (info && info.isPrimary) {
+      for (const id of book.pending) if (id !== pointerId) dropped.push(id);
+      book.pending = [];
+      for (const [tid, pid] of [...book.touchToPointer]) {
+        if (pid !== pointerId) { book.touchToPointer.delete(tid); if (dropped.indexOf(pid) < 0) dropped.push(pid); }
+      }
+    }
+    if (book.pending.indexOf(pointerId) < 0) book.pending.push(pointerId);
+    return dropped;
+  }
+  function notePointerUp(book, pointerId) {
+    if (!book) return;
+    book.pending = book.pending.filter((id) => id !== pointerId);
+    for (const [tid, pid] of book.touchToPointer) if (pid === pointerId) book.touchToPointer.delete(tid);
+  }
+  // A finger that has not moved for about a second is not a held pinch contact.
+  // The pointer currently sending the event is always kept.
+  function expireQuiet(book, pts, now, exceptId, maxAge) {
+    const dropped = [];
+    if (!pts) return dropped;
+    const age = maxAge == null ? 1000 : maxAge;
+    for (const [id, p] of pts) {
+      if (id === exceptId) continue;
+      if (!p || p.t == null || now - p.t <= age) continue;
+      pts.delete(id);
+      dropped.push(id);
+      notePointerUp(book, id);
+    }
+    return dropped;
+  }
+  // touches / changed are {identifier} lists. pointerdown is queued until the
+  // touchstart that follows it (pointerdown fires first). A pointer still queued
+  // from a selection tap that never ended is older than this touchstart, so it
+  // is dropped instead of being counted as a third finger.
+  function syncPointers(book, pts, touches, changed) {
+    const down = touches || [];
+    const started = changed || [];
+    if (!book || !pts) return pts;
+    if (!down.length) {
+      book.pending = []; book.touchToPointer.clear(); pts.clear();
+      return pts;
+    }
+    if (started.length && book.pending.length > started.length) {
+      const stale = book.pending.splice(0, book.pending.length - started.length);
+      for (const id of stale) pts.delete(id);
+    }
+    for (const t of started) {
+      if (!book.pending.length) break;
+      book.touchToPointer.set(t.identifier, book.pending.shift());
+    }
+    const live = new Set();
+    for (const t of down) {
+      const pid = book.touchToPointer.get(t.identifier);
+      if (pid != null) live.add(pid);
+    }
+    const waiting = new Set(book.pending);
+    for (const id of [...pts.keys()]) if (!live.has(id) && !waiting.has(id)) pts.delete(id);
+    for (const tid of [...book.touchToPointer.keys()]) {
+      if (!down.some((t) => t.identifier === tid)) book.touchToPointer.delete(tid);
+    }
+    return pts;
+  }
+  function trackPinchPointer(state, hit) {
+    const pts = state.pts;
+    if (!hit.track) return { start: pts.size >= 2, size: pts.size, tracked: false, anchorSel: state.anchorSel || null };
+    // A stale tap can leave the map non-empty. Capture the selection the first time
+    // a real finger arrives so cancel restores what was selected before this gesture.
+    if (pts.size === 0 || !state.anchorSel) state.anchorSel = cloneSel(hit.sel);
+    pts.set(hit.id, { x: hit.x, y: hit.y, t: hit.now || 0 });
+    return { start: pts.size >= 2, size: pts.size, tracked: true, anchorSel: state.anchorSel };
+  }
   const api = {
     clamp: clamp, worldAt: worldAt, applyView: applyView, orbit: orbit, cloneSel: cloneSel, cancelEditorGesture: cancelEditorGesture,
     clearRect: clearRect, fitView: fitView, zoomAbout: zoomAbout, clearCenter: clearCenter, frameOf: frameOf, schematicHint: schematicHint,
+    isPinchSurface: isPinchSurface, createPointerBook: createPointerBook, notePointerDown: notePointerDown,
+    notePointerUp: notePointerUp, expireQuiet: expireQuiet, syncPointers: syncPointers, trackPinchPointer: trackPinchPointer,
   };
   root.Pinch = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

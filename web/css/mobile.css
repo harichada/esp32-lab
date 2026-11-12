@@ -44,6 +44,9 @@ body.m .tip{display:none!important}
 /* selection pill + wiring bar */
 #mSel{position:absolute;left:50%;bottom:calc(176px + env(safe-area-inset-bottom));transform:translate(-50%,12px);opacity:0;pointer-events:none;gap:4px;padding:4px;border-radius:16px;background:var(--glass);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border:1px solid var(--hair);box-shadow:0 12px 32px rgba(0,0,0,.5);z-index:6;transition:opacity .2s,transform .25s cubic-bezier(.2,.8,.3,1)}
 body.m.m-has-sel #mSel{opacity:1;transform:translate(-50%,0);pointer-events:auto}
+body.m #mSel,body.m #mSel *,body.m #mPartMenu,body.m #mPartMenu *,body.m .ctxmenu,body.m .ctxmenu *,body.m .zoom-tools,body.m .zoom-tools *,body.m .canvas-tools,body.m .canvas-tools *{touch-action:none}
+body.m #mScrim{touch-action:none}
+body.m #side,body.m #side *{touch-action:pan-y}
 #mSel button{height:44px;min-width:44px;border-radius:12px;background:transparent;border:0;padding:0 12px;justify-content:center;font-size:14px;color:var(--txt)}#mSel button .ic{width:20px;height:20px}#mSel .danger{color:var(--err)}
 #mWireBar{position:absolute;left:12px;right:12px;top:10px;z-index:7;display:flex;align-items:center;gap:10px;padding:6px 6px 6px 16px;border-radius:14px;background:color-mix(in srgb,var(--acc) 14%,var(--l1));border:1px solid color-mix(in srgb,var(--acc) 45%,transparent);font-size:14px;font-weight:500;box-shadow:0 10px 30px rgba(0,0,0,.4);animation:mUp .22s}
 #mWireBar span{flex:1}#mWireBar button{height:40px;min-height:40px;border-radius:10px}

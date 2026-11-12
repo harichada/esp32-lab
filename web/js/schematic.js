@@ -1826,6 +1826,9 @@
       // Bumped when a second finger arrives so the first finger's pan/select session
       // cannot apply a stale delta or select the symbol on the way up.
       let gesture = 0;
+      // Phone pinches are owned by mobile.js, including a finger on the selection
+      // toolbar. This only drops the one-finger pan/select session that already started.
+      this.cancelTouch = () => { gesture += 1; this._pinchLock = true; };
       svg.addEventListener('pointerdown', (e) => {
         if (e.button != null && e.button !== 0) return;
         if (this._pinchLock) { e.preventDefault(); return; }
@@ -1860,6 +1863,7 @@
       const pts = new Map(); let pinch = null;
       const pair = () => { const [a, b] = [...pts.values()]; return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, d: Math.hypot(a.x - b.x, a.y - b.y) }; };
       svg.addEventListener('pointerdown', (e) => {
+        if (document.body.classList.contains('m')) return;
         if (e.pointerType !== 'touch') return;
         pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
         if (pts.size >= 2) {
@@ -1871,6 +1875,7 @@
         }
       }, true);
       svg.addEventListener('pointermove', (e) => {
+        if (document.body.classList.contains('m')) return;
         if (!pts.has(e.pointerId)) return; pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
         if (pinch && pts.size >= 2) {
           e.preventDefault(); e.stopPropagation();
@@ -1880,6 +1885,7 @@
         }
       }, true);
       const end = (e) => {
+        if (document.body.classList.contains('m')) return;
         if (!pts.has(e.pointerId)) return;
         pts.delete(e.pointerId);
         if (pts.size < 2) pinch = null;
@@ -1888,7 +1894,9 @@
         // because the session token no longer matches.
         if (pts.size === 0) this._pinchLock = false;
       };
-      svg.addEventListener('pointerup', end, true); svg.addEventListener('pointercancel', end, true);
+      svg.addEventListener('pointerup', end, true);
+      svg.addEventListener('pointercancel', end, true);
+      svg.addEventListener('lostpointercapture', end, true);
       svg.addEventListener('touchmove', (e) => { if (e.touches && e.touches.length >= 2) e.preventDefault(); }, { passive: false });
       window.addEventListener('resize', () => { if (this.active) this.apply(); });
     }
