@@ -39,10 +39,33 @@
     const end = () => { if (y0 == null) return; y0 = null; el.style.transition = ''; el.style.transform = ''; if (dy > 70) setSheet(null); };
     handle.addEventListener('pointerup', end); handle.addEventListener('pointercancel', end);
   }
+  // Phone-only nodes inserted into the desktop panels. Leaving the phone layout
+  // takes them back out, so the close buttons do not stay on the desktop headers.
+  const phoneChrome = [];
+  function trackPhoneChrome(el) {
+    if (!el || phoneChrome.some((n) => n.el === el)) return;
+    phoneChrome.push({ el, parent: el.parentNode, next: el.nextSibling });
+  }
+  function syncPhoneChrome(m) {
+    for (const rec of phoneChrome) {
+      if (m) {
+        if (rec.el.parentNode !== rec.parent) rec.parent.insertBefore(rec.el, rec.next && rec.next.parentNode === rec.parent ? rec.next : null);
+      } else if (rec.el.parentNode) rec.el.remove();
+    }
+    if (!m) {
+      for (const id of ['palette', 'dock', 'side']) {
+        const el = document.getElementById(id); if (!el) continue;
+        el.classList.remove('m-sheet');
+        el.style.height = ''; el.style.top = ''; el.style.transform = ''; el.style.transition = '';
+      }
+    } else {
+      for (const id of ['palette', 'dock', 'side']) { const el = document.getElementById(id); if (el) el.classList.add('m-sheet'); }
+    }
+  }
   function sheetHead(el, title, extra) {
     const h = document.createElement('div'); h.className = 'm-sh-h';
     h.innerHTML = `<i class="m-grab"></i><div class="m-sh-row"><span class="m-sh-t">${title}</span>${extra || ''}<button class="m-x" aria-label="Close">${ic('i-x')}</button></div>`;
-    el.prepend(h); h.querySelector('.m-x').onclick = () => setSheet(null); dragClose(el, h); return h;
+    el.prepend(h); trackPhoneChrome(h); h.querySelector('.m-x').onclick = () => setSheet(null); dragClose(el, h); return h;
   }
 
   function build() {
@@ -75,7 +98,7 @@
     const chips = document.createElement('div'); chips.className = 'm-chips';
     const cats = $$('.pcat', pal).map((c) => c.dataset.cat);
     chips.innerHTML = ['All', ...cats].map((c, i) => `<button class="m-chip${i ? '' : ' on'}" data-c="${c}">${c}</button>`).join('');
-    $('.pal-search', pal).after(chips);
+    $('.pal-search', pal).after(chips); trackPhoneChrome(chips);
     chips.onclick = (e) => { const b = e.target.closest('.m-chip'); if (!b) return; $$('.m-chip', chips).forEach((x) => x.classList.toggle('on', x === b)); filterCat(b.dataset.c); track.scrollLeft = 0; requestAnimationFrame(() => window.Mobile_orbit()); b.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' }); };
     function filterCat(c) { $$('.pitem', track).forEach((it) => it.classList.toggle('m-off', c !== 'All' && it.dataset.cat !== c)); $$('.pcat', pal).forEach((h) => { const on = c === 'All' || h.dataset.cat === c; h.classList.toggle('m-off', !on); h.nextElementSibling.classList.toggle('m-off', !on); if (on) { h.classList.remove('closed'); h.nextElementSibling.classList.remove('closed'); } }); }
     $('#palSearch').setAttribute('enterkeyhint', 'search');
@@ -95,7 +118,7 @@
     // symbol bar for the code editor
     const syms = ['Tab', '{', '}', '(', ')', ';', '=', '"', '<', '>', '[', ']', '&', '|', '!', '+', '-', '*', '/', '#', "'", '_', ':', ','];
     const sb = document.createElement('div'); sb.className = 'm-symbar m-only'; sb.innerHTML = syms.map((s) => `<button data-s="${s.replace(/"/g, '&quot;')}">${s.replace(/</g, '&lt;')}</button>`).join('');
-    $('#codeWrap').after(sb);
+    $('#codeWrap').after(sb); trackPhoneChrome(sb);
     sb.addEventListener('pointerdown', (e) => e.preventDefault());   // keep the keyboard up
     sb.onclick = (e) => { const b = e.target.closest('[data-s]'); if (!b) return; const ta = $('#code'); const t = b.dataset.s === 'Tab' ? '  ' : b.dataset.s;
       ta.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: t, bubbles: true, cancelable: true }));
@@ -364,7 +387,7 @@
     const m = MQ.matches, entered = m && !document.body.classList.contains('m');
     document.body.classList.toggle('m', m);
     if (m && !built && window.app && window.app.editor) build();
-    if (built) { relocate(m); window.Mobile_track && window.Mobile_track(m); }
+    if (built) { syncPhoneChrome(m); relocate(m); window.Mobile_track && window.Mobile_track(m); }
     if (!m) setSheet(null);
     // Entering the phone layout (or opening on one) refits. A desktop fit near 177%
     // otherwise stays put and clips the breadboard once the canvas is ~500px wide.
@@ -375,5 +398,5 @@
     if (window.app && window.app.editor) window.app.editor.setHint();
   }
   window.addEventListener('DOMContentLoaded', () => { apply(); if (MQ.addEventListener) MQ.addEventListener('change', apply); else MQ.addListener(apply); if (document.body.classList.contains('m')) setTimeout(() => fitIfReady(window.app && window.app.editor, true), 200); });
-  window.Mobile = { setSheet, openDock, fitIfReady };
+  window.Mobile = { setSheet, openDock, fitIfReady, sheetHead, syncPhoneChrome };
 })();

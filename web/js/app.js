@@ -279,6 +279,8 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     b.disabled = !!on;
     b.classList.toggle('spinning', !!on);
     b.setAttribute('aria-busy', on ? 'true' : 'false');
+    const label = b.querySelector('span');
+    if (label) label.textContent = on ? 'Compiling…' : 'Run';
   }
   function retryAfterSeconds(r) {
     const h = r && r.headers && r.headers.get && r.headers.get('Retry-After');
@@ -330,12 +332,15 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     serialAppend(`\n[compiled ${res.cached ? '(cached)' : ''}${res.netShim ? ' + QemuNet shim' : ''}; starting QEMU]\n`);
     run.bid = res.id; run.lastN = 0; run.tries = 0; connectRun(run);
   }
+  app.startRun = startRun;
   // Resumable run websocket: the server keeps QEMU alive for a grace period when the socket drops (ngrok heartbeat
   // timeouts, network blips). We reconnect with backoff and resume the same session from the last message we saw.
   function connectRun(run) {
     const resume = !!run.sid;
     const q = resume ? `?sid=${run.sid}&since=${run.lastN}` : '';
-    const ws = run.ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + location.pathname.replace(/[^/]*$/, '') + 'api/run/' + run.bid + q);
+    let ws;
+    try { ws = run.ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + location.pathname.replace(/[^/]*$/, '') + 'api/run/' + run.bid + q); }
+    catch (e) { setRunBusy(false); setStatus('err', 'connection lost'); app.run = null; return; }
     ws.onopen = () => {
       ws.send(JSON.stringify({ t: 'sync', on: true })); ws.send(JSON.stringify({ t: 'i2cfast', on: new URLSearchParams(location.search).get('i2cfast') !== '0' })); if (!app.netlog.enabled) ws.send(JSON.stringify({ t: 'netlog', on: false })); if (new URLSearchParams(location.search).get('gcache') === '0') ws.send(JSON.stringify({ t: 'gcache', on: false }));
       app.spiMask = -1; spiCfg(); setStatus('run', 'running (QEMU)'); document.body.classList.remove('reconnecting'); run.tq = run.tq || performance.now();
@@ -359,6 +364,8 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const lost = () => {
       if (app.run !== run || run.ws !== ws) return;
       run.ws = null; ws.onclose = ws.onmessage = null; try { ws.close(); } catch (e) { /* already closed */ }
+      // A dropped socket is no longer a compile. The Run control must not stay on Compiling….
+      setRunBusy(false);
       if (run.ended || !run.sid) { setStatus(run.ended ? 'idle' : 'err', run.ended ? 'QEMU exited' : 'connection lost'); document.body.classList.remove('reconnecting'); app.run = null; return; }
       if (!run.lostAt || run.tries === 0) run.lostAt = Date.now();
       if (run.grace && Date.now() - run.lostAt > run.grace + 600000) { setStatus('err', 'connection lost'); document.body.classList.remove('reconnecting'); serialAppend('\n[connection lost — run expired on the server]\n'); app.run = null; return; }
@@ -889,7 +896,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     $('#bRun').onclick = startRun; $('#bStop').onclick = stopRun; $('#bReset').onclick = () => { app.sim.resetState(); app.editor.render(); };
     $('#bUndo').onclick = () => app.editor.undo(); $('#bRedo').onclick = () => app.editor.redo(); $('#bRot').onclick = () => app.editor.rotateSel(); $('#bDel').onclick = () => app.editor.deleteSel();
     $('#bSave').onclick = save; $('#bDownload').onclick = download; $('#fileIn').onchange = (e) => { if (e.target.files[0]) openFile(e.target.files[0]); e.target.value = ''; }; $('#bFit').onclick = () => { if (viewMode === '3d' && app.view3d && app.view3d.fit) app.view3d.fit(); else if (viewMode === 'schematic' && app.schematic) app.schematic.fit(); else app.editor.fit(); };
-    $('#tabs').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; document.querySelectorAll('#tabs button').forEach((x) => x.classList.toggle('on', x === b)); document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('on', t.id === 'tab-' + b.dataset.tab)); if (b.dataset.tab === 'dev') { renderDevices(); drawIr(); } if (b.dataset.tab === 'net') { app.netlog.dirty = true; app.netlog.render(); } };
+    $('#tabs').onclick = (e) => { if (!UI.dockTabClick(e)) return; const tab = UI.restoreDock(); if (tab === 'dev') { renderDevices(); drawIr(); } if (tab === 'net') { app.netlog.dirty = true; app.netlog.render(); } };
     $('#selMode').onchange = (e) => { beforeEdit(); app.proj.mode = e.target.value; autosave(); modeNote(); renderFileTabs(); };
     $('#fileTabs').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; syncCode(); if (b.dataset.f === '+') { const n = prompt('File name (e.g. config.h)'); if (!n || !/^[\w.-]+\.(h|hpp|c|cpp|ino)$/.test(n)) return; beforeEdit(); app.proj.files[n] = ''; autosave(); app.file = n; } else app.file = b.dataset.f; renderFileTabs(); loadCode(); };
     $('#code').addEventListener('beforeinput', beforeEdit); $('#inDefines').addEventListener('beforeinput', beforeEdit);

@@ -182,11 +182,24 @@ test('hint bar tells you to select a part, then wire from pins', () => {
   const { ed, hint } = editor();
   ed.setHint();
   assert.match(hint.textContent, /Click a part to select it\. Click a pin, then another pin, to wire/);
+  assert.doesNotMatch(hint.textContent, /F flip/);
   classes.add('m');
   try {
     ed.setHint();
     assert.equal(hint.textContent, 'Tap a part to select it. Tap a pin, then another pin, to wire');
   } finally { classes.delete('m'); }
+});
+
+test('F flip is hinted only when the selected part can flip', () => {
+  const { ed, hint } = editor();
+  ed.select({ part: 'R1' });
+  assert.match(hint.textContent, /R rotate/);
+  assert.match(hint.textContent, /F flip/);
+  ed.proj.parts.push({ id: 'SW1', type: 'pushbutton', x: 40, y: 40, rot: 0, props: {} });
+  ed.select({ part: 'SW1' });
+  assert.match(hint.textContent, /R rotate/);
+  assert.doesNotMatch(hint.textContent, /F flip/);
+  assert.equal(global.Parts.canPhysicalFlip(ed.part('SW1')), false);
 });
 
 test('undo matches z/Z and y/Y, Shift+Z redoes, and a value field is left alone', () => {
