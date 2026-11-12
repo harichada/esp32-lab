@@ -312,6 +312,75 @@ test('button zoom keeps the world point at the clear-rect center', () => {
   assert.ok(Math.abs(back.y - before.y) < 1e-6);
 });
 
+function overlaps(a, b) {
+  return a.left < b.right - 0.5 && a.right > b.left + 0.5 && a.top < b.bottom - 0.5 && a.bottom > b.top + 0.5;
+}
+function gapClear(a, b, gap) {
+  return a.right <= b.left - gap + 0.75 || a.left >= b.right + gap - 0.75 || a.bottom <= b.top - gap + 0.75 || a.top >= b.bottom + gap - 0.75;
+}
+
+test('clear area uses the zoom stack only where it sits and keeps the larger scale', () => {
+  // 375px phone chrome: header, ticker, Make a copy, + Parts, the zoom stack,
+  // the hint, and the bottom controls. The stack is a short column on the right.
+  const w = 375, h = 667;
+  const stage = { left: 0, top: 0, right: w, bottom: h, width: w, height: h };
+  const blockers = [
+    { left: 0, top: 0, right: w, bottom: 54 },
+    { left: 0, top: 54, right: w, bottom: 78 },
+    { left: 12, top: 90, right: 137, bottom: 130 },
+    { left: 263, top: 90, right: 363, bottom: 134 },
+    { left: 313, top: 142, right: 367, bottom: 296 },
+    { left: 12, top: 445, right: 363, bottom: 491 },
+    { left: 12, top: 501, right: 279, bottom: 555 },
+    { left: w / 2 - 38, top: 577, right: w / 2 + 38, bottom: 653 },
+    { left: w - 92, top: 577, right: w - 16, bottom: 653 },
+  ];
+  const stack = blockers[4];
+  const limits2 = { min: 0.15, max: 3 }, limitsS = { min: 0.12, max: 2.4 };
+  const legacy = Pinch.clearRect(stage, blockers, 8);
+  // The old inset reserves the stack's width for the whole height.
+  assert.ok(legacy.right <= stack.left, 'legacy clear is a full-height column');
+  assert.ok(legacy.bottom > stack.bottom + 40, 'that column continues below the stack');
+
+  const sheet = { x: 0, y: 0, w: 700, h: 128 };
+  const picked = Pinch.bestClear(stage, blockers, sheet, 8, 14, limitsS);
+  const oldS = Pinch.fitView(sheet, stage, legacy, 14, limitsS).s;
+  const newS = Pinch.fitView(sheet, stage, picked, 14, limitsS).s;
+  assert.ok(newS > oldS + 0.05, 'wide schematic ' + oldS.toFixed(3) + ' -> ' + newS.toFixed(3));
+  assert.ok(picked.right > stack.left + 8, 'the sheet uses the width under the stack');
+  assert.ok(picked.top >= stack.bottom + 7, 'and stays below the stack');
+  for (const b of blockers) {
+    assert.equal(overlaps(picked, b), false, 'clear rect hits a control');
+    assert.equal(gapClear(picked, b, 8), true, 'clear rect is within 8px of a control');
+  }
+  const fitted = Pinch.fitView(sheet, stage, picked, 14, limitsS);
+  for (const c of corners(sheet)) {
+    const p = screenOf(fitted, c, stage);
+    assert.ok(p.x >= picked.left + 14 - 0.5 && p.x <= picked.right - 14 + 0.5);
+    assert.ok(p.y >= picked.top + 14 - 0.5 && p.y <= picked.bottom - 14 + 0.5);
+    for (const b of blockers) assert.equal(overlaps({ left: p.x, top: p.y, right: p.x, bottom: p.y }, b), false);
+  }
+
+  // A tall circuit that is already limited by the hint stays in the column.
+  const tall = { x: 0, y: 0, w: 270, h: 360 };
+  const tallPick = Pinch.bestClear(stage, blockers, tall, 8, 14, limits2);
+  const tallOld = Pinch.fitView(tall, stage, legacy, 14, limits2).s;
+  const tallNew = Pinch.fitView(tall, stage, tallPick, 14, limits2).s;
+  assert.ok(tallNew + 1e-6 >= tallOld, 'tall circuit does not shrink');
+  for (const b of blockers) assert.equal(overlaps(tallPick, b), false);
+
+  const frame = { stage, blockers, clear: legacy };
+  assert.equal(Pinch.resolveClear(frame, sheet, 14, limitsS, false), legacy);
+  const forced = Pinch.resolveClear(frame, sheet, 14, limitsS, true);
+  const view = Pinch.fitView(sheet, stage, forced, 14, limitsS);
+  const center = { x: (forced.left + forced.right) / 2, y: (forced.top + forced.bottom) / 2 };
+  const zoomed = Pinch.zoomAbout(view, 1.25, center, stage, { min: 0.12, max: 4 });
+  const back = Pinch.worldAt(zoomed, center, stage);
+  const at = Pinch.worldAt(view, center, stage);
+  assert.ok(Math.abs(zoomed.s - view.s * 1.25) < 1e-9);
+  assert.ok(Math.abs(back.x - at.x) < 1e-6 && Math.abs(back.y - at.y) < 1e-6);
+});
+
 test('a blocker that would collapse the window is ignored', () => {
   const stage = { left: 0, top: 0, right: 390, bottom: 800 };
   const column = { left: 50, top: 180, right: 390, bottom: 520 };

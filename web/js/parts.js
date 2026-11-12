@@ -32,8 +32,16 @@
   const WIRE_R = 1e-3;   // 1 mΩ: a 0 Ω entry is stamped as a tiny ideal wire, not as 1 Ω
   function stampResistance(raw, fallback) {
     const p = parseProp(raw, fallback);
-    if (p.ok && p.value === 0) return { value: WIRE_R, ok: true, wire: true };
-    return { value: p.value, ok: p.ok, wire: false };
+    if (!p.ok) return { value: fallback, ok: false, wire: false };
+    // 0 Ω is a short. Stamp 1 mΩ and let warn() say so — do not pretend it was the default.
+    if (p.value === 0) return { value: WIRE_R, ok: true, wire: true, short: true };
+    // A negative resistance is not a part value. Fall back and warn; never stamp it.
+    if (!(p.value > 0)) return { value: fallback, ok: false, wire: false };
+    return { value: p.value, ok: true, wire: false };
+  }
+  function resistanceWarning(raw, used, fallback) {
+    if (used && used.short) return `short circuit: ${JSON.stringify(raw)} Ω is below the minimum, using ${fmt(WIRE_R, 'Ω')}`;
+    if (used && !used.ok) return invalidValueWarning('resistance', raw, fallback, 'Ω');
   }
   // Oscilloscope probe channel: always 1..4. Non-numeric values fall back to 1.
   function scopeChannel(ch) {
@@ -193,7 +201,8 @@
     warn(p, cx) {
       const used = stampResistance(p.props.r, this.props.r);
       const msgs = [];
-      if (!used.ok) msgs.push(invalidValueWarning('resistance', p.props.r, this.props.r, 'Ω'));
+      const valueMsg = resistanceWarning(p.props.r, used, this.props.r);
+      if (valueMsg) msgs.push(valueMsg);
       const e = cx.main(p); if (e) { const i = cx.I(e); if (i * i * e.r > 0.5) msgs.push('resistor overheating (>0.5 W)'); }
       return msgs.join('; ') || undefined;
     },
@@ -344,8 +353,7 @@
     svg(p) { const a = -135 + 270 * (+p.props.pos); return [0, 10, 20].map((v) => `<line x1="${v}" y1="0" x2="${v}" y2="-6" class="lead"/>`).join('') + `<rect x="-6" y="-30" width="32" height="24" rx="3" class="pot-body" filter="url(#fShadow)"/><path d="M2.2 -10.2 A11 11 0 1 1 17.8 -10.2" class="pot-track"/><g transform="rotate(${a} 10 -18)"><circle cx="10" cy="-18" r="9" class="pot-knob" fill="url(#gKnob)"/>${Array.from({ length: 18 }, (_, k) => `<line x1="10" y1="-27" x2="10" y2="-25.4" stroke="#0009" stroke-width=".8" transform="rotate(${k * 20} 10 -18)"/>`).join('')}<circle cx="10" cy="-18" r="5.5" fill="#2a2f37" stroke="#4a525d" stroke-width=".5"/><line x1="10" y1="-18" x2="10" y2="-25" class="pot-ind"/></g>` + pinDots(this.pins(p)) + `<text x="10" y="-34" class="plbl">${Math.round(p.props.pos * 100)}%</text>`; },
     stamp(p, cx) { const r = stampResistance(p.props.r, this.props.r).value, x = Math.min(0.999, Math.max(0.001, +p.props.pos)); cx.add({ kind: 'R', a: cx.node(p, '1'), b: cx.node(p, 'W'), r: r * x }, p); cx.add({ kind: 'R', a: cx.node(p, 'W'), b: cx.node(p, '2'), r: r * (1 - x) }, p); },
     warn(p) {
-      const used = stampResistance(p.props.r, this.props.r);
-      if (!used.ok) return invalidValueWarning('resistance', p.props.r, this.props.r, 'Ω');
+      return resistanceWarning(p.props.r, stampResistance(p.props.r, this.props.r), this.props.r);
     },
     wheel(p, d) { p.props.pos = Math.min(1, Math.max(0, +p.props.pos - d * 0.05)); return true; },
   });
@@ -968,7 +976,7 @@
     return { x: seat.x, y: seat.y, moved: seat.x !== part.x || seat.y !== part.y };
   }
 
-  const api = { T, fmt, parseVal, parseProp, stampResistance, WIRE_R, scopeChannel, bands, espGpio, ESP_TOP, ESP_BOT, INPUT_ONLY, STRAPPING, ADC1, ADC2, rotPt, orientPt, pinWorld, bodySpin, partTransform, canPhysicalFlip, isTwoTerminal, ALLOW_MIRROR_MULTIPIN, NO_FLIP_TIP, seating, placeNewPart, placeDroppedPart, placeOnEmptyStrips, reseat, G, VTH, esc, LEDCOL };
+  const api = { T, fmt, parseVal, parseProp, stampResistance, resistanceWarning, invalidValueWarning, WIRE_R, scopeChannel, bands, espGpio, ESP_TOP, ESP_BOT, INPUT_ONLY, STRAPPING, ADC1, ADC2, rotPt, orientPt, pinWorld, bodySpin, partTransform, canPhysicalFlip, isTwoTerminal, ALLOW_MIRROR_MULTIPIN, NO_FLIP_TIP, seating, placeNewPart, placeDroppedPart, placeOnEmptyStrips, reseat, G, VTH, esc, LEDCOL };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.Parts = api;
 })(typeof window !== 'undefined' ? window : globalThis);
