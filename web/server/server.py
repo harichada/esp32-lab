@@ -4,8 +4,12 @@
 Run:  python3 server.py [--port 8765]      then open http://127.0.0.1:8765/
 Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/qemu-system-xtensa)
       QEMU_ROM_DIR (dir with esp32-v3-rom.bin), ARDUINO_CLI, ESP32_FQBN
+      Disk bounds (web/README.md): SIM_MIN_FREE_MB, SIM_BUILD_CACHE_DIR,
+      SIM_IMAGE_CACHE_MAX_MB, SIM_CORE_CACHE_MAX_MB, SIM_SKETCH_CACHE_MAX_MB,
+      SIM_ORPHAN_MAX_AGE_S and the matching *_MAX_AGE_S knobs.
 """
 import asyncio, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, argparse
+import diskkeep
 from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 import secrets
@@ -36,6 +40,7 @@ EFUSE_VREF_CODE = int(os.environ.get('SIM_ADC_VREF_CODE', '16'))   # 0x10 = '-0'
 MAX_RUNS = int(os.environ.get('SIM_MAX_RUNS', '4'))
 app = FastAPI(title='ESP32 sim backend')
 runs = {}
+_live_images = set()   # firmware ids a QEMU process still has open
 _compile_lock = asyncio.Lock()
 # ---------------- public-exposure hardening ----------------
 TOKEN = os.environ.get('SIM_TOKEN', '')
@@ -132,8 +137,17 @@ def merged_image(outdir: Path) -> Path:
 async def compile_progress():
     return {'active': PROGRESS['active'], 'elapsed': round(time.time() - PROGRESS['t0'], 1) if PROGRESS['active'] else 0, 'log': PROGRESS['log'][-20000:]}
 
+def _cache_roots():
+    return diskkeep.cache_roots_from_env()
+
 @app.on_event('startup')
 async def _prewarm():
+    try:
+        summary = diskkeep.startup(builds=BUILDS, cache_roots=_cache_roots(),
+                                   temp_roots=[Path(tempfile.gettempdir())], limits=diskkeep.Limits.from_env())
+        print('disk startup', summary, flush=True)
+    except Exception as e:
+        print('disk startup failed:', repr(e), flush=True)
     async def go():
         try: await compile_({'sketch': 'void setup(){}\nvoid loop(){}'}); print('prewarm compile done', flush=True)
         except Exception as e: print('prewarm failed:', repr(e), flush=True)
@@ -160,48 +174,77 @@ async def compile_(req: dict):
     bdir = BUILDS / key
     img = bdir / 'flash.bin'
     if img.exists():
-        return {'ok': True, 'id': key, 'cached': True, 'log': sanitize((bdir / 'log.txt').read_text()), 'netShim': net, 'net': netmode}
+        return _cached_compile(key, bdir, net, netmode)
     async with _compile_lock:
-        sk = bdir / 'sketch'; out = bdir / 'out'
-        if sk.exists(): shutil.rmtree(sk)
-        sk.mkdir(parents=True); out.mkdir(exist_ok=True)
-        (sk / 'sketch.ino').write_text(sketch)
-        for name, content in files.items():
-            if re.fullmatch(r'[A-Za-z0-9_.-]+\.(h|hpp|c|cpp|ino)', name) and name != 'sketch.ino':
-                (sk / name).write_text(content)
-        cmd = [CLI, 'compile', '-b', FQBN, '--output-dir', str(out), '--warnings', 'none']
-        if defines:
-            cmd += ['--build-property', 'compiler.cpp.extra_flags=' + ' '.join('-D' + d for d in defines),
-                    '--build-property', 'compiler.c.extra_flags=' + ' '.join('-D' + d for d in defines)]
-        if netmode == 'lwip':
-            cmd += ['--library', str(SHIMS / 'QemuEth'), '--build-property', 'compiler.c.elf.extra_flags=-Wl,--wrap=lwip_getaddrinfo,--wrap=lwip_connect']
-        elif net: cmd += ['--library', str(SHIMS / 'QemuNet')]
-        for n in simlibs: cmd += ['--library', str(SHIMS / n)]   # simulator back ends: NeoPixel show() -> UART frame, DHT read() -> lock-step bits
-        cmd.append(str(sk))
-        t0 = time.time()
-        cmd[2:2] = ['-v', '--no-color']
-        p = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-        buf = []; PROGRESS.update(active=True, log='', t0=t0)
-        async def _pump():
-            async for ln in p.stdout:
-                t = ln.decode(errors='replace'); buf.append(t)
-                PROGRESS['log'] = sanitize(''.join(buf[-200:]).replace(str(sk) + '/', ''))
-            await p.wait()
+        if img.exists():
+            return _cached_compile(key, bdir, net, netmode)
+        roots = _cache_roots()
         try:
-            await asyncio.wait_for(_pump(), COMPILE_TIMEOUT)
-        except asyncio.TimeoutError:
-            p.kill(); await p.wait(); shutil.rmtree(bdir, ignore_errors=True); PROGRESS['active'] = False
-            return JSONResponse({'ok': False, 'log': sanitize(''.join(buf[-200:])) + f'\ncompile timed out ({COMPILE_TIMEOUT}s) - the first build after a restart compiles the ESP32 core; press Run again.'})
-        PROGRESS['active'] = False
-        log = ''.join(buf[-300:]) if len(buf) > 300 else ''.join(buf).replace(str(sk) + '/', '')
-        log = sanitize(log)
-        log += f'\n[{time.time() - t0:.1f}s] compile {"(+QemuEth: open_eth + lwIP)" if netmode == "lwip" else "(+QemuNet shim)" if net else ""}\n'
-        (bdir / 'log.txt').write_text(log)
-        if p.returncode != 0:
-            return JSONResponse({'ok': False, 'log': log, 'netShim': net, 'net': netmode})
-        shutil.copy(merged_image(out), img)
-        (bdir / 'net.txt').write_text(netmode or '')
-        return {'ok': True, 'id': key, 'cached': False, 'log': log, 'netShim': net, 'net': netmode}
+            diskkeep.prepare_for_compile(builds=BUILDS, cache_roots=roots, temp_roots=[Path(tempfile.gettempdir())],
+                                         limits=diskkeep.Limits.from_env(), keep_images=set(_live_images))
+        except diskkeep.LowDisk as e:
+            return JSONResponse({'ok': False, 'log': e.message}, 507)
+        # .last-used is stamped when arduino-cli starts; a couple of seconds of slack covers that.
+        started = time.time() - 2
+        try:
+            with diskkeep.request_build_dir() as work:
+                return await _compile_in(work, bdir, key, sketch, files, defines, net, netmode, simlibs)
+        finally:
+            try: diskkeep.forget_sketch_builds_since(roots, started)
+            except Exception as e: print('sketch cache cleanup failed:', repr(e))
+            PROGRESS['active'] = False
+
+def _cached_compile(key, bdir, net, netmode):
+    try: diskkeep.touch_firmware(bdir / 'flash.bin')
+    except OSError: pass
+    try: log = sanitize((bdir / 'log.txt').read_text())
+    except OSError: log = ''
+    return {'ok': True, 'id': key, 'cached': True, 'log': log, 'netShim': net, 'net': netmode}
+
+async def _compile_in(work, bdir, key, sketch, files, defines, net, netmode, simlibs):
+    """Run arduino-cli with --output-dir inside `work`. The caller deletes `work` and the sketch build tree."""
+    sk = work / 'sketch'; out = work / 'out'
+    sk.mkdir(parents=True); out.mkdir()
+    (sk / 'sketch.ino').write_text(sketch)
+    for name, content in files.items():
+        if re.fullmatch(r'[A-Za-z0-9_.-]+\.(h|hpp|c|cpp|ino)', name) and name != 'sketch.ino':
+            (sk / name).write_text(content)
+    # --build-path is intentionally not set. On arduino-cli 1.x it disables the core cache and
+    # rebuilds the ESP32 core on every sketch (minutes, not the ~8 s warm Blink).
+    cmd = [CLI, 'compile', '-b', FQBN, '--output-dir', str(out), '--warnings', 'none']
+    if defines:
+        cmd += ['--build-property', 'compiler.cpp.extra_flags=' + ' '.join('-D' + d for d in defines),
+                '--build-property', 'compiler.c.extra_flags=' + ' '.join('-D' + d for d in defines)]
+    if netmode == 'lwip':
+        cmd += ['--library', str(SHIMS / 'QemuEth'), '--build-property', 'compiler.c.elf.extra_flags=-Wl,--wrap=lwip_getaddrinfo,--wrap=lwip_connect']
+    elif net: cmd += ['--library', str(SHIMS / 'QemuNet')]
+    for n in simlibs: cmd += ['--library', str(SHIMS / n)]   # simulator back ends: NeoPixel show() -> UART frame, DHT read() -> lock-step bits
+    cmd.append(str(sk))
+    t0 = time.time()
+    cmd[2:2] = ['-v', '--no-color']
+    p = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+    buf = []; PROGRESS.update(active=True, log='', t0=t0)
+    async def _pump():
+        async for ln in p.stdout:
+            t = ln.decode(errors='replace'); buf.append(t)
+            PROGRESS['log'] = sanitize(''.join(buf[-200:]).replace(str(sk) + '/', ''))
+        await p.wait()
+    try:
+        await asyncio.wait_for(_pump(), COMPILE_TIMEOUT)
+    except asyncio.TimeoutError:
+        p.kill(); await p.wait()
+        return JSONResponse({'ok': False, 'log': sanitize(''.join(buf[-200:])) + f'\ncompile timed out ({COMPILE_TIMEOUT}s) - the first build after a restart compiles the ESP32 core; press Run again.'})
+    log = ''.join(buf[-300:]) if len(buf) > 300 else ''.join(buf).replace(str(sk) + '/', '')
+    log = sanitize(log)
+    log += f'\n[{time.time() - t0:.1f}s] compile {"(+QemuEth: open_eth + lwIP)" if netmode == "lwip" else "(+QemuNet shim)" if net else ""}\n'
+    if p.returncode != 0:
+        return JSONResponse({'ok': False, 'log': log, 'netShim': net, 'net': netmode})
+    try:
+        produced = merged_image(out)
+    except RuntimeError as e:
+        return JSONResponse({'ok': False, 'log': log + '\n' + str(e)})
+    diskkeep.publish_firmware(bdir, produced, log, netmode or '')
+    return {'ok': True, 'id': key, 'cached': False, 'log': log, 'netShim': net, 'net': netmode}
 
 # ---------------- raw Ethernet frame tap (real lwIP UDP <-> browser mock devices) ----------------
 import socket, struct
@@ -396,8 +439,37 @@ async def session_main(ws, bid, img):
         asyncio.ensure_future(_forget())
 
 async def _session_main(ws, bid, img):
-    link = ws
+    """One QEMU run. The private flash copy is removed when this returns, including a failed start."""
+    safe = re.sub(r'[^0-9a-f]', '', bid)
+    if safe: _live_images.add(safe)
     tmp = Path(tempfile.mkdtemp(prefix='esp32run-'))
+    hold = {}
+    try:
+        await _qemu_session(ws, bid, img, tmp, hold)
+    finally:
+        proc = hold.get('proc')
+        if proc is not None and proc.returncode is None:
+            try: proc.kill()
+            except ProcessLookupError: pass
+            try: await proc.wait()
+            except Exception: pass
+        runs.pop(id(ws), None)
+        for srv in (hold.get('gsrv'), hold.get('ssrv')):
+            if srv is not None:
+                try: srv.close()
+                except Exception: pass
+        for h_ in hold.get('hsrvs') or []:
+            try: h_.close()
+            except Exception: pass
+        for t_ in hold.get('taps') or []:
+            try: t_.close()
+            except Exception: pass
+        udp_taps.pop(id(ws), None)
+        _live_images.discard(safe)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+async def _qemu_session(ws, bid, img, tmp, hold):
+    link = ws
     flash = tmp / 'flash.bin'; shutil.copy(img, flash)      # private copy (NVS writes)
     gsock, ssock = str(tmp / 'gpio.sock'), str(tmp / 'uart.sock')
     # eFuse image (BLK0..3 = 124 bytes). BLK0 word4 bits[12:8] = ADC_VREF (sign-magnitude, 7 mV steps from 1100 mV):
@@ -410,7 +482,7 @@ async def _session_main(ws, bid, img):
     async def on_uart(r, w):
         conns['s'] = (r, w); ready.set() if 'g' in conns else None
     netmode = (img.parent / 'net.txt').read_text().strip() if (img.parent / 'net.txt').exists() else ''
-    pending = {}; nid = [0]; hsrvs = []; taps = []
+    pending = {}; nid = [0]; hsrvs = []; taps = []; hold['hsrvs'] = hsrvs; hold['taps'] = taps
     nl_on = [NETLOG]; t_run = time.time()
     def nlog(k, msg, ok=True, **kw):
         if not nl_on[0]: return
@@ -460,8 +532,8 @@ async def _session_main(ws, bid, img):
         tap.peer = ('127.0.0.1', qport); taps.append(tr); udp_taps[id(ws)] = tap
         nic = ['-net', 'nic,model=open_eth', '-net', 'user,' + ','.join(fw),
                '-net', f'socket,udp=127.0.0.1:{tport},localaddr=127.0.0.1:{qport}']
-    gsrv = await asyncio.start_unix_server(on_gpio, gsock)
-    ssrv = await asyncio.start_unix_server(on_uart, ssock)
+    gsrv = await asyncio.start_unix_server(on_gpio, gsock); hold['gsrv'] = gsrv
+    ssrv = await asyncio.start_unix_server(on_uart, ssock); hold['ssrv'] = ssrv
     args = [QEMU, '-display', 'none', '-machine', 'esp32', '-drive', f'file={flash},if=mtd,format=raw', *nic,
             '-chardev', f'socket,id=ser,path={ssock}', '-serial', 'chardev:ser',
             '-chardev', f'socket,id=gp,path={gsock}', '-global', 'driver=esp32.gpio,property=chardev,value=gp',
@@ -470,7 +542,7 @@ async def _session_main(ws, bid, img):
     if ICOUNT: args += ['-icount', ICOUNT]
     if bid in runs: pass
     proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-    runs[id(ws)] = proc
+    hold['proc'] = proc; runs[id(ws)] = proc
     await ws.send_json({'t': 'status', 'msg': 'qemu started', 'pid': proc.pid, 'cap_s': RUN_CAP})
     nlog('wifi', 'network: ' + ('open_eth NIC + slirp (DHCP 10.0.2.x, virtual devices at 10.0.2.100:80/8060/8080, LAN UDP via frame tap)' if netmode == 'lwip' else 'UART shim' if netmode else 'no network library in this sketch'))
     try:
@@ -478,7 +550,13 @@ async def _session_main(ws, bid, img):
     except asyncio.TimeoutError:
         out = (await proc.stdout.read(4000)).decode(errors='replace') if proc.stdout else ''
         await ws.send_json({'t': 'error', 'msg': 'qemu did not connect: ' + sanitize(out)})
-        proc.kill(); await ws.close(); return
+        if proc.returncode is None:
+            proc.kill()
+            try: await proc.wait()
+            except Exception: pass
+        try: await ws.close()
+        except Exception: pass
+        return
     gr, gw = conns['g']; sr, sw = conns['s']
     gc = {'on': GPIO_CACHE, 'cache': {}, 'ep': 0, 'muxver': 0, 'S': None, 'seq': 0, 'pend': {}, 'out': None, 'hits': 0,
           'i2cfast': False, 'i2cack': {}, 'i2cpend': None, 'lastI': (0, 0), 'bwait': False}

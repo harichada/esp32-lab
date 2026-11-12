@@ -40,14 +40,77 @@ The circuit solver uses modified nodal analysis with Newton–Raphson, and backw
 - Key taps are held until the firmware has had time to scan and debounce them, and the server caches GPIO-input answers per pad state (`SIM_GPIO_CACHE=0` / `?gcache=0` to disable) so lock-step keyboard scanning stays fast through a tunnel.
 
 ## How it fits together
-- `server/server.py`: FastAPI. `/api/compile` runs arduino-cli. `WS /api/run/{id}` starts QEMU and relays the GPIO bridge, UART and the HTTP guest-forward.
+- `server/server.py`: FastAPI. `/api/compile` runs arduino-cli. `WS /api/run/{id}` starts QEMU and relays the GPIO bridge, UART and the HTTP guest-forward. `server/diskkeep.py` bounds the disk those two use.
 - `server/qemu-patch/`: the QEMU patch plus its BASE_COMMIT.
 - `server/shims/QemuEth`: the open_eth + lwIP WiFi replacement, with a DNS hook for `*.sim.internal` (and legacy `*.wokwi.internal`).
 - `server/shims/QemuNet`: a UART-only fallback, used when the request asks for `"net":"shim"`.
 - `js/`: the editor, solver, parts, the runtime bridge and the mock devices.
 
+## Disk
+
+`/api/compile` shells out to `arduino-cli compile` (not esp-idf). A warm Blink compile used to leave about **66.3 MiB** (69,523,776 bytes) behind, which matches the production drop from ~940 MB free to ~877 MB during ordinary use. Measured with arduino-cli 1.5.1, esp32 core 3.3.12, FQBN `esp32:esp32:esp32doit-devkit-v1`, and `web/examples/Blink.ino`, after the core archive already existed. The first compile on an empty cache also writes the core archive below (2,794,876 bytes) and a slightly larger sketch tree (28,087,018 bytes).
+
+What one warm compile used to keep, and where:
+
+1. `{SIM_BUILD_DIR}/esp32sim-builds/<16-hex id>/` — **47,665,946 bytes**. `SIM_BUILD_DIR` defaults to the system temp dir (so this is `/tmp/esp32sim-builds/`). `setup.sh` uses `~/.esp32lab/builds`. The Docker image uses `/home/sim/builds`.
+
+    | File | Bytes |
+    |---|---:|
+    | `sketch/sketch.ino` | 707 |
+    | `sketch/build/esp32.esp32.esp32doit-devkit-v1/sketch.ino.map` | 11,483,387 |
+    | `sketch/build/.../sketch.ino.elf` | 5,704,084 |
+    | `sketch/build/.../sketch.ino.merged.bin` | 4,194,304 |
+    | `sketch/build/.../sketch.ino.bin` | 257,840 |
+    | `sketch/build/.../sdkconfig` | 113,980 |
+    | `sketch/build/.../sketch.ino.bootloader.bin` | 23,488 |
+    | `sketch/build/.../boot_app0.bin` | 8,192 |
+    | `sketch/build/.../sketch.ino.partitions.bin` | 3,072 |
+    | `sketch/build/.../build.options.json`, `partitions.csv`, `flash_args` | 905 |
+    | `out/sketch.ino.map` | 11,483,387 |
+    | `out/sketch.ino.elf` | 5,704,084 |
+    | `out/sketch.ino.merged.bin` | 4,194,304 |
+    | `out/sketch.ino.bin` | 257,840 |
+    | `out/sketch.ino.bootloader.bin` | 23,488 |
+    | `out/sketch.ino.partitions.bin` | 3,072 |
+    | `flash.bin` (the image QEMU boots) | 4,194,304 |
+    | `log.txt` (verbose log; 56 lines for Blink) | 15,508 |
+    | `net.txt` | 0 |
+
+    The `sketch/build/` tree is the ESP32 "export binaries" hook. `out/` is a second copy from `--output-dir`. `flash.bin` is a third copy of the merged image. Nothing deleted these except a compile timeout, which removed only this directory.
+
+2. `~/.cache/arduino/sketches/<MD5 of the sketch path>/` — **21,857,830 bytes**. Same elf, map, and merged image again, plus `sdkconfig`, `includes.cache`, `compile_commands.json`, and a small `sketch/` preprocess dir. The directory name is the uppercase MD5 of the absolute sketch path (a different directory for every distinct sketch). arduino-cli 1.5.1's purge still scans `$TMP/arduino` (empty in this measurement) and only drops entries older than 30 days, so this tree was never removed. `$XDG_CACHE_HOME/arduino` is used instead of `~/.cache/arduino` when that variable is set.
+
+One core archive is created on the first compile and then reused, which is what keeps the next Blink fast: `~/.cache/arduino/cores/esp32_esp32_esp32doit-devkit-v1_<hash>/core.a` (2,794,876 bytes). Installed cores and libraries (`~/.arduino15`, `~/Arduino`, or `ARDUINO_DIRECTORIES_DATA` / `ARDUINO_DIRECTORIES_USER`) are a separate, much larger tree and are not a per-compile leak.
+
+A QEMU run copies `flash.bin` to `$TMPDIR/esp32run-<random>/flash.bin` (4,194,304 bytes) plus `efuse.bin` (124 bytes) and the gpio/uart sockets. That directory was removed when a run ended normally. It was left behind if QEMU failed to connect, or if the process was killed before the cleanup at the end of the session.
+
+What happens now:
+
+- Each compile uses a fresh `esp32build-*` directory for the sketch and for `--output-dir`. It is deleted in a `finally` block after `flash.bin` is published, or the compile fails, or it times out. The matching `sketches/<MD5>` tree is deleted in that same `finally`. `--build-path` is not passed: on arduino-cli 1.x that flag turns off the core cache and rebuilds the ESP32 core every time.
+- The published entry is only `flash.bin`, `log.txt`, and `net.txt` (about 4.2 MB for Blink). Repeat runs of the same source are still a cache hit.
+- The core archive stays. It is capped by size and age, least-recently-used, and the newest archive is kept even when it is the only one over the cap. Compiled library archives under the same cache (`libraries/`), if present, are capped the same way. The installed core and library sources are never deleted.
+- On startup, orphan `esp32build-*`, `esp32run-*`, and `arduino-sketch-*` directories older than an hour are removed, and existing `out/` and `sketch/` directories left by older servers are stripped off any published image. That reclaims the historical leak without throwing away `flash.bin`.
+- QEMU's private directory is removed when the run ends: stop, QEMU exit, the resume grace after a disconnect, or a failed start. It is not removed while QEMU is still running for a reconnect, because the drive file has to stay.
+- If free space on the build or cache filesystem is under `SIM_MIN_FREE_MB`, the server drops firmware images and sketch trees (and extra core archives) first. A filesystem smaller than that floor, such as a small `/tmp` tmpfs, only has to keep 32 MB free. If the disk is still short, `/api/compile` returns `low disk: … Compile was not started.` and does not launch arduino-cli.
+
+On this machine the same Blink took 7.8 s with an empty core cache, 4.2 s once `core.a` existed, and 4.1 s when the sketch trees had been deleted first. Deleting the per-compile trees does not change the warm time. The server's ~8 s cold Blink is the same `arduino-cli compile` invocation as before.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SIM_BUILD_DIR` | system temp dir | Parent of `esp32sim-builds/`. Images land in `<dir>/esp32sim-builds/<id>/`. |
+| `SIM_BUILD_CACHE_DIR` | (discovered) | arduino-cli build cache to cap. Also reads `ARDUINO_BUILD_CACHE_PATH`, `build_cache.path` in `arduino-cli.yaml`, `$XDG_CACHE_HOME/arduino` or `~/.cache/arduino`, and always checks `$TMP/arduino`. |
+| `SIM_MIN_FREE_MB` | `300` | Free-space floor on the build and cache disks. Below it, caches are evicted and the compile is refused if still short. |
+| `SIM_ORPHAN_MAX_AGE_S` | `3600` | Startup sweep age for `esp32build-*`, `esp32run-*`, and `arduino-sketch-*`. |
+| `SIM_IMAGE_CACHE_MAX_MB` | `128` | Cap on published `flash.bin` entries. Live runs are not evicted. |
+| `SIM_IMAGE_CACHE_MAX_AGE_S` | `604800` | Max age of a published image (7 days). |
+| `SIM_SKETCH_CACHE_MAX_MB` | `0` | Cap on `sketches/` trees. `0` deletes them (they are keyed by a temp path and are not reused). Set a positive value only to keep trees for incremental rebuilds. |
+| `SIM_SKETCH_CACHE_MAX_AGE_S` | `3600` | Max age of a sketch tree when the byte cap is non-zero. |
+| `SIM_CORE_CACHE_MAX_MB` | `512` | Cap on `cores/` and compiled `libraries/` archives. The newest archive is always kept. |
+| `SIM_CORE_CACHE_MAX_AGE_S` | `2592000` | Max age of a core archive (30 days). The newest one is kept past this age. |
+
 ## Tests
 - `node --test tests/*.test.js`: solver, JS-sketch runner, remote logic and the network log.
+- `python3 tests/diskkeep_test.py`: firmware-image reclaim, sketch/core LRU eviction, orphan sweep, and the low-disk guard.
 - `node --test` also covers the project store (`tests/projects.test.js`).
 - `python3 tests/ui/projects_wiring_ui.py [url]`: copy-on-edit, My Projects persistence and server copy, click-click wiring, hover labels, net highlight, Delete/Backspace, right-click menu, double-click bend, Esc, undo.
 - `python3 tests/ui/remote_net_ui.py [url]`: remote example end to end in Chrome (80 ms key taps, virtual TV/Roku/Eco change, Network tab content). Tests read the token from `SIM_TOKEN` or `/tmp/sim_token`.
