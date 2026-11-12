@@ -212,7 +212,14 @@
     defaultHint() {
       if (this.sel && this.sel.wire) return 'Wire selected: Delete/Backspace removes · right-click for colour · double-click adds a bend · drag bends';
       if (document.body.classList.contains('m')) return 'Tap a part to select it. Tap a pin, then another pin, to wire';
-      return 'Click a part to select it. Click a pin, then another pin, to wire · R rotate · F flip';
+      // R and F are advertised only for the part that is actually selected.
+      // A pushbutton can turn, but it cannot flip, so the hint must not say F.
+      let s = 'Click a part to select it. Click a pin, then another pin, to wire';
+      const p = this.sel && this.sel.part && this.part(this.sel.part);
+      if (!p) return s;
+      s += ' · R rotate';
+      if (P.canPhysicalFlip(p)) s += ' · F flip';
+      return s;
     }
     // ---------- interaction ----------
     _bind() {

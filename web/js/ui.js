@@ -5,12 +5,41 @@
   const get = (k, d) => { try { const v = LS.getItem('esp32lab.ui.' + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } };
   const put = (k, v) => { try { LS.setItem('esp32lab.ui.' + k, JSON.stringify(v)); } catch (e) { /* ignore */ } };
   const SHORTCUTS = [['Run / compile', 'Ctrl Enter'], ['Command palette', 'Ctrl K'], ['Save (copies an example)', 'Ctrl S'], ['Undo / redo', 'Ctrl Z · Ctrl Y'], ['Wire: click pin → click pin', 'Click'], ['Add bend while wiring', 'Click empty'], ['Cancel wire / deselect', 'Esc'], ['Delete selection', 'Del · ⌫'], ['Rotate part', 'R'], ['Flip part / mirror symbol', 'F'], ['Fit to view', 'Shift F'], ['Zoom in / out', '+ · −'], ['Wire menu', 'Right-click'], ['Add bend to a wire', 'Double-click'], ['Pan canvas', 'Drag background'], ['Toggle parts / inspector / dock', 'Ctrl 1 · 2 · 3'], ['This overlay', '?']];
+  // The collapse control lives in #tabs. Treating every button as a tab used to
+  // clear the selected tab, so reopening the dock showed its full height with
+  // nothing in it. Only real tabs change the selection, and the last one is restored.
+  function selectDockTab(name, doc) {
+    doc = doc || document;
+    const tabs = [...doc.querySelectorAll('#tabs [data-tab]')];
+    let btn = tabs.find((b) => b.dataset.tab === name && b.style.display !== 'none');
+    if (!btn) btn = tabs.find((b) => b.style.display !== 'none') || tabs[0];
+    if (!btn) return '';
+    for (const b of doc.querySelectorAll('#tabs button')) b.classList.toggle('on', b === btn);
+    for (const t of doc.querySelectorAll('#dock .tab')) t.classList.toggle('on', t.id === 'tab-' + btn.dataset.tab);
+    put('dockTab', btn.dataset.tab);
+    return btn.dataset.tab;
+  }
+  function dockTabClick(e) {
+    const b = e && e.target && e.target.closest && e.target.closest('button');
+    if (!b || !b.dataset || !b.dataset.tab) return false;
+    selectDockTab(b.dataset.tab);
+    return true;
+  }
+  function restoreDock(doc) {
+    doc = doc || document;
+    const dh = get('dockH', 0);
+    const rootStyle = doc.documentElement && doc.documentElement.style;
+    if (dh && rootStyle) rootStyle.setProperty('--dockH', dh + 'px');
+    const on = doc.querySelector('#tabs [data-tab].on');
+    if (on && on.style.display !== 'none') return on.dataset.tab;
+    return selectDockTab(get('dockTab', ''), doc);
+  }
   function init(app) {
     const ed = app.editor, body = document.body;
     // ----- code view -----
     if (root.CodeViewMod) app.codeview = new CodeViewMod.CodeView($('#code'), $('#codeHl'), $('#codeGutter'), () => app.file);
     // ----- panels: collapse + resize (persisted) -----
-    const setC = (k, v) => { body.classList.toggle('c-' + k, v); put('c-' + k, v); setTimeout(() => ed.applyView(), 0); };
+    const setC = (k, v) => { body.classList.toggle('c-' + k, v); put('c-' + k, v); if (k === 'dock' && !v) restoreDock(); setTimeout(() => ed.applyView(), 0); };
     for (const k of ['palette', 'side', 'dock']) body.classList.toggle('c-' + k, !!get('c-' + k, false));
     document.addEventListener('click', (e) => { const c = e.target.closest('[data-collapse]'), r = e.target.closest('[data-reopen]'); if (c) setC(c.dataset.collapse, true); if (r) setC(r.dataset.reopen, false); });
     const rs = document.documentElement.style; const dh = get('dockH', 0), sw = get('sideW', 0); if (dh) rs.setProperty('--dockH', dh + 'px'); if (sw) rs.setProperty('--sideW', sw + 'px');
@@ -146,5 +175,5 @@
     }, true);
     drawMap(true);
   }
-  root.UI = { init };
+  root.UI = { init, selectDockTab, dockTabClick, restoreDock };
 })(window);
