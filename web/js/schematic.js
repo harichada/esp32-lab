@@ -1756,7 +1756,7 @@
       if (hint) {
         if (this.active) {
           if (!this._hint0) this._hint0 = hint.textContent;
-          hint.textContent = 'F mirrors the symbol (drawing only, wiring unchanged)';
+          hint.textContent = root.Pinch.schematicHint();
         } else if (this._hint0) hint.textContent = this._hint0;
       }
       if (this.active) this.rebuild(true);
@@ -1792,23 +1792,19 @@
     fit() {
       if (!this.model) return;
       const b = this.model.bounds, r = this.svg.getBoundingClientRect();
-      const w = r.width || 800, h = r.height || 600;
-      // Leave room for the floating toolbar and the view-only hint along the bottom.
-      // The example banner sits over the canvas in screen pixels (~12px offset + ~30px chip).
-      // Convert that clearance into world units so fit-to-view never hides the top of the sheet.
-      const bannerPx = 58, toolPx = 118, sidePx = 40;
-      const s = Math.min(2.4, Math.max(0.12, Math.min((w - sidePx * 2) / Math.max(b.w, 1), (h - bannerPx - toolPx) / Math.max(b.h, 1))));
-      this.view.s = s;
-      this.view.x = b.x - (w / s - b.w) / 2;
-      this.view.y = b.y - bannerPx / s;
+      if (r.width < 2 || r.height < 2) return;
+      // Center the sheet in the area that is not under the header, Make a copy,
+      // + Parts, the zoom stack, or the hint and bottom toolbars.
+      const frame = root.Pinch.frameOf(this.svg);
+      const fit = root.Pinch.fitView(b, frame.stage, frame.clear, 14, { min: 0.12, max: 2.4 });
+      this.view.s = fit.s; this.view.x = fit.x; this.view.y = fit.y;
       this.apply();
     }
     zoomBy(f, client) {
-      const r = this.svg.getBoundingClientRect();
-      const cx = client ? client.x : r.left + r.width / 2, cy = client ? client.y : r.top + r.height / 2;
-      const wx = this.view.x + (cx - r.left) / this.view.s, wy = this.view.y + (cy - r.top) / this.view.s;
-      const s = Math.min(4, Math.max(0.12, this.view.s * f));
-      this.view.x = wx - (cx - r.left) / s; this.view.y = wy - (cy - r.top) / s; this.view.s = s;
+      const frame = root.Pinch.frameOf(this.svg);
+      const anchor = client || root.Pinch.clearCenter(frame);
+      const v = root.Pinch.zoomAbout(this.view, f, anchor, frame.stage, { min: 0.12, max: 4 });
+      this.view.x = v.x; this.view.y = v.y; this.view.s = v.s;
       this.apply();
     }
     select(id) {

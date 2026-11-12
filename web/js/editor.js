@@ -35,8 +35,10 @@
     markUserView() { this._autoFit = false; }
     fit() {
       const bb = this.bounds(); const r = this.svg.getBoundingClientRect(); if (!bb || r.width < 2 || r.height < 2) return;
-      const s = Math.min(3, Math.max(0.2, Math.min(r.width / (bb.w + 80), r.height / (bb.h + 80))));
-      this.view = { s, x: bb.x - 40 - (r.width / s - bb.w - 80) / 2, y: bb.y - 40 - (r.height / s - bb.h - 80) / 2 };
+      const frame = root.Pinch.frameOf(this.svg);
+      const fit = root.Pinch.fitView(bb, frame.stage, frame.clear, 14, { min: 0.15, max: 3 });
+      const s = fit.s;
+      this.view = { s: s, x: fit.x, y: fit.y };
       this._autoFit = true; this._fitSize = Math.round(r.width) + 'x' + Math.round(r.height); this.applyView();
       const z = document.getElementById('zoomPct');
       if (z && !document.body.classList.contains('viewsch') && !document.body.classList.contains('view3d')) z.textContent = Math.round(s * 100) + '%';
@@ -204,7 +206,7 @@
       if (h) mark(h.pos, 'hl-pin'); for (const q of extra || []) mark(q, 'hl-pin');
       this.ovHl.innerHTML = s;
     }
-    setHint(t) { if (!this.hintEl) return; if (document.body.classList.contains('viewsch')) { this.hintEl.textContent = 'F mirrors the symbol (drawing only, wiring unchanged)'; return; } this.hintEl.textContent = t || this.defaultHint(); }
+    setHint(t) { if (!this.hintEl) return; if (document.body.classList.contains('viewsch')) { this.hintEl.textContent = root.Pinch.schematicHint(); return; } this.hintEl.textContent = t || this.defaultHint(); }
     defaultHint() {
       if (this.sel && this.sel.wire) return 'Wire selected: Delete/Backspace removes · right-click for colour · double-click adds a bend · drag bends';
       if (document.body.classList.contains('m')) return 'Tap a part to select it. Tap a pin, then another pin, to wire';

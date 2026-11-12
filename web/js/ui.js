@@ -24,10 +24,12 @@
     const zoomBy = (f, client) => {
       if (app.view3d && app.view3d.active && typeof app.view3d.zoomBy === 'function') { app.view3d.zoomBy(f); return; }
       if (app.schematic && app.schematic.active) { app.schematic.zoomBy(f, client); return; }
-      ed.markUserView && ed.markUserView(); const r = $('#stage').getBoundingClientRect(), v = ed.view, s = Math.min(4, Math.max(0.15, v.s * f));
-      const cx = client ? client.x : r.left + r.width / 2, cy = client ? client.y : r.top + r.height / 2;
-      const wx = v.x + (cx - r.left) / v.s, wy = v.y + (cy - r.top) / v.s;
-      v.x = wx - (cx - r.left) / s; v.y = wy - (cy - r.top) / s; v.s = s; ed.applyView();
+      ed.markUserView && ed.markUserView();
+      const stage = $('#stage');
+      const frame = root.Pinch.frameOf(stage);
+      const anchor = client || root.Pinch.clearCenter(frame);
+      const v = root.Pinch.zoomAbout(ed.view, f, anchor, frame.stage, { min: 0.15, max: 4 });
+      ed.view.x = v.x; ed.view.y = v.y; ed.view.s = v.s; ed.applyView();
     };
     app.zoomBy = zoomBy; $('#bZoomIn').onclick = () => zoomBy(1.25); $('#bZoomOut').onclick = () => zoomBy(0.8);
     const fitActive = () => {

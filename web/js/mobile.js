@@ -177,7 +177,7 @@
     const up = ed._up.bind(ed); ed._up = function (ev) { if (this._pinchLock) return; return up(ev); };
     const av = ed.applyView.bind(ed); ed.applyView = function () { av(); const w = $('#stageWrap'); if (w) { w.style.setProperty('--px', (-this.view.x * 0.08 % 400).toFixed(1) + 'px'); w.style.setProperty('--py', (-this.view.y * 0.08 % 400).toFixed(1) + 'px'); } };
     // hint text for phones
-    ed.setHint = function (t) { if (!this.hintEl) return; if (document.body.classList.contains('viewsch')) { this.hintEl.textContent = 'F mirrors the symbol (drawing only, wiring unchanged)'; return; } this.hintEl.textContent = t || (document.body.classList.contains('m') ? 'Tap a part to select it. Tap a pin, then another pin, to wire' : this.defaultHint()); };
+    ed.setHint = function (t) { if (!this.hintEl) return; if (document.body.classList.contains('viewsch')) { this.hintEl.textContent = window.Pinch.schematicHint(); return; } this.hintEl.textContent = t || (document.body.classList.contains('m') ? 'Tap a part to select it. Tap a pin, then another pin, to wire' : this.defaultHint()); };
     window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && sheet && document.body.classList.contains('m')) setSheet(null); });
   }
 

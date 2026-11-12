@@ -230,6 +230,110 @@ test('a second finger cancels a wire, even one that has been waiting, and leaves
   assert.deepEqual(ed.sel, { part: 'R1' });
 });
 
+function phoneChrome(w, h) {
+  // Stage is the canvas. Chrome rects are in the same coordinate space.
+  const stage = { left: 0, top: 0, right: w, bottom: h, width: w, height: h };
+  const blockers = [
+    { left: 0, top: 0, right: w, bottom: 24 },                         // ticker over the canvas
+    { left: 12, top: 10, right: w - 12, bottom: 50 },                  // Make a copy row
+    { left: w - 112, top: 36, right: w - 12, bottom: 80 },             // + Parts
+    { left: w - 57, top: 88, right: w - 9, bottom: 240 },              // zoom stack column
+    { left: 12, top: h - 224, right: w - 12, bottom: h - 176 },        // hint
+    { left: 12, top: h - 164, right: 168, bottom: h - 112 },           // view toggle
+    { left: w / 2 - 38, top: h - 90, right: w / 2 + 38, bottom: h - 14 }, // Circuit
+    { left: w - 92, top: h - 90, right: w - 16, bottom: h - 14 },      // Run
+  ];
+  return { stage, blockers, clear: Pinch.clearRect(stage, blockers, 8) };
+}
+function screenOf(view, world, stage) {
+  return { x: stage.left + (world.x - view.x) * view.s, y: stage.top + (world.y - view.y) * view.s };
+}
+function corners(bounds) {
+  return [
+    { x: bounds.x, y: bounds.y },
+    { x: bounds.x + bounds.w, y: bounds.y },
+    { x: bounds.x, y: bounds.y + bounds.h },
+    { x: bounds.x + bounds.w, y: bounds.y + bounds.h },
+  ];
+}
+
+test('clear rect drops the top chrome, the right zoom column, and the bottom bars', () => {
+  for (const [w, h] of [[390, 790], [375, 613]]) {
+    const { stage, blockers, clear } = phoneChrome(w, h);
+    const stack = blockers[3], hint = blockers[4], parts = blockers[2];
+    assert.ok(clear.top >= parts.bottom, 'top is below + Parts');
+    assert.ok(clear.right <= stack.left, 'right is left of the zoom stack');
+    assert.ok(clear.bottom <= hint.top, 'bottom is above the hint');
+    assert.equal(clear.left, stage.left, 'Make a copy stays a top bar, not a left column');
+    assert.ok(clear.top < stack.bottom - 40, 'the zoom stack is a column, not a top bar');
+    assert.ok(clear.width > stage.width * 0.35 && clear.height > stage.height * 0.35);
+  }
+});
+
+test('fit centers the whole circuit inside the clear rect with padding', () => {
+  const pad = 14;
+  const bounds = { x: 40, y: 80, w: 420, h: 380 };
+  for (const [w, h] of [[390, 790], [375, 613]]) {
+    const { stage, clear } = phoneChrome(w, h);
+    const view = Pinch.fitView(bounds, stage, clear, pad, { min: 0.15, max: 3 });
+    const mid = screenOf(view, { x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h / 2 }, stage);
+    assert.ok(Math.abs(mid.x - (clear.left + clear.right) / 2) < 1e-6);
+    assert.ok(Math.abs(mid.y - (clear.top + clear.bottom) / 2) < 1e-6);
+    for (const c of corners(bounds)) {
+      const p = screenOf(view, c, stage);
+      assert.ok(p.x >= clear.left + pad - 0.5 && p.x <= clear.right - pad + 0.5, 'corner x ' + p.x);
+      assert.ok(p.y >= clear.top + pad - 0.5 && p.y <= clear.bottom - pad + 0.5, 'corner y ' + p.y);
+    }
+    // The old schematic fit pinned the sheet bannerPx under the stage top.
+    const bannerPx = 58;
+    const oldS = Math.min(2.4, Math.max(0.12, Math.min((w - 80) / bounds.w, (h - bannerPx - 118) / bounds.h)));
+    const oldTop = stage.top + bannerPx;
+    assert.ok(oldTop < clear.top, 'the old top pin sits under the top chrome');
+    const fittedTop = screenOf(view, { x: bounds.x, y: bounds.y }, stage).y;
+    assert.ok(fittedTop >= clear.top + pad - 0.5);
+    assert.ok(oldS > 0);
+  }
+});
+
+test('button zoom keeps the world point at the clear-rect center', () => {
+  const { stage, clear } = phoneChrome(375, 613);
+  const bounds = { x: 60, y: 100, w: 300, h: 280 };
+  const view = Pinch.fitView(bounds, stage, clear, 14, { min: 0.12, max: 2.4 });
+  const center = Pinch.clearCenter({ clear });
+  const before = Pinch.worldAt(view, center, stage);
+  const zoomed = Pinch.zoomAbout(view, 1.25, center, stage, { min: 0.12, max: 4 });
+  const after = Pinch.worldAt(zoomed, center, stage);
+  assert.ok(Math.abs(zoomed.s - view.s * 1.25) < 1e-9);
+  assert.ok(Math.abs(after.x - before.x) < 1e-6);
+  assert.ok(Math.abs(after.y - before.y) < 1e-6);
+  const out = Pinch.zoomAbout(zoomed, 0.8, center, stage, { min: 0.12, max: 4 });
+  const back = Pinch.worldAt(out, center, stage);
+  assert.ok(Math.abs(back.x - before.x) < 1e-6);
+  assert.ok(Math.abs(back.y - before.y) < 1e-6);
+});
+
+test('a blocker that would collapse the window is ignored', () => {
+  const stage = { left: 0, top: 0, right: 390, bottom: 800 };
+  const column = { left: 50, top: 180, right: 390, bottom: 520 };
+  const clear = Pinch.clearRect(stage, [column], 8);
+  assert.equal(clear.left, stage.left);
+  assert.equal(clear.top, stage.top);
+  assert.equal(clear.right, stage.right);
+  assert.equal(clear.bottom, stage.bottom);
+  const onlyCopy = Pinch.clearRect(stage, [{ left: 12, top: 10, right: 160, bottom: 50 }], 8);
+  assert.equal(onlyCopy.left, stage.left, 'a top-left chip does not become a side column');
+  assert.ok(onlyCopy.top >= 50);
+});
+
+test('schematic hint on touch does not mention the F key', () => {
+  const touch = Pinch.schematicHint(true);
+  const desk = Pinch.schematicHint(false);
+  assert.equal(touch.includes('F '), false);
+  assert.match(touch, /View only/);
+  assert.match(touch, /2D/);
+  assert.match(desk, /F mirrors the symbol/);
+});
+
 test('without a second finger, a body drag keeps the move and a pin still starts a wire', () => {
   const ed = editor();
   const { body, pin1 } = partTree();
