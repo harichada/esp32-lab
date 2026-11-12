@@ -271,7 +271,22 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const rest = lines.filter((ln) => !stage.test(ln));
     return rest.length ? rest.join('\n') + '\n' : '';
   }
+  let compileBusy = false;
+  function setRunBusy(on) {
+    compileBusy = !!on;
+    const b = $('#bRun');
+    if (!b) return;
+    b.disabled = !!on;
+    b.classList.toggle('spinning', !!on);
+    b.setAttribute('aria-busy', on ? 'true' : 'false');
+  }
+  function retryAfterSeconds(r) {
+    const h = r && r.headers && r.headers.get && r.headers.get('Retry-After');
+    const n = parseInt(h, 10);
+    return Number.isFinite(n) && n > 0 && n < 120 ? n : 3;
+  }
   async function startRun() {
+    if (compileBusy) return;
     syncCode(); stopRun(); app.proj.defines = $('#inDefines').value.split(',').map((s) => s.trim()).filter(Boolean);
     const esp = espPart();
     if (!esp || app.proj.mode === 'circuit') {   // basic circuit (no ESP32): nothing to compile — the MNA solver already runs live; Run just (re)starts it from t=0
@@ -287,6 +302,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     }
     const run = app.run = { kind: 'qemu', t0: performance.now() };
     app.netlog.add({ k: 'info', msg: `—— run: ${app.proj.name || 'sketch'} ——` });
+    setRunBusy(true);
     setStatus('busy', 'compiling…'); $('#buildLog').textContent = '';
     let res;
     try {
@@ -294,9 +310,20 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       run.poll = setInterval(async () => { try { const q = await (await fetch('api/compile/progress')).json(); if (app.run !== run || !run.poll || run.settled) return; if (q.unpacking) setStatus('busy', `unpacking toolchain… ${Math.round((q.unpackProgress || 0) * 100)}%`); else if (q.active) { const stage = q.stage || 'compiling…'; bl.textContent = q.log || (stage + '\n'); bl.scrollTop = bl.scrollHeight; setStatus('busy', `${stage} ${Math.round(q.elapsed)}s`); } } catch (e) {} }, 400);
       const r = await fetchRetry('api/compile', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sketch: app.proj.code, files: app.proj.files, defines: app.proj.defines }) });
       clearInterval(run.poll); run.poll = null;
+      if (r.status === 429) {
+        const wait = retryAfterSeconds(r);
+        try { await r.json(); } catch (e) { /* the status line is the message */ }
+        const msg = `Please wait ${wait} second${wait === 1 ? '' : 's'} before compiling again`;
+        setStatus('warn', msg); toast(msg);
+        $('#buildLog').textContent = msg + '\n';
+        serialAppend('\n[' + msg + ']\n');
+        app.run = null;
+        return;
+      }
       res = await r.json();
       run.settled = true;
     } catch (e) { clearInterval(run.poll); run.poll = null; setStatus('err', 'backend unreachable'); serialAppend('\n[backend] cannot reach /api/compile — start server/server.py (see README) or switch to JS sketch mode.\n'); app.run = null; return; }
+    finally { setRunBusy(false); }
     if (app.run !== run) return;
     $('#buildLog').textContent = res.cached ? cachedCompileLog(res.log) : (res.log || ''); if (app.codeview) app.codeview.setLog(res.ok ? '' : (res.log || ''));
     if (!res.ok) { setStatus('err', 'compile error'); $('#buildDet').open = true; document.querySelector('[data-tab=build]').click(); if (app.codeview) app.codeview.setLog(res.log || ''); serialAppend('\n[compile failed — see build log in Code tab]\n'); app.run = null; return; }
@@ -759,9 +786,21 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
 <ul>
 <li><b>✅ Stage 1 — real firmware, digital GPIO, UART:</b> your sketch is compiled with <code>arduino-cli</code> (esp32:esp32 3.3.x) and runs in <b>Espressif's QEMU</b> (Xtensa LX6, ROM, flash, FreeRTOS, ESP-IDF timers). A patched GPIO device streams OUT/ENABLE/IO_MUX/RTC pad writes to this page; the page solves the circuit and replies with GPIO_IN in lock-step. UART0 ↔ Serial tab. Verified with the unmodified Blink and Button examples and the unmodified remote firmware.</li>
 <li><b>✅ RMT TX (IR):</b> RMT items + carrier are forwarded, decoded (SIRC), drawn, and delivered to the mock TV only if the IR LED actually conducts in the solved circuit.</li>
-<li><b>✅ Stage 2 — ADC + LEDC/PWM:</b> the patched QEMU implements the SENS SAR-ADC registers: each conversion asks this page for the solved pin voltage (lock-step), so <code>analogRead()</code> in real firmware returns the circuit's value. LEDC duty/timer writes are forwarded, mapped through the GPIO matrix to the pin and applied as average drive (frequency shown in the Inspector). Timers run on deterministic virtual time (icount). <span class="warn">Not modelled: ADC attenuation curves/noise, eFuse calibration (<code>analogReadMilliVolts()</code> returns 0), LEDC fades, per-cycle PWM waveform.</span></li>
+<li><b>✅ Stage 2 — ADC + LEDC/PWM:</b> the patched QEMU implements the SENS SAR-ADC registers: each conversion asks this page for the solved pin voltage (lock-step), so <code>analogRead()</code> in real firmware returns the circuit's value. A typical chip's eFuse Vref is burned in, so <code>analogReadMilliVolts()</code> follows the pin up to about 3.13 V. LEDC duty, timer and hardware fades are forwarded and applied as average drive (frequency shown in the Inspector). Timers run on deterministic virtual time (icount). <span class="warn">Not modelled: ADC noise, or the per-cycle PWM waveform (the pin sees the average).</span></li>
 <li><b>✅ Stage 3 — networking:</b> <code>WiFi.begin()</code> brings up a <b>real esp_netif + lwIP stack</b> on QEMU's OpenCores Ethernet (open_eth) NIC with slirp user networking (DHCP → 10.0.2.15). The genuine Arduino <code>HTTPClient</code>/<code>NetworkClient</code> run over lwIP TCP; <code>*.sim.internal</code> (legacy <code>*.wokwi.internal</code> also accepted) resolves to a slirp guest-forward that the server bridges to the mock Sony/Roku devices here. <span class="warn">The 802.11 radio itself is not emulated (no scan/RSSI/AP); TLS untested.</span> UDP goes through a raw-frame tap to the virtual devices; TCP to private LAN IPs (e.g. 192.168.1.50) is redirected to them. Every packet is shown in the <b>Network</b> tab.</li>
-<li>❌ Not modelled: I²C/SPI devices, touch, DAC, hall sensor, deep-sleep currents, Bluetooth, analog behaviour of the ESP32 die beyond a 40 Ω driver / 45 kΩ pulls.</li>
+<li><b>✅ I²C devices</b> (QEMU I²C controller → these parts). Each one answers the bus; none of them is a physical die:
+<ul>
+<li><b>SSD1306 OLED</b> — on/off, contrast, column/page address and flips. The framebuffer the sketch writes is drawn on the module. Not modelled: charge-pump timing.</li>
+<li><b>BME280</b> — chip id <code>0x60</code>. A sample decodes to the Inspector temperature, humidity and pressure. Not a real atmosphere.</li>
+<li><b>MPU6050</b> — WHO_AM_I <code>0x68</code>. Accel, gyro and temperature follow the Inspector sliders and the full-scale registers. Not modelled: FIFO, DMP, interrupts.</li>
+</ul></li>
+<li><b>✅ SPI devices</b> (QEMU SPI controller → these parts, chip-select is a GPIO):
+<ul>
+<li><b>ILI9341 TFT</b> — RGB565 framebuffer, address window, MADCTL rotation and display on/off are drawn on the module. Other init commands are accepted and ignored.</li>
+<li><b>MCP3008</b> — 10-bit conversion of each channel against its VDD pin.</li>
+<li><b>microSD</b> — SPI SDHC with a FAT16 image that already contains <code>HELLO.TXT</code>. Sector reads and writes stick in that image. Not modelled: the rest of the SD command set, card-detect, or wear. The sketch's own FAT library is what creates or appends files.</li>
+</ul></li>
+<li>❌ Not modelled: touch, DAC, hall sensor, deep-sleep currents, Bluetooth, the 802.11 radio, analog behaviour of the ESP32 die beyond a 40 Ω driver / 45 kΩ pulls.</li>
 </ul>
 <h3>Circuit solver</h3><p>Modified nodal analysis with Newton–Raphson (diode/LED Shockley, zener breakdown, Ebers–Moll BJT, square-law MOSFET, LDO), backward-Euler transient for capacitors. LEDs burn out above 2× their rating; supply/GPIO shorts are flagged.</p>
 <h3>Shortcuts</h3><p>Ctrl+Enter run · click pin → click pin to wire · R rotate · F flip (two-lead parts, or the schematic symbol) · Shift+F fit · Del/Backspace delete · right-click wire for menu · double-click wire adds a bend · Ctrl+Z / Ctrl+Y undo/redo · Ctrl+S save (examples: makes a copy) · Esc cancel · keys/buttons respond to their labelled keyboard key while running.</p>`;

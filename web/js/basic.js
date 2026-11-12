@@ -223,7 +223,18 @@
     if (st.over > 0.5) { st.burned = true; cx.log(`💥 ${p.id} burned open (${fmt(pw, 'W')} in a ${rate} W resistor)`); }
   };
   R0.readout = function (p, cx) { return cx.state(p).burned ? 'BURNED OPEN (press Run to reset)' : rReadout.call(this, p, cx); };
-  R0.warn = function (p, cx) { const st = cx.state(p); if (st.burned) return 'resistor burned open — too much power'; const e = cx.main(p); if (e) { const i = cx.I(e), pw = i * i * e.r, rate = +p.props.w || 0.25; if (pw > rate) return `resistor over its ${rate} W rating (${fmt(pw, 'W')}) — getting hot`; } return rWarn ? rWarn.call(this, p, cx) : undefined; };
+  R0.warn = function (p, cx) {
+    const msgs = [];
+    const st = cx.state(p);
+    if (st.burned) msgs.push('resistor burned open — too much power');
+    else {
+      const e = cx.main(p);
+      if (e) { const i = cx.I(e), pw = i * i * e.r, rate = +p.props.w || 0.25; if (pw > rate) msgs.push(`resistor over its ${rate} W rating (${fmt(pw, 'W')}) — getting hot`); }
+    }
+    const base = rWarn ? rWarn.call(this, p, cx) : '';
+    if (base) msgs.push(base);
+    return msgs.join('; ') || undefined;
+  };
 
   // ======================= example projects =======================
   const E = root.Examples; if (!E) return;

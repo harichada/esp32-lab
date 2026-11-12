@@ -628,6 +628,21 @@ def netstack_warm_enabled(env=None) -> bool:
     return env.get('SIM_NETSTACK_WARM', '1') == '1'
 
 
+def compile_gate(*, locked: bool, queue: bool, warm_running: bool) -> str:
+    """How ``/api/compile`` treats a busy compiler.
+
+    ``wait`` — the startup network warm-up holds the lock. The request blocks on that
+    lock and does not answer 429, so the page does not show the "please wait" message.
+    ``retry`` — another user compile holds the lock. Answer 429 with ``Retry-After``.
+    ``go`` — the lock is free, or this caller is the warm-up and may queue for it.
+    """
+    if queue or not locked:
+        return 'go'
+    if warm_running:
+        return 'wait'
+    return 'retry'
+
+
 def plan_netstack_warm(env, example_js, *, cache_present: bool, toolchain: str, core: str,
                        shim_hash: str, fqbn: str) -> dict:
     """What a startup warm does with the defines a browser compile of the remote example posts.

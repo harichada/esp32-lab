@@ -51,6 +51,10 @@ header#top{height:48px;display:flex;align-items:center;gap:var(--s3);padding:0 v
 .crumb{display:flex;align-items:center;gap:8px;min-width:0;max-width:340px}.crumb-sep{color:var(--line2);font-size:18px}.proj-title{font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:default}
 .chip-tag{font-size:10.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;padding:2px 7px;border-radius:20px;border:1px solid var(--line2);color:var(--txt2);white-space:nowrap}.chip-tag.ex{color:var(--warn);border-color:rgba(251,191,36,.35);background:rgba(251,191,36,.08)}.chip-tag.mine{color:var(--ok);border-color:rgba(52,211,153,.35);background:rgba(52,211,153,.08)}
 .runctl{display:flex;align-items:center;gap:2px;padding:2px;border-radius:8px;background:var(--l2);border:1px solid var(--line)}.runctl .run{height:26px;padding:0 12px}.runctl .run .ic{width:12px;height:12px}
+#bRun:disabled{cursor:progress;opacity:.9}#bRun:disabled:hover{transform:none}
+#bRun .runspin{display:none;width:12px;height:12px;border-radius:50%;border:2px solid currentColor;border-right-color:transparent;box-sizing:border-box;flex:none}
+#bRun.spinning .ic{display:none}#bRun.spinning .runspin{display:block;animation:runspin .7s linear infinite}
+@keyframes runspin{to{transform:rotate(360deg)}}
 body.running .runctl .run{background:var(--l3);color:var(--ok);border-color:rgba(52,211,153,.4);box-shadow:none}body.running #bStop{color:var(--err)}
 .status{display:flex;align-items:center;gap:8px;height:28px;padding:0 10px;border-radius:var(--r2);background:var(--l2);border:1px solid var(--line);color:var(--txt2);font-size:12px;white-space:nowrap;position:relative;overflow:hidden;min-width:150px}
 .status #stTime{color:var(--mut);font-size:11.5px}

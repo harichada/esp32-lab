@@ -255,14 +255,12 @@ async def _warm_netstack():
     finally:
         _netstack_warm_task = None
 
+def _warm_running() -> bool:
+    task = _netstack_warm_task
+    return task is not None and task is not asyncio.current_task() and not task.done()
+
 @app.post('/api/compile')
 async def compile_(req: dict):
-    task = _netstack_warm_task
-    if task is not None and task is not asyncio.current_task() and not task.done():
-        try:
-            await asyncio.wait_for(asyncio.shield(task), COMPILE_TIMEOUT)
-        except asyncio.TimeoutError:
-            return JSONResponse({'ok': False, 'log': 'network stack is still warming, retry shortly'}, 429)
     return await _compile_request(req)
 
 async def _compile_request(req: dict, *, queue: bool = False, rebuild_netstack: bool = False):
@@ -275,8 +273,22 @@ async def _compile_request(req: dict, *, queue: bool = False, rebuild_netstack: 
     files = {k: v for k, v in files.items() if re.fullmatch(r'[A-Za-z0-9_.-]+\.(h|hpp|c|cpp|ino)', k) and k != 'sketch.ino'}
     err = check_sources([sketch, *files.values()], set(files))
     if err: return JSONResponse({'ok': False, 'log': 'rejected: ' + err})
-    if _compile_lock.locked() and not queue:
-        return JSONResponse({'ok': False, 'log': 'another compile is running, retry shortly'}, 429)
+    # Another user compile is 429 + Retry-After. The startup warm-up holds the same
+    # lock; that request waits it out and does not answer 429, so the page keeps the
+    # spinner and does not show "Please wait N seconds".
+    while not queue:
+        gate = diskkeep.compile_gate(locked=_compile_lock.locked(), queue=False, warm_running=_warm_running())
+        if gate == 'retry':
+            return JSONResponse({'ok': False, 'log': 'another compile is running, retry shortly'}, 429, headers={'Retry-After': '3'})
+        if gate != 'wait':
+            break
+        task = _netstack_warm_task
+        if task is None or task.done():
+            break
+        try:
+            await asyncio.wait_for(asyncio.shield(task), COMPILE_TIMEOUT)
+        except asyncio.TimeoutError:
+            return JSONResponse({'ok': False, 'log': 'network stack is still warming, retry shortly'})
     defines = diskkeep.sanitize_defines(req.get('defines'))
     net = bool(req.get('netShim', False)) or bool(re.search(r'#include\s*[<"](WiFi|HTTPClient|WiFiUdp)\.h', sketch + ''.join(files.values())))
     netmode = (req.get('net') if req.get('net') in ('lwip', 'shim') else 'lwip') if net else None

@@ -137,6 +137,42 @@ function cathodeBarX(svg, id) {
   return m ? +m[1] : null;
 }
 
+test('a pin on the ground net gets a GND symbol, including a lone ESP32 ground pin', () => {
+  const lone = layout({ name: 'lone', parts: [{ id: 'esp', type: 'esp32', x: 0, y: 0, rot: 0, props: { power: 'usb' } }], wires: [] });
+  const gnd = lone.symbols.find((s) => s.id === 'esp').terms.find((t) => /GND/.test(t.name));
+  assert.ok(gnd, 'ESP32 has a ground term');
+  assert.equal(gnd.rail, 'gnd');
+  assert.equal(gnd.nc, false);
+  assert.ok(lone.rails.some((r) => r.kind === 'gnd' && r.pid === 'esp'));
+  assert.ok(toSvg(lone).includes('sch-gnd'));
+
+  const button = E.EX.button();
+  const drawn = layout(button);
+  const led = drawn.symbols.find((s) => s.id === 'LED1');
+  const cath = led.terms.find((t) => t.name === 'C');
+  assert.equal(cath.rail, 'gnd');
+  assert.equal(cath.nc, false);
+  assert.ok(drawn.rails.some((r) => r.kind === 'gnd' && r.pid === 'LED1' && r.pin === 'C'));
+  assert.ok(toSvg(drawn).includes('sch-gnd'));
+
+  // The blue − stripe is not ground until a ground pin is jumpered onto it.
+  const open = E.EX.button();
+  const board = open.parts.find((p) => p.type === 'breadboard');
+  const hole = (row, col) => {
+    const h = P.T.breadboard.pins(board).find((z) => z.name === row + col);
+    return { x: board.x + h.x, y: board.y + h.y };
+  };
+  const a3 = hole('a', 3), tn3 = hole('tn', 3);
+  const near = (a, b) => a && b && Math.abs(a.x - b.x) < 1 && Math.abs(a.y - b.y) < 1;
+  const before = open.wires.length;
+  open.wires = open.wires.filter((w) => !((near(w.a, a3) && near(w.b, tn3)) || (near(w.a, tn3) && near(w.b, a3))));
+  assert.ok(open.wires.length === before - 1, 'removed the GND.2 jumper onto the top − rail');
+  const floated = layout(open);
+  const fc = floated.symbols.find((s) => s.id === 'LED1').terms.find((t) => t.name === 'C');
+  assert.notEqual(fc.rail, 'gnd');
+  assert.ok(!floated.rails.some((r) => r.kind === 'gnd' && r.pid === 'LED1'));
+});
+
 test('blink LED schematic: ESP32, resistor, LED, orthogonal, GND symbols, project unchanged', () => {
   const raw = E.EX.blink();
   const before = JSON.stringify(raw);

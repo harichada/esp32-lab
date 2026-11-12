@@ -511,6 +511,12 @@ class NetstackTests(unittest.TestCase):
         self.assertIsNone(off['key'])
         self.assertTrue(diskkeep.netstack_warm_enabled({}))
         self.assertFalse(diskkeep.netstack_warm_enabled({'SIM_NETSTACK_WARM': '0'}))
+        # A second user compile is 429. The startup warm-up holds the same lock, and
+        # that request waits instead of answering 429.
+        self.assertEqual(diskkeep.compile_gate(locked=True, queue=False, warm_running=False), 'retry')
+        self.assertEqual(diskkeep.compile_gate(locked=True, queue=False, warm_running=True), 'wait')
+        self.assertEqual(diskkeep.compile_gate(locked=False, queue=False, warm_running=True), 'go')
+        self.assertEqual(diskkeep.compile_gate(locked=True, queue=True, warm_running=False), 'go')
         # Toolchain, core, FQBN, and the QemuEth hash still miss. SIM_NO_LAN_REMAP
         # changes qemu_eth.cpp, so user defines stay in the key.
         self.assertNotEqual(lookup, diskkeep.netstack_key(**{**common, 'toolchain': 'other'}, defines=tuple(posted)))
