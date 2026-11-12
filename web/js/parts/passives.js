@@ -16,6 +16,22 @@
   function injectDefs() { const d = document.querySelector('#stage defs'); if (d && !d.querySelector('#pvEcap')) d.insertAdjacentHTML('beforeend', DEFS); }
   if (typeof document !== 'undefined') { if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', injectDefs); else injectDefs(); }
   const fmtq = (v, u) => fmt(v, u).replace(' ', '').replace('µ', 'u');
+  // A 0 / negative / unparseable value must not silently become the fallback.
+  // The stamp still uses that fallback (a 0 H inductor or 0 Ω network is not a useful part)
+  // and warn() names it.
+  function usedPositive(raw, fallback) {
+    const used = P.parseProp ? P.parseProp(raw, fallback) : { value: fallback, ok: true };
+    if (!used.ok || !(used.value > 0)) return { value: fallback, ok: false, short: !!(used.ok && used.value === 0) };
+    return { value: used.value, ok: true, short: false };
+  }
+  function propFallbackWarning(kind, raw, used, unit) {
+    if (!used || used.ok) return;
+    if (used.short) return `${kind} ${JSON.stringify(raw)} is below the minimum, using ${fmt(used.value, unit)}`;
+    return `invalid ${kind} ${JSON.stringify(raw)}, using ${fmt(used.value, unit)}`;
+  }
+  const usedL = (p) => usedPositive(p.props.l, 1e-3);
+  const usedR25 = (p) => usedPositive(p.props.r25, 1e4);
+  const usedRnet = (p) => usedPositive(p.props.r, 1e4);
 
   // ---------- capacitors with value pickers (same electrical model as the generic Capacitor) ----------
   const CER = ['10p', '22p', '100p', '1n', '10n', '100n', '220n', '470n', '1u'];
@@ -71,8 +87,9 @@
       for (let i = 0; i < 8; i++) s += `<line x1="1" y1="${-25 + i * 2.1}" x2="19" y2="${-24.2 + i * 2.1}" stroke="#6b3508" stroke-width=".5"/>`;
       return s + dots(this.pins(p)) + `<text x="10" y="-34" class="plbl">${esc(fmt(pv(p.props.l), 'H'))}</text>`;
     },
-    stamp(p, cx) { const st = cx.state(p); cx.add({ kind: 'L', a: cx.node(p, '1'), b: cx.node(p, '2'), l: pv(p.props.l) || 1e-3, iprev: st.iL || 0, st, main: true }, p); cx.add({ kind: 'R', a: cx.node(p, '1'), b: cx.node(p, '2'), r: 1e7 }, p); },
+    stamp(p, cx) { const st = cx.state(p); cx.add({ kind: 'L', a: cx.node(p, '1'), b: cx.node(p, '2'), l: usedL(p).value, iprev: st.iL || 0, st, main: true }, p); cx.add({ kind: 'R', a: cx.node(p, '1'), b: cx.node(p, '2'), r: 1e7 }, p); },
     readout(p, cx) { return `I=${fmt(cx.state(p).iL || 0, 'A')}`; },
+    warn(p) { return propFallbackWarning('inductance', p.props.l, usedL(p), 'H'); },
   }, { bom: (pp) => ({ key: 'ind' + pp.l, name: 'Inductor ' + fmt(pv(pp.l), 'H') + ' radial', q: fmtq(pv(pp.l), 'H') + ' radial inductor' }) });
 
   // ---------- crystal (HC-49/S) ----------
@@ -100,7 +117,9 @@
       s += t(6, -14.5, '3296', 3.4, '#e7eefa') + t(6, -9, P.fmt(pv(p.props.r), 'Ω').replace(' ', ''), 3, '#bcd0ee');
       return s + dots(this.pins(p)) + `<text x="10" y="-26" class="plbl">${Math.round(p.props.pos * 100)}%</text>`;
     },
-    stamp: T.potentiometer.stamp, wheel(p, d) { p.props.pos = Math.min(1, Math.max(0, +p.props.pos - d * 0.02)); return true; },
+    stamp: T.potentiometer.stamp,
+    warn(p) { return P.resistanceWarning(p.props.r, P.stampResistance(p.props.r, this.props.r), this.props.r); },
+    wheel(p, d) { p.props.pos = Math.min(1, Math.max(0, +p.props.pos - d * 0.02)); return true; },
     readout(p) { const r = pv(p.props.r); return `1-W ${fmt(r * p.props.pos, 'Ω')} · W-2 ${fmt(r * (1 - p.props.pos), 'Ω')}`; },
   }, { bom: (pp) => ({ key: 'trim' + pp.r, name: 'Trimmer pot 3296W ' + fmt(pv(pp.r), 'Ω'), q: '3296W ' + fmtq(pv(pp.r), 'ohm').replace('ohm', '') + ' trimmer potentiometer' }) });
 
@@ -248,7 +267,8 @@
     label: 'Thermistor NTC 10k', cat: 'Sensors', prefix: 'TH', props: { temp: 25, r25: 10000, beta: 3950 }, keywords: 'thermistor ntc temperature sensor mf52 10k beta 3950',
     edit: [{ k: 'temp', label: 'Temperature (°C)', t: 'range', min: -40, max: 125, step: 0.5, live: true }, { k: 'r25', label: 'R @25 °C (Ω)', t: 'sel', opts: [1000, 4700, 10000, 47000, 100000] }, { k: 'beta', label: 'β (K)', t: 'num' }],
     pins: () => [{ name: '1', x: 0, y: 0 }, { name: '2', x: 10, y: 0 }], size: () => ({ w: 10, h: 10 }),
-    R: (p) => (+p.props.r25 || 1e4) * Math.exp((+p.props.beta || 3950) * (1 / (273.15 + +p.props.temp) - 1 / 298.15)),
+    R: (p) => usedR25(p).value * Math.exp((+p.props.beta || 3950) * (1 / (273.15 + +p.props.temp) - 1 / 298.15)),
+    warn(p) { return propFallbackWarning('resistance', p.props.r25, usedR25(p), 'Ω'); },
     svg(p) { return lead(0, 0, -8) + lead(10, 0, -8) + `<path d="M0 -8 L4 -14 M10 -8 L6 -14" stroke="url(#aLeadV)" stroke-width="1.2"/><ellipse cx="5" cy="-18" rx="5.5" ry="6" fill="#1b1c1f" stroke="#000" stroke-width=".5" filter="url(#fShadow)"/><ellipse cx="3.4" cy="-20.4" rx="2" ry="1.4" fill="#fff" opacity=".3"/>` + dots(this.pins(p)) + `<text x="5" y="-28" class="plbl">${(+p.props.temp).toFixed(1)}°C</text>`; },
     stamp(p, cx) { cx.add({ kind: 'R', a: cx.node(p, '1'), b: cx.node(p, '2'), r: this.R(p), main: true }, p); },
     readout(p) { return 'R=' + fmt(this.R(p), 'Ω'); },
@@ -266,7 +286,8 @@
       s += t(42, -8.4, `${code}J · 8×${fmt(r, 'Ω').replace(' ', '')}`, 4, '#3b3320');
       return s + dots(RNP) + `<text x="0" y="9" class="plbl small">●</text>`;
     },
-    stamp(p, cx) { const r = pv(p.props.r) || 1e4, c = cx.node(p, 'COM'); for (let i = 2; i <= 9; i++) cx.add({ kind: 'R', a: c, b: cx.node(p, String(i)), r }, p); },
+    stamp(p, cx) { const r = usedRnet(p).value, c = cx.node(p, 'COM'); for (let i = 2; i <= 9; i++) cx.add({ kind: 'R', a: c, b: cx.node(p, String(i)), r }, p); },
+    warn(p) { return propFallbackWarning('resistance', p.props.r, usedRnet(p), 'Ω'); },
     readout(p) { return `8 × ${fmt(pv(p.props.r), 'Ω')} from COM (pin 1, dot)`; },
   }, { bom: (pp) => ({ key: 'rnet' + pp.r, name: `Resistor network SIP-9 bussed 8×${fmt(pv(pp.r), 'Ω')}`, q: `${fmtq(pv(pp.r), '')} SIP-9 resistor network bussed`.replace(/\s+/g, ' ') }) });
 })(typeof window !== 'undefined' ? window : globalThis);

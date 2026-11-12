@@ -310,6 +310,21 @@ test('resistor r=0 is stamped as 1 mΩ; invalid strings use 220 Ω and warn', ()
   // 1 kΩ + 1 mΩ ≈ 5 mA; voltage across the 1 mΩ part is ~5 µV.
   assert.ok(Math.abs(Math.abs(i) - 0.005) < 5e-5, 'I=' + i);
   assert.ok(Math.abs(v(sim, Rz, '1', '2')) < 1e-4, 'Vr=' + v(sim, Rz, '1', '2'));
+  const zmsgs = (sim.warnings || []).map((w) => w.msg).join('; ');
+  assert.match(zmsgs, /short circuit/);
+  assert.match(zmsgs, /1 mΩ/);
+  assert.doesNotMatch(zmsgs, /220/);
+
+  const Vn = mk('vcc5'), Gn = mk('ground'), Rn = mk('resistor', { r: -5 }), RrefN = mk('resistor', { r: 1000 });
+  const neg = circuit([Vn, Gn, Rn, RrefN], [
+    [[Vn, '+'], [RrefN, '1']],
+    [[RrefN, '2'], [Rn, '1']],
+    [[Rn, '2'], [Gn, 'GND'], [Vn, 'GND']],
+  ]);
+  assert.equal(neg.sim.mains.get(Rn.id).r, 220);
+  const nmsgs = (neg.sim.warnings || []).map((w) => w.msg).join('; ');
+  assert.match(nmsgs, /invalid resistance/);
+  assert.match(nmsgs, /220/);
 
   const V2 = mk('vcc5'), G2 = mk('ground'), Rbad = mk('resistor', { r: 'foo' }), Rref = mk('resistor', { r: 1000 });
   const bad = circuit([V2, G2, Rbad, Rref], [
@@ -369,4 +384,30 @@ test('potentiometer r=0 uses 1 mΩ total; invalid strings use 10 kΩ and warn', 
   const msgs = (sim.warnings || []).map((w) => w.msg).join('; ');
   assert.match(msgs, /invalid resistance/);
   assert.match(msgs, /10 kΩ|10kΩ|10000/);
+
+  const V0 = mk('vcc5'), G0 = mk('ground'), P0 = mk('potentiometer', { r: 0, pos: 0.5 });
+  const zero = circuit([V0, G0, P0], [
+    [[V0, '+'], [P0, '1']],
+    [[P0, '2'], [G0, 'GND'], [V0, 'GND']],
+  ]);
+  const zpot = (zero.sim.warnings || []).map((w) => w.msg).join('; ');
+  assert.match(zpot, /short circuit/);
+  assert.match(zpot, /1 mΩ/);
+  assert.doesNotMatch(zpot, /10 kΩ/);
+});
+
+test('inductor, NTC and resistor-network 0 / invalid values warn instead of staying silent', () => {
+  const L = mk('inductor', { l: 0 });
+  assert.match(P.T.inductor.warn(L) || '', /inductance/);
+  assert.match(P.T.inductor.warn(L) || '', /1 mH/);
+  const Lbad = mk('inductor', { l: 'nope' });
+  assert.match(P.T.inductor.warn(Lbad) || '', /invalid inductance/);
+  assert.equal(P.T.inductor.warn(mk('inductor', { l: '10m' })), undefined);
+  const N = mk('ntc', { r25: 0 });
+  assert.match(P.T.ntc.warn(N) || '', /resistance/);
+  assert.match(P.T.ntc.warn(N) || '', /10 kΩ/);
+  const net = mk('rnet', { r: -1 });
+  assert.match(P.T.rnet.warn(net) || '', /invalid resistance/);
+  const trim = mk('trimmer', { r: 0 });
+  assert.match(P.T.trimmer.warn(trim) || '', /short circuit/);
 });
