@@ -376,6 +376,13 @@
       if (m) { if (!homes.has(id)) homes.set(id, { parent: el.parentNode, next: el.nextSibling }); if (el.parentNode !== document.body) document.body.appendChild(el); }
       else if (homes.has(id)) { const h = homes.get(id); h.parent.insertBefore(el, h.next && h.next.parentNode === h.parent ? h.next : null); } }
   }
+  // Phone layout schedules a fit on load. Remote examples fetch their sketch
+  // before setProject, so the editor exists with no circuit yet.
+  function fitIfReady(ed, forceFit) {
+    if (!ed || !ed.proj) return false;
+    if (forceFit) ed.fit(); else ed.applyView();
+    return true;
+  }
   function apply() {
     const m = MQ.matches, entered = m && !document.body.classList.contains('m');
     document.body.classList.toggle('m', m);
@@ -386,10 +393,10 @@
     // otherwise stays put and clips the breadboard once the canvas is ~500px wide.
     setTimeout(() => {
       const ed = window.app && window.app.editor; if (!ed) return;
-      if (entered || ed._autoFit || !ed._fitSize) ed.fit(); else ed.applyView();
+      fitIfReady(ed, entered || ed._autoFit || !ed._fitSize);
     }, 60);
     if (window.app && window.app.editor) window.app.editor.setHint();
   }
-  window.addEventListener('DOMContentLoaded', () => { apply(); if (MQ.addEventListener) MQ.addEventListener('change', apply); else MQ.addListener(apply); if (document.body.classList.contains('m')) setTimeout(() => window.app && window.app.editor && window.app.editor.fit(), 200); });
-  window.Mobile = { setSheet, openDock, sheetHead, syncPhoneChrome };
+  window.addEventListener('DOMContentLoaded', () => { apply(); if (MQ.addEventListener) MQ.addEventListener('change', apply); else MQ.addListener(apply); if (document.body.classList.contains('m')) setTimeout(() => fitIfReady(window.app && window.app.editor, true), 200); });
+  window.Mobile = { setSheet, openDock, fitIfReady, sheetHead, syncPhoneChrome };
 })();
