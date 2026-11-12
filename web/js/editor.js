@@ -12,7 +12,7 @@
       this.hintEl = svg.parentElement && svg.parentElement.querySelector('.hint'); this.menu = null;
       this._bind();
     }
-    setProject(proj) { this.proj = proj; this.sel = null; this.undoS = []; this.redoS = []; this.mode = null; this._setWarnings([]); this.render(); }
+    setProject(proj) { this.proj = proj; this.sel = null; this.undoS = []; this.redoS = []; this.mode = null; this._hover = null; this.hoverPin = null; this._setWarnings([]); if (this.hooks.hover) this.hooks.hover(null); this.render(); }
     snapshot() { return JSON.stringify({ parts: this.proj.parts, wires: this.proj.wires, sel: this.sel || null }); }
     push() { if (this.hooks.beforeEdit) this.hooks.beforeEdit(); this.undoS.push(this.snapshot()); if (this.undoS.length > 200) this.undoS.shift(); this.redoS = []; }
     // The snapshot replaces part objects. Gestures and the pin index were holding
@@ -29,6 +29,7 @@
       const wireOk = keep && keep.wire && this.wire(keep.wire);
       this.sel = partOk ? { part: keep.part } : wireOk ? { wire: keep.wire } : null;
       this._setWarnings([]);
+      this._clearHoverIfGone();
       this.render(); this.hooks.changed(true); if (this.hooks.selected) this.hooks.selected(this.sel);
     }
     undo() { if (!this.undoS.length) return; this.redoS.push(this.snapshot()); this._restore(this.undoS.pop()); }
@@ -230,6 +231,7 @@
         this.push();
         this.proj.wires = this.proj.wires.filter((w) => w.id !== this.sel.wire);
         this.sel = null; this.render(); this.hooks.changed(true); this.hooks.selected(null);
+        this._clearHoverIfGone();
         this.focusCanvas();
         return;
       }
@@ -243,6 +245,7 @@
       this.push();
       this.proj.parts = this.proj.parts.filter((p) => p.id !== id);
       this.sel = null; this.render(); this.hooks.changed(true); this.hooks.selected(null);
+      this._clearHoverIfGone();
       // Inspector and phone-sheet Delete leave focus in a value field, which swallows Ctrl+Z.
       this.focusCanvas();
     }
@@ -325,7 +328,7 @@
       window.addEventListener('pointerdown', (ev) => { if (this.menu && !this.menu.contains(ev.target)) this.closeMenu(); }, true);
       svg.addEventListener('dragover', (ev) => ev.preventDefault());
       svg.addEventListener('drop', (ev) => { ev.preventDefault(); const t = ev.dataTransfer.getData('text/x-part'); if (t && P.T[t]) { const w = this.toWorld(ev); const seat = P.placeDroppedPart ? P.placeDroppedPart(this.proj.parts, t, w.x, w.y, 0) : w; this.addPart(t, seat.x, seat.y); } });
-      svg.addEventListener('pointerleave', () => this.hooks.hover(null));
+      svg.addEventListener('pointerleave', () => this._emitHover(null));
       window.addEventListener('resize', () => this.applyView());
       // A fitted desktop zoom (often ~177% on a wide canvas) used to survive a shrink to phone
       // width, so the breadboard opened clipped. Refit while the view is still the automatic one.
@@ -346,7 +349,7 @@
     cancelWire() { if (this.mode && this.mode.k === 'wire') { this.mode = null; this.ovWire.innerHTML = ''; this.highlight(null); this.setHint(); } this.closeMenu(); }
     closeMenu() { if (this.menu) { this.menu.remove(); this.menu = null; } }
     wire(id) { return this.proj.wires.find((w) => w.id === id); }
-    deleteWire(id) { if (!this.wire(id)) return; this.push(); this.proj.wires = this.proj.wires.filter((w) => w.id !== id); if (this.sel && this.sel.wire === id) this.sel = null; this.renderWires(); this.hooks.changed(true); this.hooks.selected(this.sel); this.setHint(); }
+    deleteWire(id) { if (!this.wire(id)) return; this.push(); this.proj.wires = this.proj.wires.filter((w) => w.id !== id); if (this.sel && this.sel.wire === id) this.sel = null; this.renderWires(); this._clearHoverIfGone(); this.hooks.changed(true); this.hooks.selected(this.sel); this.setHint(); }
     colorWire(id, c) { const w = this.wire(id); if (!w) return; this.push(); w.color = c; this.renderWires(); this.hooks.changed(false); }
     addBend(id, at) {
       const w = this.wire(id); if (!w) return; const pts = [w.a, ...(w.pts || []), w.b]; let bi = 0, bd = 1e18;
@@ -360,7 +363,24 @@
       m.onclick = (e) => { const b = e.target.closest('[data-a],[data-c]'); if (!b) return; if (b.dataset.c) this.colorWire(id, b.dataset.c); else if (b.dataset.a === 'del') this.deleteWire(id); else if (b.dataset.a === 'bend') this.addBend(id, at); else { this.push(); this.wire(id).pts = []; this.renderWires(); this.hooks.changed(false); } this.closeMenu(); };
       wrap.appendChild(m); this.menu = m;
     }
+    _emitHover(h) {
+      this._hover = h || null;
+      if (!h) this.hoverPin = null;
+      if (this.hooks.hover) this.hooks.hover(h || null);
+    }
+    // The tooltip keeps the last part it was showing. Hide it once that part or wire is gone
+    // (Delete, undo/redo, or a project that no longer contains it).
+    _clearHoverIfGone() {
+      const h = this._hover;
+      if (!h) return;
+      const proj = this.proj;
+      const partGone = h.part && (!proj || !(proj.parts || []).some((p) => p.id === h.part.id));
+      const wireGone = h.wire && (!proj || !(proj.wires || []).some((w) => w.id === h.wire.id));
+      if (!proj || partGone || wireGone) this._emitHover(null);
+    }
     _down(ev) {
+      // Pointer events can land before the example fetch finishes and setProject runs.
+      if (!this.proj || !this.proj.parts) return;
       // A drag started before undo still points at the replaced part object.
       if (this.mode && this.mode.p && !this.proj.parts.includes(this.mode.p)) this.mode = null;
       if (this.mode && this.mode.w && !this.proj.wires.includes(this.mode.w)) this.mode = null;
@@ -418,7 +438,7 @@
       const w = this.toWorld(ev), m = this.mode;
       if (m && m.k === 'pan') { if (ev.clientX !== m.sx || ev.clientY !== m.sy) this.markUserView(); this.view.x = m.vx - (ev.clientX - m.sx) / this.view.s; this.view.y = m.vy - (ev.clientY - m.sy) / this.view.s; this.applyView(); return; }
       if (m && m.k === 'knob') { const dlt = ((ev.clientX - m.sx) - (ev.clientY - m.sy)) / 150; m.p.props.pos = Math.min(1, Math.max(0, m.pos0 + dlt)); this.hooks.changed(false); this.refreshDynamic(); this.hooks.selected(this.sel); return; }
-      if (m && m.k === 'wire') { this._drawWirePreview(w); const t = this.pinNear(w, ev); this.highlight(m.start, t ? [t.pos] : []); this.hooks.hover(t ? { ev, pin: t, part: t.part, world: w, label: this.pinLabel(t) } : null); return; }
+      if (m && m.k === 'wire') { this._drawWirePreview(w); const t = this.pinNear(w, ev); this.highlight(m.start, t ? [t.pos] : []); this._emitHover(t ? { ev, pin: t, part: t.part, world: w, label: this.pinLabel(t) } : null); return; }
       if (m && m.k === 'bend') { const q = { x: snap(w.x), y: snap(w.y) }; const b = m.w.pts[m.i]; if (b.x !== q.x || b.y !== q.y) { b.x = q.x; b.y = q.y; m.moved = true; this.renderWires(); } return; }
       if (m && m.k === 'drag') {
         const nx = snap(m.ox + w.x - m.sx), ny = snap(m.oy + w.y - m.sy);
@@ -435,10 +455,11 @@
       const wEl = !pin && ev.target.closest && ev.target.closest('.wire');
       const hk = pin ? pin.pos.x + ',' + pin.pos.y : (wEl ? 'w:' + wEl.dataset.wid : ''); if (hk !== this.hoverPin) { this.hoverPin = hk; this.highlight(pin); }
       this.svg.classList.toggle('on-pin', !!pin);
-      if (wEl) { const wire = this.wire(wEl.dataset.wid); this.hooks.hover({ ev, wire, world: w }); return; }
-      this.hooks.hover({ ev, pin, part: pin ? pin.part : partEl ? this.part(partEl.dataset.id) : null, world: w, label: pin ? this.pinLabel(pin) : '' });
+      if (wEl) { const wire = this.wire(wEl.dataset.wid); this._emitHover({ ev, wire, world: w }); return; }
+      this._emitHover({ ev, pin, part: pin ? pin.part : partEl ? this.part(partEl.dataset.id) : null, world: w, label: pin ? this.pinLabel(pin) : '' });
     }
     _up(ev) {
+      if (!this.proj) { this.mode = null; return; }
       const m = this.mode; if (!m) return;
       if (m.k === 'press') { this.hooks.press(m.p, false); this.mode = null; return; }
       if (m.k === 'drag') { this.mode = null; this.highlight(null); if (m.moved) this.hooks.changed(true); return; }

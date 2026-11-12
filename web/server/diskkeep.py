@@ -629,18 +629,109 @@ def netstack_warm_enabled(env=None) -> bool:
 
 
 def compile_gate(*, locked: bool, queue: bool, warm_running: bool) -> str:
-    """How ``/api/compile`` treats a busy compiler.
+    """How ``/api/compile`` treats a busy compiler when ``SIM_COMPILE_QUEUE=0``.
 
     ``wait`` — the startup network warm-up holds the lock. The request blocks on that
     lock and does not answer 429, so the page does not show the "please wait" message.
     ``retry`` — another user compile holds the lock. Answer 429 with ``Retry-After``.
     ``go`` — the lock is free, or this caller is the warm-up and may queue for it.
+
+    The default (``SIM_COMPILE_QUEUE`` unset or ``1``) does not use this. Different
+    clients wait in :func:`plan_compile_admit` instead of taking the ``retry`` branch.
     """
     if queue or not locked:
         return 'go'
     if warm_running:
         return 'wait'
     return 'retry'
+
+
+def compile_queue_enabled(env=None) -> bool:
+    """FIFO compile queue. Default on. ``SIM_COMPILE_QUEUE=0`` restores the 429 gate."""
+    env = os.environ if env is None else env
+    return env.get('SIM_COMPILE_QUEUE', '1') != '0'
+
+
+def compile_queue_max(env=None) -> int:
+    """How many compiles may wait behind the one that holds the compiler. Default 4."""
+    env = os.environ if env is None else env
+    try:
+        n = int(str(env.get('SIM_COMPILE_QUEUE_MAX', '4')).strip())
+    except (TypeError, ValueError):
+        n = 4
+    return max(0, n)
+
+
+def compile_queue_timeout_s(env=None) -> float:
+    """Seconds a queued compile will wait for the compiler. Default 120."""
+    env = os.environ if env is None else env
+    try:
+        n = float(str(env.get('SIM_COMPILE_QUEUE_TIMEOUT_S', '120')).strip())
+    except (TypeError, ValueError):
+        n = 120.0
+    if n != n:  # NaN
+        return 120.0
+    return max(0.0, n)
+
+
+def plan_compile_admit(*, enabled: bool, same_client_busy: bool, waiting: int, limit: int,
+                       locked: bool, warm_running: bool) -> str:
+    """What to do with a user compile that was not a firmware-cache hit.
+
+    ``go`` — take the compiler now.
+    ``wait`` — join the FIFO (queue on, compiler busy or the startup warm-up is running).
+    ``rate`` — this same tab already has a compile in flight. 429, ``Retry-After: 3``.
+    ``full`` — the FIFO is already at ``limit``. 429 with the busy message.
+    ``warm`` — queue off, and the startup warm-up holds the lock. Block without 429.
+    ``retry`` — queue off, and another user compile holds the lock. 429.
+    """
+    if not enabled:
+        if not locked:
+            return 'go'
+        return 'warm' if warm_running else 'retry'
+    if same_client_busy:
+        return 'rate'
+    busy = bool(locked or warm_running or waiting > 0)
+    if not busy:
+        return 'go'
+    if waiting >= max(0, limit):
+        return 'full'
+    return 'wait'
+
+
+def compile_busy_message(queued: int) -> str:
+    """Body of the 429 returned when the FIFO is at its cap."""
+    return f'Server busy, {queued} builds queued — try again shortly'
+
+
+def compile_timeout_message(seconds: float) -> str:
+    """Body of the 429 returned when a queued compile waits too long.
+
+    429, not 503: the page retries 502–504 as if the gateway had dropped the POST.
+    """
+    seconds = max(0.0, float(seconds))
+    shown = str(int(round(seconds))) if seconds >= 10 else f'{seconds:.1f}'
+    return f'Timed out waiting for a build slot after {shown} s — try again shortly'
+
+
+def compile_wait_message(reason: str, position: int | None = None) -> str:
+    """Status line while a compile is queued.
+
+    ``warm-up`` is the startup network archive. Anything else is another learner's build.
+    ``position`` is 1-based in the FIFO (the running compile is not in that count).
+    """
+    if reason == 'warm-up':
+        return 'Preparing network stack (first run after restart), about 40 s…'
+    text = 'Waiting for another build to finish…'
+    if position:
+        return f'{text} (position {int(position)})'
+    return text
+
+
+def compile_wait_log(seconds: float, reason: str) -> str:
+    """One server log line for a compile that waited. ``reason`` is ``warm-up`` or ``build``."""
+    kind = 'warm-up' if reason == 'warm-up' else 'build'
+    return f'waited {max(0.0, float(seconds)):.1f} s for {kind}'
 
 
 def plan_netstack_warm(env, example_js, *, cache_present: bool, toolchain: str, core: str,

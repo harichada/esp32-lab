@@ -196,6 +196,30 @@ test('collapsing the dock and reopening it restores the last tab and the saved h
   assert.match(src, /k === 'dock' && !v\) restoreDock\(\)/);
 });
 
+test('a hard reload restores the saved dock tab, and an unknown name falls back to Code', () => {
+  const UI = global.UI;
+  localStorage.setItem('esp32lab.ui.dockTab', JSON.stringify('serial'));
+  localStorage.setItem('esp32lab.ui.dockH', JSON.stringify(180));
+  code.classList.add('on');
+  serial.classList.remove('on');
+  collapse.classList.remove('on');
+  tabCode.classList.add('on');
+  tabSerial.classList.remove('on');
+  document.documentElement.style.setProperty('--dockH', '900px');
+  assert.equal(UI.restoreDock(document), 'serial');
+  assert.equal(serial.classList.contains('on'), true);
+  assert.equal(code.classList.contains('on'), false);
+  assert.equal(tabSerial.classList.contains('on'), true);
+  assert.equal(tabCode.classList.contains('on'), false);
+  assert.equal(document.documentElement.style.getPropertyValue('--dockH'), '180px');
+  localStorage.setItem('esp32lab.ui.dockTab', JSON.stringify('blueprint'));
+  assert.equal(UI.restoreDock(document), 'code');
+  assert.equal(code.classList.contains('on'), true);
+  assert.equal(serial.classList.contains('on'), false);
+  assert.equal(tabCode.classList.contains('on'), true);
+  assert.equal(tabSerial.classList.contains('on'), false);
+});
+
 test('leaving the phone layout removes the close-button headers from the desktop panels', () => {
   const Mobile = global.Mobile;
   Mobile.sheetHead(palette, 'Parts');

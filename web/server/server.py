@@ -7,6 +7,7 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       Disk bounds (web/README.md): SIM_MIN_FREE_MB, SIM_BUILD_CACHE_DIR,
       SIM_IMAGE_CACHE_MAX_MB, SIM_CORE_CACHE_MAX_MB, SIM_SKETCH_CACHE_MAX_MB,
       SIM_NETSTACK_CACHE_DIR, SIM_NETSTACK_CACHE_MAX_MB, SIM_NETSTACK_WARM,
+      SIM_COMPILE_QUEUE, SIM_COMPILE_QUEUE_MAX, SIM_COMPILE_QUEUE_TIMEOUT_S,
       SIM_ORPHAN_MAX_AGE_S and the matching *_MAX_AGE_S knobs.
 """
 import asyncio, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, argparse
@@ -42,8 +43,12 @@ MAX_RUNS = int(os.environ.get('SIM_MAX_RUNS', '4'))
 app = FastAPI(title='ESP32 sim backend')
 runs = {}
 _live_images = set()   # firmware ids a QEMU process still has open
-_compile_lock = asyncio.Lock()
+_compile_lock = None
+_cqueue = None
+_lock_owner = None            # 'user' or 'warm' while that side holds _compile_lock
+_legacy_warm = set()          # client ids blocked on the startup warm-up when the queue is off
 _netstack_warm_task = None   # startup task building the browser's network archive, if any
+_CLIENT_ID = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 # ---------------- public-exposure hardening ----------------
 TOKEN = os.environ.get('SIM_TOKEN', '')
 MAX_BODY = 200 * 1024; COMPILE_TIMEOUT = int(os.environ.get('SIM_COMPILE_TIMEOUT', '300'))
@@ -158,12 +163,31 @@ def _note_compiler_line(line: str):
     elif ' -c ' in line and ' -E ' not in line and 'sketch.ino.cpp' in line:
         _stage('Compiling sketch...')
 
+def _normalize_client_id(raw) -> str:
+    """Per-tab id from ``X-Client-Id``. Empty when the header is missing or odd."""
+    if not isinstance(raw, str):
+        return ''
+    raw = raw.strip()
+    return raw if _CLIENT_ID.fullmatch(raw) else ''
+
+def _client_id_from(request: Request) -> str:
+    return _normalize_client_id(request.headers.get('x-client-id', ''))
+
 @app.get('/api/compile/progress')
-async def compile_progress():
+async def compile_progress(request: Request):
     # Keep the stage lines even when the compiler tail is long.
+    # ``wait`` is set while this tab is queued, so the page can say so before the POST returns.
     log = (PROGRESS.get('stages') or '') + (PROGRESS.get('compiler') or '')[-20000:]
-    return {'active': PROGRESS['active'], 'elapsed': round(time.time() - PROGRESS['t0'], 1) if PROGRESS['active'] else 0,
+    body = {'active': PROGRESS['active'], 'elapsed': round(time.time() - PROGRESS['t0'], 1) if PROGRESS['active'] else 0,
             'log': log, 'stage': PROGRESS.get('stage') or ''}
+    cid = _client_id_from(request)
+    wait = await _cqueue.view(cid) if _cqueue is not None else None
+    if wait is None and cid and cid in _legacy_warm:
+        wait = {'reason': 'warm-up', 'position': None, 'queued': 0,
+                'message': diskkeep.compile_wait_message('warm-up', None)}
+    if wait:
+        body['wait'] = wait
+    return body
 
 def _cache_roots():
     return diskkeep.cache_roots_from_env()
@@ -254,16 +278,20 @@ async def _warm_netstack():
               f'{time.perf_counter() - t0:.1f}s', flush=True)
     finally:
         _netstack_warm_task = None
+        # Waiters treat a live warm task as still ahead of them. Kick only after it is cleared.
+        if _cqueue is not None:
+            await _cqueue.kick()
 
 def _warm_running() -> bool:
     task = _netstack_warm_task
     return task is not None and task is not asyncio.current_task() and not task.done()
 
-@app.post('/api/compile')
-async def compile_(req: dict):
-    return await _compile_request(req)
+def _build_key(sketch, files, defines, net, netmode, simlibs) -> str:
+    blob = [sketch, files, defines, net, netmode, FQBN, SHIM_VER if (net or simlibs) else '', simlibs]
+    return hashlib.sha256(json.dumps(blob, sort_keys=True).encode()).hexdigest()[:16]
 
-async def _compile_request(req: dict, *, queue: bool = False, rebuild_netstack: bool = False):
+def _compile_plan(req: dict):
+    """Sanitized sources and cache key, or a JSONResponse when the body is rejected."""
     sketch = req.get('sketch', '')
     files = req.get('files', {}) or {}
     if not isinstance(sketch, str) or not isinstance(files, dict) or not all(isinstance(v, str) for v in files.values()):
@@ -272,38 +300,221 @@ async def _compile_request(req: dict, *, queue: bool = False, rebuild_netstack: 
         return JSONResponse({'ok': False, 'log': 'sources too large'}, 413)
     files = {k: v for k, v in files.items() if re.fullmatch(r'[A-Za-z0-9_.-]+\.(h|hpp|c|cpp|ino)', k) and k != 'sketch.ino'}
     err = check_sources([sketch, *files.values()], set(files))
-    if err: return JSONResponse({'ok': False, 'log': 'rejected: ' + err})
-    # Another user compile is 429 + Retry-After. The startup warm-up holds the same
-    # lock; that request waits it out and does not answer 429, so the page keeps the
-    # spinner and does not show "Please wait N seconds".
-    while not queue:
-        gate = diskkeep.compile_gate(locked=_compile_lock.locked(), queue=False, warm_running=_warm_running())
-        if gate == 'retry':
-            return JSONResponse({'ok': False, 'log': 'another compile is running, retry shortly'}, 429, headers={'Retry-After': '3'})
-        if gate != 'wait':
-            break
-        task = _netstack_warm_task
-        if task is None or task.done():
-            break
-        try:
-            await asyncio.wait_for(asyncio.shield(task), COMPILE_TIMEOUT)
-        except asyncio.TimeoutError:
-            return JSONResponse({'ok': False, 'log': 'network stack is still warming, retry shortly'})
+    if err:
+        return JSONResponse({'ok': False, 'log': 'rejected: ' + err})
     defines = diskkeep.sanitize_defines(req.get('defines'))
     net = bool(req.get('netShim', False)) or bool(re.search(r'#include\s*[<"](WiFi|HTTPClient|WiFiUdp)\.h', sketch + ''.join(files.values())))
     netmode = (req.get('net') if req.get('net') in ('lwip', 'shim') else 'lwip') if net else None
     allsrc = sketch + ''.join(files.values())
     simlibs = [n for h, n in (('Adafruit_NeoPixel.h', 'QemuNeoPixel'), ('DHT.h', 'QemuDHT')) if re.search(r'#\s*include\s*[<"]' + re.escape(h) + r'[>"]', allsrc) and (SHIMS / n).exists()]
-    key = hashlib.sha256(json.dumps([sketch, files, defines, net, netmode, FQBN, SHIM_VER if (net or simlibs) else '', simlibs], sort_keys=True).encode()).hexdigest()[:16]
+    key = _build_key(sketch, files, defines, net, netmode, simlibs)
     bdir = BUILDS / key
-    img = bdir / 'flash.bin'
-    # A warm rebuild ignores a firmware hit only while the network archive for these
-    # defines is missing. The defines are the same list a browser POST is sanitized to.
-    if img.exists() and not rebuild_netstack:
-        return _cached_compile(key, bdir, net, netmode)
-    async with _compile_lock:
-        if img.exists() and not (rebuild_netstack and not _netstack_cached(defines)):
-            return _cached_compile(key, bdir, net, netmode)
+    return {'sketch': sketch, 'files': files, 'defines': defines, 'net': net, 'netmode': netmode,
+            'simlibs': simlibs, 'key': key, 'bdir': bdir, 'img': bdir / 'flash.bin'}
+
+def _rate_limited():
+    return JSONResponse({'ok': False, 'log': 'another compile is running, retry shortly', 'reason': 'rate'},
+                        429, headers={'Retry-After': '3'})
+
+class CompileQueue:
+    """One compiler, FIFO waiters, same-tab presses rejected while that tab is already in flight.
+
+    ``enter`` either returns a JSONResponse or a token. The token means this task holds
+    ``lock`` and the caller must ``leave`` it. The condition is never held across ``lock.acquire``.
+    """
+    def __init__(self):
+        self.cond = asyncio.Condition()
+        self.lock = asyncio.Lock()
+        self.waiters = []
+        self.granted = None
+        self.inflight = {}
+
+    def _warm_ahead(self) -> bool:
+        if _lock_owner == 'user':
+            return False
+        if _lock_owner == 'warm':
+            return True
+        return _warm_running()
+
+    def _release_id(self, client_id: str):
+        if not client_id:
+            return
+        n = self.inflight.get(client_id, 0) - 1
+        if n <= 0:
+            self.inflight.pop(client_id, None)
+        else:
+            self.inflight[client_id] = n
+
+    def _drop(self, token):
+        """Caller holds ``cond``."""
+        try:
+            self.waiters.remove(token)
+        except ValueError:
+            pass
+        if self.granted is token:
+            self.granted = None
+        self._release_id(token.get('id') or '')
+        self._wake()
+
+    def _wake(self):
+        """Caller holds ``cond``."""
+        for w in self.waiters:
+            w['event'].set()
+        self.cond.notify_all()
+
+    def _note_reason(self, token):
+        idx = self.waiters.index(token) if token in self.waiters else 0
+        if idx > 0:
+            token['reason'] = 'build'
+        elif self._warm_ahead():
+            token['reason'] = 'warm-up'
+        else:
+            token['reason'] = 'build'
+        token['log_reason'] = token['reason']
+
+    async def view(self, client_id: str):
+        if not client_id or not diskkeep.compile_queue_enabled():
+            return None
+        async with self.cond:
+            for i, w in enumerate(self.waiters):
+                if w['id'] != client_id:
+                    continue
+                reason = 'warm-up' if w.get('reason') == 'warm-up' else 'build'
+                pos = i + 1
+                return {'reason': reason, 'position': pos, 'queued': len(self.waiters),
+                        'message': diskkeep.compile_wait_message(reason, pos)}
+        return None
+
+    async def kick(self):
+        async with self.cond:
+            self._wake()
+
+    async def enter(self, client_id: str):
+        timeout = diskkeep.compile_queue_timeout_s()
+        limit = diskkeep.compile_queue_max()
+        async with self.cond:
+            same = bool(client_id) and self.inflight.get(client_id, 0) > 0
+            decision = diskkeep.plan_compile_admit(
+                enabled=True, same_client_busy=same, waiting=len(self.waiters), limit=limit,
+                locked=self.lock.locked() or self.granted is not None,
+                warm_running=self._warm_ahead())
+            if decision == 'rate':
+                return _rate_limited()
+            if decision == 'full':
+                return JSONResponse({'ok': False, 'log': diskkeep.compile_busy_message(len(self.waiters)), 'reason': 'full'}, 429)
+            if client_id:
+                self.inflight[client_id] = self.inflight.get(client_id, 0) + 1
+            if decision == 'go':
+                token = {'id': client_id, 'reason': 'build', 'log_reason': 'build', 't0': None, 'event': asyncio.Event()}
+                self.granted = token
+            else:
+                token = {'id': client_id, 'reason': 'warm-up' if self._warm_ahead() else 'build',
+                         'log_reason': 'warm-up' if self._warm_ahead() else 'build',
+                         't0': time.perf_counter(), 'event': asyncio.Event()}
+                self.waiters.append(token)
+        if decision == 'go':
+            await self.lock.acquire()
+            return token
+        deadline = time.monotonic() + timeout
+        while True:
+            async with self.cond:
+                head = bool(self.waiters) and self.waiters[0] is token
+                ready = head and not self.lock.locked() and self.granted is None and not self._warm_ahead()
+                if ready:
+                    self.waiters.pop(0)
+                    self.granted = token
+                    break
+                if token not in self.waiters:
+                    return JSONResponse({'ok': False, 'log': diskkeep.compile_timeout_message(timeout), 'reason': 'timeout'}, 429)
+                self._note_reason(token)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return self._timeout(token, timeout)
+                token['event'].clear()
+            try:
+                await asyncio.wait_for(token['event'].wait(), remaining)
+            except (asyncio.TimeoutError, TimeoutError):
+                async with self.cond:
+                    head = bool(self.waiters) and self.waiters[0] is token
+                    ready = head and not self.lock.locked() and self.granted is None and not self._warm_ahead()
+                    if ready:
+                        self.waiters.pop(0)
+                        self.granted = token
+                        break
+                    return self._timeout(token, timeout)
+        await self.lock.acquire()
+        return token
+
+    def _timeout(self, token, timeout):
+        """Caller holds ``cond``."""
+        reason = token.get('log_reason') or token.get('reason') or 'build'
+        waited = time.perf_counter() - (token.get('t0') or time.perf_counter())
+        self._drop(token)
+        print(diskkeep.compile_wait_log(waited, reason))
+        return JSONResponse({'ok': False, 'log': diskkeep.compile_timeout_message(timeout), 'reason': 'timeout'}, 429)
+
+    async def leave(self, token):
+        if self.lock.locked():
+            self.lock.release()
+        async with self.cond:
+            if self.granted is token:
+                self.granted = None
+            self._release_id(token.get('id') or '')
+            reason = token.get('log_reason') or token.get('reason') or 'build'
+            t0 = token.get('t0')
+            token['t0'] = None
+            self._wake()
+        if t0 is not None:
+            waited = time.perf_counter() - t0
+            if waited >= 0.05:
+                print(diskkeep.compile_wait_log(waited, reason))
+
+def _install_queue():
+    """Bind the compiler lock to a queue. Call again inside a fresh event loop (tests)."""
+    global _compile_lock, _cqueue
+    q = CompileQueue()
+    _cqueue = q
+    _compile_lock = q.lock
+
+_install_queue()
+
+@app.post('/api/compile')
+async def compile_(req: dict, request: Request):
+    return await _compile_request(req, client_id=_client_id_from(request))
+
+async def _legacy_busy(client_id: str):
+    """SIM_COMPILE_QUEUE=0: 429 while a user compile holds the lock; block on the warm-up."""
+    while True:
+        gate = diskkeep.compile_gate(locked=_compile_lock.locked(), queue=False, warm_running=_warm_running())
+        if gate == 'retry':
+            return JSONResponse({'ok': False, 'log': 'another compile is running, retry shortly'}, 429, headers={'Retry-After': '3'})
+        if gate != 'wait':
+            return None
+        task = _netstack_warm_task
+        if task is None or task.done():
+            return None
+        if client_id:
+            _legacy_warm.add(client_id)
+        t0 = time.perf_counter()
+        try:
+            await asyncio.wait_for(asyncio.shield(task), COMPILE_TIMEOUT)
+        except asyncio.TimeoutError:
+            print(diskkeep.compile_wait_log(time.perf_counter() - t0, 'warm-up'))
+            return JSONResponse({'ok': False, 'log': 'network stack is still warming, retry shortly'})
+        else:
+            waited = time.perf_counter() - t0
+            if waited >= 0.05:
+                print(diskkeep.compile_wait_log(waited, 'warm-up'))
+        finally:
+            _legacy_warm.discard(client_id)
+
+async def _compile_holding_lock(owner, plan, *, rebuild_netstack: bool = False):
+    """Caller holds ``_compile_lock``. Runs the compile, or returns a cache hit / low-disk response."""
+    global _lock_owner
+    _lock_owner = owner
+    try:
+        if plan['img'].exists() and not (rebuild_netstack and not _netstack_cached(plan['defines'])):
+            return _cached_compile(plan['key'], plan['bdir'], plan['net'], plan['netmode'])
         roots = _cache_roots()
         try:
             diskkeep.prepare_for_compile(builds=BUILDS, cache_roots=roots, temp_roots=[Path(tempfile.gettempdir())],
@@ -311,15 +522,52 @@ async def _compile_request(req: dict, *, queue: bool = False, rebuild_netstack: 
                                          netstack_root=diskkeep.netstack_root_from_env())
         except diskkeep.LowDisk as e:
             return JSONResponse({'ok': False, 'log': e.message}, 507)
-        # .last-used is stamped when arduino-cli starts; a couple of seconds of slack covers that.
         started = time.time() - 2
         try:
             with diskkeep.request_build_dir() as work:
-                return await _compile_in(work, bdir, key, sketch, files, defines, net, netmode, simlibs)
+                return await _compile_in(work, plan['bdir'], plan['key'], plan['sketch'], plan['files'],
+                                         plan['defines'], plan['net'], plan['netmode'], plan['simlibs'])
         finally:
-            try: diskkeep.forget_sketch_builds_since(roots, started)
-            except Exception as e: print('sketch cache cleanup failed:', repr(e))
-            PROGRESS['active'] = False
+            try:
+                diskkeep.forget_sketch_builds_since(roots, started)
+            except Exception as e:
+                print('sketch cache cleanup failed:', repr(e))
+    finally:
+        _lock_owner = None
+        PROGRESS['active'] = False
+
+async def _compile_request(req: dict, *, queue: bool = False, rebuild_netstack: bool = False, client_id: str = ''):
+    plan = _compile_plan(req)
+    if isinstance(plan, JSONResponse):
+        return plan
+    # A firmware hit does not wait, and it does not count as this tab's in-flight compile.
+    if plan['img'].exists() and not rebuild_netstack:
+        return _cached_compile(plan['key'], plan['bdir'], plan['net'], plan['netmode'])
+    if queue:
+        # The startup warm-up. It may wait for a user compile, then it owns the lock.
+        try:
+            async with _compile_lock:
+                return await _compile_holding_lock('warm', plan, rebuild_netstack=rebuild_netstack)
+        finally:
+            if _cqueue is not None:
+                await _cqueue.kick()
+    if not diskkeep.compile_queue_enabled():
+        denied = await _legacy_busy(client_id)
+        if denied is not None:
+            return denied
+        try:
+            async with _compile_lock:
+                return await _compile_holding_lock('user', plan, rebuild_netstack=rebuild_netstack)
+        finally:
+            if _cqueue is not None:
+                await _cqueue.kick()
+    token = await _cqueue.enter(client_id)
+    if not isinstance(token, dict):
+        return token
+    try:
+        return await _compile_holding_lock('user', plan, rebuild_netstack=rebuild_netstack)
+    finally:
+        await _cqueue.leave(token)
 
 def _cached_compile(key, bdir, net, netmode):
     t0 = time.perf_counter()

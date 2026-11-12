@@ -528,5 +528,41 @@ class NetstackTests(unittest.TestCase):
         self.assertEqual(missing['action'], 'missing')
 
 
+class CompileQueuePolicyTests(unittest.TestCase):
+    def test_flags_and_messages(self):
+        self.assertTrue(diskkeep.compile_queue_enabled({}))
+        self.assertTrue(diskkeep.compile_queue_enabled({'SIM_COMPILE_QUEUE': '1'}))
+        self.assertFalse(diskkeep.compile_queue_enabled({'SIM_COMPILE_QUEUE': '0'}))
+        self.assertEqual(diskkeep.compile_queue_max({}), 4)
+        self.assertEqual(diskkeep.compile_queue_max({'SIM_COMPILE_QUEUE_MAX': '8'}), 8)
+        self.assertEqual(diskkeep.compile_queue_max({'SIM_COMPILE_QUEUE_MAX': 'nope'}), 4)
+        self.assertEqual(diskkeep.compile_queue_max({'SIM_COMPILE_QUEUE_MAX': '-3'}), 0)
+        self.assertEqual(diskkeep.compile_queue_timeout_s({}), 120.0)
+        self.assertEqual(diskkeep.compile_queue_timeout_s({'SIM_COMPILE_QUEUE_TIMEOUT_S': 'nope'}), 120.0)
+        self.assertEqual(diskkeep.compile_queue_timeout_s({'SIM_COMPILE_QUEUE_TIMEOUT_S': '-1'}), 0.0)
+        self.assertEqual(diskkeep.compile_queue_timeout_s({'SIM_COMPILE_QUEUE_TIMEOUT_S': '0.5'}), 0.5)
+        self.assertEqual(diskkeep.compile_busy_message(4), 'Server busy, 4 builds queued — try again shortly')
+        self.assertEqual(diskkeep.compile_timeout_message(120), 'Timed out waiting for a build slot after 120 s — try again shortly')
+        self.assertEqual(diskkeep.compile_timeout_message(0.25), 'Timed out waiting for a build slot after 0.2 s — try again shortly')
+        self.assertEqual(diskkeep.compile_wait_message('warm-up', 1),
+                         'Preparing network stack (first run after restart), about 40 s…')
+        self.assertEqual(diskkeep.compile_wait_message('build', 2),
+                         'Waiting for another build to finish… (position 2)')
+        self.assertEqual(diskkeep.compile_wait_message('build', None), 'Waiting for another build to finish…')
+        self.assertEqual(diskkeep.compile_wait_log(1.25, 'warm-up'), 'waited 1.2 s for warm-up')
+        self.assertEqual(diskkeep.compile_wait_log(0.04, 'build'), 'waited 0.0 s for build')
+
+    def test_admit_plan(self):
+        kw = dict(enabled=True, same_client_busy=False, waiting=0, limit=4, locked=False, warm_running=False)
+        self.assertEqual(diskkeep.plan_compile_admit(**kw), 'go')
+        self.assertEqual(diskkeep.plan_compile_admit(**{**kw, 'same_client_busy': True, 'locked': True}), 'rate')
+        self.assertEqual(diskkeep.plan_compile_admit(**{**kw, 'locked': True}), 'wait')
+        self.assertEqual(diskkeep.plan_compile_admit(**{**kw, 'warm_running': True}), 'wait')
+        self.assertEqual(diskkeep.plan_compile_admit(**{**kw, 'locked': True, 'waiting': 4}), 'full')
+        self.assertEqual(diskkeep.plan_compile_admit(**{**kw, 'enabled': False, 'locked': True}), 'retry')
+        self.assertEqual(diskkeep.plan_compile_admit(**{**kw, 'enabled': False, 'locked': True, 'warm_running': True}), 'warm')
+        self.assertEqual(diskkeep.plan_compile_admit(**{**kw, 'enabled': False}), 'go')
+
+
 if __name__ == '__main__':
     unittest.main()

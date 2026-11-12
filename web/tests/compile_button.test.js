@@ -6,6 +6,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const { setTimeout: delay } = require('node:timers/promises');
 
 function classListFor(node) {
   const set = new Set((node.className || '').split(/\s+/).filter(Boolean));
@@ -102,10 +103,12 @@ global.requestAnimationFrame = (fn) => global.setTimeout(fn, 0);
 
 let compileReply = null;
 let wsShouldThrow = false;
-global.fetch = (url) => {
+let progressBody = { active: false };
+let lastCompile = null;
+global.fetch = (url, init) => {
   const u = String(url);
-  if (u.includes('progress')) return Promise.resolve({ status: 200, json: async () => ({ active: false }) });
-  if (u.includes('api/compile')) return compileReply;
+  if (u.includes('progress')) return Promise.resolve({ status: 200, json: async () => progressBody });
+  if (u.includes('api/compile')) { lastCompile = { url: u, init: init || {} }; return compileReply; }
   return Promise.resolve({ status: 200, ok: true, json: async () => ({}) });
 };
 global.WebSocket = class {
@@ -184,6 +187,50 @@ test('Run stays busy for the whole compile, then restores', async () => {
   await droppedFlight;
   idle();
   assert.equal(ids.stText.textContent, 'connection lost');
+});
+
+test('a queued compile says it is waiting, then the button returns to Run', async () => {
+  progressBody = { active: false, wait: { reason: 'build', position: 2, message: 'Waiting for another build to finish… (position 2)' } };
+  const pending = gate();
+  compileReply = pending.promise;
+  app.serialText = '';
+  const flight = app.startRun();
+  busy();
+  await delay(20);
+  assert.equal(label.textContent, 'Waiting…');
+  assert.equal(bRun.disabled, true);
+  assert.equal(bRun.classList.contains('spinning'), true);
+  assert.equal(ids.stText.textContent, 'Waiting for another build to finish… (position 2)');
+  assert.match(ids.buildLog.textContent, /Waiting for another build to finish… \(position 2\)/);
+  assert.match(app.serialText, /\[Waiting for another build to finish… \(position 2\)\]/);
+  const id = lastCompile.init.headers['X-Client-Id'];
+  assert.match(id, /^[A-Za-z0-9_-]{1,64}$/);
+  progressBody = { active: false, wait: { reason: 'warm-up', position: 1, message: 'Preparing network stack (first run after restart), about 40 s…' } };
+  await delay(450);
+  assert.equal(label.textContent, 'Waiting…');
+  assert.equal(ids.stText.textContent, 'Preparing network stack (first run after restart), about 40 s…');
+  assert.match(app.serialText, /Preparing network stack \(first run after restart\), about 40 s…/);
+  pending.resolve(okResponse());
+  await flight;
+  idle();
+  progressBody = { active: false };
+
+  const full = gate();
+  compileReply = full.promise;
+  const fullFlight = app.startRun();
+  full.resolve({ status: 429, headers: { get: () => '3' }, json: async () => ({ ok: false, reason: 'full', log: 'Server busy, 4 builds queued — try again shortly' }) });
+  await fullFlight;
+  idle();
+  assert.equal(ids.stText.textContent, 'Server busy, 4 builds queued — try again shortly');
+
+  const timed = gate();
+  compileReply = timed.promise;
+  const timedFlight = app.startRun();
+  timed.resolve({ status: 429, headers: { get: () => '3' }, json: async () => ({ ok: false, reason: 'timeout', log: 'Timed out waiting for a build slot after 120 s — try again shortly' }) });
+  await timedFlight;
+  idle();
+  assert.equal(ids.stText.textContent, 'Timed out waiting for a build slot after 120 s — try again shortly');
+  assert.equal(lastCompile.init.headers['X-Client-Id'], id);
 });
 
 test('the busy Run button is grey, keeps its spinner, and theme.css is cache-busted', () => {
