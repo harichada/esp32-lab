@@ -36,7 +36,9 @@
     fit() {
       const bb = this.bounds(); const r = this.svg.getBoundingClientRect(); if (!bb || r.width < 2 || r.height < 2) return;
       const frame = root.Pinch.frameOf(this.svg);
-      const fit = root.Pinch.fitView(bb, frame.stage, frame.clear, 14, { min: 0.15, max: 3 });
+      const limits = { min: 0.15, max: 3 };
+      const clear = root.Pinch.resolveClear(frame, bb, 14, limits);
+      const fit = root.Pinch.fitView(bb, frame.stage, clear, 14, limits);
       const s = fit.s;
       this.view = { s: s, x: fit.x, y: fit.y };
       this._autoFit = true; this._fitSize = Math.round(r.width) + 'x' + Math.round(r.height); this.applyView();

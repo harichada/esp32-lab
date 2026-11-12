@@ -27,7 +27,9 @@
       ed.markUserView && ed.markUserView();
       const stage = $('#stage');
       const frame = root.Pinch.frameOf(stage);
-      const anchor = client || root.Pinch.clearCenter(frame);
+      const limits = { min: 0.15, max: 3 };
+      const clear = root.Pinch.resolveClear(frame, ed.bounds(), 14, limits);
+      const anchor = client || { x: (clear.left + clear.right) / 2, y: (clear.top + clear.bottom) / 2 };
       const v = root.Pinch.zoomAbout(ed.view, f, anchor, frame.stage, { min: 0.15, max: 4 });
       ed.view.x = v.x; ed.view.y = v.y; ed.view.s = v.s; ed.applyView();
     };

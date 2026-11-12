@@ -121,6 +121,90 @@
     if (right - left < W * 0.35 || bottom - top < H * 0.35) return rectOf(S.left, S.top, S.right, S.bottom);
     return rectOf(left, top, right, bottom);
   }
+  // Every maximal empty rectangle inside the stage, gap pixels clear of each blocker.
+  // A side control (the zoom stack) only blocks its own box, so the area under it
+  // stays available. Top and bottom bars still block the band they actually cover.
+  function emptyRects(stage, blockers, gap) {
+    const S = box(stage);
+    if (!S) return [];
+    const g = gap == null ? 8 : gap;
+    const obs = [];
+    for (const raw of blockers || []) {
+      const b = box(raw);
+      if (!b) continue;
+      const left = Math.max(S.left, b.left - g), top = Math.max(S.top, b.top - g);
+      const right = Math.min(S.right, b.right + g), bottom = Math.min(S.bottom, b.bottom + g);
+      if (right - left < 1 || bottom - top < 1) continue;
+      obs.push(rectOf(left, top, right, bottom));
+    }
+    const ys = [S.top, S.bottom];
+    for (const b of obs) { ys.push(b.top, b.bottom); }
+    ys.sort((a, c) => a - c);
+    const y = [];
+    for (const v of ys) if (!y.length || v - y[y.length - 1] > 0.25) y.push(v);
+    const rects = [];
+    for (let i = 0; i < y.length; i++) {
+      for (let j = i + 1; j < y.length; j++) {
+        const y0 = y[i], y1 = y[j];
+        if (y1 - y0 < 8) continue;
+        const spans = [];
+        for (const b of obs) {
+          if (b.bottom <= y0 + 0.25 || b.top >= y1 - 0.25) continue;
+          spans.push([b.left, b.right]);
+        }
+        spans.sort((a, c) => a[0] - c[0] || a[1] - c[1]);
+        let x = S.left;
+        for (const [l, r] of spans) {
+          if (l > x + 0.25) rects.push(rectOf(x, y0, l, y1));
+          if (r > x) x = r;
+        }
+        if (S.right > x + 0.25) rects.push(rectOf(x, y0, S.right, y1));
+      }
+    }
+    return rects;
+  }
+  // Scale the bounds would get inside clear, before the min/max clamp.
+  // A clamp would make a sliver look as good as a rect the circuit actually fits.
+  function rawScale(bounds, clear, pad) {
+    const C = box(clear);
+    if (!C || !bounds) return 0;
+    const p = pad == null ? 12 : pad;
+    const availW = C.width - 2 * p, availH = C.height - 2 * p;
+    if (availW <= 1 || availH <= 1) return 0;
+    return Math.min(availW / Math.max(bounds.w, 1e-6), availH / Math.max(bounds.h, 1e-6));
+  }
+  // Pick the empty rectangle that gives this circuit the larger scale.
+  // The old full-height column is one candidate, so a tall circuit that already
+  // fits beside the stack does not move. A wide sheet can use the full width
+  // under the stack instead of staying in that column.
+  function bestClear(stage, blockers, bounds, gap, pad, limits) {
+    const g = gap == null ? 8 : gap;
+    const legacy = clearRect(stage, blockers, g);
+    const minS = limits && limits.min != null ? limits.min : 0.12;
+    const maxS = limits && limits.max != null ? limits.max : 4;
+    const scoreOf = (raw) => (raw >= minS ? Math.min(raw, maxS) : raw);
+    let best = legacy, bestS = scoreOf(rawScale(bounds, legacy, pad)), bestA = legacy ? legacy.width * legacy.height : 0, legacyWins = true;
+    for (const r of emptyRects(stage, blockers, g)) {
+      const s = scoreOf(rawScale(bounds, r, pad));
+      const a = r.width * r.height;
+      if (s > bestS + 1e-4) { best = r; bestS = s; bestA = a; legacyWins = false; }
+      else if (!legacyWins && Math.abs(s - bestS) <= 1e-4 && a > bestA + 0.5) { best = r; bestA = a; }
+    }
+    return best || rectOf(0, 0, 0, 0);
+  }
+  function phoneLayout() {
+    try {
+      return typeof document !== 'undefined' && document.body && document.body.classList.contains('m');
+    } catch (e) { return false; }
+  }
+  // Phone fit uses bestClear. Desktop keeps the edge-inset rect, so a wide
+  // window does not move. tight forces the phone choice in tests.
+  function resolveClear(frame, bounds, pad, limits, tight) {
+    if (!frame) return null;
+    const on = tight == null ? phoneLayout() : !!tight;
+    if (!on || !bounds || !frame.blockers) return frame.clear;
+    return bestClear(frame.stage, frame.blockers, bounds, 8, pad, limits);
+  }
   // Center bounds in the clear rect. pad is screen pixels inside that rect.
   // The returned view is the SVG viewBox origin: world = view + (screen - stage) / s.
   function fitView(bounds, stage, clear, pad, limits) {
@@ -154,8 +238,12 @@
     const stage = { left: s.left, top: s.top, right: s.right, bottom: s.bottom, width: s.width, height: s.height };
     const blockers = [];
     if (typeof document !== 'undefined' && document.querySelectorAll) {
+      const phone = phoneLayout();
       document.querySelectorAll(CHROME).forEach((node) => {
         if (node === el) return;
+        // The banner is stretched across the canvas. On a phone the only visible
+        // control in it is Make a copy, which is measured on its own.
+        if (phone && node.classList && node.classList.contains('projbanner')) return;
         let cs; try { cs = getComputedStyle(node); } catch (e) { return; }
         if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) return;
         const r = node.getBoundingClientRect();
@@ -277,7 +365,8 @@
   }
   const api = {
     clamp: clamp, worldAt: worldAt, applyView: applyView, orbit: orbit, cloneSel: cloneSel, cancelEditorGesture: cancelEditorGesture,
-    clearRect: clearRect, fitView: fitView, zoomAbout: zoomAbout, clearCenter: clearCenter, frameOf: frameOf, schematicHint: schematicHint,
+    clearRect: clearRect, emptyRects: emptyRects, rawScale: rawScale, bestClear: bestClear, resolveClear: resolveClear,
+    fitView: fitView, zoomAbout: zoomAbout, clearCenter: clearCenter, frameOf: frameOf, schematicHint: schematicHint,
     isPinchSurface: isPinchSurface, createPointerBook: createPointerBook, notePointerDown: notePointerDown,
     notePointerUp: notePointerUp, expireQuiet: expireQuiet, syncPointers: syncPointers, trackPinchPointer: trackPinchPointer,
   };
