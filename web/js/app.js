@@ -826,7 +826,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     $('#selWireColor').innerHTML = ['auto', ...Object.keys(window.WIRE_COLORS)].map((c) => `<option>${c}</option>`).join(''); $('#selWireColor').onchange = (e) => app.editor.setWireColor(e.target.value);
     $('#bRun').onclick = startRun; $('#bStop').onclick = stopRun; $('#bReset').onclick = () => { app.sim.resetState(); app.editor.render(); };
     $('#bUndo').onclick = () => app.editor.undo(); $('#bRedo').onclick = () => app.editor.redo(); $('#bRot').onclick = () => app.editor.rotateSel(); $('#bDel').onclick = () => app.editor.deleteSel();
-    $('#bSave').onclick = save; $('#bDownload').onclick = download; $('#fileIn').onchange = (e) => { if (e.target.files[0]) openFile(e.target.files[0]); e.target.value = ''; }; $('#bFit').onclick = () => (viewMode === 'schematic' && app.schematic ? app.schematic.fit() : app.editor.fit());
+    $('#bSave').onclick = save; $('#bDownload').onclick = download; $('#fileIn').onchange = (e) => { if (e.target.files[0]) openFile(e.target.files[0]); e.target.value = ''; }; $('#bFit').onclick = () => { if (viewMode === '3d' && app.view3d && app.view3d.fit) app.view3d.fit(); else if (viewMode === 'schematic' && app.schematic) app.schematic.fit(); else app.editor.fit(); };
     $('#tabs').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; document.querySelectorAll('#tabs button').forEach((x) => x.classList.toggle('on', x === b)); document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('on', t.id === 'tab-' + b.dataset.tab)); if (b.dataset.tab === 'dev') { renderDevices(); drawIr(); } if (b.dataset.tab === 'net') { app.netlog.dirty = true; app.netlog.render(); } };
     $('#selMode').onchange = (e) => { beforeEdit(); app.proj.mode = e.target.value; autosave(); modeNote(); renderFileTabs(); };
     $('#fileTabs').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; syncCode(); if (b.dataset.f === '+') { const n = prompt('File name (e.g. config.h)'); if (!n || !/^[\w.-]+\.(h|hpp|c|cpp|ino)$/.test(n)) return; beforeEdit(); app.proj.files[n] = ''; autosave(); app.file = n; } else app.file = b.dataset.f; renderFileTabs(); loadCode(); };
@@ -905,7 +905,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
 
   // ---------------- 2D / 3D view ----------------
   let viewMode = '2d', view3dLoading = null, knob3d = null;
-  const VIEW3D_SRC = 'js/view3d.js?v=55';
+  const VIEW3D_SRC = 'js/view3d.js?v=56';
   const THREE_SRC = 'vendor/three.min.js?v=2';
   function loadScriptOnce(src) {
     return new Promise((res, rej) => {

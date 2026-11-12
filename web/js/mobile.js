@@ -125,7 +125,7 @@
       if (b.dataset.d) { openDock(b.dataset.d); return; }
       if (a === 'projects') { setSheet(null); app.cmd.projects(); } else if (a === 'save') { app.cmd.save(); } else if (a === 'download') app.cmd.download();
       else if (a === 'import') $('#fileIn').click(); else if (a === 'restart') { setSheet(null); app.cmd.restart(); } else if (a === 'reset') $('#bReset').click();
-      else if (a === 'fit') { setSheet(null); ed.fit(); } else if (a === 'theme') $('#bTheme').click(); };
+      else if (a === 'fit') { setSheet(null); fitActive(); } else if (a === 'theme') $('#bTheme').click(); };
     // examples select: a mobile copy that drives the real one
     const ex = $('#selExample').cloneNode(true); ex.id = 'mSelExample'; ex.value = ''; $('#mExWrap').appendChild(ex);
     ex.onchange = () => { const v = ex.value; ex.value = ''; if (!v) return; const s = $('#selExample'); s.value = v; s.dispatchEvent(new Event('change')); setSheet(null); };
@@ -172,7 +172,9 @@
     touch();
     const fw = ed._finishWire.bind(ed); ed._finishWire = function (b, pin) { const n = this.proj.wires.length; fw(b, pin); if (this.proj.wires.length > n && document.body.classList.contains('m')) { haptic([8, 30, 14]); sound(880); } };
     const ap = ed.addPart.bind(ed); ed.addPart = function (...a) { const r = ap(...a); if (document.body.classList.contains('m')) { haptic(10); sound(660); } return r; };
-    const dw = ed._down.bind(ed); ed._down = function (ev) { const was = this.mode && this.mode.k; dw(ev); if (document.body.classList.contains('m') && was !== 'wire' && this.mode && this.mode.k === 'wire') { haptic(6); sound(520); } };
+    const dw = ed._down.bind(ed); ed._down = function (ev) { if (this._pinchLock) return; const was = this.mode && this.mode.k; dw(ev); if (document.body.classList.contains('m') && was !== 'wire' && this.mode && this.mode.k === 'wire') { haptic(6); sound(520); } };
+    const mv = ed._move.bind(ed); ed._move = function (ev) { if (this._pinchLock) return; return mv(ev); };
+    const up = ed._up.bind(ed); ed._up = function (ev) { if (this._pinchLock) return; return up(ev); };
     const av = ed.applyView.bind(ed); ed.applyView = function () { av(); const w = $('#stageWrap'); if (w) { w.style.setProperty('--px', (-this.view.x * 0.08 % 400).toFixed(1) + 'px'); w.style.setProperty('--py', (-this.view.y * 0.08 % 400).toFixed(1) + 'px'); } };
     // hint text for phones
     ed.setHint = function (t) { if (!this.hintEl) return; if (document.body.classList.contains('viewsch')) { this.hintEl.textContent = 'F mirrors the symbol (drawing only, wiring unchanged)'; return; } this.hintEl.textContent = t || (document.body.classList.contains('m') ? 'Tap a part to select it. Tap a pin, then another pin, to wire' : this.defaultHint()); };
@@ -221,35 +223,64 @@
       burned0 = burned;
     }, 250);
   }
+  function fitActive() {
+    if (document.body.classList.contains('view3d') && app.view3d && app.view3d.fit) app.view3d.fit();
+    else if (document.body.classList.contains('viewsch') && app.schematic) app.schematic.fit();
+    else ed.fit();
+  }
   function touch() {
-    const wrap = $('#stageWrap'), st = $('#stage'); const pts = new Map(); let g = null, lp = null;
+    const wrap = $('#stageWrap'), st = $('#stage'); const pts = new Map(); let g = null, lp = null, gestureSel = null;
+    const P = () => window.Pinch;
     const mid = () => { const [a, b] = [...pts.values()]; return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, d: Math.hypot(a.x - b.x, a.y - b.y) }; };
     const on = () => document.body.classList.contains('m');
+    const showZoom = (s) => { const z = $('#zoomPct'); if (z && !document.body.classList.contains('viewsch') && !document.body.classList.contains('view3d')) z.textContent = Math.round(s * 100) + '%'; };
     wrap.addEventListener('pointerdown', (e) => {
       if (!on() || e.pointerType !== 'touch' || !st.contains(e.target)) return;
+      if (pts.size === 0) gestureSel = P() ? P().cloneSel(ed.sel) : (ed.sel ? { ...ed.sel } : null);
       pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (pts.size === 1) {   // long-press on a part -> action menu
         const pg = e.target.closest && e.target.closest('.part'); clearTimeout(lp && lp.t);
         if (pg) lp = { x: e.clientX, y: e.clientY, id: pg.dataset.id, t: setTimeout(() => longPress(lp), 480) }; else lp = null;
       }
-      if (pts.size === 2) {
-        e.stopPropagation(); clearTimeout(lp && lp.t); lp = null;
-        if (ed.mode && ed.mode.k === 'drag' && ed.mode.moved) { ed.mode.p.x = ed.mode.ox; ed.mode.p.y = ed.mode.oy; ed.undoS.pop(); ed.render(); }
-        if (ed.mode && ed.mode.k === 'wire' && Date.now() - (ed.mode.t0 || 0) < 400) ed.cancelWire(); else if (!(ed.mode && ed.mode.k === 'wire')) ed.mode = null;
-        const m = mid(), r = st.getBoundingClientRect(); g = { m, s: ed.view.s, wx: ed.view.x + (m.x - r.left) / ed.view.s, wy: ed.view.y + (m.y - r.top) / ed.view.s };
+      if (pts.size >= 2) {
+        e.stopPropagation(); e.preventDefault(); clearTimeout(lp && lp.t); lp = null;
+        // The first finger may already have selected, dragged or started a wire. Cancel it
+        // the moment the second finger lands — including a wire that has been up for a while.
+        ed._pinchLock = true;
+        if (P()) P().cancelEditorGesture(ed, gestureSel);
+        else { if (ed.mode && ed.mode.k === 'wire') ed.cancelWire(); ed.mode = null; }
+        const m = mid(), r = st.getBoundingClientRect();
+        const w = P() ? P().worldAt(ed.view, m, r) : { x: ed.view.x + (m.x - r.left) / ed.view.s, y: ed.view.y + (m.y - r.top) / ed.view.s };
+        g = { dist: Math.max(m.d, 1), s: ed.view.s, wx: w.x, wy: w.y };
       }
     }, true);
     wrap.addEventListener('pointermove', (e) => {
       if (!pts.has(e.pointerId)) return; pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (lp && Math.hypot(e.clientX - lp.x, e.clientY - lp.y) > 10) { clearTimeout(lp.t); lp = null; }
-      if (g && pts.size === 2) { e.stopPropagation(); e.preventDefault(); const m = mid(), r = st.getBoundingClientRect(); const s = Math.min(4, Math.max(0.15, g.s * m.d / (g.m.d || 1)));
+      if (g && pts.size >= 2) {
+        e.stopPropagation(); e.preventDefault();
+        const m = mid(), r = st.getBoundingClientRect();
+        const next = P().applyView(g, m, m.d, r, { min: 0.15, max: 4 });
         ed.markUserView && ed.markUserView();
-        ed.view.s = s; ed.view.x = g.wx - (m.x - r.left) / s; ed.view.y = g.wy - (m.y - r.top) / s; ed.applyView(); const z = $('#zoomPct'); if (z) z.textContent = Math.round(s * 100) + '%'; }
+        ed.view.s = next.s; ed.view.x = next.x; ed.view.y = next.y; ed.applyView(); showZoom(next.s);
+      }
     }, true);
-    const up = (e) => { if (!pts.has(e.pointerId)) return; pts.delete(e.pointerId); if (lp) { clearTimeout(lp.t); lp = null; } if (pts.size < 2) { if (g) e.stopPropagation(); g = null; } };
+    const up = (e) => {
+      if (!pts.has(e.pointerId)) return; pts.delete(e.pointerId);
+      if (lp) { clearTimeout(lp.t); lp = null; }
+      if (pts.size < 2) {
+        // One finger still down must not resume the drag, the wire, or a pan from the old origin.
+        if (g) { e.stopPropagation(); e.preventDefault(); }
+        g = null;
+      }
+      if (pts.size === 0) ed._pinchLock = false;
+    };
     wrap.addEventListener('pointerup', up, true); wrap.addEventListener('pointercancel', up, true);
+    wrap.addEventListener('touchmove', (e) => { if (e.touches && e.touches.length >= 2) e.preventDefault(); }, { passive: false });
     st.addEventListener('contextmenu', (e) => { if (on() && e.target.closest('.part')) e.preventDefault(); });
-    ['gesturestart', 'gesturechange'].forEach((n) => document.addEventListener(n, (e) => e.preventDefault()));
+    // iOS Safari pinch-zooms the page unless the gesture is cancelled. The canvas zoom is our own.
+    ['gesturestart', 'gesturechange', 'gestureend'].forEach((n) => document.addEventListener(n, (e) => e.preventDefault(), { passive: false }));
+    document.addEventListener('touchmove', (e) => { if (e.touches && e.touches.length >= 2) e.preventDefault(); }, { passive: false });
   }
   function longPress(l) {
     if (!l || ed.mode && ed.mode.k === 'wire') return; const p = ed.part(l.id); if (!p) return;

@@ -1827,12 +1827,18 @@
     }
     _bind() {
       const svg = this.svg;
+      // Bumped when a second finger arrives so the first finger's pan/select session
+      // cannot apply a stale delta or select the symbol on the way up.
+      let gesture = 0;
       svg.addEventListener('pointerdown', (e) => {
         if (e.button != null && e.button !== 0) return;
+        if (this._pinchLock) { e.preventDefault(); return; }
+        const token = gesture;
         const pid = e.target.closest && e.target.closest('[data-pid]');
         const start = { x: e.clientX, y: e.clientY, vx: this.view.x, vy: this.view.y, pid: pid && pid.dataset.pid, drag: false };
         svg.setPointerCapture && svg.setPointerCapture(e.pointerId);
         const move = (ev) => {
+          if (token !== gesture || this._pinchLock) return;
           const dx = ev.clientX - start.x, dy = ev.clientY - start.y;
           if (Math.hypot(dx, dy) > 4) start.drag = true;
           if (!start.pid || start.drag) { this.view.x = start.vx - dx / this.view.s; this.view.y = start.vy - dy / this.view.s; this.apply(); }
@@ -1840,6 +1846,7 @@
         const up = (ev) => {
           svg.removeEventListener('pointermove', move);
           svg.removeEventListener('pointerup', up);
+          if (token !== gesture || this._pinchLock) return;
           if (start.pid && !start.drag) this.select(start.pid);
           else if (!start.drag && !start.pid) this.select(null);
           this._tip(ev);
@@ -1855,13 +1862,38 @@
         this.zoomBy(Math.exp(-e.deltaY * 0.0012), { x: e.clientX, y: e.clientY });
       }, { passive: false });
       const pts = new Map(); let pinch = null;
-      svg.addEventListener('pointerdown', (e) => { if (e.pointerType !== 'touch') return; pts.set(e.pointerId, e); if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch = { d: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY), s: this.view.s }; } }, true);
-      svg.addEventListener('pointermove', (e) => {
-        if (!pts.has(e.pointerId)) return; pts.set(e.pointerId, e);
-        if (pinch && pts.size === 2) { const [a, b] = [...pts.values()]; const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY); this.zoomBy((pinch.s * d / pinch.d) / this.view.s, { x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 }); e.stopPropagation(); }
+      const pair = () => { const [a, b] = [...pts.values()]; return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, d: Math.hypot(a.x - b.x, a.y - b.y) }; };
+      svg.addEventListener('pointerdown', (e) => {
+        if (e.pointerType !== 'touch') return;
+        pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (pts.size >= 2) {
+          gesture += 1; this._pinchLock = true;
+          const m = pair(), rect = svg.getBoundingClientRect();
+          const w = root.Pinch.worldAt(this.view, m, rect);
+          pinch = { dist: Math.max(m.d, 1), s: this.view.s, wx: w.x, wy: w.y };
+          e.preventDefault(); e.stopPropagation();
+        }
       }, true);
-      const end = (e) => { pts.delete(e.pointerId); if (pts.size < 2) pinch = null; };
+      svg.addEventListener('pointermove', (e) => {
+        if (!pts.has(e.pointerId)) return; pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (pinch && pts.size >= 2) {
+          e.preventDefault(); e.stopPropagation();
+          const m = pair(), rect = svg.getBoundingClientRect();
+          const next = root.Pinch.applyView(pinch, m, m.d, rect, { min: 0.12, max: 4 });
+          this.view.s = next.s; this.view.x = next.x; this.view.y = next.y; this.apply();
+        }
+      }, true);
+      const end = (e) => {
+        if (!pts.has(e.pointerId)) return;
+        pts.delete(e.pointerId);
+        if (pts.size < 2) pinch = null;
+        // Keep the lock until every finger is up so the remaining finger cannot pan or select.
+        // The finger's own pointerup still runs and drops its session without selecting,
+        // because the session token no longer matches.
+        if (pts.size === 0) this._pinchLock = false;
+      };
       svg.addEventListener('pointerup', end, true); svg.addEventListener('pointercancel', end, true);
+      svg.addEventListener('touchmove', (e) => { if (e.touches && e.touches.length >= 2) e.preventDefault(); }, { passive: false });
       window.addEventListener('resize', () => { if (this.active) this.apply(); });
     }
     _tip(ev) {

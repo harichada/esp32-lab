@@ -1,7 +1,7 @@
 /* ===== Mobile shell (<=820px). Every rule is scoped to body.m, which js/mobile.js sets only on small viewports. ===== */
 .m-only{display:none!important}
 body.m{--mTop:calc(54px + env(safe-area-inset-top));--mBot:env(safe-area-inset-bottom);--dock:calc(96px + env(safe-area-inset-bottom));--glass:color-mix(in srgb,var(--l1) 78%,transparent);--glass2:color-mix(in srgb,var(--l0) 86%,transparent);
-  font-size:15px;overscroll-behavior:none;-webkit-tap-highlight-color:transparent;touch-action:manipulation;position:fixed;inset:0;width:100%}
+  font-size:15px;overscroll-behavior:none;-webkit-tap-highlight-color:transparent;touch-action:pan-x pan-y;position:fixed;inset:0;width:100%}
 body.m .m-only{display:revert!important}
 body.m #mDial.m-only,body.m #mTicker.m-only,body.m #mSel.m-only,body.m .m-symbar.m-only{display:flex!important}
 body.m #mMore.m-only{display:flex!important}
@@ -34,7 +34,7 @@ body.m .canvas-tools,body.m .zoom-tools{bottom:calc(112px + env(safe-area-inset-
 body.m .canvas-tools{left:max(12px,env(safe-area-inset-left))}body.m .zoom-tools{right:max(12px,env(safe-area-inset-right))}
 body.m .canvas-tools,body.m .zoom-tools{gap:8px}
 body.m .canvas-tools .iconbtn,body.m .zoom-tools .iconbtn{width:44px;height:44px;min-width:44px;min-height:44px;border-radius:10px}body.m .canvas-tools .ic,body.m .zoom-tools .ic{width:20px;height:20px}
-body.m #zoomPct{min-width:46px;font-size:12px}
+body.m #zoomPct{min-width:44px;min-height:44px;font-size:12px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;box-sizing:border-box;padding:0 4px}
 body.m .hint{left:50%;transform:translateX(-50%);bottom:calc(176px + env(safe-area-inset-bottom));max-width:calc(100% - 32px)!important;font-size:12.5px;padding:7px 14px;background:var(--glass);border-color:var(--hair);transition:opacity .3s}
 body.m.m-has-sel .hint,body.m.m-wiring .hint{opacity:0}
 body.m .projbanner{top:10px;left:12px;right:12px;font-size:13px}body.m .projbanner .pb-ex,body.m .projbanner .pb-my{height:36px;border-radius:11px;background:var(--glass);border-color:var(--hair)}
@@ -252,6 +252,7 @@ body.m.m-wiring #mParts{opacity:0;pointer-events:none}
 
 /* ---- mobile 3D ---- */
 body.m.view3d #zoomPct{display:none!important}
+body.m.view3d .zoom-tools #zoomPct{display:inline-flex!important}
 body.m .view-toggle{height:44px;border-radius:10px}
 body.m .view-toggle .seg{height:44px;min-width:44px;min-height:44px;padding:0 10px;font-size:12.5px;justify-content:center}
 body.m #stage3d.on{z-index:4}
@@ -276,8 +277,15 @@ body.m #mScope .inst-ch{grid-template-columns:repeat(2,1fr);padding:6px}
 body.m #mScope .ich button,body.m #mScope .ich-r select{height:28px}
 body.m .telstrip{left:6px;right:6px;bottom:auto;top:calc(var(--mTop) + 28px);max-width:none;padding:3px 4px;overflow-x:auto}
 body.m .tel-i canvas{width:84px;height:22px}body.m .tel-h{display:none}body.m .tel-l{min-width:60px}
-/* narrow phones: the zoom pill overlapped the 2D/3D toggle; pinch zooms, so keep only Fit there */
-@media (max-width:430px){body.m .zoom-tools #bZoomOut,body.m .zoom-tools #bZoomIn,body.m .zoom-tools #zoomPct{display:none!important}}
+/* narrow phones: a horizontal zoom pill overlapped the 2D/Sch/3D toggle.
+   Stack − / % / + on the right, under the Parts chip and clear of the ignition button.
+   The % is the fit control, so the separate fit icon is not repeated here. */
+@media (max-width:430px){
+  body.m .zoom-tools{top:88px;bottom:auto;right:max(8px,env(safe-area-inset-right));left:auto;flex-direction:column;gap:6px;padding:4px;z-index:14}
+  body.m .zoom-tools #bZoomOut,body.m .zoom-tools #bZoomIn,body.m .zoom-tools #zoomPct{display:inline-flex!important;width:44px;min-width:44px;height:44px;min-height:44px;padding:0;align-items:center;justify-content:center;box-sizing:border-box}
+  body.m .zoom-tools #bFit{display:none!important}
+  body.m.view3d .zoom-tools #zoomPct{display:inline-flex!important}
+}
 
 /* header view chip on phones: fixed, dark, above everything. Names the current view. */
 body.m #bForce2d{position:fixed;top:calc(env(safe-area-inset-top) + 12px);right:64px;height:32px;min-height:32px;min-width:44px;max-width:46vw;z-index:2147483647;margin:0;border-radius:16px;overflow:hidden;text-overflow:ellipsis}
