@@ -167,18 +167,97 @@
       this.sph = { theta: 0.70, phi: 1.05, r: 280 };
       this.goal = { theta: 0.70, phi: 1.05, r: 280, target: target.clone() };
       this.dragging = false; this.mode = null; this.last = null; this.pinch0 = null; this.moved = false;
-      this.enabled = true; this._fly = null; this._bind(); this.apply(true);
+      this.enabled = true; this._fly = null; this._pinch = false; this._gestureLock = false; this._pids = new Set(); this._bind(); this.apply(true);
+    }
+    radiusLimits() {
+      const fit = this._fitR || this.sph.r || 280;
+      const ceiling = Math.max(1200, fit * 5);
+      // Keep the current distance inside the range so a pinch never snaps inward
+      // just because the fitted shot is farther than the old hard cap.
+      const cur = Math.max(this.sph.r || 0, this.goal.r || 0);
+      return { min: Math.min(60, cur || 60), max: Math.max(ceiling, cur) };
+    }
+    _ndc(mid, rect) {
+      const w = rect.width || 1, h = rect.height || 1;
+      return { x: ((mid.x - rect.left) / w) * 2 - 1, y: -(((mid.y - rect.top) / h) * 2 - 1) };
+    }
+    _freezePose() {
+      this._fly = null;
+      this.goal.theta = this.sph.theta; this.goal.phi = this.sph.phi; this.goal.r = this.sph.r;
+      this.goal.target.copy(this.target);
+      this.dragging = false; this.last = null;
+    }
+    _beginPinch(touches) {
+      this._freezePose();
+      this.apply();
+      this.cam.updateMatrixWorld(true);
+      const [a, b] = [...touches.values()];
+      const rect = this.el.getBoundingClientRect();
+      const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      const right = new THREE.Vector3().setFromMatrixColumn(this.cam.matrixWorld, 0);
+      const up = new THREE.Vector3().setFromMatrixColumn(this.cam.matrixWorld, 1);
+      const lim = this.radiusLimits();
+      this.pinch0 = {
+        dist: Math.max(Math.hypot(a.x - b.x, a.y - b.y), 1),
+        r: this.sph.r,
+        ndc: this._ndc(mid, rect),
+        target: { x: this.target.x, y: this.target.y, z: this.target.z },
+        right: { x: right.x, y: right.y, z: right.z },
+        up: { x: up.x, y: up.y, z: up.z },
+        fov: (this.cam.fov || 40) * Math.PI / 180,
+        aspect: this.cam.aspect || (rect.width / Math.max(1, rect.height)),
+        minR: lim.min, maxR: lim.max,
+      };
+      this._pinch = true; this._gestureLock = true;
+    }
+    _applyPinch(touches) {
+      if (!this.pinch0 || !root.Pinch) return;
+      const [a, b] = [...touches.values()];
+      const rect = this.el.getBoundingClientRect();
+      const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      const next = root.Pinch.orbit({
+        r0: this.pinch0.r, dist0: this.pinch0.dist, dist: Math.hypot(a.x - b.x, a.y - b.y),
+        ndc0: this.pinch0.ndc, ndc: this._ndc(mid, rect),
+        target: this.pinch0.target, right: this.pinch0.right, up: this.pinch0.up,
+        fov: this.pinch0.fov, aspect: this.pinch0.aspect, minR: this.pinch0.minR, maxR: this.pinch0.maxR,
+      });
+      this.goal.r = next.r; this.sph.r = next.r;
+      this.goal.target.set(next.target.x, next.target.y, next.target.z);
+      this.target.copy(this.goal.target);
+      this.apply();
     }
     _bind() {
       const el = this.el;
+      // Pointer events, not the touch-event stream: a phone fires both, and applying
+      // the pinch twice (once per stream) walks the anchor off the fingers. The touch
+      // listeners below only cancel the browser's own page zoom.
+      const ptr = new Map();
       el.addEventListener('pointerdown', (e) => {
         if (!this.enabled) return;
+        if (e.pointerType === 'touch') {
+          ptr.set(e.pointerId, { x: e.clientX, y: e.clientY });
+          this._pids.add(e.pointerId);
+          if (ptr.size >= 2) {
+            this._beginPinch(ptr);
+            try { el.setPointerCapture(e.pointerId); } catch (_) {}
+            e.preventDefault();
+            return;
+          }
+        }
+        // A second finger, or a finger still down after a pinch, must not start an orbit.
+        if (this._pinch || this._gestureLock) {
+          this._freezePose(); this._gestureLock = true;
+          e.preventDefault(); return;
+        }
         this.dragging = true; this.moved = false; this.last = { x: e.clientX, y: e.clientY };
         this.mode = (e.button === 2 || e.shiftKey || e.ctrlKey) ? 'pan' : 'orbit';
         this._fly = null;
         try { el.setPointerCapture(e.pointerId); } catch (_) {}
       });
       el.addEventListener('pointermove', (e) => {
+        if (ptr.has(e.pointerId)) ptr.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (this._pinch && ptr.size >= 2) { e.preventDefault(); this._applyPinch(ptr); return; }
+        if (this._pinch || this._gestureLock) return;
         if (!this.dragging || !this.last) return;
         const dx = e.clientX - this.last.x, dy = e.clientY - this.last.y;
         if (Math.abs(dx) + Math.abs(dy) > 2) this.moved = true;
@@ -193,37 +272,23 @@
           this.goal.phi = Math.max(0.22, Math.min(Math.PI * 0.46, this.goal.phi + dy * 0.0045));
         }
       });
-      const end = () => { this.dragging = false; this.last = null; };
+      const end = (e) => {
+        if (e && e.pointerId != null) { this._pids.delete(e.pointerId); ptr.delete(e.pointerId); }
+        this.dragging = false; this.last = null;
+        if (ptr.size < 2) { this._pinch = false; this.pinch0 = null; }
+        // The finger that is still down must not fall through into an orbit.
+        if (ptr.size === 0 && this._pids.size === 0) this._gestureLock = false;
+      };
       el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end);
       el.addEventListener('wheel', (e) => {
         if (!this.enabled) return; e.preventDefault(); this._fly = null;
-        this.goal.r = Math.max(60, Math.min(1200, this.goal.r * (e.deltaY > 0 ? 1.07 : 0.93)));
+        const lim = this.radiusLimits();
+        this.goal.r = Math.max(lim.min, Math.min(lim.max, this.goal.r * (e.deltaY > 0 ? 1.07 : 0.93)));
       }, { passive: false });
       el.addEventListener('contextmenu', (e) => e.preventDefault());
-      const touches = new Map(); el._touches = touches;
-      el.addEventListener('touchstart', (e) => {
-        for (const t of e.changedTouches) touches.set(t.identifier, { x: t.clientX, y: t.clientY });
-        if (touches.size === 2) {
-          const [a, b] = [...touches.values()];
-          this.pinch0 = { dist: Math.hypot(a.x - b.x, a.y - b.y), r: this.goal.r, mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, target: this.goal.target.clone() };
-          this.dragging = false; this._fly = null;
-        }
-      }, { passive: true });
-      el.addEventListener('touchmove', (e) => {
-        for (const t of e.changedTouches) touches.set(t.identifier, { x: t.clientX, y: t.clientY });
-        if (touches.size === 2 && this.pinch0) {
-          e.preventDefault();
-          const [a, b] = [...touches.values()];
-          const dist = Math.hypot(a.x - b.x, a.y - b.y);
-          this.goal.r = Math.max(60, Math.min(1200, this.pinch0.r * (this.pinch0.dist / Math.max(10, dist))));
-          const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-          const s = this.goal.r * 0.0012;
-          const right = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
-          right.crossVectors(this.cam.getWorldDirection(new THREE.Vector3()), up).normalize();
-          this.goal.target.copy(this.pinch0.target).addScaledVector(right, -(mid.x - this.pinch0.mid.x) * s).addScaledVector(up, (mid.y - this.pinch0.mid.y) * s);
-        }
-      }, { passive: false });
-      el.addEventListener('touchend', (e) => { for (const t of e.changedTouches) touches.delete(t.identifier); if (touches.size < 2) this.pinch0 = null; }, { passive: true });
+      const stopPageZoom = (e) => { if (e.touches && e.touches.length >= 2) e.preventDefault(); };
+      el.addEventListener('touchstart', stopPageZoom, { passive: false });
+      el.addEventListener('touchmove', stopPageZoom, { passive: false });
     }
     apply() {
       const { theta, phi, r } = this.sph, t = this.target;
@@ -503,10 +568,23 @@
     _applyFrame() {
       if (!this._fitBox || !this.orbit) return;
       this.orbit.frameBox(this._fitBox, 40, this._safeNdc());
+      this._fitR = this.orbit.sph.r; this.orbit._fitR = this.orbit.sph.r;
       if (this.scene && this.scene.fog && this.scene.fog.isFogExp2) {
         const r = this.orbit.sph.r;
         this.scene.fog.density = Math.min(0.00055, 0.45 / Math.max(r, 1));
       }
+    }
+    zoomBy(factor) {
+      if (!this.orbit || !factor) return;
+      const lim = this.orbit.radiusLimits();
+      this.orbit._fly = null;
+      this.orbit.goal.r = Math.max(lim.min, Math.min(lim.max, this.orbit.goal.r / factor));
+    }
+    fit() { if (this._fitBox) this._applyFrame(); }
+    zoomLabel() {
+      if (!this.orbit) return '';
+      const fit = this._fitR || this.orbit.sph.r || 1;
+      return Math.round(fit / Math.max(1, this.orbit.sph.r) * 100) + '%';
     }
     setActive(on) {
       this.active = !!on; this.canvas.classList.toggle('on', this.active);
@@ -523,7 +601,7 @@
     }
     _projectSig() {
       if (!this.proj) return '';
-      return this.proj.parts.map((p) => p.id + ':' + p.type + ':' + p.x + ',' + p.y + ',' + (p.rot || 0) + ':' + JSON.stringify(p.props || {})).join('|')
+      return this.proj.parts.map((p) => p.id + ':' + p.type + ':' + p.x + ',' + p.y + ',' + (p.rot || 0) + ':' + (p.flipX ? 1 : 0) + (p.flipY ? 1 : 0) + ':' + JSON.stringify(p.props || {})).join('|')
         + '#' + this.proj.wires.map((w) => w.id + ':' + w.color + ':' + w.a.x + ',' + w.a.y + '>' + w.b.x + ',' + w.b.y + ':' + (w.pts || []).map((q) => q.x + ',' + q.y).join(';')).join('|');
     }
     clear() {
@@ -591,6 +669,34 @@
         }
       });
     }
+    // Same pose as Parts.bodySpin. A two-terminal end-swap yaws 180° about the
+    // pin centre (the model sits on z = 0, so the body stays between the leads).
+    // Applied in local space, before the part's yaw, so pins match pinWorld.
+    _spinBody(mesh, p) {
+      const s = root.Parts.bodySpin && root.Parts.bodySpin(p);
+      if (!s) return;
+      const THREE = root.THREE;
+      const pivot = new THREE.Group();
+      pivot.position.set(s.cx, 0, s.cy);
+      // A horizontal end-swap is a yaw about the pin centre. Models sit on
+      // z = 0, so the body stays between the holes and the leads exchange.
+      if (s.turn || (s.flipX && !s.flipY)) pivot.rotation.y = Math.PI;
+      else {
+        if (s.flipX) pivot.scale.x = -1;
+        if (s.flipY) pivot.scale.z = -1;
+        pivot.traverse((o) => {
+          if (!o.material) return;
+          const list = Array.isArray(o.material) ? o.material : [o.material];
+          o.material = list.map((m) => { const c = m.clone(); c.side = THREE.DoubleSide; return c; });
+        });
+      }
+      for (const k of [...mesh.children]) {
+        mesh.remove(k);
+        k.position.x -= s.cx; k.position.z -= s.cy;
+        pivot.add(k);
+      }
+      mesh.add(pivot);
+    }
     _shadowDisc(rad) {
       const THREE = root.THREE;
       const m = new THREE.Mesh(
@@ -624,13 +730,14 @@
         mesh.position.set(p.x, 0, p.y);
         mesh.rotation.y = -rot;
         gParts.add(mesh); this.parts.set(p.id, { mesh, part: p });
-        this._addSolid(box, mesh);
         if (p.type !== 'breadboard') {
           try {
             const sz = d.size ? d.size(p) : { w: 24, h: 20 };
             mesh.add(this._shadowDisc(Math.max(6, Math.max(sz.w || 20, sz.h || 20) * 0.32)));
           } catch (_) { mesh.add(this._shadowDisc(10)); }
         }
+        this._spinBody(mesh, p);
+        this._addSolid(box, mesh);
       }
       this._partBoxes = []; this._pinOwners = new Map(); this._pinNames = new Map();
       for (const [, rec] of this.parts) if (rec.part.type === 'breadboard') {
@@ -1846,7 +1953,9 @@
         const dt = Math.min(0.05, (now - (this._last || now)) / 1000); this._last = now; this._t += dt;
         if (this.orbit) {
           this.orbit.tick(dt);
-          if (!this.orbit.dragging && !this.orbit._fly && !RM()) {
+          const zlab = document.getElementById('zoomPct');
+          if (zlab) { const t = this.zoomLabel(); if (zlab.textContent !== t) zlab.textContent = t; }
+          if (!this.orbit.dragging && !this.orbit._fly && !this.orbit._pinch && !this.orbit._gestureLock && !RM()) {
             this._idle += dt;
             if (this._idle > 4) this.orbit.goal.theta += 0.0004;
           } else this._idle = 0;

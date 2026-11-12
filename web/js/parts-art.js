@@ -72,7 +72,7 @@
       s += `<rect x="-3.5" y="-9.6" width="17" height="2.6" rx=".8" fill="${c}" stroke="#0005" stroke-width=".4"/><rect x="10.5" y="-9.6" width="3" height="2.6" fill="#0003"/>`;
       if (isIR) { s += `<text x="5" y="-31" class="plbl">IR</text>`; if (b > 0.02 && !burned) s += `<g class="ir-arcs" style="opacity:${0.3 + 0.7 * b}">${[0, 1, 2].map((k) => `<path d="M${14 + k * 5} ${-26 - k * 4} a${8 + k * 5} ${8 + k * 5} 0 0 1 0 ${12 + k * 8}" style="animation-delay:${k * 0.18}s"/>`).join('')}</g>`; }
       if (burned) s += `<g class="smoke"><circle cx="5" cy="-32" r="5"/><circle cx="9" cy="-42" r="6"/><circle cx="3" cy="-52" r="7"/></g>`;
-      return s + dots(this.pins(p)) + `<text x="-4" y="9" class="plbl small">A</text><text x="14" y="9" class="plbl small">C</text>`;
+      return s + dots(this.pins(p)) + `<text x="0" y="8" class="plbl small">A</text><text x="10" y="8" class="plbl small">C</text>`;
     };
   }
 

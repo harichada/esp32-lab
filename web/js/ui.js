@@ -4,7 +4,7 @@
   const $ = (s) => document.querySelector(s), LS = root.localStorage;
   const get = (k, d) => { try { const v = LS.getItem('esp32lab.ui.' + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } };
   const put = (k, v) => { try { LS.setItem('esp32lab.ui.' + k, JSON.stringify(v)); } catch (e) { /* ignore */ } };
-  const SHORTCUTS = [['Run / compile', 'Ctrl Enter'], ['Command palette', 'Ctrl K'], ['Save (copies an example)', 'Ctrl S'], ['Undo / redo', 'Ctrl Z · Ctrl Y'], ['Wire: click pin → click pin', 'Click'], ['Add bend while wiring', 'Click empty'], ['Cancel wire / deselect', 'Esc'], ['Delete selection', 'Del · ⌫'], ['Rotate part', 'R'], ['Fit to view', 'F'], ['Zoom in / out', '+ · −'], ['Wire menu', 'Right-click'], ['Add bend to a wire', 'Double-click'], ['Pan canvas', 'Drag background'], ['Toggle parts / inspector / dock', 'Ctrl 1 · 2 · 3'], ['This overlay', '?']];
+  const SHORTCUTS = [['Run / compile', 'Ctrl Enter'], ['Command palette', 'Ctrl K'], ['Save (copies an example)', 'Ctrl S'], ['Undo / redo', 'Ctrl Z · Ctrl Y'], ['Wire: click pin → click pin', 'Click'], ['Add bend while wiring', 'Click empty'], ['Cancel wire / deselect', 'Esc'], ['Delete selection', 'Del · ⌫'], ['Rotate part', 'R'], ['Flip part / mirror symbol', 'F'], ['Fit to view', 'Shift F'], ['Zoom in / out', '+ · −'], ['Wire menu', 'Right-click'], ['Add bend to a wire', 'Double-click'], ['Pan canvas', 'Drag background'], ['Toggle parts / inspector / dock', 'Ctrl 1 · 2 · 3'], ['This overlay', '?']];
   function init(app) {
     const ed = app.editor, body = document.body;
     // ----- code view -----
@@ -21,13 +21,35 @@
     // ----- theme -----
     $('#bTheme').onclick = () => { const t = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light'; document.documentElement.dataset.theme = t; LS.setItem('esp32lab.theme', t); drawMap(true); };
     // ----- zoom + minimap -----
-    const zoomBy = (f) => { if (app.schematic && app.schematic.active) { app.schematic.zoomBy(f); return; } ed.markUserView && ed.markUserView(); const r = $('#stage').getBoundingClientRect(), v = ed.view, s = Math.min(4, Math.max(0.15, v.s * f)), cx = v.x + r.width / v.s / 2, cy = v.y + r.height / v.s / 2; v.x = cx - r.width / s / 2; v.y = cy - r.height / s / 2; v.s = s; ed.applyView(); };
+    const zoomBy = (f, client) => {
+      if (app.view3d && app.view3d.active && typeof app.view3d.zoomBy === 'function') { app.view3d.zoomBy(f); return; }
+      if (app.schematic && app.schematic.active) { app.schematic.zoomBy(f, client); return; }
+      ed.markUserView && ed.markUserView();
+      const stage = $('#stage');
+      const frame = root.Pinch.frameOf(stage);
+      const anchor = client || root.Pinch.clearCenter(frame);
+      const v = root.Pinch.zoomAbout(ed.view, f, anchor, frame.stage, { min: 0.15, max: 4 });
+      ed.view.x = v.x; ed.view.y = v.y; ed.view.s = v.s; ed.applyView();
+    };
     app.zoomBy = zoomBy; $('#bZoomIn').onclick = () => zoomBy(1.25); $('#bZoomOut').onclick = () => zoomBy(0.8);
+    const fitActive = () => {
+      if (app.view3d && app.view3d.active && typeof app.view3d.fit === 'function') { app.view3d.fit(); return; }
+      if (app.schematic && app.schematic.active) { app.schematic.fit(); return; }
+      ed.fit();
+    };
+    const pct = $('#zoomPct');
+    if (pct) {
+      pct.setAttribute('role', 'button'); pct.tabIndex = 0; pct.title = 'Zoom level. Tap to fit the circuit';
+      pct.addEventListener('click', fitActive);
+      pct.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fitActive(); } });
+    }
     const mm = $('#minimap'); if (!get('minimap', window.innerWidth > 1400)) mm.classList.add('off'); $('#bMap').classList.toggle('on', !mm.classList.contains('off'));
     $('#bMap').onclick = () => { mm.classList.toggle('off'); put('minimap', !mm.classList.contains('off')); $('#bMap').classList.toggle('on', !mm.classList.contains('off')); drawMap(true); };
     let mmT = null, lastKey = '';
     function drawMap(force) {
       if (app.schematic && app.schematic.active) return;
+      // 3D writes its own percent (fit distance, not the breadboard scale).
+      if (app.view3d && app.view3d.active) return;
       const pct = Math.round(ed.view.s * 100) + '%'; if ($('#zoomPct').textContent !== pct) $('#zoomPct').textContent = pct;
       if (mm.classList.contains('off') || !ed.proj) return;
       const r = $('#stage').getBoundingClientRect(), v = ed.view, key = [v.x, v.y, v.s, r.width, r.height, ed.proj.parts.length, ed.proj.wires.length, document.documentElement.dataset.theme].join();
@@ -44,11 +66,42 @@
     app.drawMap = drawMap; setInterval(() => drawMap(false), 120);
     const mmGo = (e) => { if (!mmT) return; ed.markUserView && ed.markUserView(); const b = mm.getBoundingClientRect(), wx = ((e.clientX - b.left) * mm.width / b.width - mmT.ox) / mmT.sc, wy = ((e.clientY - b.top) * mm.height / b.height - mmT.oy) / mmT.sc, r = $('#stage').getBoundingClientRect(); ed.view.x = wx - r.width / ed.view.s / 2; ed.view.y = wy - r.height / ed.view.s / 2; ed.applyView(); drawMap(true); };
     mm.addEventListener('pointerdown', (e) => { mmGo(e); mm.setPointerCapture(e.pointerId); const mv = (ev) => mmGo(ev); mm.addEventListener('pointermove', mv); mm.addEventListener('pointerup', () => mm.removeEventListener('pointermove', mv), { once: true }); });
-    // ----- pinch zoom (touch) -----
-    const pts = new Map(); let pinch = null; const st = $('#stage');
-    st.addEventListener('pointerdown', (e) => { if (e.pointerType !== 'touch') return; pts.set(e.pointerId, e); if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch = { d: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY), s: ed.view.s }; ed.mode = null; } }, true);
-    st.addEventListener('pointermove', (e) => { if (!pts.has(e.pointerId)) return; pts.set(e.pointerId, e); if (pinch && pts.size === 2) { const [a, b] = [...pts.values()]; const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY); zoomBy((pinch.s * d / pinch.d) / ed.view.s); e.stopPropagation(); } }, true);
-    const pend = (e) => { pts.delete(e.pointerId); if (pts.size < 2) pinch = null; }; st.addEventListener('pointerup', pend, true); st.addEventListener('pointercancel', pend, true);
+    // ----- pinch zoom (touch). Phones use mobile.js, which anchors on the fingers.
+    // This path is the touch laptop: same anchor, and the second finger cancels a wire or drag.
+    const pts = new Map(); let pinch = null, gestureSel = null; const st = $('#stage');
+    st.addEventListener('pointerdown', (e) => {
+      if (e.pointerType !== 'touch' || document.body.classList.contains('m')) return;
+      if (pts.size === 0) gestureSel = root.Pinch.cloneSel(ed.sel);
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pts.size >= 2) {
+        ed._pinchLock = true;
+        root.Pinch.cancelEditorGesture(ed, gestureSel);
+        const [a, b] = [...pts.values()], rect = st.getBoundingClientRect();
+        const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+        const w = root.Pinch.worldAt(ed.view, mid, rect);
+        pinch = { dist: Math.max(Math.hypot(a.x - b.x, a.y - b.y), 1), s: ed.view.s, wx: w.x, wy: w.y };
+        e.preventDefault(); e.stopPropagation();
+      }
+    }, true);
+    st.addEventListener('pointermove', (e) => {
+      if (!pts.has(e.pointerId) || document.body.classList.contains('m')) return;
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pinch && pts.size >= 2) {
+        const [a, b] = [...pts.values()], rect = st.getBoundingClientRect();
+        const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+        const next = root.Pinch.applyView(pinch, mid, Math.hypot(a.x - b.x, a.y - b.y), rect, { min: 0.15, max: 4 });
+        ed.markUserView && ed.markUserView();
+        ed.view.s = next.s; ed.view.x = next.x; ed.view.y = next.y; ed.applyView();
+        e.preventDefault(); e.stopPropagation();
+      }
+    }, true);
+    const pend = (e) => {
+      if (!pts.has(e.pointerId)) return; pts.delete(e.pointerId);
+      if (pts.size < 2) pinch = null;
+      if (pts.size === 0) ed._pinchLock = false;
+      else e.stopPropagation();
+    };
+    st.addEventListener('pointerup', pend, true); st.addEventListener('pointercancel', pend, true);
     // ----- shortcuts overlay -----
     $('#keysList').innerHTML = SHORTCUTS.map(([a, k]) => `<div class="krow"><span>${a}</span><span>${k.split(' · ').map((x) => `<kbd>${x}</kbd>`).join(' ')}</span></div>`).join('');
     const keysDlg = $('#keysDlg'); const showKeys = () => { keysDlg.hidden = false; }; $('#bKeys').onclick = showKeys;

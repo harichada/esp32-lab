@@ -13,9 +13,20 @@
       this._bind();
     }
     setProject(proj) { this.proj = proj; this.sel = null; this.undoS = []; this.redoS = []; this.render(); }
-    snapshot() { return JSON.stringify({ parts: this.proj.parts, wires: this.proj.wires }); }
+    snapshot() { return JSON.stringify({ parts: this.proj.parts, wires: this.proj.wires, sel: this.sel || null }); }
     push() { if (this.hooks.beforeEdit) this.hooks.beforeEdit(); this.undoS.push(this.snapshot()); if (this.undoS.length > 200) this.undoS.shift(); this.redoS = []; }
-    _restore(s) { const o = JSON.parse(s); this.proj.parts = o.parts; this.proj.wires = o.wires; this.sel = null; this.render(); this.hooks.changed(true); }
+    // The snapshot replaces part objects. Put the selection back on the id it
+    // had when the edit was made, then tell the Inspector. Otherwise Delete
+    // clears the selection, Flip clicks after undo do nothing, and the panel
+    // keeps showing the pre-undo part.
+    _restore(s) {
+      const o = JSON.parse(s); this.proj.parts = o.parts; this.proj.wires = o.wires;
+      const keep = o.sel !== undefined ? o.sel : this.sel;
+      const partOk = keep && keep.part && this.part(keep.part);
+      const wireOk = keep && keep.wire && this.wire(keep.wire);
+      this.sel = partOk ? { part: keep.part } : wireOk ? { wire: keep.wire } : null;
+      this.render(); this.hooks.changed(true); if (this.hooks.selected) this.hooks.selected(this.sel);
+    }
     undo() { if (!this.undoS.length) return; this.redoS.push(this.snapshot()); this._restore(this.undoS.pop()); }
     redo() { if (!this.redoS.length) return; this.undoS.push(this.snapshot()); this._restore(this.redoS.pop()); }
     // ---------- coordinates ----------
@@ -24,15 +35,17 @@
     markUserView() { this._autoFit = false; }
     fit() {
       const bb = this.bounds(); const r = this.svg.getBoundingClientRect(); if (!bb || r.width < 2 || r.height < 2) return;
-      const s = Math.min(3, Math.max(0.2, Math.min(r.width / (bb.w + 80), r.height / (bb.h + 80))));
-      this.view = { s, x: bb.x - 40 - (r.width / s - bb.w - 80) / 2, y: bb.y - 40 - (r.height / s - bb.h - 80) / 2 };
+      const frame = root.Pinch.frameOf(this.svg);
+      const fit = root.Pinch.fitView(bb, frame.stage, frame.clear, 14, { min: 0.15, max: 3 });
+      const s = fit.s;
+      this.view = { s: s, x: fit.x, y: fit.y };
       this._autoFit = true; this._fitSize = Math.round(r.width) + 'x' + Math.round(r.height); this.applyView();
       const z = document.getElementById('zoomPct');
       if (z && !document.body.classList.contains('viewsch') && !document.body.classList.contains('view3d')) z.textContent = Math.round(s * 100) + '%';
     }
     bounds() {
       let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; const add = (x, y) => { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); };
-      for (const p of this.proj.parts) { const d = P.T[p.type]; if (!d) continue; const sz = d.size(p); const c = [[-30, -50], [sz.w + 30, sz.h + 30]]; for (const [a, b] of c) { const [rx, ry] = P.rotPt(a, b, p.rot || 0); add(p.x + rx, p.y + ry); } }
+      for (const p of this.proj.parts) { const d = P.T[p.type]; if (!d) continue; const sz = d.size(p); const c = [[-30, -50], [sz.w + 30, sz.h + 30]]; for (const [a, b] of c) { const [rx, ry] = P.orientPt(a, b, p); add(p.x + rx, p.y + ry); } }
       for (const w of this.proj.wires) { add(w.a.x, w.a.y); add(w.b.x, w.b.y); for (const q of w.pts || []) add(q.x, q.y); }
       return x0 > x1 ? null : { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
     }
@@ -44,8 +57,8 @@
       for (const p of sorted) {
         if (!P.T[p.type]) continue;
         const g = document.createElementNS(NS, 'g'); g.setAttribute('class', 'part' + (this.sel && this.sel.part === p.id ? ' sel' : '') + (P.T[p.type].interactive || P.T[p.type].click ? ' inter' : '')); g.dataset.id = p.id;
-        g.setAttribute('transform', `translate(${p.x},${p.y}) rotate(${(p.rot || 0) * 90})`);
-        const html = this.partSvg(p); g.innerHTML = html; this.svgCache.set(p.id, html);
+        g.setAttribute('transform', P.partTransform(p));
+        const html = this.partSvg(p); g.innerHTML = html; this._upright(g, p); this.svgCache.set(p.id, html);
         this.lParts.appendChild(g); this.partEls.set(p.id, g);
       }
       this.renderWires();
@@ -84,7 +97,7 @@
     refreshDynamic() {
       for (const p of this.proj.parts) {
         const g = this.partEls.get(p.id); if (!g || p.type === 'breadboard') continue;
-        const html = this.partSvg(p); if (this.svgCache.get(p.id) !== html) { g.innerHTML = html; this.svgCache.set(p.id, html); }
+        const html = this.partSvg(p); if (this.svgCache.get(p.id) !== html) { g.innerHTML = html; this._upright(g, p); this.svgCache.set(p.id, html); }
       }
     }
     select(s) { this.sel = s; for (const [id, g] of this.partEls) g.classList.toggle('sel', !!(s && s.part === id)); this.renderWires(); this.hooks.selected(s); if (!this.mode) this.setHint(); }
@@ -103,12 +116,55 @@
       return this.addPart(type, seat.x, seat.y);
     }
     part(id) { return this.proj.parts.find((p) => p.id === id); }
-    rotateSel() { if (!this.sel || !this.sel.part) return; const p = this.part(this.sel.part); this.push(); p.rot = ((p.rot || 0) + 1) & 3; this.render(); this.hooks.changed(true); }
+    rotateSel() { if (!this.sel || !this.sel.part) return; const p = this.part(this.sel.part); if (!p) return; this.push(); p.rot = ((p.rot || 0) + 1) & 3; this.render(); this.hooks.changed(true); if (this.hooks.selected) this.hooks.selected(this.sel); }
+    // axis 'x' or 'y'. On the breadboard a two-terminal part turns 180° (either
+    // axis — there is only one real flip). In the schematic, H and V are display-only.
+    flipSel(axis) {
+      if (!this.sel || !this.sel.part) return;
+      const p = this.part(this.sel.part); if (!p) return;
+      const sch = document.body.classList.contains('viewsch');
+      if (sch) {
+        this.push();
+        if (axis === 'y') p.schFlipY = !p.schFlipY; else p.schFlipX = !p.schFlipX;
+        this.hooks.changed(true); this.hooks.selected(this.sel); return;
+      }
+      if (!P.canPhysicalFlip(p)) return;
+      this.push();
+      if (P.ALLOW_MIRROR_MULTIPIN && !P.isTwoTerminal(p)) {
+        if (axis === 'y') p.flipY = !p.flipY; else p.flipX = !p.flipX;
+      } else { p.flipX = !p.flipX; p.flipY = false; }
+      const seat = P.reseat(this.proj.parts, p);
+      if (seat) { p.x = seat.x; p.y = seat.y; }
+      this.render(); this.hooks.changed(true); this.hooks.selected(this.sel);
+    }
+    // A 180° body turn would invert lettering. Spin each label back about its
+    // own anchor so it stays upright and unmirrored. Geometry still turns.
+    _upright(g, p) {
+      const s = P.bodySpin(p); if (!s) return;
+      g.querySelectorAll('text').forEach((el) => {
+        const x = parseFloat(el.getAttribute('x')) || 0, y = parseFloat(el.getAttribute('y')) || 0;
+        const prev = el.getAttribute('transform') || '';
+        const fix = s.turn ? `rotate(180 ${x} ${y})` : `translate(${x} ${y}) scale(${s.flipX ? -1 : 1} ${s.flipY ? -1 : 1}) translate(${-x} ${-y})`;
+        el.setAttribute('transform', prev ? fix + ' ' + prev : fix);
+      });
+    }
     deleteSel() {
       if (!this.sel) return; this.push();
       if (this.sel.part) this.proj.parts = this.proj.parts.filter((p) => p.id !== this.sel.part);
       if (this.sel.wire) this.proj.wires = this.proj.wires.filter((w) => w.id !== this.sel.wire);
       this.sel = null; this.render(); this.hooks.changed(true); this.hooks.selected(null);
+      // Inspector and phone-sheet Delete leave focus in a value field, which swallows Ctrl+Z.
+      this.focusCanvas();
+    }
+    focusCanvas() {
+      const svg = this.svg; if (!svg || typeof svg.focus !== 'function') return;
+      try {
+        const ae = document.activeElement;
+        if (ae && ae !== svg && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName || '') && typeof ae.blur === 'function') ae.blur();
+      } catch (e) { /* focus is a convenience */ }
+      try { if (typeof svg.hasAttribute !== 'function' || !svg.hasAttribute('tabindex')) svg.setAttribute('tabindex', '-1'); } catch (e) { /* */ }
+      try { if (svg.style) svg.style.outline = 'none'; svg.focus({ preventScroll: true }); }
+      catch (e) { try { svg.focus(); } catch (e2) { /* shortcut still works when focus is already on the page */ } }
     }
     setWireColor(c) { this.wireColor = c; if (this.sel && this.sel.wire) { const w = this.proj.wires.find((q) => q.id === this.sel.wire); if (w) { this.push(); w.color = c; this.renderWires(); } } }
     pinIndex() {   // world positions of every pin (non-breadboard first so they win ties with the hole underneath)
@@ -125,8 +181,11 @@
       const el = ev.target && ev.target.closest && ev.target.closest('[data-pin]');
       if (el) { const g = el.closest('.part'); const p = g && this.part(g.dataset.id); const pin = p && P.T[p.type].pins(p).find((q) => q.name === el.dataset.pin); if (pin) { const near = this.pinNear(this.toWorld(ev), ev); if (near && !near.bb && near.part !== p) return near; return { part: p, pin, pos: P.pinWorld(p, pin), bb: p.type === 'breadboard' }; } }
       if (ev.target && ev.target.closest && ev.target.closest('.w-bend')) return null;
-      const pg = ev.target && ev.target.closest && ev.target.closest('.part'), body = (pg && (this.part(pg.dataset.id) || {}).type !== 'breadboard') || (ev.target.closest && ev.target.closest('.wire'));
-      return this.pinNear(this.toWorld(ev), ev, body ? 5 : 14);   // over a part's body: only snap when really close to a leg, so the body stays draggable
+      const pg = ev.target && ev.target.closest && ev.target.closest('.part'), part = pg && this.part(pg.dataset.id);
+      // A part body, lead, or label selects the part. It must not snap to a nearby leg and start a wire.
+      if (part && part.type !== 'breadboard') return null;
+      const onWire = ev.target && ev.target.closest && ev.target.closest('.wire');
+      return this.pinNear(this.toWorld(ev), ev, onWire ? 5 : 14);
     }
     pinLabel(h) {
       if (!h) return ''; const p = h.part, n = h.pin.name, d = P.T[p.type] || {};
@@ -147,8 +206,12 @@
       if (h) mark(h.pos, 'hl-pin'); for (const q of extra || []) mark(q, 'hl-pin');
       this.ovHl.innerHTML = s;
     }
-    setHint(t) { if (!this.hintEl) return; if (document.body.classList.contains('viewsch')) { this.hintEl.textContent = 'Schematic is view-only — switch to 2D to add, move, or wire · drag to pan · scroll to zoom'; return; } this.hintEl.textContent = t || this.defaultHint(); }
-    defaultHint() { return this.sel && this.sel.wire ? 'Wire selected: Delete/Backspace removes · right-click for colour · double-click adds a bend · drag bends' : 'Click a pin, then click another pin to wire (drag works too) · hover a pin to see its net · Esc cancels · right-click a wire for options · wheel/pinch = zoom · drag background = pan'; }
+    setHint(t) { if (!this.hintEl) return; if (document.body.classList.contains('viewsch')) { this.hintEl.textContent = root.Pinch.schematicHint(); return; } this.hintEl.textContent = t || this.defaultHint(); }
+    defaultHint() {
+      if (this.sel && this.sel.wire) return 'Wire selected: Delete/Backspace removes · right-click for colour · double-click adds a bend · drag bends';
+      if (document.body.classList.contains('m')) return 'Tap a part to select it. Tap a pin, then another pin, to wire';
+      return 'Click a part to select it. Click a pin, then another pin, to wire · R rotate · F flip';
+    }
     // ---------- interaction ----------
     _bind() {
       const svg = this.svg;
@@ -202,7 +265,12 @@
     _down(ev) {
       if (ev.button === 1 || (ev.button === 0 && ev.altKey && !this.pinAtEvent(ev))) { this.mode = { k: 'pan', sx: ev.clientX, sy: ev.clientY, vx: this.view.x, vy: this.view.y }; return; }
       if (ev.button !== 0) return;
-      const w = this.toWorld(ev), pin = this.pinAtEvent(ev);
+      const partEl = ev.target.closest && ev.target.closest('.part'); const p = partEl && this.part(partEl.dataset.id);
+      const pinEl = ev.target.closest && ev.target.closest('[data-pin]');
+      const onBody = !!(p && p.type !== 'breadboard' && !pinEl);
+      // A body tap selects, even mid-wire. It must not drop a bend or land the wire on a nearby pin.
+      if (onBody && this.mode && this.mode.k === 'wire') this.cancelWire();
+      const w = this.toWorld(ev), pin = onBody ? null : this.pinAtEvent(ev);
       if (this.mode && this.mode.k === 'wire') {
         const m = this.mode;
         if (pin) { if (pin.pos.x === m.a.x && pin.pos.y === m.a.y && !m.pts.length) { this.cancelWire(); return; } this._finishWire(pin.pos, pin); return; }
@@ -212,9 +280,7 @@
       }
       const bEl = ev.target.closest && ev.target.closest('.w-bend');
       if (bEl) { const wid = bEl.closest('.wire').dataset.wid; this.push(); this.mode = { k: 'bend', w: this.wire(wid), i: +bEl.dataset.bend }; svg_capture(this.svg, ev); return; }
-      const partEl = ev.target.closest('.part'); const p = partEl && this.part(partEl.dataset.id);
-      const onPart = p && p.type !== 'breadboard' && !pin;
-      if (pin && !(p && p.type === 'breadboard' && ev.shiftKey) && !(onPart && false)) { this.closeMenu(); this.mode = { k: 'wire', a: pin.pos, pts: [], start: pin, t0: Date.now() }; this._drawWirePreview(w); this.highlight(pin); this.setHint(`Wiring from ${this.pinLabel(pin)} — click the target pin · click empty space to add a bend · Esc / right-click cancels`); return; }
+      if (pin && !(p && p.type === 'breadboard' && ev.shiftKey)) { this.closeMenu(); this.mode = { k: 'wire', a: pin.pos, pts: [], start: pin, t0: Date.now() }; this._drawWirePreview(w); this.highlight(pin); this.setHint(`Wiring from ${this.pinLabel(pin)} — click the target pin · click empty space to add a bend · Esc / right-click cancels`); return; }
       const wEl = ev.target.closest('.wire');
       if (wEl) { const dbl = this._lastWireDown && this._lastWireDown.id === wEl.dataset.wid && Date.now() - this._lastWireDown.t < 450; this._lastWireDown = { id: wEl.dataset.wid, t: Date.now() };
         if (dbl && this.sel && this.sel.wire === wEl.dataset.wid) { this._lastWireDown = null; this._dblBend = Date.now(); this.addBend(wEl.dataset.wid, w); return; } this.select({ wire: wEl.dataset.wid }); return; }
@@ -254,7 +320,7 @@
       if (m && m.k === 'drag') {
         const nx = snap(m.ox + w.x - m.sx), ny = snap(m.oy + w.y - m.sy);
         if (nx !== m.p.x || ny !== m.p.y) {
-          if (!m.moved) { this.push(); m.moved = true; } m.p.x = nx; m.p.y = ny; this._pinIdx = null; const g = this.partEls.get(m.p.id); g.setAttribute('transform', `translate(${nx},${ny}) rotate(${(m.p.rot || 0) * 90})`);
+          if (!m.moved) { this.push(); m.moved = true; } m.p.x = nx; m.p.y = ny; this._pinIdx = null; const g = this.partEls.get(m.p.id); g.setAttribute('transform', P.partTransform(m.p));
           if (m.p.type !== 'breadboard') {   // show which breadboard holes/strips the part's legs will land in
             const holes = []; for (const pin of P.T[m.p.type].pins(m.p)) { const pw = P.pinWorld(m.p, pin); const h = this.pinIndex().find((q) => q.bb && q.pos.x === pw.x && q.pos.y === pw.y); if (h) holes.push(h.pos); }
             this.highlight(null, holes);
@@ -291,5 +357,21 @@
     }
   }
   function svg_capture(svg, ev) { try { svg.setPointerCapture(ev.pointerId); } catch (e) { /* ignore */ } }
+  // Ctrl/Cmd+Z undo, Ctrl/Cmd+Y and Ctrl/Cmd+Shift+Z redo. z/Z and y/Y so Caps Lock still matches.
+  // A value field (input, textarea, select) returns null: the browser keeps native text undo.
+  function editChord(e) {
+    if (!e) return null;
+    const tag = (e.target && e.target.tagName) || '';
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(tag)) return null;
+    if (!(e.ctrlKey || e.metaKey)) return null;
+    const k = String(e.key || '').toLowerCase();
+    const z = k === 'z' || e.code === 'KeyZ';
+    const y = k === 'y' || e.code === 'KeyY';
+    if (z && e.shiftKey) return 'redo';
+    if (z) return 'undo';
+    if (y) return 'redo';
+    return null;
+  }
+  Editor.editChord = editChord;
   root.Editor = Editor; root.WIRE_COLORS = WIRE_COLORS;
 })(window);

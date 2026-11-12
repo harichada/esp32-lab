@@ -125,7 +125,7 @@
       if (b.dataset.d) { openDock(b.dataset.d); return; }
       if (a === 'projects') { setSheet(null); app.cmd.projects(); } else if (a === 'save') { app.cmd.save(); } else if (a === 'download') app.cmd.download();
       else if (a === 'import') $('#fileIn').click(); else if (a === 'restart') { setSheet(null); app.cmd.restart(); } else if (a === 'reset') $('#bReset').click();
-      else if (a === 'fit') { setSheet(null); ed.fit(); } else if (a === 'theme') $('#bTheme').click(); };
+      else if (a === 'fit') { setSheet(null); fitActive(); } else if (a === 'theme') $('#bTheme').click(); };
     // examples select: a mobile copy that drives the real one
     const ex = $('#selExample').cloneNode(true); ex.id = 'mSelExample'; ex.value = ''; $('#mExWrap').appendChild(ex);
     ex.onchange = () => { const v = ex.value; ex.value = ''; if (!v) return; const s = $('#selExample'); s.value = v; s.dispatchEvent(new Event('change')); setSheet(null); };
@@ -137,14 +137,27 @@
     $('#mConn').className = $('#connDot').className;
     // selection actions floating over the canvas
     const sel = document.createElement('div'); sel.id = 'mSel'; sel.className = 'm-only';
-    sel.innerHTML = `<button data-a="rot" aria-label="Rotate">${ic('i-rotate')}</button><button data-a="props" aria-label="Properties">${ic('m-sliders')}<span>Properties</span></button><button data-a="del" class="danger" aria-label="Delete">${ic('i-trash')}</button>`;
+    sel.innerHTML = `<button data-a="rot" aria-label="Rotate">${ic('i-rotate')}</button><button data-a="flip" aria-label="Flip">Flip</button><button data-a="flipH" aria-label="Flip horizontal" hidden>Flip H</button><button data-a="flipV" aria-label="Flip vertical" hidden>Flip V</button><button data-a="props" aria-label="Properties">${ic('m-sliders')}<span>Properties</span></button><button data-a="del" class="danger" aria-label="Delete">${ic('i-trash')}</button>`;
     $('#stageWrap').appendChild(sel);
-    sel.onclick = (e) => { const b = e.target.closest('[data-a]'); if (!b) return; if (document.body.classList.contains('viewsch') && (b.dataset.a === 'rot' || b.dataset.a === 'del')) return; if (b.dataset.a === 'rot') ed.rotateSel(); else if (b.dataset.a === 'del') ed.deleteSel(); else setSheet('insp'); };
+    sel.onclick = (e) => { const b = e.target.closest('[data-a]'); if (!b || b.getAttribute('aria-disabled') === 'true') return; if (document.body.classList.contains('viewsch') && (b.dataset.a === 'rot' || b.dataset.a === 'del')) return; if (b.dataset.a === 'rot') ed.rotateSel(); else if (b.dataset.a === 'flip' || b.dataset.a === 'flipH') ed.flipSel('x'); else if (b.dataset.a === 'flipV') ed.flipSel('y'); else if (b.dataset.a === 'del') ed.deleteSel(); else setSheet('insp'); };
     const hs = ed.hooks.selected; ed.hooks.selected = (s) => {
       hs(s);
       const has = !!(s && (s.part || s.wire));
       document.body.classList.toggle('m-has-sel', has);
       sel.querySelector('[data-a=rot]').hidden = !(s && s.part);
+      const sch = document.body.classList.contains('viewsch');
+      const part = s && s.part && ed.part(s.part);
+      const physical = !!(part && window.Parts && Parts.canPhysicalFlip(part));
+      const tip = (window.Parts && Parts.NO_FLIP_TIP) || "Real parts can't be mirrored; rotate instead";
+      const show = !!(s && s.part);
+      const one = sel.querySelector('[data-a=flip]');
+      one.hidden = !show || sch;
+      one.setAttribute('aria-disabled', physical ? 'false' : 'true');
+      one.title = physical ? 'Turn end for end' : tip;
+      const fh = sel.querySelector('[data-a=flipH]'), fv = sel.querySelector('[data-a=flipV]');
+      fh.hidden = !show || !sch; fv.hidden = !show || !sch;
+      fh.setAttribute('aria-disabled', 'false'); fv.setAttribute('aria-disabled', 'false');
+      fh.title = 'Mirror the symbol (drawing only)'; fv.title = 'Mirror the symbol (drawing only)';
       // A wire used to leave only the trash button: Properties was part-only, and nothing opened the sheet.
       sel.querySelector('[data-a=props]').hidden = !(s && (s.part || s.wire));
       if (s && s.wire && document.body.classList.contains('m')) setSheet('insp');
@@ -159,10 +172,12 @@
     touch();
     const fw = ed._finishWire.bind(ed); ed._finishWire = function (b, pin) { const n = this.proj.wires.length; fw(b, pin); if (this.proj.wires.length > n && document.body.classList.contains('m')) { haptic([8, 30, 14]); sound(880); } };
     const ap = ed.addPart.bind(ed); ed.addPart = function (...a) { const r = ap(...a); if (document.body.classList.contains('m')) { haptic(10); sound(660); } return r; };
-    const dw = ed._down.bind(ed); ed._down = function (ev) { const was = this.mode && this.mode.k; dw(ev); if (document.body.classList.contains('m') && was !== 'wire' && this.mode && this.mode.k === 'wire') { haptic(6); sound(520); } };
+    const dw = ed._down.bind(ed); ed._down = function (ev) { if (this._pinchLock) return; const was = this.mode && this.mode.k; dw(ev); if (document.body.classList.contains('m') && was !== 'wire' && this.mode && this.mode.k === 'wire') { haptic(6); sound(520); } };
+    const mv = ed._move.bind(ed); ed._move = function (ev) { if (this._pinchLock) return; return mv(ev); };
+    const up = ed._up.bind(ed); ed._up = function (ev) { if (this._pinchLock) return; return up(ev); };
     const av = ed.applyView.bind(ed); ed.applyView = function () { av(); const w = $('#stageWrap'); if (w) { w.style.setProperty('--px', (-this.view.x * 0.08 % 400).toFixed(1) + 'px'); w.style.setProperty('--py', (-this.view.y * 0.08 % 400).toFixed(1) + 'px'); } };
     // hint text for phones
-    ed.setHint = function (t) { if (!this.hintEl) return; if (document.body.classList.contains('viewsch')) { this.hintEl.textContent = 'Schematic is view-only — switch to 2D to add, move, or wire · drag to pan · scroll to zoom'; return; } this.hintEl.textContent = t || (document.body.classList.contains('m') ? 'Tap pin → tap pin to wire · hold part for options' : this.defaultHint()); };
+    ed.setHint = function (t) { if (!this.hintEl) return; if (document.body.classList.contains('viewsch')) { this.hintEl.textContent = window.Pinch.schematicHint(); return; } this.hintEl.textContent = t || (document.body.classList.contains('m') ? 'Tap a part to select it. Tap a pin, then another pin, to wire' : this.defaultHint()); };
     window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && sheet && document.body.classList.contains('m')) setSheet(null); });
   }
 
@@ -208,48 +223,127 @@
       burned0 = burned;
     }, 250);
   }
+  function fitActive() {
+    if (document.body.classList.contains('view3d') && app.view3d && app.view3d.fit) app.view3d.fit();
+    else if (document.body.classList.contains('viewsch') && app.schematic) app.schematic.fit();
+    else ed.fit();
+  }
   function touch() {
-    const wrap = $('#stageWrap'), st = $('#stage'); const pts = new Map(); let g = null, lp = null;
-    const mid = () => { const [a, b] = [...pts.values()]; return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, d: Math.hypot(a.x - b.x, a.y - b.y) }; };
+    const st = $('#stage'); const pts = new Map(); let g = null, lp = null, gestureSel = null, swallowClick = false;
+    const P = () => window.Pinch;
+    const book = P().createPointerBook();
     const on = () => document.body.classList.contains('m');
-    wrap.addEventListener('pointerdown', (e) => {
-      if (!on() || e.pointerType !== 'touch' || !st.contains(e.target)) return;
-      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      if (pts.size === 1) {   // long-press on a part -> action menu
-        const pg = e.target.closest && e.target.closest('.part'); clearTimeout(lp && lp.t);
+    const showZoom = (s) => { const z = $('#zoomPct'); if (z && !document.body.classList.contains('viewsch') && !document.body.classList.contains('view3d')) z.textContent = Math.round(s * 100) + '%'; };
+    const kind = () => (document.body.classList.contains('view3d') && app.view3d && app.view3d.active) ? '3d'
+      : (document.body.classList.contains('viewsch') && app.schematic && app.schematic.active) ? 'sch' : '2d';
+    const viewBox = () => kind() === 'sch' && app.schematic ? app.schematic.svg : st;
+    const view = () => kind() === 'sch' && app.schematic ? app.schematic.view : ed.view;
+    const mid = () => { const [a, b] = [...pts.values()]; return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, d: Math.hypot(a.x - b.x, a.y - b.y) }; };
+    const unlock = () => { if (pts.size) return; ed._pinchLock = false; if (app.schematic) app.schematic._pinchLock = false; };
+    const begin = (e) => {
+      e.stopPropagation(); e.preventDefault();
+      swallowClick = true; clearTimeout(lp && lp.t); lp = null;
+      const k = kind();
+      if (k === 'sch' && app.schematic && app.schematic.cancelTouch) app.schematic.cancelTouch();
+      else if (k !== '3d') {
+        ed._pinchLock = true;
+        if (P()) P().cancelEditorGesture(ed, gestureSel);
+        else { if (ed.mode && ed.mode.k === 'wire') ed.cancelWire(); ed.mode = null; }
+      }
+      const m = mid(), r = viewBox().getBoundingClientRect(), v = view();
+      const w = P() ? P().worldAt(v, m, r) : { x: v.x + (m.x - r.left) / v.s, y: v.y + (m.y - r.top) / v.s };
+      g = { dist: Math.max(m.d, 1), s: v.s, wx: w.x, wy: w.y, k: k, last: Math.max(m.d, 1) };
+    };
+    // Capture on document, not only #stage. The selection toolbar, the properties
+    // sheet and the scrim are outside the SVG, and a finger landing there used to
+    // be ignored — the other finger then panned, or the browser scaled the page.
+    document.addEventListener('pointerdown', (e) => {
+      if (!on() || e.pointerType !== 'touch' || !P()) return;
+      const el = e.target;
+      if (document.body.classList.contains('view3d') && el.closest && el.closest('#stage3d, canvas.stage3d')) return;
+      const track = P().isPinchSurface(el);
+      const ghosts = P().notePointerDown(book, e.pointerId, { isPrimary: !!e.isPrimary });
+      for (const id of ghosts) pts.delete(id);
+      // The selection tap never pointerup'd, so its drag or wire is still the editor's
+      // current mode. Clear that before this swipe, and keep the selection.
+      if (ghosts.length && ed.mode) P().cancelEditorGesture(ed, ed.sel);
+      P().expireQuiet(book, pts, Date.now(), e.pointerId, 1000);
+      const hit = P().trackPinchPointer({ pts: pts, anchorSel: gestureSel }, { id: e.pointerId, x: e.clientX, y: e.clientY, track: track, sel: ed.sel, now: Date.now() });
+      gestureSel = hit.anchorSel;
+      if (!track) return;
+      if (pts.size === 1 && st.contains(el)) {
+        const pg = el.closest && el.closest('.part'); clearTimeout(lp && lp.t);
         if (pg) lp = { x: e.clientX, y: e.clientY, id: pg.dataset.id, t: setTimeout(() => longPress(lp), 480) }; else lp = null;
       }
-      if (pts.size === 2) {
-        e.stopPropagation(); clearTimeout(lp && lp.t); lp = null;
-        if (ed.mode && ed.mode.k === 'drag' && ed.mode.moved) { ed.mode.p.x = ed.mode.ox; ed.mode.p.y = ed.mode.oy; ed.undoS.pop(); ed.render(); }
-        if (ed.mode && ed.mode.k === 'wire' && Date.now() - (ed.mode.t0 || 0) < 400) ed.cancelWire(); else if (!(ed.mode && ed.mode.k === 'wire')) ed.mode = null;
-        const m = mid(), r = st.getBoundingClientRect(); g = { m, s: ed.view.s, wx: ed.view.x + (m.x - r.left) / ed.view.s, wy: ed.view.y + (m.y - r.top) / ed.view.s };
+      if (hit.start) begin(e);
+    }, true);
+    document.addEventListener('pointermove', (e) => {
+      if (!pts.has(e.pointerId)) return; pts.set(e.pointerId, { x: e.clientX, y: e.clientY, t: Date.now() });
+      P().expireQuiet(book, pts, Date.now(), e.pointerId, 1000);
+      if (pts.size < 2) g = null;
+      if (lp && Math.hypot(e.clientX - lp.x, e.clientY - lp.y) > 10) {
+        clearTimeout(lp.t); lp = null;
+        const menu = $('#mPartMenu'); if (menu) menu.remove();
       }
+      if (!(g && pts.size >= 2)) return;
+      e.stopPropagation(); e.preventDefault();
+      const m = mid();
+      if (g.k === '3d' && app.view3d && app.view3d.zoomBy) {
+        const step = m.d / Math.max(g.last, 1); g.last = m.d;
+        if (Math.abs(step - 1) > 0.001) app.view3d.zoomBy(step);
+        return;
+      }
+      const r = viewBox().getBoundingClientRect();
+      const next = P().applyView(g, m, m.d, r, g.k === 'sch' ? { min: 0.12, max: 4 } : { min: 0.15, max: 4 });
+      if (g.k === 'sch' && app.schematic) { app.schematic.view.s = next.s; app.schematic.view.x = next.x; app.schematic.view.y = next.y; app.schematic.apply(); }
+      else { ed.markUserView && ed.markUserView(); ed.view.s = next.s; ed.view.x = next.x; ed.view.y = next.y; ed.applyView(); showZoom(next.s); }
     }, true);
-    wrap.addEventListener('pointermove', (e) => {
-      if (!pts.has(e.pointerId)) return; pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      if (lp && Math.hypot(e.clientX - lp.x, e.clientY - lp.y) > 10) { clearTimeout(lp.t); lp = null; }
-      if (g && pts.size === 2) { e.stopPropagation(); e.preventDefault(); const m = mid(), r = st.getBoundingClientRect(); const s = Math.min(4, Math.max(0.15, g.s * m.d / (g.m.d || 1)));
-        ed.markUserView && ed.markUserView();
-        ed.view.s = s; ed.view.x = g.wx - (m.x - r.left) / s; ed.view.y = g.wy - (m.y - r.top) / s; ed.applyView(); const z = $('#zoomPct'); if (z) z.textContent = Math.round(s * 100) + '%'; }
-    }, true);
-    const up = (e) => { if (!pts.has(e.pointerId)) return; pts.delete(e.pointerId); if (lp) { clearTimeout(lp.t); lp = null; } if (pts.size < 2) { if (g) e.stopPropagation(); g = null; } };
-    wrap.addEventListener('pointerup', up, true); wrap.addEventListener('pointercancel', up, true);
+    const up = (e) => {
+      P().notePointerUp(book, e.pointerId);
+      if (!pts.has(e.pointerId)) return; pts.delete(e.pointerId);
+      if (lp) { clearTimeout(lp.t); lp = null; }
+      if (pts.size < 2) g = null;
+      unlock();
+      // The click that follows the last finger is the toolbar button under it.
+      // Swallow that one, then arm the buttons again.
+      if (!pts.size && swallowClick) setTimeout(() => { swallowClick = false; }, 0);
+    };
+    document.addEventListener('pointerup', up, true);
+    document.addEventListener('pointercancel', up, true);
+    document.addEventListener('lostpointercapture', up, true);
+    document.addEventListener('click', (e) => { if (!swallowClick) return; e.preventDefault(); e.stopPropagation(); }, true);
+    const remember = (e) => {
+      if (!on() || !e.touches || !P()) return;
+      const changed = e.type === 'touchstart' ? [...e.changedTouches].map((t) => ({ identifier: t.identifier })) : [];
+      P().syncPointers(book, pts, [...e.touches].map((t) => ({ identifier: t.identifier })), changed);
+      if (pts.size < 2) g = null;
+      unlock();
+      if (!e.touches.length && swallowClick) setTimeout(() => { swallowClick = false; }, 0);
+    };
+    document.addEventListener('touchstart', remember, true);
+    document.addEventListener('touchmove', remember, true);
+    document.addEventListener('touchend', remember, true);
+    document.addEventListener('touchcancel', remember, true);
     st.addEventListener('contextmenu', (e) => { if (on() && e.target.closest('.part')) e.preventDefault(); });
-    ['gesturestart', 'gesturechange'].forEach((n) => document.addEventListener(n, (e) => e.preventDefault()));
+    // iOS Safari pinch-zooms the page unless the gesture is cancelled. The canvas zoom is our own.
+    ['gesturestart', 'gesturechange', 'gestureend'].forEach((n) => document.addEventListener(n, (e) => e.preventDefault(), { passive: false }));
+    document.addEventListener('touchmove', (e) => { if (e.touches && e.touches.length >= 2) e.preventDefault(); }, { passive: false });
   }
   function longPress(l) {
     if (!l || ed.mode && ed.mode.k === 'wire') return; const p = ed.part(l.id); if (!p) return;
-    if (ed.mode && ed.mode.k === 'drag') { if (ed.mode.moved) return; ed.mode = null; }
+    // An unmoved drag stays armed. Holding still, then moving, must drag the part.
+    if (ed.mode && ed.mode.k === 'drag' && ed.mode.moved) return;
     ed.select({ part: p.id }); if (navigator.vibrate) try { navigator.vibrate(12); } catch (e) { /* */ }
     $('#mPartMenu') && $('#mPartMenu').remove();
     const P = window.Parts, label = (P.T[p.type] && P.T[p.type].label) || p.type;
     const m = document.createElement('div'); m.id = 'mPartMenu'; m.className = 'm-only';
-    m.innerHTML = `<div class="m-pm-t">${P.esc(label)} <small>${P.esc(p.id)}</small></div><button data-a="rot">${ic('i-rotate')}<span>Rotate 90°</span></button><button data-a="props">${ic('m-sliders')}<span>Properties</span></button><button data-a="del" class="danger">${ic('i-trash')}<span>Delete</span></button>`;
+    const flipOk = P.canPhysicalFlip(p);
+    const tip = P.NO_FLIP_TIP;
+    m.innerHTML = `<div class="m-pm-t">${P.esc(label)} <small>${P.esc(p.id)}</small></div><button data-a="rot">${ic('i-rotate')}<span>Rotate 90°</span></button><button data-a="flip" aria-disabled="${flipOk ? 'false' : 'true'}" title="${P.esc(flipOk ? 'Turn end for end' : tip)}"><span>↔ Flip</span></button><button data-a="props">${ic('m-sliders')}<span>Properties</span></button><button data-a="del" class="danger">${ic('i-trash')}<span>Delete</span></button>`;
     document.body.appendChild(m);
     const close = () => { m.remove(); document.removeEventListener('pointerdown', away, true); };
     const away = (e) => { if (!m.contains(e.target)) close(); }; setTimeout(() => document.addEventListener('pointerdown', away, true), 0);
-    m.onclick = (e) => { const b = e.target.closest('[data-a]'); if (!b) return; close(); if (b.dataset.a === 'rot') ed.rotateSel(); else if (b.dataset.a === 'del') ed.deleteSel(); else setSheet('insp'); };
+    m.onclick = (e) => { const b = e.target.closest('[data-a]'); if (!b || b.getAttribute('aria-disabled') === 'true') return; close(); if (b.dataset.a === 'rot') ed.rotateSel(); else if (b.dataset.a === 'flip') ed.flipSel('x'); else if (b.dataset.a === 'del') ed.deleteSel(); else setSheet('insp'); };
   }
 
   // sheets must live at <body> level on phones (so they stack above the canvas and scrim); put them back for desktop

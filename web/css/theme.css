@@ -130,7 +130,7 @@ body.c-palette [data-reopen=palette],body.c-side [data-reopen=side],body.c-dock 
 #insp h3{margin:0 0 var(--s3);font-size:14px;font-weight:600;display:flex;align-items:baseline;gap:8px}#insp h3 small{color:var(--mut);font-weight:500;font-family:var(--mono);font-size:11px;padding:1px 6px;border:1px solid var(--line2);border-radius:var(--r1)}
 #insp label{display:flex;flex-direction:column;gap:5px;margin-bottom:var(--s3);color:var(--mut);font-size:11.5px;font-weight:500}#insp label input[type=checkbox]{align-self:flex-start}
 #insp .insp-k{margin:0 0 5px;color:var(--mut);font-size:11.5px;font-weight:500}
-#insp .row button{flex:1;justify-content:center}
+#insp .row button{flex:1;justify-content:center}#insp .row button.on{border-color:var(--acc);color:var(--acc)}#insp .row button.is-off{opacity:.45}
 .ro{font-family:var(--mono);color:var(--ok);font-size:12px;background:var(--l0);border:1px solid var(--line);border-radius:var(--r2);padding:8px 10px;margin:0 0 var(--s3);min-height:34px}
 table.pins{width:100%;border-collapse:collapse;font-size:11.5px;font-family:var(--mono)}table.pins td{border-bottom:1px solid var(--line);padding:4px 6px;color:var(--txt2)}table.pins tr:hover td{background:var(--l2)}
 .sw{width:22px;height:22px;padding:0;border-radius:50%;border:2px solid var(--l1)}.sw.on{box-shadow:0 0 0 2px var(--acc)}

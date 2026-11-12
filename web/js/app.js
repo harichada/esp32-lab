@@ -623,7 +623,18 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       else h += `<label>${e.label}<input data-k="${e.k}" value="${P.esc(v)}" data-t="${e.t}"></label>`;
     }
     if (p.type === 'esp32') h += `<label>Power<select data-k="power"><option ${p.props.power === 'usb' ? 'selected' : ''}>usb</option><option ${p.props.power !== 'usb' ? 'selected' : ''}>external</option></select></label>`;
-    h += `<p id="ro" class="ro"></p><div class="row"><button id="iRot">⟳ Rotate</button><button id="iDel">🗑 Delete</button></div><div id="pinTable"></div>`;
+    const sch = document.body.classList.contains('viewsch');
+    const physical = P.canPhysicalFlip(p);
+    let flipBtns;
+    if (sch) {
+      const tipH = 'Mirror the symbol (drawing only)', tipV = 'Mirror the symbol (drawing only)';
+      flipBtns = `<button id="iFlipH" class="${p.schFlipX ? 'on' : ''}" title="${P.esc(tipH)}">↔ Flip H</button><button id="iFlipV" class="${p.schFlipY ? 'on' : ''}" title="${P.esc(tipV)}">↕ Flip V</button>`;
+    } else {
+      const on = !!(p.flipX || p.flipY);
+      const tip = physical ? 'Turn this part end for end (F)' : P.NO_FLIP_TIP;
+      flipBtns = `<button id="iFlip" class="${on ? 'on' : ''} ${physical ? '' : 'is-off'}" aria-disabled="${physical ? 'false' : 'true'}" title="${P.esc(tip)}">↔ Flip</button>`;
+    }
+    h += `<p id="ro" class="ro"></p><div class="row"><button id="iRot">⟳ Rotate</button>${flipBtns}<button id="iDel">🗑 Delete</button></div><div id="pinTable"></div>`;
     el.innerHTML = h;
     el.querySelectorAll('[data-k]').forEach((inp) => {
       const k = inp.dataset.k, ev = inp.type === 'range' ? 'input' : 'change';
@@ -634,11 +645,19 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
         p.props[k] = v; app.sim.dirty = true; app.editor.refreshDynamic(); if (inp.type !== 'range') app.editor.render(); autosave();
       });
     });
-    $('#iRot').onclick = () => app.editor.rotateSel(); $('#iDel').onclick = () => app.editor.deleteSel();
+    $('#iRot').onclick = () => app.editor.rotateSel();
+    const wireFlip = (id, axis) => { const b = $('#' + id); if (!b || b.getAttribute('aria-disabled') === 'true') return; app.editor.flipSel(axis); };
+    const iFlip = $('#iFlip'); if (iFlip) iFlip.onclick = () => wireFlip('iFlip', 'x');
+    const iFlipH = $('#iFlipH'); if (iFlipH) iFlipH.onclick = () => wireFlip('iFlipH', 'x');
+    const iFlipV = $('#iFlipV'); if (iFlipV) iFlipV.onclick = () => wireFlip('iFlipV', 'y');
+    $('#iDel').onclick = () => app.editor.deleteSel();
     updateReadouts();
   }
   function updateReadouts() {
     const sel = app.editor.sel, ro = $('#ro'); if (!sel || !ro) return;
+    // settle() rebuilds the nets but skips measure(), so a flipped LED would
+    // keep the previous current until the next animation frame. Measure once.
+    if (app.sim && app.sim.needsRebuild && app.sim.needsRebuild()) { try { app.sim.settle(); app.sim._after(0); } catch (e) { /* the last solved readout stays until the next tick */ } }
     if (sel.wire) { const w = app.proj.wires.find((q) => q.id === sel.wire); if (w) { const f = (app.sim._wireFlow || {})[w.id] || { i: 0, v: app.sim.nodeVoltage(app.sim.netAt(w.a.x, w.a.y)) }; ro.textContent = `V ${P.fmt(f.v, 'V')} · I ${P.fmt(f.i, 'A')}`; } return; }
     const p = app.editor.part(sel.part); if (!p) return;
     ro.textContent = app.sim.readout(p) || '';
@@ -734,7 +753,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
 <li>❌ Not modelled: I²C/SPI devices, touch, DAC, hall sensor, deep-sleep currents, Bluetooth, analog behaviour of the ESP32 die beyond a 40 Ω driver / 45 kΩ pulls.</li>
 </ul>
 <h3>Circuit solver</h3><p>Modified nodal analysis with Newton–Raphson (diode/LED Shockley, zener breakdown, Ebers–Moll BJT, square-law MOSFET, LDO), backward-Euler transient for capacitors. LEDs burn out above 2× their rating; supply/GPIO shorts are flagged.</p>
-<h3>Shortcuts</h3><p>Ctrl+Enter run · click pin → click pin to wire · R rotate · Del/Backspace delete · right-click wire for menu · double-click wire adds a bend · Ctrl+Z / Ctrl+Y undo/redo · Ctrl+S save (examples: makes a copy) · F fit · Esc cancel · keys/buttons respond to their labelled keyboard key while running.</p>`;
+<h3>Shortcuts</h3><p>Ctrl+Enter run · click pin → click pin to wire · R rotate · F flip (two-lead parts, or the schematic symbol) · Shift+F fit · Del/Backspace delete · right-click wire for menu · double-click wire adds a bend · Ctrl+Z / Ctrl+Y undo/redo · Ctrl+S save (examples: makes a copy) · Esc cancel · keys/buttons respond to their labelled keyboard key while running.</p>`;
   }
   function keyPart(k) { const kp = app.proj.parts.find((q) => q.type === 'keypad' && P.T.keypad.keyAt(q, k) >= 0); if (kp) { kp._kidx = P.T.keypad.keyAt(kp, k); return kp; } return app.proj.parts.find((q) => P.T[q.type] && P.T[q.type].interactive && q.props.key && (q.props.key === k || q.props.key.toLowerCase() === String(k).toLowerCase())); }
   const MIN_SCANS = 400, MAX_LATCH_MS = 6000;   // ~400 GPIO updates ≈ 30+ matrix scans ≈ well past the firmware's 30 ms debounce
@@ -807,7 +826,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     $('#selWireColor').innerHTML = ['auto', ...Object.keys(window.WIRE_COLORS)].map((c) => `<option>${c}</option>`).join(''); $('#selWireColor').onchange = (e) => app.editor.setWireColor(e.target.value);
     $('#bRun').onclick = startRun; $('#bStop').onclick = stopRun; $('#bReset').onclick = () => { app.sim.resetState(); app.editor.render(); };
     $('#bUndo').onclick = () => app.editor.undo(); $('#bRedo').onclick = () => app.editor.redo(); $('#bRot').onclick = () => app.editor.rotateSel(); $('#bDel').onclick = () => app.editor.deleteSel();
-    $('#bSave').onclick = save; $('#bDownload').onclick = download; $('#fileIn').onchange = (e) => { if (e.target.files[0]) openFile(e.target.files[0]); e.target.value = ''; }; $('#bFit').onclick = () => (viewMode === 'schematic' && app.schematic ? app.schematic.fit() : app.editor.fit());
+    $('#bSave').onclick = save; $('#bDownload').onclick = download; $('#fileIn').onchange = (e) => { if (e.target.files[0]) openFile(e.target.files[0]); e.target.value = ''; }; $('#bFit').onclick = () => { if (viewMode === '3d' && app.view3d && app.view3d.fit) app.view3d.fit(); else if (viewMode === 'schematic' && app.schematic) app.schematic.fit(); else app.editor.fit(); };
     $('#tabs').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; document.querySelectorAll('#tabs button').forEach((x) => x.classList.toggle('on', x === b)); document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('on', t.id === 'tab-' + b.dataset.tab)); if (b.dataset.tab === 'dev') { renderDevices(); drawIr(); } if (b.dataset.tab === 'net') { app.netlog.dirty = true; app.netlog.render(); } };
     $('#selMode').onchange = (e) => { beforeEdit(); app.proj.mode = e.target.value; autosave(); modeNote(); renderFileTabs(); };
     $('#fileTabs').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; syncCode(); if (b.dataset.f === '+') { const n = prompt('File name (e.g. config.h)'); if (!n || !/^[\w.-]+\.(h|hpp|c|cpp|ino)$/.test(n)) return; beforeEdit(); app.proj.files[n] = ''; autosave(); app.file = n; } else app.file = b.dataset.f; renderFileTabs(); loadCode(); };
@@ -854,16 +873,21 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     window.addEventListener('keydown', (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); startRun(); return; }
       if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); save(); return; }
+      // Value fields keep native text undo. Delete moves focus back to the canvas first, so Ctrl+Z still undoes that delete.
       if (typing(e)) return;
-      if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); app.editor.undo(); return; }
-      if ((e.ctrlKey || e.metaKey) && e.key === 'y') { e.preventDefault(); app.editor.redo(); return; }
+      const chord = Editor.editChord(e);
+      if (chord === 'undo') { e.preventDefault(); app.editor.undo(); return; }
+      if (chord === 'redo') { e.preventDefault(); app.editor.redo(); return; }
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       const kp = app.run ? keyPart(e.key) : null; if (kp) { e.preventDefault(); if (!e.repeat) press(kp, true); return; }   // labelled keys only act as buttons while running
       if (e.key === 'Escape') { app.editor.cancelWire(); app.editor.select(null); if (app.schematic) app.schematic.select(null); }
       else if (viewMode === 'schematic' && (e.key === 'Delete' || e.key === 'Backspace' || e.key === 'r' || e.key === 'R')) { if (e.key === 'Delete' || e.key === 'Backspace') e.preventDefault(); }
       else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); app.editor.deleteSel(); }
       else if (e.key === 'r' || e.key === 'R') app.editor.rotateSel();
-      else if (e.key === 'f' || e.key === 'F') { if (viewMode === 'schematic' && app.schematic) app.schematic.fit(); else app.editor.fit(); }
+      else if (e.key === 'f' || e.key === 'F') {
+        if (e.shiftKey) { if (viewMode === 'schematic' && app.schematic) app.schematic.fit(); else app.editor.fit(); }
+        else app.editor.flipSel('x');
+      }
     });
     window.addEventListener('keyup', (e) => { if (typing(e)) return; const kp = keyPart(e.key); if (kp && app.sim.partState(kp).pressed) press(kp, false); });
     // start-up: ?p=<project> > ?ex=<example, read-only> > last open project > legacy single-slot save > Blink example
@@ -881,7 +905,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
 
   // ---------------- 2D / 3D view ----------------
   let viewMode = '2d', view3dLoading = null, knob3d = null;
-  const VIEW3D_SRC = 'js/view3d.js?v=54';
+  const VIEW3D_SRC = 'js/view3d.js?v=56';
   const THREE_SRC = 'vendor/three.min.js?v=2';
   function loadScriptOnce(src) {
     return new Promise((res, rej) => {
@@ -1021,6 +1045,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const seq = ++viewSeq;
     viewMode = mode === '3d' ? '3d' : mode === 'schematic' ? 'schematic' : '2d';
     applyViewChrome();
+    try { if (app.editor) { if (app.editor.hooks.selected) app.editor.hooks.selected(app.editor.sel); else renderInspector(app.editor.sel); app.editor.setHint(); } } catch (_) {}
     if (viewMode !== '3d') {
       show3dLoad(false);
       try { if (app.view3d) app.view3d.setActive(false); } catch (e) { console.error(e); }

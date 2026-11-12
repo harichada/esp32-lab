@@ -1,7 +1,7 @@
 /* ===== Mobile shell (<=820px). Every rule is scoped to body.m, which js/mobile.js sets only on small viewports. ===== */
 .m-only{display:none!important}
 body.m{--mTop:calc(54px + env(safe-area-inset-top));--mBot:env(safe-area-inset-bottom);--dock:calc(96px + env(safe-area-inset-bottom));--glass:color-mix(in srgb,var(--l1) 78%,transparent);--glass2:color-mix(in srgb,var(--l0) 86%,transparent);
-  font-size:15px;overscroll-behavior:none;-webkit-tap-highlight-color:transparent;touch-action:manipulation;position:fixed;inset:0;width:100%}
+  font-size:15px;overscroll-behavior:none;-webkit-tap-highlight-color:transparent;touch-action:pan-x pan-y;position:fixed;inset:0;width:100%}
 body.m .m-only{display:revert!important}
 body.m #mDial.m-only,body.m #mTicker.m-only,body.m #mSel.m-only,body.m .m-symbar.m-only{display:flex!important}
 body.m #mMore.m-only{display:flex!important}
@@ -34,7 +34,7 @@ body.m .canvas-tools,body.m .zoom-tools{bottom:calc(112px + env(safe-area-inset-
 body.m .canvas-tools{left:max(12px,env(safe-area-inset-left))}body.m .zoom-tools{right:max(12px,env(safe-area-inset-right))}
 body.m .canvas-tools,body.m .zoom-tools{gap:8px}
 body.m .canvas-tools .iconbtn,body.m .zoom-tools .iconbtn{width:44px;height:44px;min-width:44px;min-height:44px;border-radius:10px}body.m .canvas-tools .ic,body.m .zoom-tools .ic{width:20px;height:20px}
-body.m #zoomPct{min-width:46px;font-size:12px}
+body.m #zoomPct{min-width:44px;min-height:44px;font-size:12px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;box-sizing:border-box;padding:0 4px}
 body.m .hint{left:50%;transform:translateX(-50%);bottom:calc(176px + env(safe-area-inset-bottom));max-width:calc(100% - 32px)!important;font-size:12.5px;padding:7px 14px;background:var(--glass);border-color:var(--hair);transition:opacity .3s}
 body.m.m-has-sel .hint,body.m.m-wiring .hint{opacity:0}
 body.m .projbanner{top:10px;left:12px;right:12px;font-size:13px}body.m .projbanner .pb-ex,body.m .projbanner .pb-my{height:36px;border-radius:11px;background:var(--glass);border-color:var(--hair)}
@@ -44,6 +44,9 @@ body.m .tip{display:none!important}
 /* selection pill + wiring bar */
 #mSel{position:absolute;left:50%;bottom:calc(176px + env(safe-area-inset-bottom));transform:translate(-50%,12px);opacity:0;pointer-events:none;gap:4px;padding:4px;border-radius:16px;background:var(--glass);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border:1px solid var(--hair);box-shadow:0 12px 32px rgba(0,0,0,.5);z-index:6;transition:opacity .2s,transform .25s cubic-bezier(.2,.8,.3,1)}
 body.m.m-has-sel #mSel{opacity:1;transform:translate(-50%,0);pointer-events:auto}
+body.m #mSel,body.m #mSel *,body.m #mPartMenu,body.m #mPartMenu *,body.m .ctxmenu,body.m .ctxmenu *,body.m .zoom-tools,body.m .zoom-tools *,body.m .canvas-tools,body.m .canvas-tools *{touch-action:none}
+body.m #mScrim{touch-action:none}
+body.m #side,body.m #side *{touch-action:pan-y}
 #mSel button{height:44px;min-width:44px;border-radius:12px;background:transparent;border:0;padding:0 12px;justify-content:center;font-size:14px;color:var(--txt)}#mSel button .ic{width:20px;height:20px}#mSel .danger{color:var(--err)}
 #mWireBar{position:absolute;left:12px;right:12px;top:10px;z-index:7;display:flex;align-items:center;gap:10px;padding:6px 6px 6px 16px;border-radius:14px;background:color-mix(in srgb,var(--acc) 14%,var(--l1));border:1px solid color-mix(in srgb,var(--acc) 45%,transparent);font-size:14px;font-weight:500;box-shadow:0 10px 30px rgba(0,0,0,.4);animation:mUp .22s}
 #mWireBar span{flex:1}#mWireBar button{height:40px;min-height:40px;border-radius:10px}
@@ -107,7 +110,8 @@ body.m #insp input:not([type=checkbox]):not([type=range]),body.m #insp select{he
 body.m #insp input[type=range]{height:44px}
 body.m #insp input[type=range]::-webkit-slider-runnable-track{height:6px;border-radius:3px}
 body.m #insp input[type=range]::-webkit-slider-thumb{width:28px;height:28px;margin-top:-11px;box-shadow:0 0 0 5px var(--acc-bg),0 2px 6px #000}
-body.m #insp input[type=checkbox]{width:24px;height:24px}body.m #insp .row button{height:44px}
+body.m #insp input[type=checkbox]{width:24px;height:24px}body.m #insp .row button{height:44px;min-width:44px;min-height:44px}
+#mSel button[aria-disabled=true],#mPartMenu button[aria-disabled=true]{opacity:.4}
 body.m table.pins{font-size:13px}body.m table.pins td{padding:8px}body.m .sw{width:32px;height:32px}
 /* more sheet */
 .m-more-b{overflow:auto;padding:4px 16px calc(18px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:18px}
@@ -219,7 +223,7 @@ body.m #mCount.on{display:grid!important;animation:mCnt .23s ease-out infinite}
 @media (prefers-reduced-motion:reduce){body.m *,body.m *::before,body.m *::after{animation:none!important;transition-duration:.01ms!important}}
 body.m.m-dial #mIgnite{opacity:0;pointer-events:none}#mIgnite{transition:opacity .2s,transform .15s}
 body.m .canvas-tools,body.m .zoom-tools{border-radius:6px;background:rgba(4,8,14,.7);border-color:var(--hudl)}
-body.m .hint{font-family:var(--mono);font-size:11px;letter-spacing:.06em;border-radius:4px;border-color:var(--hudl);background:rgba(4,8,14,.6)}
+body.m .hint{left:12px;right:12px;width:auto;max-width:none!important;transform:none;font-family:var(--mono);font-size:11px;letter-spacing:.06em;border-radius:4px;border-color:var(--hudl);background:rgba(4,8,14,.6);white-space:normal;overflow:visible;text-align:center;line-height:1.35}
 body.m .projbanner #bCopy{background:rgba(34,211,238,.1);color:var(--acc);border:1px solid var(--hud);box-shadow:0 0 18px rgba(34,211,238,.18);border-radius:6px;font-family:var(--mono);font-size:12px;letter-spacing:.12em;text-transform:uppercase}
 body.m #mSel{border-radius:8px;background:rgba(4,8,14,.82);border-color:var(--hudl)}
 body.m #mCount:not(.on),body.m #mFlash:not(.on){display:none!important}
@@ -251,6 +255,7 @@ body.m.m-wiring #mParts{opacity:0;pointer-events:none}
 
 /* ---- mobile 3D ---- */
 body.m.view3d #zoomPct{display:none!important}
+body.m.view3d .zoom-tools #zoomPct{display:inline-flex!important}
 body.m .view-toggle{height:44px;border-radius:10px}
 body.m .view-toggle .seg{height:44px;min-width:44px;min-height:44px;padding:0 10px;font-size:12.5px;justify-content:center}
 body.m #stage3d.on{z-index:4}
@@ -258,7 +263,7 @@ body.m.view3d .canvas-tools,body.m.view3d .zoom-tools{z-index:12}
 body.m .exit3d{top:72px;right:auto;left:50%;transform:translateX(-50%);height:44px;line-height:44px;padding:0 20px;border-radius:8px;font-size:13px}
 body.m.view3d #mParts{opacity:.3;pointer-events:none}
 body.m.view3d .hint{display:none}
-body.m.viewsch .hint{display:block;bottom:calc(64px + env(safe-area-inset-bottom));max-width:calc(100% - 24px)}
+body.m.viewsch .hint{display:block;left:12px;right:12px;bottom:calc(176px + env(safe-area-inset-bottom));max-width:none!important;height:auto;white-space:normal!important;overflow:visible!important;text-overflow:clip;line-height:1.35}
 body.m.viewsch #mSel [data-a=rot],body.m.viewsch #mSel [data-a=del]{display:none!important}
 body.m .view-toggle .seg{padding:0 10px}
 /* oscilloscope HUD sheet (full-screen) */
@@ -275,8 +280,15 @@ body.m #mScope .inst-ch{grid-template-columns:repeat(2,1fr);padding:6px}
 body.m #mScope .ich button,body.m #mScope .ich-r select{height:28px}
 body.m .telstrip{left:6px;right:6px;bottom:auto;top:calc(var(--mTop) + 28px);max-width:none;padding:3px 4px;overflow-x:auto}
 body.m .tel-i canvas{width:84px;height:22px}body.m .tel-h{display:none}body.m .tel-l{min-width:60px}
-/* narrow phones: the zoom pill overlapped the 2D/3D toggle; pinch zooms, so keep only Fit there */
-@media (max-width:430px){body.m .zoom-tools #bZoomOut,body.m .zoom-tools #bZoomIn,body.m .zoom-tools #zoomPct{display:none!important}}
+/* narrow phones: a horizontal zoom pill overlapped the 2D/Sch/3D toggle.
+   Stack − / % / + on the right, under the Parts chip and clear of the ignition button.
+   The % is the fit control, so the separate fit icon is not repeated here. */
+@media (max-width:430px){
+  body.m .zoom-tools{top:88px;bottom:auto;right:max(8px,env(safe-area-inset-right));left:auto;flex-direction:column;gap:6px;padding:4px;z-index:14}
+  body.m .zoom-tools #bZoomOut,body.m .zoom-tools #bZoomIn,body.m .zoom-tools #zoomPct{display:inline-flex!important;width:44px;min-width:44px;height:44px;min-height:44px;padding:0;align-items:center;justify-content:center;box-sizing:border-box}
+  body.m .zoom-tools #bFit{display:none!important}
+  body.m.view3d .zoom-tools #zoomPct{display:inline-flex!important}
+}
 
 /* header view chip on phones: fixed, dark, above everything. Names the current view. */
 body.m #bForce2d{position:fixed;top:calc(env(safe-area-inset-top) + 12px);right:64px;height:32px;min-height:32px;min-width:44px;max-width:46vw;z-index:2147483647;margin:0;border-radius:16px;overflow:hidden;text-overflow:ellipsis}

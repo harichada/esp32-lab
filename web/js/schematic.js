@@ -463,6 +463,7 @@
         for (const arr of idsByL.values()) arr.sort((a, b) => (byId.get(a).part.y - byId.get(b).part.y) || (byId.get(a).part.x - byId.get(b).part.x) || String(a).localeCompare(String(b)));
       }
       for (const id of ids) buildGeom(byId.get(id), { neighLayers, flow, bag, rank, passive: drawSupply });
+      for (const id of ids) applySchMirror(byId.get(id));
       placeComp(ids.map((id) => byId.get(id)), flow, idsByL);
       let minY = Infinity, maxY = -Infinity;
       for (const id of ids) {
@@ -489,6 +490,7 @@
         const s = byId.get(id);
         s.parked = true; s.flow = 1; s.layer = 0; s.comp = -1; s.root = id;
         buildGeom(s, { neighLayers: () => [], flow: 1, bag: new Set([id]) });
+        applySchMirror(s);
         const p = pads(s);
         s.pad = p;
         const slot = p.L + s.w + p.R;
@@ -522,6 +524,17 @@
   }
 
   function opp(dir) { return { l: 'r', r: 'l', t: 'b', b: 't' }[dir] || 'r'; }
+  // KiCad-style symbol mirror. Display only: pin names keep their nets, so the
+  // breadboard and the netlist do not change. Text is drawn upright afterwards.
+  function applySchMirror(s) {
+    const part = s && s.part;
+    if (!part || (!part.schFlipX && !part.schFlipY) || !s.w) return;
+    const fx = !!part.schFlipX, fy = !!part.schFlipY;
+    for (const t of s.terms || []) {
+      if (fx) { t.lx = s.w - t.lx; if (t.dir === 'l' || t.dir === 'r') t.dir = opp(t.dir); }
+      if (fy) { t.ly = s.h - t.ly; if (t.dir === 't' || t.dir === 'b') t.dir = opp(t.dir); }
+    }
+  }
   function sideOf(flow, which) { // which: 'up' (toward lower layer) | 'down' (toward higher layer)
     if (which === 'up') return flow > 0 ? 'l' : 'r';
     return flow > 0 ? 'r' : 'l';
@@ -1743,7 +1756,7 @@
       if (hint) {
         if (this.active) {
           if (!this._hint0) this._hint0 = hint.textContent;
-          hint.textContent = 'Schematic is view-only — switch to 2D to add, move, or wire · drag to pan · scroll to zoom';
+          hint.textContent = root.Pinch.schematicHint();
         } else if (this._hint0) hint.textContent = this._hint0;
       }
       if (this.active) this.rebuild(true);
@@ -1779,23 +1792,19 @@
     fit() {
       if (!this.model) return;
       const b = this.model.bounds, r = this.svg.getBoundingClientRect();
-      const w = r.width || 800, h = r.height || 600;
-      // Leave room for the floating toolbar and the view-only hint along the bottom.
-      // The example banner sits over the canvas in screen pixels (~12px offset + ~30px chip).
-      // Convert that clearance into world units so fit-to-view never hides the top of the sheet.
-      const bannerPx = 58, toolPx = 118, sidePx = 40;
-      const s = Math.min(2.4, Math.max(0.12, Math.min((w - sidePx * 2) / Math.max(b.w, 1), (h - bannerPx - toolPx) / Math.max(b.h, 1))));
-      this.view.s = s;
-      this.view.x = b.x - (w / s - b.w) / 2;
-      this.view.y = b.y - bannerPx / s;
+      if (r.width < 2 || r.height < 2) return;
+      // Center the sheet in the area that is not under the header, Make a copy,
+      // + Parts, the zoom stack, or the hint and bottom toolbars.
+      const frame = root.Pinch.frameOf(this.svg);
+      const fit = root.Pinch.fitView(b, frame.stage, frame.clear, 14, { min: 0.12, max: 2.4 });
+      this.view.s = fit.s; this.view.x = fit.x; this.view.y = fit.y;
       this.apply();
     }
     zoomBy(f, client) {
-      const r = this.svg.getBoundingClientRect();
-      const cx = client ? client.x : r.left + r.width / 2, cy = client ? client.y : r.top + r.height / 2;
-      const wx = this.view.x + (cx - r.left) / this.view.s, wy = this.view.y + (cy - r.top) / this.view.s;
-      const s = Math.min(4, Math.max(0.12, this.view.s * f));
-      this.view.x = wx - (cx - r.left) / s; this.view.y = wy - (cy - r.top) / s; this.view.s = s;
+      const frame = root.Pinch.frameOf(this.svg);
+      const anchor = client || root.Pinch.clearCenter(frame);
+      const v = root.Pinch.zoomAbout(this.view, f, anchor, frame.stage, { min: 0.12, max: 4 });
+      this.view.x = v.x; this.view.y = v.y; this.view.s = v.s;
       this.apply();
     }
     select(id) {
@@ -1814,12 +1823,21 @@
     }
     _bind() {
       const svg = this.svg;
+      // Bumped when a second finger arrives so the first finger's pan/select session
+      // cannot apply a stale delta or select the symbol on the way up.
+      let gesture = 0;
+      // Phone pinches are owned by mobile.js, including a finger on the selection
+      // toolbar. This only drops the one-finger pan/select session that already started.
+      this.cancelTouch = () => { gesture += 1; this._pinchLock = true; };
       svg.addEventListener('pointerdown', (e) => {
         if (e.button != null && e.button !== 0) return;
+        if (this._pinchLock) { e.preventDefault(); return; }
+        const token = gesture;
         const pid = e.target.closest && e.target.closest('[data-pid]');
         const start = { x: e.clientX, y: e.clientY, vx: this.view.x, vy: this.view.y, pid: pid && pid.dataset.pid, drag: false };
         svg.setPointerCapture && svg.setPointerCapture(e.pointerId);
         const move = (ev) => {
+          if (token !== gesture || this._pinchLock) return;
           const dx = ev.clientX - start.x, dy = ev.clientY - start.y;
           if (Math.hypot(dx, dy) > 4) start.drag = true;
           if (!start.pid || start.drag) { this.view.x = start.vx - dx / this.view.s; this.view.y = start.vy - dy / this.view.s; this.apply(); }
@@ -1827,6 +1845,7 @@
         const up = (ev) => {
           svg.removeEventListener('pointermove', move);
           svg.removeEventListener('pointerup', up);
+          if (token !== gesture || this._pinchLock) return;
           if (start.pid && !start.drag) this.select(start.pid);
           else if (!start.drag && !start.pid) this.select(null);
           this._tip(ev);
@@ -1842,13 +1861,43 @@
         this.zoomBy(Math.exp(-e.deltaY * 0.0012), { x: e.clientX, y: e.clientY });
       }, { passive: false });
       const pts = new Map(); let pinch = null;
-      svg.addEventListener('pointerdown', (e) => { if (e.pointerType !== 'touch') return; pts.set(e.pointerId, e); if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch = { d: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY), s: this.view.s }; } }, true);
-      svg.addEventListener('pointermove', (e) => {
-        if (!pts.has(e.pointerId)) return; pts.set(e.pointerId, e);
-        if (pinch && pts.size === 2) { const [a, b] = [...pts.values()]; const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY); this.zoomBy((pinch.s * d / pinch.d) / this.view.s, { x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 }); e.stopPropagation(); }
+      const pair = () => { const [a, b] = [...pts.values()]; return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, d: Math.hypot(a.x - b.x, a.y - b.y) }; };
+      svg.addEventListener('pointerdown', (e) => {
+        if (document.body.classList.contains('m')) return;
+        if (e.pointerType !== 'touch') return;
+        pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (pts.size >= 2) {
+          gesture += 1; this._pinchLock = true;
+          const m = pair(), rect = svg.getBoundingClientRect();
+          const w = root.Pinch.worldAt(this.view, m, rect);
+          pinch = { dist: Math.max(m.d, 1), s: this.view.s, wx: w.x, wy: w.y };
+          e.preventDefault(); e.stopPropagation();
+        }
       }, true);
-      const end = (e) => { pts.delete(e.pointerId); if (pts.size < 2) pinch = null; };
-      svg.addEventListener('pointerup', end, true); svg.addEventListener('pointercancel', end, true);
+      svg.addEventListener('pointermove', (e) => {
+        if (document.body.classList.contains('m')) return;
+        if (!pts.has(e.pointerId)) return; pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (pinch && pts.size >= 2) {
+          e.preventDefault(); e.stopPropagation();
+          const m = pair(), rect = svg.getBoundingClientRect();
+          const next = root.Pinch.applyView(pinch, m, m.d, rect, { min: 0.12, max: 4 });
+          this.view.s = next.s; this.view.x = next.x; this.view.y = next.y; this.apply();
+        }
+      }, true);
+      const end = (e) => {
+        if (document.body.classList.contains('m')) return;
+        if (!pts.has(e.pointerId)) return;
+        pts.delete(e.pointerId);
+        if (pts.size < 2) pinch = null;
+        // Keep the lock until every finger is up so the remaining finger cannot pan or select.
+        // The finger's own pointerup still runs and drops its session without selecting,
+        // because the session token no longer matches.
+        if (pts.size === 0) this._pinchLock = false;
+      };
+      svg.addEventListener('pointerup', end, true);
+      svg.addEventListener('pointercancel', end, true);
+      svg.addEventListener('lostpointercapture', end, true);
+      svg.addEventListener('touchmove', (e) => { if (e.touches && e.touches.length >= 2) e.preventDefault(); }, { passive: false });
       window.addEventListener('resize', () => { if (this.active) this.apply(); });
     }
     _tip(ev) {
@@ -1883,7 +1932,7 @@
 
   function signature(proj) {
     return JSON.stringify({
-      p: (proj.parts || []).map((q) => [q.id, q.type, q.x, q.y, q.rot, q.props]),
+      p: (proj.parts || []).map((q) => [q.id, q.type, q.x, q.y, q.rot, q.schFlipX ? 1 : 0, q.schFlipY ? 1 : 0, q.props]),
       w: (proj.wires || []).map((w) => [Math.round(w.a.x), Math.round(w.a.y), Math.round(w.b.x), Math.round(w.b.y)]),
     });
   }
