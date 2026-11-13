@@ -1,5 +1,5 @@
 """Staging flags and the /staging/ pass-through. Flags default off."""
-import asyncio, http.client, inspect, json, os, shutil, sys, tempfile, threading, unittest, urllib.request
+import asyncio, http.client, inspect, json, os, shutil, socket, sys, tempfile, threading, time, unittest, urllib.request
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -16,6 +16,20 @@ import staging
 import uvicorn
 import websockets
 from websockets.exceptions import ConnectionClosed, InvalidStatus
+
+def _loopback_target(value):
+    """Exact http://127.0.0.1:<port>, or None. Tests use this as the seam, not the env var."""
+    prefix = 'http://127.0.0.1:'
+    if not value.startswith(prefix):
+        return None
+    port_text = value[len(prefix):]
+    if not port_text.isdigit() or (len(port_text) > 1 and port_text.startswith('0')):
+        return None
+    port = int(port_text)
+    if not 1 <= port <= 65535:
+        return None
+    return ('127.0.0.1', port)
+
 
 TOKEN = 'test123'
 PRIVATE = 'This is a private test copy of Circuit Lab.'
@@ -149,11 +163,19 @@ class StagingTests(unittest.TestCase):
         self.ws_log.clear()
 
     def _env(self, staging='0', token='', upstream='', base=''):
+        """Apply flags. A loopback URL is the test seam, not the env var."""
         staging_mod = sys.modules['staging']
+        local = None
+        env_upstream = upstream or ''
+        loop = _loopback_target(env_upstream)
+        if loop is not None:
+            local = loop
+            env_upstream = ''
+        staging_mod.set_test_upstream(local)
         staging_mod.apply_env({
             'SIM_STAGING': staging,
             'SIM_ACCESS_TOKEN': token,
-            'SIM_STAGING_UPSTREAM': upstream,
+            'SIM_STAGING_UPSTREAM': env_upstream,
             'SIM_BASE_PATH': base,
         })
 
@@ -323,8 +345,9 @@ class StagingTests(unittest.TestCase):
         self.assertIsNone(staging.parse_upstream(''))
         self.assertIsNone(staging.parse_upstream(None))
         self.assertEqual(self.logs, [])
-        self.assertEqual(staging.parse_upstream('http://127.0.0.1:8766'), ('127.0.0.1', 8766))
-        self.assertEqual(self.logs, [])
+        self.logs.clear()
+        self.assertIsNone(staging.parse_upstream('http://127.0.0.1:8766'))
+        self.assertEqual(self.logs, [staging.UPSTREAM_ERROR])
         self._env(upstream='http://localhost:9')
         code, _, _ = self.fetch('/staging/api/health')
         self.assertEqual(code, 404)
@@ -351,25 +374,108 @@ class StagingTests(unittest.TestCase):
             'http://esp32lab-staging:8765/extra',
             'http://esp32lab-staging:8765?x=1',
             'http://esp32lab-staging:8765#frag',
+            'http://127.0.0.1:8766',
         ]
         for value in refused:
             self.logs.clear()
             self.assertIsNone(staging.parse_upstream(value), value)
             self.assertEqual(self.logs, [staging.UPSTREAM_ERROR], value)
-            self._env(upstream=value)
+            staging.set_test_upstream(None)
+            staging.apply_env({
+                'SIM_STAGING': '0', 'SIM_ACCESS_TOKEN': '',
+                'SIM_STAGING_UPSTREAM': value, 'SIM_BASE_PATH': '',
+            })
             code, _, _ = self.fetch('/staging/api/health')
             self.assertEqual(code, 404, value)
             self.assertEqual(self.http_log, [], value)
             self.assertIsNone(staging.upstream_port())
-        self.logs.clear()
         self._env(upstream='http://esp32lab-staging:8765')
         self.assertEqual(staging.upstream_port(), 8765)
-        code, headers, body = self.fetch('/staging/api/health')
-        self.assertEqual(code, 502)
-        self._assert_down(body)
-        self._assert_guard_page(headers, body, '/staging/api/health', 'esp32lab-staging', 'esp32lab-staging:8765')
-        self.assertEqual(self.http_log, [])
-        self.assertTrue(any(line.endswith('reason=upstream_unreachable') for line in self.logs))
+        self.assertIsNone(staging.TEST_UPSTREAM)
+        self._assert_resolved('error', 'upstream_unreachable')
+        self._assert_resolved(('refused', self.dead_port), 'upstream_unreachable')
+        self._assert_resolved(('blackhole', '192.0.2.1'), 'upstream_timeout')
+
+    def _assert_resolved(self, action, reason):
+        """esp32lab-staging never reaches the host resolver.
+
+        stdlib asyncio calls socket.getaddrinfo. uvicorn's uvloop does not, so
+        its create_connection is rewritten to the same outcome: a gaierror, a
+        refused port, or a blackhole address that does not complete.
+        """
+        real_get = socket.getaddrinfo
+
+        def patched(host, port, *args, **kwargs):
+            if host != 'esp32lab-staging':
+                return real_get(host, port, *args, **kwargs)
+            if action == 'error':
+                raise socket.gaierror(socket.EAI_NONAME, 'Name or service not known')
+            if action[0] == 'refused':
+                return real_get('127.0.0.1', action[1], *args, **kwargs)
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (action[1], int(port)))]
+
+        socket.getaddrinfo = patched
+        real_cc = None
+        loop_cls = None
+        try:
+            import uvloop
+            loop_cls = uvloop.Loop
+            real_cc = loop_cls.create_connection
+        except ImportError:
+            uvloop = None
+
+        async def create_connection(self, protocol_factory, host=None, port=None, **kwargs):
+            if host == 'esp32lab-staging':
+                if action == 'error':
+                    raise socket.gaierror(socket.EAI_NONAME, 'Name or service not known')
+                if action[0] == 'refused':
+                    host, port = '127.0.0.1', action[1]
+                else:
+                    host = action[1]
+            return await real_cc(self, protocol_factory, host, port, **kwargs)
+
+        if loop_cls is not None:
+            loop_cls.create_connection = create_connection
+        if isinstance(action, tuple) and action[0] == 'blackhole':
+            staging.PROXY_TIMEOUT = 0.4
+        self.logs.clear()
+        try:
+            code, headers, body = self.fetch('/staging/api/health', timeout=5)
+            self.assertEqual(code, 502, action)
+            self._assert_down(body)
+            self._assert_guard_page(headers, body, '/staging/api/health', 'esp32lab-staging', 'esp32lab-staging:8765')
+            self.assertEqual(self.http_log, [])
+            self.assertTrue(any(
+                line.startswith('staging_proxy status=502 ms=') and line.endswith('reason=%s' % reason)
+                for line in self.logs
+            ), self.logs)
+            self.logs.clear()
+
+            async def ws_status():
+                try:
+                    async with websockets.connect(
+                        'ws://127.0.0.1:%d/staging/api/run/abc' % self.port,
+                        open_timeout=3, proxy=None,
+                    ) as ws:
+                        await ws.recv()
+                    return 101, b''
+                except InvalidStatus as exc:
+                    raw = getattr(exc.response, 'body', b'') or b''
+                    return exc.response.status_code, raw
+
+            status, ws_body = asyncio.run(ws_status())
+            self.assertEqual(status, 502, action)
+            if ws_body:
+                self._assert_down(ws_body)
+            self.assertTrue(any(
+                line.startswith('staging_proxy status=502 ms=') and line.endswith('reason=%s' % reason)
+                for line in self.logs
+            ), self.logs)
+        finally:
+            socket.getaddrinfo = real_get
+            if loop_cls is not None:
+                loop_cls.create_connection = real_cc
+            staging.PROXY_TIMEOUT = 30.0
 
     def test_upstream_redirect_is_not_followed(self):
         self._env(upstream='http://127.0.0.1:%d' % self.http_port)
@@ -426,10 +532,10 @@ class StagingTests(unittest.TestCase):
         self._env(upstream='http://127.0.0.1:%d' % self.http_port)
         staging.PROXY_TIMEOUT = 0.4
         code, _, body = self.fetch('/staging/hang', timeout=5)
-        self.assertEqual(code, 504)
+        self.assertEqual(code, 502)
         self._assert_down(body)
         self.assertNotIn(b'Traceback', body)
-        self.assertTrue(any(line.startswith('staging_proxy status=504 ms=') for line in self.logs))
+        self.assertTrue(any(line.startswith('staging_proxy status=502 ms=') and line.endswith('reason=upstream_timeout') for line in self.logs))
 
     def test_access_token_gate(self):
         self._env(staging='1', token=TOKEN)
@@ -1052,7 +1158,8 @@ class StagingTests(unittest.TestCase):
         self._env(upstream='http://127.0.0.1:%d' % self.http_port)
         staging.PROXY_TIMEOUT = 0.4
         status, headers, body = self.fetch('/staging/hang', headers={'X-Trace': header}, timeout=5)
-        self.assertEqual(status, 504)
+        self.assertEqual(status, 502)
+        self.assertTrue(any(line.endswith('reason=upstream_timeout') for line in self.logs))
         self._assert_guard_page(headers, body, '/staging/hang', header, upstream)
         self._assert_down(body)
         self.assertGreaterEqual(_contrast('e6e8eb', '08090b'), 4.5)

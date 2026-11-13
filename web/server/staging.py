@@ -6,7 +6,7 @@ uses the ``websockets`` package already installed with uvicorn. No new dependenc
 
 SIM_STAGING           default 0. 1 adds noindex, robots.txt, and the page flag.
 SIM_ACCESS_TOKEN      default empty (off). Cookie cl_stage, constant-time compare.
-SIM_STAGING_UPSTREAM  default empty (off). http://127.0.0.1:<port> or http://esp32lab-staging:8765.
+SIM_STAGING_UPSTREAM  default empty (off). Only http://esp32lab-staging:8765.
 SIM_BASE_PATH         cookie and redirect prefix. Defaults to /staging when SIM_STAGING=1.
 """
 import asyncio, hashlib, hmac, html, os, re, time
@@ -27,7 +27,7 @@ def _main_link(label):
     return '<a href="/">%s</a>' % _esc(label)
 
 
-# One template for the 401 and the 502/504 pages. Inline CSS, system fonts, no
+# One template for the 401 and the 502 pages. Inline CSS, system fonts, no
 # network requests. The copy is fixed; nothing from the request is inserted.
 _PAGE_CSS = (
     "html{background:#08090b;color:#e6e8eb;"
@@ -81,18 +81,18 @@ _WS_SKIP = _HOP | _FORWARDED_IP | {
     'sec-websocket-key', 'sec-websocket-version', 'sec-websocket-extensions',
     'sec-websocket-protocol', 'sec-websocket-accept',
 }
-_LOOPBACK_RE = re.compile(r'^http://127\.0\.0\.1:([1-9][0-9]{0,4})$')
 # Host exactly esp32lab-staging, port 8765. Path may be empty or a single slash.
 _NAME_RE = re.compile(r'^http://esp32lab-staging:8765/?$')
 UPSTREAM_ERROR = (
-    'staging_proxy error: SIM_STAGING_UPSTREAM must be http://127.0.0.1:<port> '
-    'or http://esp32lab-staging:8765; pass-through off'
+    'staging_proxy error: SIM_STAGING_UPSTREAM must be http://esp32lab-staging:8765; pass-through off'
 )
 _BASE_RE = re.compile(r'^/[A-Za-z0-9][A-Za-z0-9._/-]{0,80}$')
 
 STAGING = False
 ACCESS = ''
 UPSTREAM = None  # ('host', port) or None. Off never proxies.
+# Tests only. Production leaves this None, so the env var is the only switch.
+TEST_UPSTREAM = None
 BASE_PATH = ''
 COOKIE_PATH = '/'
 _sim_authed = None
@@ -125,21 +125,29 @@ def upstream_port():
     return None if UPSTREAM is None else UPSTREAM[1]
 
 
+def set_test_upstream(target):
+    """Install a local upstream for tests. ``target`` is ``(host, port)`` or None.
+
+    This is not read from the environment. ``SIM_STAGING_UPSTREAM`` accepts only
+    ``http://esp32lab-staging:8765``.
+    """
+    global TEST_UPSTREAM
+    if target is None:
+        TEST_UPSTREAM = None
+        return
+    TEST_UPSTREAM = (str(target[0]), int(target[1]))
+
+
 def parse_upstream(value):
     """Return (host, port), or None. Empty is off. Anything else is rejected and stays off.
 
-    Allowed: http://127.0.0.1:<port> for local and dev, or http://esp32lab-staging:8765
-    (a trailing slash is the only extra path). No userinfo, query, fragment, other
-    hostname, or IP literal besides that loopback form.
+    The only accepted value is ``http://esp32lab-staging:8765`` (a trailing slash is
+    the only extra path). No userinfo, query, fragment, other hostname, or any IP
+    literal, including ``http://127.0.0.1:<port>``.
     """
     raw = '' if value is None else str(value).strip()
     if raw == '':
         return None
-    loop = _LOOPBACK_RE.fullmatch(raw)
-    if loop:
-        port = int(loop.group(1))
-        if 1 <= port <= 65535:
-            return ('127.0.0.1', port)
     if _NAME_RE.fullmatch(raw):
         return ('esp32lab-staging', 8765)
     _log(UPSTREAM_ERROR)
@@ -168,7 +176,9 @@ def apply_env(env=None):
     env = os.environ if env is None else env
     STAGING = env.get('SIM_STAGING', '0') == '1'
     ACCESS = env.get('SIM_ACCESS_TOKEN', '') or ''
-    UPSTREAM = parse_upstream(env.get('SIM_STAGING_UPSTREAM', ''))
+    parsed = parse_upstream(env.get('SIM_STAGING_UPSTREAM', ''))
+    # The test seam wins so a unit test can point at 127.0.0.1 without the env var.
+    UPSTREAM = TEST_UPSTREAM if TEST_UPSTREAM is not None else parsed
     BASE_PATH = _base_path(env.get('SIM_BASE_PATH', ''), STAGING)
     COOKIE_PATH = (BASE_PATH + '/') if BASE_PATH else '/'
 
@@ -218,7 +228,7 @@ def _redirect_target(request):
 
 
 def _html(html, status):
-    """401 / 502 / 504. Fixed markup, no-store, and a CSP that blocks every extra request."""
+    """401 / 502. Fixed markup, no-store, and a CSP that blocks every extra request."""
     from starlette.responses import HTMLResponse
     resp = HTMLResponse(html, status_code=status, headers={
         'Cache-Control': 'no-store',
@@ -452,27 +462,31 @@ async def maybe_proxy(request):
     if err is not None:
         return err
     t0 = time.perf_counter()
+    started = {'ok': False}
     try:
         status, headers, payload = await asyncio.wait_for(
             _forward(request.method, strip_prefix(request.url.path), request.url.query, request.headers.raw, body,
-                     _peer_host(request.client)),
+                     _peer_host(request.client), started),
             PROXY_TIMEOUT,
         )
-    except asyncio.TimeoutError:
-        _log('staging_proxy status=504 ms=%d' % _ms(t0))
-        return _down(504)
-    except OSError:
-        # DNS failure and a refused or reset connection. The name is not retried.
-        _log('staging_proxy status=502 ms=%d reason=upstream_unreachable' % _ms(t0))
-        return _down(502)
-    except Exception:
-        _log('staging_proxy status=502 ms=%d' % _ms(t0))
+    except Exception as exc:
+        # A bug after the upstream response has started is a 500. Before that, the 502 page.
+        if started['ok']:
+            raise
+        _log('staging_proxy status=502 ms=%d reason=%s' % (_ms(t0), _connect_reason(exc)))
         return _down(502)
     _log('staging_proxy status=%s ms=%d' % (status, _ms(t0)))
     return seal(_response(status, headers, payload))
 
 
-async def _forward(method, path, query, raw_headers, body, client_host=''):
+def _connect_reason(exc):
+    """upstream_timeout before any byte, otherwise the connect never succeeded."""
+    if isinstance(exc, TimeoutError) or type(exc).__name__ in ('TimeoutError', 'ConnectionTimeout'):
+        return 'upstream_timeout'
+    return 'upstream_unreachable'
+
+
+async def _forward(method, path, query, raw_headers, body, client_host='', started=None):
     # The upstream status is returned as received. A 3xx is not followed.
     target = path or '/'
     if query:
@@ -499,7 +513,7 @@ async def _forward(method, path, query, raw_headers, body, client_host=''):
     try:
         writer.write(blob)
         await writer.drain()
-        status, headers, rest = await _read_head(reader)
+        status, headers, rest = await _read_head(reader, started)
         payload = await _read_body(reader, headers, rest)
         return status, headers, payload
     finally:
@@ -510,12 +524,14 @@ async def _forward(method, path, query, raw_headers, body, client_host=''):
             pass
 
 
-async def _read_head(reader):
+async def _read_head(reader, started=None):
     buf = bytearray()
     while b'\r\n\r\n' not in buf:
         chunk = await reader.read(4096)
         if not chunk:
             break
+        if started is not None:
+            started['ok'] = True
         buf += chunk
         if len(buf) > 65536:
             raise OSError('upstream headers')
@@ -758,14 +774,14 @@ async def _proxy_ws(scope, receive, send):
         connector = websockets.connect(url, **kwargs)
     try:
         remote = await asyncio.wait_for(connector.__aenter__(), PROXY_TIMEOUT)
-    except asyncio.TimeoutError:
-        _log('staging_proxy status=504 ms=%d' % _ms(t0))
-        await _ws_http(send, 504, DOWN_HTML.encode('utf-8'))
-        return
     except Exception as exc:
-        reason = ' reason=upstream_unreachable' if isinstance(exc, OSError) else ''
-        _log('staging_proxy status=502 ms=%d%s' % (_ms(t0), reason))
+        # Handshake not finished: no upstream byte has been bridged. Same 502 page as HTTP.
+        _log('staging_proxy status=502 ms=%d reason=%s' % (_ms(t0), _connect_reason(exc)))
         await _ws_http(send, 502, DOWN_HTML.encode('utf-8'))
+        try:
+            await connector.__aexit__(type(exc), exc, exc.__traceback__)
+        except Exception:
+            pass
         return
     _log('staging_proxy status=101 ms=%d' % _ms(t0))
     await send({'type': 'websocket.accept'})
