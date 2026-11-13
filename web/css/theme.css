@@ -61,10 +61,15 @@ html[data-theme=light] #bRun.spinning:hover{background:#e2e5e9;border-color:#3d4
 html[data-theme=light] #bRun.spinning:active{background:#d5d9df;border-color:#3d4550;color:#15181c;transform:none}
 #bRun .runspin{display:none;width:12px;height:12px;border-radius:50%;border:2px solid currentColor;border-right-color:transparent;box-sizing:border-box;flex:none}
 #bRun.spinning .ic{display:none}#bRun.spinning .runspin{display:block;animation:runspin .7s linear infinite}
-/* Full-width compile line under the top bar. Fixed, so showing it does not move the bar or the canvas. */
-#compileStrip{position:fixed;top:48px;left:0;right:0;z-index:12;margin:0;padding:8px 16px;box-sizing:border-box;background:#1b1f24;color:#e8eaed;border-bottom:1px solid #9aa3af;font-size:13.5px;line-height:1.45;font-weight:500;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;pointer-events:none}
+/* Longest label is Compiling…. The shorter ones (Run, Queued, Building…) stay in the same box. */
+#bRun{min-width:11em;flex-shrink:0}
+/* Full-width compile line. --strip-top is the measured bottom of the top bar plus the ticker, set from a ResizeObserver. */
+#compileStrip{position:fixed;top:var(--strip-top,0px);left:0;right:0;z-index:12;margin:0;padding:8px 16px;box-sizing:border-box;background:#1b1f24;color:#e8eaed;border-bottom:1px solid #9aa3af;font-size:13.5px;line-height:1.45;font-weight:500;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;pointer-events:none}
 #compileStrip[hidden]{display:none!important}
 html[data-theme=light] #compileStrip{background:#eceef1;color:#2c333c;border-bottom-color:#3d4550}
+/* Push the canvas down while the strip is up. Transform is not layout, so CLS stays 0. */
+html.strip-on #stage,html.strip-on #projBanner,html.strip-on #mParts,html.strip-on #mWireBar{transform:translateY(var(--strip-h,0px))}
+html.strip-on body:not(.m) #palette,html.strip-on body:not(.m) #side{transform:translateY(var(--strip-h,0px))}
 @keyframes runspin{to{transform:rotate(360deg)}}
 body.running .runctl .run{background:var(--l3);color:var(--ok);border-color:rgba(52,211,153,.4);box-shadow:none}body.running #bStop{color:var(--err)}
 .status{display:flex;align-items:center;gap:8px;height:28px;padding:0 10px;border-radius:var(--r2);background:var(--l2);border:1px solid var(--line);color:var(--txt2);font-size:12px;white-space:nowrap;position:relative;overflow:hidden;min-width:150px}

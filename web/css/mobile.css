@@ -237,12 +237,9 @@ body.m #mIgnite.compiling::after{content:"";position:absolute;left:50%;top:50%;w
 /* Narrow phones use the toast. Wider phone shells (tablet width) use the strip under the bar. */
 .m-compile-toast{display:none}
 @media (max-width:640px){
-  body.m .m-compile-toast{position:fixed;right:max(16px,env(safe-area-inset-right));bottom:calc(102px + env(safe-area-inset-bottom));z-index:60;display:block;width:min(280px,calc(100vw - 24px));margin:0;padding:8px 10px;border-radius:12px;background:#1b1f24;color:#e8eaed;border:1px solid #9aa3af;font-size:13px;line-height:1.4;font-weight:500;text-align:left;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;height:auto;pointer-events:none;box-shadow:0 8px 24px rgba(0,0,0,.35)}
+  body.m .m-compile-toast{position:fixed;right:max(16px,env(safe-area-inset-right));bottom:calc(102px + env(safe-area-inset-bottom));z-index:60;display:block;width:min(280px,calc(100vw - 24px));margin:0;padding:8px 10px;border-radius:12px;background:#1b1f24;color:#e8eaed;border:1px solid #9aa3af;font-size:13px;line-height:1.4;font-weight:500;text-align:left;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;height:auto;min-height:calc(2 * 1.4em + 18px);pointer-events:none;box-shadow:0 8px 24px rgba(0,0,0,.35)}
   body.m .m-compile-toast[hidden]{display:none!important}
   #compileStrip{display:none!important}
-}
-@media (min-width:641px){
-  body.m #compileStrip{top:var(--mTop)}
 }
 html[data-theme=light] body.m .m-compile-toast{background:#eceef1;color:#2c333c;border-color:#3d4550}
 body.busy #mIgnite .m-ig-bg{stroke:var(--warn);stroke-dasharray:8 6;animation:mSpin 1.2s linear infinite;transform-origin:center}

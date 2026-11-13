@@ -340,7 +340,58 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       else if (paintedStatus && pill.textContent === paintedStatus) { pill.textContent = ''; paintedStatus = ''; }
     }
     if (window.Mobile && typeof window.Mobile.syncIgnite === 'function') window.Mobile.syncIgnite();
+    syncStripMetrics();
   }
+  function shownChrome(el) {
+    if (!el || typeof getComputedStyle !== 'function') return null;
+    const s = getComputedStyle(el);
+    if (s.display === 'none' || s.visibility === 'hidden') return null;
+    const r = el.getBoundingClientRect();
+    if (r.height < 1 || r.width < 1) return null;
+    return r;
+  }
+  // --strip-top is the bottom of whatever top chrome is actually on screen (the bar, plus the ticker when it is shown).
+  function syncStripMetrics() {
+    try {
+      const root = document.documentElement;
+      if (!root || !root.style || typeof root.style.setProperty !== 'function') return;
+      if (typeof getComputedStyle !== 'function') return;
+      const bar = shownChrome(document.getElementById('top'));
+      const ticker = shownChrome(document.getElementById('mTicker'));
+      let edge = 0;
+      if (bar) edge = Math.max(edge, bar.bottom);
+      if (ticker) edge = Math.max(edge, ticker.bottom);
+      root.style.setProperty('--strip-top', edge + 'px');
+      const strip = document.getElementById('compileStrip');
+      const open = !!(strip && !strip.hidden && shownChrome(strip));
+      if (open) {
+        root.style.setProperty('--strip-h', strip.getBoundingClientRect().height + 'px');
+        if (root.classList) root.classList.add('strip-on');
+      } else {
+        root.style.setProperty('--strip-h', '0px');
+        if (root.classList) root.classList.remove('strip-on');
+      }
+    } catch (e) {}
+  }
+  let stripObserver = null;
+  function watchStripChrome() {
+    syncStripMetrics();
+    if (typeof ResizeObserver !== 'function' || stripObserver) return;
+    stripObserver = new ResizeObserver(() => syncStripMetrics());
+    const attach = () => {
+      ['top', 'mTicker', 'compileStrip'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el && !el.__stripWatch) { stripObserver.observe(el); el.__stripWatch = true; }
+      });
+    };
+    attach();
+    if (!document.getElementById('mTicker') && typeof MutationObserver === 'function' && document.body) {
+      const mo = new MutationObserver(() => { if (document.getElementById('mTicker')) { attach(); mo.disconnect(); syncStripMetrics(); } });
+      mo.observe(document.body, { childList: true, subtree: true });
+    }
+    window.addEventListener('resize', syncStripMetrics);
+  }
+  app.syncStripMetrics = syncStripMetrics;
   function setRunBusy(on) { setCompilePhase(on ? 'building' : 'idle'); }
   app.queuedCopy = queuedCopy;
   app.setCompilePhase = setCompilePhase;
@@ -1012,6 +1063,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
   setInterval(latchTick, 20);
   function init() {
+    watchStripChrome();
     app.editor = new Editor($('#stage'), {
       changed: (topo) => {
         if (window.Netlist && app.proj) { try { Netlist.syncFromWires(app.proj); } catch (e) { /* the wires stay; the next load rebuilds the netlist */ } }

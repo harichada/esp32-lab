@@ -13,7 +13,11 @@ const path = require('path');
 const MSG = 'Waiting for another build to finish… (position 8)';
 const WIDTHS = [
   { w: 390, h: 844, surface: 'toast' },
+  { w: 641, h: 900, surface: 'strip' },
+  { w: 700, h: 900, surface: 'strip' },
   { w: 768, h: 1024, surface: 'strip' },
+  { w: 820, h: 900, surface: 'strip' },
+  { w: 821, h: 900, surface: 'strip' },
   { w: 960, h: 800, surface: 'strip' },
   { w: 1024, h: 768, surface: 'strip' },
   { w: 1280, h: 800, surface: 'strip' },
@@ -30,7 +34,7 @@ function freePort() {
   });
 }
 
-test('the full queue message, including the position, is visible at 390, 768, 960, 1024 and 1280', async () => {
+test('the queue line clears the ticker, keeps Make a copy clickable, and stays fully visible', async () => {
   const web = path.join(__dirname, '..');
   const httpPort = await freePort();
   const dbgPort = await freePort();
@@ -85,7 +89,7 @@ test('the full queue message, including the position, is visible at 390, 768, 96
     await send('Page.navigate', { url: 'http://127.0.0.1:' + httpPort + '/?ex=blink' }, sessionId);
     const ready = await evalJs(`(async () => {
       for (let i = 0; i < 80; i++) {
-        if (window.app && app.setCompilePhase && document.getElementById('compileStrip') && document.getElementById('mCompileToast')) return true;
+        if (window.app && app.setCompilePhase && document.getElementById('compileStrip') && document.getElementById('mCompileToast') && document.getElementById('bCopy')) return true;
         await new Promise((r) => setTimeout(r, 100));
       }
       return false;
@@ -134,6 +138,41 @@ test('the full queue message, including the position, is visible at 390, 768, 96
         const offscreen = rects.some((rc) => rc.left < -slop || rc.top < -slop || rc.right > innerWidth + slop || rc.bottom > innerHeight + slop);
         const main = document.getElementById('main').getBoundingClientRect();
         const top = document.getElementById('top').getBoundingClientRect();
+        const ticker = document.getElementById('mTicker');
+        const tickerBox = ticker && getComputedStyle(ticker).display !== 'none' ? ticker.getBoundingClientRect() : null;
+        const tickerOn = !!(tickerBox && tickerBox.height > 1);
+        const overlap = (a, b) => a.left < b.right - 1 && a.right > b.left + 1 && a.top < b.bottom - 1 && a.bottom > b.top + 1;
+        const chromeBottom = Math.max(top.bottom, tickerOn ? tickerBox.bottom : 0);
+        const setTop = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--strip-top')) || 0;
+        const copy = document.getElementById('bCopy');
+        const copyBox = copy ? copy.getBoundingClientRect() : null;
+        const banner = document.getElementById('projBanner');
+        const bannerCs = banner ? getComputedStyle(banner) : null;
+        let hit = null;
+        if (copyBox && copyBox.width > 2) {
+          const node = document.elementFromPoint(copyBox.left + copyBox.width / 2, copyBox.top + copyBox.height / 2);
+          hit = node && (node === copy || copy.contains(node));
+        }
+        const covered = [];
+        if (el.id === 'compileStrip') {
+          for (const node of document.querySelectorAll('button, a, input, select, textarea')) {
+            if (node.closest('#compileStrip, #top')) continue;
+            const cs = getComputedStyle(node);
+            const r = node.getBoundingClientRect();
+            if (cs.display === 'none' || cs.visibility === 'hidden' || cs.pointerEvents === 'none') continue;
+            if (r.width < 2 || r.height < 2) continue;
+            if (overlap(r, box)) covered.push(node.id || node.getAttribute('aria-label') || node.tagName);
+          }
+        }
+        let toastH = null;
+        if (el.id === 'mCompileToast') {
+          const ign = document.getElementById('mIgnite').getBoundingClientRect().top;
+          app.setCompilePhase('queued', 'Queued.');
+          const shortH = toast.getBoundingClientRect().height;
+          const ignShort = document.getElementById('mIgnite').getBoundingClientRect().top;
+          app.setCompilePhase('queued', msg);
+          toastH = { shortH, longH: toast.getBoundingClientRect().height, ign, ignShort, ignLong: document.getElementById('mIgnite').getBoundingClientRect().top };
+        }
         return {
           ok: true,
           which: el.id,
@@ -144,10 +183,23 @@ test('the full queue message, including the position, is visible at 390, 768, 96
           overflow: s.overflow,
           textOverflow: s.textOverflow,
           position: s.position,
+          pointerEvents: s.pointerEvents,
           clipped, offscreen,
           rects: rects.length,
           boxW: box.width,
+          boxTop: box.top,
+          boxBottom: box.bottom,
           mainTop: main.top, mainH: main.height, topH: top.height,
+          tickerOn, tickerBottom: tickerOn ? tickerBox.bottom : 0,
+          chromeBottom, setTop,
+          copyTop: copyBox ? copyBox.top : null,
+          copyBottom: copyBox ? copyBox.bottom : null,
+          copyHit: hit,
+          bannerTransform: bannerCs ? bannerCs.transform : '',
+          bannerTop: bannerCs ? bannerCs.top : '',
+          bannerMargin: bannerCs ? bannerCs.marginTop : '',
+          covered,
+          toastH,
         };
       })()`);
       assert.equal(report.ok, true, size.w + ' ' + JSON.stringify(report));
@@ -165,8 +217,55 @@ test('the full queue message, including the position, is visible at 390, 768, 96
       assert.equal(report.mainTop, before.mainTop, 'canvas did not move');
       assert.equal(report.mainH, before.mainH, 'canvas height did not change');
       assert.equal(report.topH, before.topH, 'top bar height did not change');
-      if (size.surface === 'strip') assert.ok(report.boxW > size.w * 0.9, 'strip is full width at ' + size.w);
+      if (size.surface === 'strip') {
+        assert.ok(report.boxW > size.w * 0.9, 'strip is full width at ' + size.w);
+        assert.ok(Math.abs(report.boxTop - report.chromeBottom) < 1.5, size.w + ' strip top ' + report.boxTop + ' chrome ' + report.chromeBottom);
+        assert.ok(Math.abs(report.setTop - report.chromeBottom) < 1.5, size.w + ' --strip-top ' + report.setTop);
+        if (size.w <= 820) {
+          assert.equal(report.tickerOn, true, size.w + ' ticker is showing');
+          assert.ok(report.boxTop >= report.tickerBottom - 1, size.w + ' strip is under the ticker');
+        } else {
+          assert.equal(report.tickerOn, false, size.w + ' ticker is hidden');
+        }
+        assert.ok(report.copyTop != null, 'Make a copy is on screen');
+        assert.ok(report.copyTop >= report.boxBottom - 1, size.w + ' Make a copy starts below the strip');
+        assert.ok(report.copyBottom <= size.h + 1, 'Make a copy stays in the viewport');
+        assert.equal(report.copyHit, true, size.w + ' Make a copy is the click target');
+        assert.deepEqual(report.covered, [], size.w + ' strip covers ' + report.covered.join(','));
+        assert.match(report.bannerTransform, /matrix/, 'banner uses a transform');
+        assert.equal(report.bannerMargin, '0px');
+        assert.equal(report.pointerEvents, 'none');
+      }
+      if (report.toastH) {
+        assert.equal(report.toastH.shortH, report.toastH.longH, 'toast height stays at two lines');
+        assert.equal(report.toastH.ign, report.toastH.ignShort);
+        assert.equal(report.toastH.ignShort, report.toastH.ignLong);
+      }
     }
+    await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }, sessionId);
+    const widths = await evalJs(`(async () => {
+      for (let i = 0; i < 30; i++) {
+        if (!document.body.classList.contains('m') && document.getElementById('bRun').getBoundingClientRect().width > 20) break;
+        await new Promise((r) => setTimeout(r, 40));
+      }
+      const btn = document.getElementById('bRun');
+      const read = () => btn.getBoundingClientRect().width;
+      app.setCompilePhase('idle');
+      const run = read();
+      app.setCompilePhase('queued', ${JSON.stringify(MSG)});
+      const queued = read();
+      app.setCompilePhase('building');
+      const building = read();
+      btn.querySelector('span').textContent = 'Compiling…';
+      const compiling = read();
+      const main = document.getElementById('main').getBoundingClientRect().top;
+      app.setCompilePhase('idle');
+      return { run, queued, building, compiling, main, mainAfter: document.getElementById('main').getBoundingClientRect().top };
+    })()`);
+    for (const key of ['queued', 'building', 'compiling']) {
+      assert.ok(Math.abs(widths[key] - widths.run) < 0.5, key + ' width ' + widths[key] + ' vs Run ' + widths.run);
+    }
+    assert.equal(widths.main, widths.mainAfter);
     ws.close();
   } catch (err) {
     err.message += '\nchrome: ' + chromeLog.slice(-500);
