@@ -156,18 +156,24 @@ curl -s  http://127.0.0.1:8765/staging/api/health -H "Cookie: cl_stage=<value>" 
 
 Stop forwarding by unsetting `SIM_STAGING_UPSTREAM` and restarting the live process. `/staging/` is 404 again and the live site is otherwise the same process.
 
-A container for the test copy stays on loopback and does not publish port 8080:
+## Test-copy container
+
+The test copy is its own container. It has its own data volume, a half CPU, and one compile and one run at a time. This server has no `SIM_MAX_CONCURRENT`; `SIM_COMPILE_QUEUE_MAX=0` refuses a second compile while one is running, and `SIM_MAX_RUNS=1` is the run cap. Publish only on loopback. Do not use `--network host`. Pass the token with `-e` and do not commit it.
 
 ```
 docker run -d --name esp32lab-staging --cpus 0.5 \
-  -e SIM_STAGING=1 -e SIM_ACCESS_TOKEN=... -e SIM_BASE_PATH=/staging \
-  -e SIM_PROJECT_DIR=/data/staging-projects -e SIM_COMPILE_QUEUE_MAX=1 \
+  -e SIM_STAGING=1 -e SIM_ACCESS_TOKEN \
+  -e SIM_BASE_PATH=/staging \
+  -e SIM_PROJECT_DIR=/data/staging-projects \
+  -e SIM_COMPILE_QUEUE_MAX=0 -e SIM_MAX_RUNS=1 \
   -p 127.0.0.1:8766:8765 \
   -v esp32lab-staging:/data/staging-projects \
   esp32-lab
 ```
 
-The live container then gets `-e SIM_STAGING_UPSTREAM=http://127.0.0.1:8766`. That address is the live container's own loopback, so the test-copy container has to be reachable there (host network, or a published `127.0.0.1:8766` on the same host). Do not point the variable at a hostname, another address, or `https`.
+`SIM_ACCESS_TOKEN` with no value in that line is a reminder to set it in the environment you launch from (`-e SIM_ACCESS_TOKEN`), not a token written into the repo. The live container then gets `-e SIM_STAGING_UPSTREAM=http://127.0.0.1:8766` and reaches the published loopback port. Do not point that variable at a hostname, another address, or `https`.
+
+Rollback: unset `SIM_STAGING_UPSTREAM` and restart the live process. `/staging/` is 404 again. To return to the current live build, use the v64 image `aedbeb0a0c7c` or `/home/opc/backup-v64` (main `21340d3`).
 
 ## Tests
 - `node --test tests/*.test.js`: solver, JS-sketch runner, remote logic and the network log.

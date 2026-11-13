@@ -122,13 +122,29 @@ test('app code does not touch localStorage or sessionStorage except through the 
   }
 });
 
+function contrast(fg, bg) {
+  const lin = (hex) => {
+    const n = parseInt(hex, 16);
+    const c = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => v / 255);
+    const f = (u) => (u <= 0.04045 ? u / 12.92 : ((u + 0.055) / 1.055) ** 2.4);
+    const [r, g, b] = c.map(f);
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const L1 = lin(fg);
+  const L2 = lin(bg);
+  return (Math.max(L1, L2) + 0.05) / (Math.min(L1, L2) + 0.05);
+}
+
 test('staging banner is in the first HTML, reserved, and not a dialog', () => {
   const html = fs.readFileSync(path.join(WEB, 'index.html'), 'utf8');
   const css = fs.readFileSync(path.join(WEB, 'css/theme.css'), 'utf8');
   const mobile = fs.readFileSync(path.join(WEB, 'css/mobile.css'), 'utf8');
-  assert.match(html, /<div id="stageBanner" class="stage-banner" role="status">Test version: projects here may be deleted\.<\/div>/);
-  assert.doesNotMatch(html, /id="stageBanner"[^>]*emoji|id="stageBanner"[^>]*>[^<]*[\u{1F300}-\u{1FAFF}]/u);
-  assert.match(html, /js\/storage\.js\?v=1/);
+  const copy = 'Test version: projects here may be deleted. <a href="/">Use the main site</a> for real work.';
+  assert.ok(html.includes(copy));
+  assert.match(html, /<div id="stageBanner" class="stage-banner" role="status"><span class="stage-copy">/);
+  assert.doesNotMatch(html, /id="stageBanner"[^>]*tabindex/);
+  assert.doesNotMatch(html, /id="stageBanner"[^>]*aria-modal/);
+  assert.doesNotMatch(html, /id="stageBanner"[\s\S]{0,400}tabindex="-1"/);
   assert.match(html, /theme\.css\?v=60/);
   assert.match(html, /mobile\.css\?v=63/);
   assert.match(html, /app\.js\?v=71/);
@@ -137,13 +153,19 @@ test('staging banner is in the first HTML, reserved, and not a dialog', () => {
   assert.match(html, /ui\.js\?v=62/);
   assert.match(html, /netlog\.js\?v=41/);
   assert.match(css, /#stageBanner\{display:none\}/);
-  assert.match(css, /html\[data-cl-env=staging\]\{--stage-h:40px\}/);
+  assert.match(css, /html\[data-cl-env=staging\]\{--stage-h:56px\}/);
+  assert.match(css, /max-height:var\(--stage-h\)/);
   assert.match(css, /background:#4a2f00;color:#fff4d4/);
+  assert.match(css, /#stageBanner a\{[^}]*text-decoration:underline/);
+  assert.match(css, /#stageBanner a:hover,html\[data-cl-env=staging\] #stageBanner a:hover:focus-visible\{color:#4a2f00;background:#fff4d4\}/);
+  assert.match(css, /#stageBanner a:focus-visible\{outline:2px solid #fff4d4/);
+  assert.match(css, /#stageBanner a:active:hover:focus-visible\{color:#fff4d4;background:#241500\}/);
+  assert.ok(contrast('fff4d4', '4a2f00') >= 4.5);
+  assert.ok(contrast('4a2f00', 'fff4d4') >= 4.5);
+  assert.ok(contrast('fff4d4', '241500') >= 4.5);
   assert.match(css, /html\[data-cl-env=staging\] #main\{height:calc\(100% - 70px - var\(--stage-h\)\)\}/);
   assert.match(mobile, /html\[data-cl-env=staging\] body\.m #mTicker/);
   assert.match(mobile, /html\[data-cl-env=staging\] body\.m header#top\{top:var\(--stage-offset\)/);
   assert.doesNotMatch(mobile, /html\[data-cl-env=staging\] body\.m #bForce2d\{top:/);
   assert.match(mobile, /html\[data-cl-env=staging\] body\.m \.zoom-tools\{top:calc\(88px \+ var\(--stage-offset\)\)\}/);
-  assert.doesNotMatch(html, /id="stageBanner"[^>]*tabindex/);
-  assert.doesNotMatch(html, /id="stageBanner"[^>]*aria-modal/);
 });

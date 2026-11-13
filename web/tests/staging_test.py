@@ -1,5 +1,5 @@
 """Staging flags and the /staging/ pass-through. Flags default off."""
-import asyncio, os, sys, threading, unittest, urllib.request
+import asyncio, http.client, inspect, json, os, sys, threading, unittest, urllib.request
 from pathlib import Path
 
 os.environ['SIM_PREWARM'] = '0'
@@ -146,6 +146,40 @@ class StagingTests(unittest.TestCase):
         with self.opener.open(req, timeout=timeout) as resp:
             return resp.status, resp.headers, resp.read()
 
+    def raw(self, path):
+        """Send the path bytes unchanged. urllib would not be asked to resolve dot-segments."""
+        conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=5)
+        conn.request('GET', path)
+        resp = conn.getresponse()
+        body = resp.read()
+        status = resp.status
+        conn.close()
+        return status, body
+
+    def _assert_static(self, body, *parts):
+        text = body.decode()
+        low = text.lower()
+        self.assertIn('<html lang="en">', text)
+        self.assertRegex(text, r'<title>[^<]+</title>')
+        self.assertNotIn('<script', low)
+        self.assertNotIn('<link', low)
+        self.assertNotIn(' src=', low)
+        self.assertIn('href="/"', text)
+        for part in parts:
+            self.assertIn(part, text)
+
+    def _assert_private(self, body):
+        self._assert_static(
+            body, PRIVATE,
+            'Looking for Circuit Lab? <a href="/">Go to the main site</a>.',
+        )
+
+    def _assert_down(self, body):
+        self._assert_static(
+            body, DOWN,
+            'Try again in a few minutes, or <a href="/">use the main site</a>.',
+        )
+
     def test_flags_off_do_not_change_headers(self):
         status, headers, body = self.fetch('/api/health')
         self.assertEqual(status, 200)
@@ -179,6 +213,8 @@ class StagingTests(unittest.TestCase):
         _, ih, html = self.fetch('/')
         self.assertIn(b'<meta name="cl-env" content="staging">', html)
         self.assertIn(b'data-cl-env="staging"', html)
+        self.assertIn(b'href="/"', html)
+        self.assertIn(b'Test version: projects here may be deleted. <a href="/">Use the main site</a> for real work.', html)
         self.assertEqual(ih['X-Robots-Tag'], 'noindex, nofollow')
         self._env(staging='0')
         _, off, _ = self.fetch('/api/health')
@@ -189,10 +225,13 @@ class StagingTests(unittest.TestCase):
             code, _, _ = self.fetch(path)
             self.assertEqual(code, 404, path)
         rejected = [
-            'https://127.0.0.1:8766', 'http://localhost:8766', 'http://127.0.0.2:8766',
-            'http://evil.example:8766', 'http://127.0.0.1:8766/extra', 'http://127.0.0.1',
+            'https://127.0.0.1:8766', 'http://localhost:8766', 'http://[::1]:8766',
+            'http://127.0.0.1.evil.com:8766', 'http://user@127.0.0.1:8766',
+            'http://127.0.0.1:8766/extra', 'http://127.0.0.1:8766?x=1',
+            'http://127.0.0.1:8766/', 'http://127.0.0.1', 'http://127.0.0.1:',
+            'http://127.0.0.2:8766', 'http://evil.example:8766',
             'ws://127.0.0.1:8766', 'http://0.0.0.0:8766', 'http://127.0.0.1:65536',
-            'http://127.0.0.1:08766',
+            'http://127.0.0.1:0', 'http://127.0.0.1:08766',
         ]
         for value in rejected:
             self.assertIsNone(staging.parse_upstream(value), value)
@@ -209,7 +248,10 @@ class StagingTests(unittest.TestCase):
 
     def test_prefix_stripped_and_forwarded_headers(self):
         self._env(upstream='http://127.0.0.1:%d' % self.http_port)
-        code, headers, body = self.fetch('/staging/api/health?x=1', headers={'X-Lab-Test': 'kept', 'X-Forwarded-For': '1.2.3.4', 'Cookie': 'cl_stage=abc'})
+        code, headers, body = self.fetch('/staging/api/health?x=1', headers={
+            'X-Lab-Test': 'kept', 'X-Forwarded-For': '1.2.3.4',
+            'Forwarded': 'for=9.9.9.9;proto=https', 'Cookie': 'cl_stage=abc',
+        })
         self.assertEqual(code, 200)
         self.assertEqual(body, b'upstream-ok')
         self.assertEqual(headers['X-Upstream'], 'yes')
@@ -218,11 +260,12 @@ class StagingTests(unittest.TestCase):
         self.assertEqual(seen['method'], 'GET')
         self.assertEqual(seen['target'], '/api/health?x=1')
         self.assertNotIn('x-forwarded-for', seen['headers'])
+        self.assertNotIn('forwarded', seen['headers'])
         self.assertEqual(seen['headers'].get('x-lab-test'), 'kept')
         self.assertEqual(seen['headers'].get('cookie'), 'cl_stage=abc')
         self.assertTrue(seen['headers'].get('host', '').startswith('127.0.0.1:'))
         self.assertTrue(any(line.startswith('staging_proxy status=200 ms=') for line in self.logs))
-        self.assertFalse(any('?' in line or '1.2.3.4' in line or 'abc' in line for line in self.logs))
+        self.assertFalse(any('?' in line or '1.2.3.4' in line or '9.9.9.9' in line or 'abc' in line for line in self.logs))
         slash, slh, _ = self.fetch('/staging?z=1')
         self.assertEqual(slash, 302)
         self.assertTrue(slh['Location'].endswith('/staging/?z=1') or slh['Location'] == '/staging/?z=1')
@@ -243,7 +286,7 @@ class StagingTests(unittest.TestCase):
         self._env(upstream='http://127.0.0.1:%d' % self.dead_port)
         code, _, body = self.fetch('/staging/')
         self.assertEqual(code, 502)
-        self.assertIn(DOWN.encode(), body)
+        self._assert_down(body)
         self.assertNotIn(b'Traceback', body)
         self.assertTrue(any(line.startswith('staging_proxy status=502 ms=') for line in self.logs))
         self.logs.clear()
@@ -251,7 +294,7 @@ class StagingTests(unittest.TestCase):
         staging.PROXY_TIMEOUT = 0.4
         code, _, body = self.fetch('/staging/hang', timeout=5)
         self.assertEqual(code, 504)
-        self.assertIn(DOWN.encode(), body)
+        self._assert_down(body)
         self.assertNotIn(b'Traceback', body)
         self.assertTrue(any(line.startswith('staging_proxy status=504 ms=') for line in self.logs))
 
@@ -259,13 +302,13 @@ class StagingTests(unittest.TestCase):
         self._env(staging='1', token=TOKEN)
         code, _, body = self.fetch('/api/health')
         self.assertEqual(code, 401)
-        self.assertIn(PRIVATE.encode(), body)
+        self._assert_private(body)
         self.assertTrue(any(line == 'stage_auth=denied' for line in self.logs))
         self.assertFalse(any(TOKEN in line for line in self.logs))
         self.logs.clear()
         code, _, body = self.fetch('/?t=wrong')
         self.assertEqual(code, 401)
-        self.assertIn(PRIVATE.encode(), body)
+        self._assert_private(body)
         code, headers, _ = self.fetch('/?t=%s&ex=blink' % TOKEN)
         self.assertEqual(code, 302)
         self.assertEqual(headers['Location'], '/staging/?ex=blink')
@@ -310,7 +353,7 @@ class StagingTests(unittest.TestCase):
             url = 'ws://127.0.0.1:%d/staging/api/run/abc' % self.port
             async with websockets.connect(
                 url, open_timeout=3, proxy=None,
-                additional_headers={'X-Forwarded-For': '9.9.9.9', 'Cookie': 'cl_stage=abc'},
+                additional_headers={'X-Forwarded-For': '9.9.9.9', 'Forwarded': 'for=198.51.100.4', 'Cookie': 'cl_stage=abc'},
             ) as ws:
                 await ws.send('hi')
                 text = await ws.recv()
@@ -322,6 +365,7 @@ class StagingTests(unittest.TestCase):
         self.assertEqual(binary, b'\x00\x01')
         self.assertEqual(self.ws_log[-1]['path'], '/api/run/abc')
         self.assertNotIn('x-forwarded-for', self.ws_log[-1]['headers'])
+        self.assertNotIn('forwarded', self.ws_log[-1]['headers'])
         self.assertIn('cl_stage=abc', self.ws_log[-1]['headers'].get('cookie', ''))
 
         async def bye():
@@ -337,7 +381,99 @@ class StagingTests(unittest.TestCase):
         self.assertEqual(asyncio.run(bye()), 4002)
         joined = '\n'.join(self.logs)
         self.assertNotIn('9.9.9.9', joined)
+        self.assertNotIn('198.51.100.4', joined)
         self.assertNotIn('?', joined)
+
+    def test_pages_escape_and_link_home(self):
+        self.assertEqual(staging._esc('<b>&'), '&lt;b&gt;&amp;')
+        self.assertIn("isn't", staging.DOWN_HTML)
+        self._assert_private(staging.PRIVATE_HTML.encode())
+        self._assert_down(staging.DOWN_HTML.encode())
+        readme = (Path(__file__).resolve().parents[1] / 'README.md').read_text()
+        start = readme.index('docker run -d --name esp32lab-staging')
+        block = readme[start:readme.index('esp32-lab', start)]
+        self.assertIn('--cpus 0.5', block)
+        self.assertIn('-p 127.0.0.1:8766:8765', block)
+        self.assertIn('-e SIM_ACCESS_TOKEN', block)
+        self.assertNotIn('SIM_ACCESS_TOKEN=', block)
+        self.assertIn('SIM_COMPILE_QUEUE_MAX=0', block)
+        self.assertIn('SIM_MAX_RUNS=1', block)
+        self.assertIn('esp32lab-staging:/data/staging-projects', block)
+        self.assertNotIn('--network', block)
+        self.assertIn('backup-v64', readme)
+        self.assertIn('unset `SIM_STAGING_UPSTREAM`', readme)
+
+    def test_dot_segments_never_reach_live_or_upstream(self):
+        self._env(upstream='http://127.0.0.1:%d' % self.http_port)
+        _, _, live = self.fetch('/api/health')
+        self.assertIn(b'"ok"', live)
+        for path in ('/staging/../', '/staging/%2e%2e/', '/staging%2f..', '/staging/..%2fapi/projects', '/staging/../api/health'):
+            before = len(self.http_log)
+            status, body = self.raw(path)
+            self.assertEqual(status, 404, path)
+            self.assertEqual(body, b'not found')
+            self.assertNotEqual(body, live)
+            self.assertEqual(len(self.http_log), before, path)
+        code, _, body = self.fetch('/staging/api/health')
+        self.assertEqual(code, 200)
+        self.assertEqual(body, b'upstream-ok')
+        self.assertEqual(len(self.http_log), 1)
+
+    def test_missing_or_wrong_token_does_not_call_upstream(self):
+        self._env(staging='1', token=TOKEN, upstream='http://127.0.0.1:%d' % self.http_port)
+        for path in ('/staging/api/health', '/staging/api/projects', '/staging/?t=wrong', '/staging/api/health?t=nope'):
+            code, _, body = self.fetch(path)
+            self.assertEqual(code, 401, path)
+            self._assert_private(body)
+            self.assertNotIn(TOKEN.encode(), body)
+            self.assertEqual(self.http_log, [], path)
+        self.assertTrue(any(line == 'stage_auth=denied' for line in self.logs))
+        self.assertFalse(any(TOKEN in line for line in self.logs))
+        src = inspect.getsource(staging.token_eq)
+        self.assertIn('hmac.compare_digest', src)
+        self.assertNotIn('==', src)
+        self.assertTrue(staging.token_eq(TOKEN, TOKEN))
+        self.assertFalse(staging.token_eq('test124', TOKEN))
+        self.assertFalse(staging.token_eq('nope', TOKEN))
+
+    def test_forwarded_headers_do_not_change_identity_or_rate_limit(self):
+        from starlette.requests import Request
+
+        def make(cid, xff, fwd, client):
+            headers = [(b'x-forwarded-for', xff.encode()), (b'forwarded', fwd.encode())]
+            if cid is not None:
+                headers.insert(0, (b'x-client-id', cid.encode()))
+            scope = {
+                'type': 'http', 'asgi': {'version': '3.0'}, 'http_version': '1.1',
+                'method': 'POST', 'scheme': 'http', 'path': '/api/compile',
+                'raw_path': b'/api/compile', 'query_string': b'', 'headers': headers,
+                'client': client, 'server': ('127.0.0.1', 80),
+            }
+            return Request(scope)
+
+        spoofed = make('tab-a', '203.0.113.9', 'for=198.51.100.4;proto=https;host=evil.example', ('203.0.113.9', 443))
+        other_ip = make('tab-a', '198.51.100.8', 'for=203.0.113.9', ('198.51.100.8', 9))
+        other_tab = make('tab-b', '203.0.113.9', 'for=198.51.100.4;proto=https;host=evil.example', ('203.0.113.9', 443))
+        no_id = make(None, '203.0.113.9', 'for=198.51.100.4', ('203.0.113.9', 443))
+        self.assertEqual(server._client_id_from(spoofed), 'tab-a')
+        self.assertEqual(server._client_id_from(other_ip), 'tab-a')
+        self.assertEqual(server._client_id_from(other_tab), 'tab-b')
+        self.assertEqual(server._client_id_from(no_id), '')
+        ident = inspect.getsource(server._client_id_from).lower()
+        self.assertNotIn('x-forwarded-for', ident)
+        self.assertNotIn('forwarded', ident)
+        self.assertNotIn('request.client', ident)
+
+        async def rate():
+            q = server.CompileQueue()
+            token = await q.enter(server._client_id_from(spoofed))
+            self.assertIsInstance(token, dict)
+            denied = await q.enter(server._client_id_from(other_ip))
+            self.assertEqual(denied.status_code, 429)
+            self.assertEqual(json.loads(denied.body)['reason'], 'rate')
+            await q.leave(token)
+
+        asyncio.run(rate())
 
 
 if __name__ == '__main__':

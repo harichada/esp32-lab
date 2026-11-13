@@ -319,10 +319,16 @@ body.view3d .force2d,body.viewsch .force2d{background:#0b1118;color:#e7fbff;bord
 /* phones / touch: no 3D entry at all for this hotfix */
 body.no3d #bView3d,body.no3d .exit3d,body.no3d #stage3d{display:none!important}
 /* Staging banner. Hidden until the server marks <html data-cl-env="staging">, so a live page keeps its layout.
-   The bar has a fixed height (no pop-in) and the text/background pair is about 11:1 in both themes. */
+   Height is fixed (the sentence wraps inside it; the page below does not move).
+   #fff4d4 on #4a2f00 is 11.28:1 in both themes. The link uses that pair, inverted on hover. */
 #stageBanner{display:none}
-html[data-cl-env=staging]{--stage-h:40px}
-html[data-cl-env=staging] #stageBanner{display:flex;align-items:center;justify-content:center;box-sizing:border-box;height:var(--stage-h);min-height:var(--stage-h);padding:4px 12px;background:#4a2f00;color:#fff4d4;font:600 13px/1.3 system-ui,-apple-system,'Segoe UI',sans-serif;text-align:center;pointer-events:none}
+html[data-cl-env=staging]{--stage-h:56px}
+html[data-cl-env=staging] #stageBanner{display:flex;align-items:center;justify-content:center;box-sizing:border-box;height:var(--stage-h);min-height:var(--stage-h);max-height:var(--stage-h);padding:6px 12px;background:#4a2f00;color:#fff4d4;font:600 13px/1.3 system-ui,-apple-system,'Segoe UI',sans-serif;text-align:center}
+html[data-cl-env=staging] #stageBanner .stage-copy{display:block;max-width:100%;pointer-events:none}
+html[data-cl-env=staging] #stageBanner a{color:#fff4d4;text-decoration:underline;text-underline-offset:2px;pointer-events:auto;border-radius:2px}
+html[data-cl-env=staging] #stageBanner a:hover,html[data-cl-env=staging] #stageBanner a:hover:focus-visible{color:#4a2f00;background:#fff4d4}
+html[data-cl-env=staging] #stageBanner a:focus-visible{outline:2px solid #fff4d4;outline-offset:2px}
+html[data-cl-env=staging] #stageBanner a:active,html[data-cl-env=staging] #stageBanner a:active:hover,html[data-cl-env=staging] #stageBanner a:active:focus-visible,html[data-cl-env=staging] #stageBanner a:active:hover:focus-visible{color:#fff4d4;background:#241500}
 html[data-cl-env=staging] #main{height:calc(100% - 70px - var(--stage-h))}
 @media (max-width:360px){
   html[data-cl-env=staging] #stageBanner{font-size:12px;padding:4px 8px}

@@ -9,26 +9,48 @@ SIM_ACCESS_TOKEN      default empty (off). Cookie cl_stage, constant-time compar
 SIM_STAGING_UPSTREAM  default empty (off). Only http://127.0.0.1:<port>.
 SIM_BASE_PATH         cookie and redirect prefix. Defaults to /staging when SIM_STAGING=1.
 """
-import asyncio, hashlib, hmac, os, re, time
-from urllib.parse import parse_qs, urlencode
+import asyncio, hashlib, hmac, html, os, re, time
+from urllib.parse import parse_qs, unquote, urlencode
 
 PROXY_TIMEOUT = 30.0
 MAX_BODY = 200 * 1024
 ROBOTS = 'User-agent: *\nDisallow: /\n'
-PRIVATE_HTML = (
-    '<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><title>Private test copy</title></head>\n'
-    '<body><p>This is a private test copy of Circuit Lab.</p></body></html>\n'
-)
-DOWN_HTML = (
-    '<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><title>Test copy</title></head>\n'
-    '<body><p>The test copy isn\'t running right now.</p></body></html>\n'
-)
+
+
+def _esc(text):
+    """Escape text for HTML. Apostrophes in sentences stay literal so the copy is exact."""
+    return html.escape(str(text), quote=False).replace('"', '&quot;')
+
+
+def _main_link(label):
+    """Root-relative link. Through /staging/ this is the live site on the same host."""
+    return '<a href="/">%s</a>' % _esc(label)
+
+
+def _static_page(title, paragraphs):
+    """Self-contained page: no scripts, no stylesheets, lang=en, escaped text."""
+    body = ''.join('<p>%s</p>' % p for p in paragraphs)
+    return (
+        '<!doctype html>\n'
+        '<html lang="en"><head><meta charset="utf-8"><title>%s</title></head>\n'
+        '<body>%s</body></html>\n' % (_esc(title), body)
+    )
+
+
+PRIVATE_HTML = _static_page('Private test copy', [
+    _esc('This is a private test copy of Circuit Lab.'),
+    _esc('Looking for Circuit Lab? ') + _main_link('Go to the main site') + _esc('.'),
+])
+DOWN_HTML = _static_page('Test copy', [
+    _esc("The test copy isn't running right now."),
+    _esc('Try again in a few minutes, or ') + _main_link('use the main site') + _esc('.'),
+])
 _HOP = {
     'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'proxy-connection',
     'te', 'trailer', 'trailers', 'transfer-encoding', 'upgrade',
 }
 _WS_SKIP = _HOP | {
-    'host', 'x-forwarded-for', 'content-length',
+    'host', 'x-forwarded-for', 'forwarded', 'content-length',
     'sec-websocket-key', 'sec-websocket-version', 'sec-websocket-extensions',
     'sec-websocket-protocol', 'sec-websocket-accept',
 }
@@ -211,7 +233,7 @@ def strip_prefix(path):
 
 
 def _drop_hop(items):
-    """items is a list of (name, value) strings. Drops hop-by-hop and X-Forwarded-For."""
+    """Drop hop-by-hop headers. Never forward X-Forwarded-For or Forwarded."""
     connection = set()
     for name, value in items:
         if name.lower() == 'connection':
@@ -220,10 +242,31 @@ def _drop_hop(items):
     out = []
     for name, value in items:
         low = name.lower()
-        if low in _HOP or low in connection or low == 'x-forwarded-for' or low == 'host':
+        if low in _HOP or low in connection or low in ('x-forwarded-for', 'forwarded', 'host'):
             continue
         out.append((name, value))
     return out
+
+
+def _dot_segment(path):
+    for part in str(path).split('/'):
+        if part in ('.', '..'):
+            return True
+    return False
+
+
+def climbs_out(path, raw=b''):
+    """A /staging path whose dot-segments would leave the prefix. Those stay 404."""
+    texts = [path or '']
+    if isinstance(raw, bytes):
+        try:
+            raw = raw.decode('latin1')
+        except Exception:
+            raw = ''
+    if raw:
+        texts.append(raw)
+        texts.append(unquote(raw))
+    return any(_dot_segment(text) for text in texts)
 
 
 async def _read_limited(request):
@@ -258,6 +301,8 @@ async def maybe_proxy(request):
     kind = _staging_kind(request.url.path)
     if not kind:
         return None
+    if climbs_out(request.url.path, request.scope.get('raw_path') or b''):
+        return _not_found()
     if UPSTREAM_PORT is None:
         return _not_found()
     if kind == 'slash':
@@ -506,6 +551,9 @@ class StagingMiddleware:
             return
         path = scope.get('path') or ''
         if path == '/staging' or path.startswith('/staging/'):
+            if climbs_out(path, scope.get('raw_path') or b''):
+                await _ws_http(send, 404, b'not found', b'text/plain; charset=utf-8')
+                return
             await _proxy_ws(scope, receive, send)
             return
         if ACCESS and not ws_allowed(scope):
