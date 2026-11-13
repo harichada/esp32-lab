@@ -14,6 +14,8 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       SIM_PROJECT_SAVES_PER_MIN (default 10, per project, after the secret checks),
       SIM_IP_SAVES_PER_MIN (default 120, per TCP peer), SIM_IP_CREATES_PER_MIN
       (default 10, per TCP peer). See server/projectstore.py.
+      This process starts uvicorn with proxy headers off, so X-Forwarded-For
+      is not the client address.
 """
 import asyncio, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, argparse
 import diskkeep
@@ -1383,4 +1385,5 @@ if __name__ == '__main__':
     ap = argparse.ArgumentParser(); ap.add_argument('--port', type=int, default=8765); ap.add_argument('--host', default='127.0.0.1')
     a = ap.parse_args()
     print(f'QEMU={QEMU}\nROMDIR={ROMDIR}\nCLI={CLI}\nFQBN={FQBN}')
+    # proxy_headers stays off so a loopback peer cannot rotate X-Forwarded-For into a new client.
     uvicorn.run(app, host=a.host, port=a.port, log_level='warning', proxy_headers=False, forwarded_allow_ips='')

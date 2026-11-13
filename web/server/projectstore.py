@@ -16,6 +16,8 @@ Saves are limited after the secret check: SIM_PROJECT_SAVES_PER_MIN (default
 (request.client.host, never X-Forwarded-For). POST /api/projects is limited
 by SIM_IP_CREATES_PER_MIN (default 10) per TCP peer. Each limit returns 429
 with Retry-After. A failed secret does not spend the per-project budget.
+It does spend the per-IP save budget. When that budget is exhausted the
+response is 429 and the log line includes reason=bad_secret_rate.
 """
 import hashlib
 import json
@@ -454,6 +456,16 @@ def _allow_create(request: Request):
     return None
 
 
+def _charge_bad_secret(request: Request):
+    """A wrong edit secret spends the shared per-IP save budget, not the project budget."""
+    ip = _client_ip(request)
+    retry = _limited_bucket(_IP_SAVES, ip, _cap('SIM_IP_SAVES_PER_MIN', 120))
+    if retry is not None:
+        return _reject_limit(request, 'ip-save', retry, f'ip={ip} reason=bad_secret_rate')
+    _commit(_IP_SAVES, ip)
+    return None
+
+
 def _allow_save(request: Request, pid: str):
     """Count a save only after the edit secret has been accepted."""
     ip = _client_ip(request)
@@ -515,7 +527,10 @@ async def _update(pid: str, request: Request):
         # Grandfathered projects have no hash yet. This old PUT is the one time their secret is returned.
         return _json({'id': i, 'secret': secret})
     if not _secret_matches(stored, presented):
-        # A wrong secret does not spend the owner's per-project budget.
+        # Counted on the per-IP save budget only. The owner's project budget stays put.
+        limited = _charge_bad_secret(request)
+        if limited:
+            return limited
         _audit(request, 403)
         return _json(VIEW_ONLY, 403)
     limited = _allow_save(request, i)

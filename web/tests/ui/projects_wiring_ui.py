@@ -24,7 +24,7 @@ async def main():
         await pg.click('#tabs button[data-tab=code]'); await pg.click('#code'); await pg.keyboard.press('Control+End'); await pg.keyboard.type('\n// my edit 123\n')
         await pg.wait_for_timeout(1200)
         st = await pg.evaluate("({ro:app.readOnly,id:app.proj.id,name:app.proj.name,url:location.search,n:app.store.list().length,code:app.store.get(app.proj.id)&&app.store.get(app.proj.id).code,toast:[...document.querySelectorAll('.toast')].map(t=>t.textContent).join('|')})")
-        check('typing in an example auto-copies it (toast, ?p=, My Projects entry)', not st['ro'] and 'p=' in st['url'] and st['n'] == 1 and 'read-only' in st['toast'], st)
+        check('typing in an example auto-copies it (toast, ?p=, My Projects entry)', not st['ro'] and 'p=' in st['url'] and st['n'] == 1 and "Examples can't be changed" in st['toast'] and "It's in My Projects." in st['toast'], st)
         check('the edit is saved in the copy', '// my edit 123' in (st['code'] or ''))
         check('copy name marks it as a copy', '(copy)' in st['name'], st['name'])
         await pg.reload(); await pg.wait_for_timeout(2500)

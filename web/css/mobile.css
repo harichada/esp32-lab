@@ -46,7 +46,7 @@ body.m .hint{left:50%;transform:translateX(-50%);bottom:calc(176px + env(safe-ar
 body.m.m-has-sel .hint,body.m.m-wiring .hint{opacity:0}
 body.m .projbanner{top:10px;left:12px;right:12px;font-size:13px}body.m .projbanner .pb-ex,body.m .projbanner .pb-my{height:36px;border-radius:11px;background:var(--glass);border-color:var(--hair)}
 body.m .projbanner .muted,body.m .projbanner .pb-ex,body.m .projbanner .pb-my{display:none}body.m .projbanner #bCopy{height:40px;min-height:40px;padding:0 14px;font-size:14px;border-radius:12px}
-body.m .projbanner #bEditLink,body.m .projbanner #bShareLink,body.m .projbanner .share-warn,body.m .projbanner .pb-view,body.m .projbanner .backup-state{min-height:40px;display:inline-flex;align-items:center}
+body.m .projbanner #bEditLink,body.m .projbanner #bShareLink,body.m .projbanner .pb-view,body.m .projbanner .backup-state{min-height:40px;display:inline-flex;align-items:center}
 body.m .projbanner .backup-state{height:40px;line-height:40px;width:100%}
 body.m .live-status{top:58px;max-width:calc(100% - 24px)}
 body.m .warnbox{top:56px;max-width:calc(100% - 24px);font-size:13px}
@@ -341,3 +341,15 @@ html[data-cl-env=staging] body.m .modal{padding-top:calc(54px + var(--stage-offs
 @media (max-width:430px){
   html[data-cl-env=staging] body.m .zoom-tools{top:calc(88px + var(--stage-offset))}
 }
+/* View-only banner: full width under the header and ticker, clear of +PARTS and zoom. The view chip stays in the header bar. */
+body.m .projbanner{top:24px;left:0;right:0;z-index:20;margin:0;padding:8px 12px 10px;box-sizing:border-box;width:auto;background:rgba(4,8,14,.94);border-bottom:1px solid var(--hudl);align-items:flex-start;gap:8px;color:#e6e8eb}
+body.m .projbanner .pb-view{white-space:normal;width:100%;height:auto;min-height:0;box-sizing:border-box;align-items:flex-start;background:transparent;border:0;border-radius:0;padding:0;color:#e6e8eb}
+body.m .projbanner .share-warn{display:block;min-height:0;height:auto;margin:0;padding:0;background:none;border:0;border-radius:0;box-shadow:none;font-size:12px;font-weight:400;line-height:1.35;color:#fbbf24}
+body.m .projbanner .pb-own{display:inline;color:#e6e8eb;font-size:13px;line-height:1.35}
+body.m .projbanner .edit-link{display:flex;flex-direction:column;align-items:flex-start;gap:2px;max-width:100%}
+body.m .projbanner .link-actions{display:flex;flex-wrap:wrap;align-items:flex-start;gap:8px;width:100%}
+body.m #mParts,body.m #mWireBar{top:var(--banner-end,168px)}
+@media (max-width:430px){
+  body.m .zoom-tools{top:calc(var(--banner-end, 168px) + 52px)}
+}
+body.m .live-status{top:auto;bottom:calc(180px + env(safe-area-inset-bottom));left:12px;right:12px;max-width:none;z-index:8}

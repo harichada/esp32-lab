@@ -535,6 +535,7 @@
     setTimeout(() => {
       const ed = window.app && window.app.editor; if (!ed) return;
       fitIfReady(ed, entered || ed._autoFit || !ed._fitSize);
+      if (window.seatPhoneChrome) window.seatPhoneChrome();
     }, 60);
     if (window.app && window.app.editor) window.app.editor.setHint();
     if (window.app && window.app.syncExampleTip) window.app.syncExampleTip();

@@ -59,7 +59,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     syncDefines(); syncCode(); const was = app.proj.name;
     const c = store.copy(app.proj); Object.assign(app.proj, { id: c.id, name: c.name, copiedFrom: c.copiedFrom }); delete app.proj.example;
     app.readOnly = false; app.viewOnly = false; store.save(app.proj, { remote: false }); setUrl({ p: app.proj.id }); renderBanner();
-    toast(auto ? `Examples are read-only — your change is in a copy: “${app.proj.name}” (My Projects)` : `Copied “${was}” to My Projects as “${app.proj.name}”`);
+    toast(auto ? `Examples can't be changed, so we made you a copy: ${app.proj.name}. It's in My Projects.` : `Copied “${was}” to My Projects as “${app.proj.name}”`);
     if (store.serverSync) store.scheduleBackup(app.proj);
     return app.proj;
   }
@@ -123,7 +123,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const secret = !!(app.proj && store.secretFor(app.proj.id));
     const editDis = secret ? '' : ' disabled';
     const note = H ? H.esc(store.backupNote || '') : '';
-    return `<button type="button" id="bEditLink" class="pb-act"${editDis} aria-describedby="editLinkWarn">Copy edit link</button><span id="editLinkWarn" class="share-warn">Anyone with the edit link can change it.</span><button type="button" id="bShareLink" class="pb-act">Copy share link</button><span id="backupState" class="backup-state" role="status" aria-live="polite">${note}</span>`;
+    return `<span class="edit-link"><button type="button" id="bEditLink" class="pb-act"${editDis} aria-describedby="editLinkWarn">Copy link (others can edit)</button><span id="editLinkWarn" class="share-warn">Anyone with the edit link can change it.</span></span><button type="button" id="bShareLink" class="pb-act">Copy link (view only)</button><span id="backupState" class="backup-state" role="status" aria-live="polite">${note}</span>`;
   }
   function wireShareButtons() {
     const edit = $('#bEditLink'); if (edit) edit.onclick = copyEditLink;
@@ -132,15 +132,16 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   function renderBanner(saved) {
     const b = $('#projBanner'); if (!b || !app.proj) return;
     const H = window.SafeHtml;
-    if (app.viewOnly) b.innerHTML = `<span class="pb-view">You can view this project but not change it. Make a copy, or just start editing, to get your own version.</span><button type="button" id="bCopy" class="primary">Make a copy</button><button type="button" id="bShareLink">Copy share link</button><span id="backupState" class="backup-state" role="status" aria-live="polite">${H.esc(store.backupNote || '')}</span>`;
+    if (app.viewOnly) b.innerHTML = `<span class="pb-view">You can view this project but not change it. Make a copy, or just start editing, to get your own version.</span><button type="button" id="bCopy" class="primary">Make a copy</button><button type="button" id="bShareLink" class="pb-act">Copy link (view only)</button><span id="backupState" class="backup-state" role="status" aria-live="polite">${H.esc(store.backupNote || '')}</span>`;
     else if (app.readOnly) b.innerHTML = `<span class="pb-ex">📘 Example: <b>${H.esc(app.proj.name || '')}</b> — read-only</span><button type="button" id="bCopy" class="primary">Make a copy</button><span class="muted">editing anything makes a copy automatically</span>`;
-    else b.innerHTML = `<span class="pb-my">✎ My project: <b id="pbName" title="Click to rename">${H.esc(app.proj.name || 'Untitled')}</b></span>${linkButtons()}<span class="muted">${saved ? 'saved ' + new Date().toLocaleTimeString() : 'auto-saved'}</span>`;
+    else b.innerHTML = `<span class="pb-my">✎ My project: <b id="pbName" title="Click to rename">${H.esc(app.proj.name || 'Untitled')}</b></span><span class="link-actions"><span class="pb-own">This is your copy.</span>${linkButtons()}</span><span class="muted">${saved ? 'saved ' + new Date().toLocaleTimeString() : 'auto-saved'}</span>`;
     setProjectTitle(app.proj.name);
     const k = $('#projKind'); if (k) { k.textContent = app.viewOnly ? 'View-only' : app.readOnly ? 'Example · read-only' : 'My project'; k.className = 'chip-tag ' + (app.viewOnly || app.readOnly ? 'ex' : 'mine'); }
     syncExampleTip(); syncDocTitle();
     const bc = $('#bCopy'); if (bc) bc.onclick = () => { if (app.viewOnly) forkView(); else makeCopy(false); };
     wireShareButtons();
     const pn = $('#pbName'); if (pn) pn.onclick = () => { const n = prompt('Rename project', app.proj.name); if (n) { app.proj.name = n; store.rename(app.proj.id, n); renderBanner(true); } };
+    requestAnimationFrame(seatPhoneChrome);
   }
   function save() {
     syncCode(); syncDefines();
@@ -157,7 +158,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       <div class="row"><button type="button" data-a="new">＋ New blank</button><label class="btn">⤒ Import JSON / diagram.json<input type="file" id="projImp" accept=".json,application/json" hidden></label>
       <label title="Back up this project online"><input type="checkbox" id="cbSrv" ${store.serverSync ? 'checked' : ''}> Back up online</label><button type="button" data-a="srv">Open an online backup…</button></div>
       <table class="projs">${L.map((e) => `<tr data-id="${P.esc(e.id)}" class="${app.proj && app.proj.id === e.id ? 'cur' : ''}"><td class="pn">${P.esc(e.name)}<br><small class="muted">${new Date(e.updated).toLocaleString()}${e.from ? ' · from ' + P.esc(e.from) : ''}</small></td>
-        <td><button type="button" data-a="open">Open</button><button type="button" data-a="ren">Rename</button><button type="button" data-a="dup">Duplicate</button><button type="button" data-a="exp">Export</button><button type="button" data-a="editlink" aria-describedby="editWarn-${P.esc(e.id)}"${store.secretFor(e.id) ? '' : ' disabled'}>Copy edit link</button><span id="editWarn-${P.esc(e.id)}" class="share-warn">Anyone with the edit link can change it.</span><button type="button" data-a="share">Copy share link</button><button type="button" data-a="del">Delete</button></td></tr>`).join('') || '<tr><td class="muted">No projects yet. Open an example and press “Make a copy” (or just start editing it).</td></tr>'}</table><div id="srvList"></div></div>`;
+        <td><button type="button" data-a="open">Open</button><button type="button" data-a="ren">Rename</button><button type="button" data-a="dup">Duplicate</button><button type="button" data-a="exp">Export</button><span class="edit-link"><button type="button" data-a="editlink" aria-describedby="editWarn-${P.esc(e.id)}"${store.secretFor(e.id) ? '' : ' disabled'}>Copy link (others can edit)</button><span id="editWarn-${P.esc(e.id)}" class="share-warn">Anyone with the edit link can change it.</span></span><button type="button" data-a="share">Copy link (view only)</button><button type="button" data-a="del">Delete</button></td></tr>`).join('') || '<tr><td class="muted">No projects yet. Open an example and press “Make a copy” (or just start editing it).</td></tr>'}</table><div id="srvList"></div></div>`;
     d.hidden = false;
     d.onclick = async (e) => {
       if (e.target === d) { d.hidden = true; return; }
@@ -1122,6 +1123,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
   // ---------------- misc UI ----------------
   function toast(msg, err) { const t = document.createElement('div'); t.className = 'toast' + (err ? ' err' : ''); t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 2600); }
+  let liveTimer = 0;
   function announce(msg) {
     let el = document.getElementById('liveStatus');
     if (!el) {
@@ -1133,7 +1135,23 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       document.body.appendChild(el);
     }
     el.textContent = msg || '';
+    clearTimeout(liveTimer);
+    if (msg) liveTimer = setTimeout(() => { el.textContent = ''; }, 4000);
   }
+  let bannerSeat = false;
+  function seatPhoneChrome() {
+    const b = document.getElementById('projBanner');
+    if (!b) return;
+    if (!bannerSeat && window.ResizeObserver) {
+      bannerSeat = true;
+      new ResizeObserver(() => seatPhoneChrome()).observe(b);
+    }
+    if (!document.body.classList.contains('m')) return;
+    const end = Math.ceil(b.offsetTop + b.offsetHeight + 8);
+    document.documentElement.style.setProperty('--banner-end', end + 'px');
+  }
+  window.seatPhoneChrome = seatPhoneChrome;
+  window.addEventListener('resize', seatPhoneChrome);
   function flushLeaving(reason) {
     if (!app.proj || app.readOnly || app.viewOnly) return;
     try { syncCode(); syncDefines(); store.save(app.proj, { remote: false }); } catch (e) { return; }

@@ -40,7 +40,13 @@ test('the copy and lockout sentences are the ones learners see', () => {
   assert.ok(view, 'view-only banner');
   assert.match(view[1], /id="bShareLink"/);
   assert.doesNotMatch(view[1], /disabled/);
-  assert.match(appSrc, /id="bShareLink" class="pb-act">Copy share link/);
+  assert.match(view[1], /Copy link \(view only\)/);
+  assert.match(appSrc, /id="bShareLink" class="pb-act">Copy link \(view only\)/);
+  assert.match(appSrc, /Copy link \(others can edit\)/);
+  assert.match(appSrc, /aria-describedby="editLinkWarn"/);
+  assert.match(appSrc, /This is your copy\./);
+  assert.match(appSrc, /Examples can't be changed, so we made you a copy: \$\{app\.proj\.name\}\. It's in My Projects\./);
+  assert.match(appSrc, /setTimeout\(\(\) => \{ el\.textContent = ''; \}, 4000\)/);
 });
 
 test('a view-only edit is a local copy and never PUTs the original', async () => {

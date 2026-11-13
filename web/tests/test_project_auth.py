@@ -4,10 +4,13 @@ import io
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
+import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -350,6 +353,134 @@ class ProjectAuthTests(unittest.TestCase):
         bad_range = self.client.post('/api/projects', json={'name': 'x', 'parts': [{'id': 'POT1', 'type': 'potentiometer', 'props': {'pos': 5}}], 'wires': []})
         self.assertEqual(bad_range.status_code, 400, bad_range.text)
         self.assertIn('between 0 and 1', bad_range.json().get('message', ''))
+
+    def test_wrong_secret_counts_toward_ip_save_limit(self):
+        os.environ['SIM_IP_SAVES_PER_MIN'] = '2'
+        os.environ['SIM_PROJECT_SAVES_PER_MIN'] = '10'
+        if projectstore:
+            projectstore.reset_limits()
+        pid, secret = self._seed()
+        self.assertTrue(secret)
+        buf = io.StringIO()
+        with redirect_stdout(buf), redirect_stderr(buf):
+            first = self.client.put('/api/projects/' + pid, json=dict(PROJ, name='nope'), headers={'X-Edit-Secret': 'wrong'})
+            second = self.client.put('/api/projects/' + pid, json=dict(PROJ, name='nope'), headers={'X-Edit-Secret': 'wrong'})
+            blocked = self.client.put('/api/projects/' + pid, json=dict(PROJ, name='nope'), headers={'X-Edit-Secret': 'wrong'})
+            good = self.client.put('/api/projects/' + pid, json=dict(PROJ, name='kept'), headers={'X-Edit-Secret': secret})
+        self.assertEqual(first.status_code, 403, first.text)
+        self.assertEqual(second.status_code, 403, second.text)
+        self.assertEqual(first.json().get('error'), 'view_only')
+        self.assertEqual(blocked.status_code, 429, blocked.text)
+        self.assertEqual(blocked.json().get('error'), 'rate_limit')
+        self.assertTrue(blocked.headers.get('retry-after'))
+        self.assertEqual(good.status_code, 429, good.text)
+        text = buf.getvalue()
+        self.assertIn('reason=bad_secret_rate', text)
+        self.assertNotIn(secret, text)
+        self.assertNotIn('wrong', text)
+        kept = self.client.get('/api/projects/' + pid)
+        self.assertEqual(kept.status_code, 200, kept.text)
+        self.assertEqual(kept.json().get('name'), 'Blink')
+
+    def test_rotating_forwarded_for_on_uvicorn_still_429s(self):
+        """TestClient never installs uvicorn's proxy-header middleware.
+
+        A real server.py process does. Rotating X-Forwarded-For from 127.0.0.1
+        must still share one client address.
+        """
+        src = (Path(__file__).resolve().parents[1] / 'server' / 'server.py').read_text()
+        self.assertIn('proxy_headers=False', src)
+        self.assertIn("forwarded_allow_ips=''", src)
+        try:
+            import httpx
+        except ImportError:
+            self.skipTest('httpx is required to call the live server')
+        sock = socket.socket()
+        sock.bind(('127.0.0.1', 0))
+        port = sock.getsockname()[1]
+        sock.close()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        env = os.environ.copy()
+        env.update({
+            'SIM_TOKEN': '',
+            'SIM_PREWARM': '0',
+            'SIM_NETSTACK_WARM': '0',
+            'SIM_PROJECT_DIR': tmp.name,
+            'SIM_IP_CREATES_PER_MIN': '10',
+            'SIM_IP_SAVES_PER_MIN': '10',
+            'SIM_PROJECT_SAVES_PER_MIN': '100',
+        })
+        proc = subprocess.Popen(
+            [sys.executable, 'server/server.py', '--host', '127.0.0.1', '--port', str(port)],
+            cwd=str(Path(__file__).resolve().parents[1]),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        out = []
+
+        def _read():
+            for line in proc.stdout:
+                out.append(line)
+
+        threading.Thread(target=_read, daemon=True).start()
+        self.addCleanup(self._stop_proc, proc)
+        base = 'http://127.0.0.1:%d' % port
+        deadline = time.time() + 40
+        up = False
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                break
+            try:
+                httpx.get(base + '/', timeout=1)
+                up = True
+                break
+            except Exception:
+                time.sleep(0.25)
+        self.assertTrue(up, 'server did not start\n' + ''.join(out)[-2000:])
+        create_codes = []
+        made = None
+        with httpx.Client(timeout=5) as client:
+            for i in range(11):
+                res = client.post(
+                    base + '/api/projects',
+                    json=dict(PROJ, name='xff%d' % i),
+                    headers={'X-Forwarded-For': '198.51.100.%d' % (i + 1)},
+                )
+                create_codes.append(res.status_code)
+                if made is None and res.status_code == 201:
+                    made = res.json()
+            self.assertEqual(create_codes, [201] * 10 + [429], create_codes)
+            self.assertTrue(made and made.get('id') and made.get('secret'))
+            save_codes = []
+            for i in range(11):
+                res = client.put(
+                    base + '/api/projects/' + made['id'],
+                    json=dict(PROJ, name='save%d' % i),
+                    headers={
+                        'X-Edit-Secret': made['secret'],
+                        'X-Forwarded-For': '203.0.113.%d' % (i + 1),
+                    },
+                )
+                save_codes.append(res.status_code)
+        self.assertEqual(save_codes, [200] * 10 + [429], save_codes)
+        log = ''.join(out)
+        self.assertNotIn('198.51.100.', log)
+        self.assertNotIn('203.0.113.', log)
+        self.assertNotIn(made['secret'], log)
+
+    @staticmethod
+    def _stop_proc(proc):
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        if proc.stdout:
+            proc.stdout.close()
 
 
 if __name__ == '__main__':
