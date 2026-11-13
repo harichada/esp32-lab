@@ -12,12 +12,12 @@ body.m header#top{position:fixed;left:0;right:0;top:0;height:var(--mTop);padding
   background:var(--glass2);backdrop-filter:saturate(1.4) blur(18px);-webkit-backdrop-filter:saturate(1.4) blur(18px);border-bottom:1px solid var(--hair)}
 body.m .brand-t,body.m header .tb,body.m header .runctl,body.m #bRestart,body.m #bReset,body.m .crumb-sep,body.m #projKind{display:none!important}
 body.m .brand .logo{width:30px;height:30px;border-radius:9px}
-body.m .crumb{display:flex!important;flex:1;min-width:0;max-width:none;flex-direction:column;align-items:flex-start;gap:0}
-body.m .proj-title{font-size:15px;font-weight:600;letter-spacing:-.01em;max-width:100%}
+body.m header#top>.crumb,body.m .crumb{display:flex!important;flex:1 1 auto;min-width:0;max-width:100%;overflow:hidden;flex-direction:row;align-items:center;gap:0}
+body.m .proj-title{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:15px;font-weight:600;letter-spacing:-.01em;max-width:100%}
 body.m #status{min-width:0;height:auto;padding:0;background:none;border:0;font-size:11.5px;color:var(--mut);gap:6px;order:0;overflow:visible;position:static}
 body.m #status #stTime{display:none}body.m #status .prog{top:auto;bottom:0}
 body.m header#top{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;grid-template-rows:auto auto;align-content:center;row-gap:1px;column-gap:10px}
-body.m .brand{grid-row:1/3}body.m .crumb{grid-column:2;grid-row:1}body.m #status{grid-column:2;grid-row:2}body.m .runctl{grid-column:3;grid-row:1/3}body.m #mMenu{grid-column:4;grid-row:1/3}
+body.m .brand{grid-column:1;grid-row:1/3}body.m .crumb{grid-column:2;grid-row:1}body.m #status{grid-column:2;grid-row:2}body.m #bForce2d{grid-column:3;grid-row:1/3}body.m .runctl{grid-column:3;grid-row:1/3}body.m #mMenu{grid-column:4;grid-row:1/3}
 body.m .runctl{background:none;border:0;padding:0;gap:6px}
 body.m .runctl .run{height:40px;padding:0 18px;border-radius:12px;font-size:15px;gap:8px;letter-spacing:.01em}body.m .runctl .run .ic{width:13px;height:13px}
 body.m #bStop{display:none}body.m.running #bStop{display:inline-flex;width:40px;height:40px;border-radius:12px;background:rgba(248,113,113,.12);border:1px solid rgba(248,113,113,.35);color:var(--err)}
@@ -321,9 +321,9 @@ html[data-fit-pill=off] #bFitPill,
 html[data-fit-pill=off] body.m #bFitPill,
 html[data-fit-pill=off] body.m .zoom-tools #bFitPill{display:none!important}
 
-/* header view chip on phones: fixed, dark, above everything. Names the current view. */
-body.m #bForce2d{position:fixed;top:calc(env(safe-area-inset-top) + 12px);right:64px;height:32px;min-height:32px;min-width:44px;max-width:46vw;z-index:2147483647;margin:0;border-radius:16px;overflow:visible;text-overflow:clip}
-/* Staging banner sits above the fixed header and the ticker. The narrow-phone zoom stack is positioned on the viewport, so it gets the same offset. */
+/* Header view chip on phones: in the bar, after the title, with the column gap between them. */
+body.m #bForce2d{position:relative;top:auto;right:auto;align-self:center;justify-self:start;height:32px;min-height:32px;min-width:44px;max-width:46vw;z-index:3;margin:0;border-radius:16px;overflow:visible;text-overflow:clip}
+/* Staging banner sits above the header and the ticker. The narrow-phone zoom stack is positioned on the viewport, so it gets the same offset. */
 html[data-cl-env=staging] body.m{--stage-offset:calc(var(--stage-h) + env(safe-area-inset-top))}
 html[data-cl-env=staging] body.m #stageBanner{position:fixed;top:0;left:0;right:0;z-index:80;height:var(--stage-offset);padding-top:env(safe-area-inset-top)}
 html[data-cl-env=staging] body.m header#top{top:var(--stage-offset);height:54px;padding-top:0}

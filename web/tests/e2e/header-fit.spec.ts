@@ -30,7 +30,14 @@
 // The project title is never hidden. It may ellipsize, stays at least 12ch
 // wide (or the full name, when that is shorter), and its aria-label and title
 // are the full name. Its own ellipsis is not a clip. An ancestor that cuts it
-// off still fails the case.
+// off still fails the case. No crumb-hide, and it is not display:none or
+// visibility:hidden. When the text is cut off, text-overflow is ellipsis.
+//
+// getByLabel('Examples') matches one control: the header button on the
+// desktop, the More-sheet select on a phone.
+//
+// At 375 and 390 the long phone title ellipsizes and its right edge stays at
+// or left of the 2D button.
 import { chromium, test, expect, type Page } from '@playwright/test';
 import fs from 'fs';
 import path from 'path';
@@ -39,8 +46,10 @@ const BUILDING = 'Building your code… the first build takes longer.';
 const QUEUED = 'Preparing network stack (first run after restart), about 40 s…';
 const LONG_TITLE = 'Blink (real firmware) (copy 17)';
 const DEFAULT_TITLE = 'Blink (real firmware)';
+const PHONE_TITLE = 'My Weather Station With Soil Sensor (copy)';
 
-const WIDTHS = [821, 850, 900, 940, 1280];
+const WIDTHS = [821, 850, 900, 940, 950, 1280];
+const PHONE_WIDTHS = [390, 375];
 const HEIGHTS = [780, 900];
 const STATES = ['idle', 'building', 'queued'] as const;
 const BARS = [
@@ -241,7 +250,10 @@ type Report = {
   live: string;
   title: string;
   bad: Array<Record<string, unknown>>;
-  titleFit: { hidden: boolean; wide: boolean; named: boolean; width: number; need: number; aria: string; titleAttr: string };
+  titleFit: {
+    hidden: boolean; wide: boolean; named: boolean; width: number; need: number;
+    aria: string; titleAttr: string; crumbHide: boolean; cut: boolean; ellipsis: boolean;
+  };
   pillLabel: string;
   statusLabel: string;
 };
@@ -252,14 +264,18 @@ async function check(page: Page, id: string, state: State, name: string, failure
     const el = document.getElementById('projTitle');
     const st = document.getElementById('status');
     const pillEl = document.getElementById('stText');
-    const fit = { hidden: true, wide: false, named: false, width: 0, need: 0, aria: '', titleAttr: '' };
+    const fit = { hidden: true, wide: false, named: false, width: 0, need: 0, aria: '', titleAttr: '', crumbHide: false, cut: false, ellipsis: false };
     if (el) {
       const cs = getComputedStyle(el);
       const rect = el.getBoundingClientRect();
+      const crumb = el.closest('.crumb');
       fit.hidden = cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0 || rect.width < 1 || rect.height < 1;
+      fit.crumbHide = el.classList.contains('crumb-hide') || !!(crumb && crumb.classList.contains('crumb-hide'));
       fit.aria = el.getAttribute('aria-label') || '';
       fit.titleAttr = el.getAttribute('title') || '';
       fit.named = fit.aria === name && fit.titleAttr === name;
+      fit.cut = el.scrollWidth > el.clientWidth + 0.5;
+      fit.ellipsis = cs.textOverflow === 'ellipsis' && (cs.overflowX === 'hidden' || cs.overflow === 'hidden');
       const probe = document.createElement('span');
       probe.style.cssText = 'position:absolute;left:-9999px;top:0;visibility:hidden;white-space:nowrap';
       probe.style.font = cs.font;
@@ -291,8 +307,10 @@ async function check(page: Page, id: string, state: State, name: string, failure
   if (report.live !== sentence(state)) reasons.push('live ' + JSON.stringify(report.live));
   if (report.title !== sentence(state)) reasons.push('title ' + JSON.stringify(report.title));
   if (report.titleFit.hidden) reasons.push('project title hidden');
+  if (report.titleFit.crumbHide) reasons.push('project title has crumb-hide');
   if (!report.titleFit.wide) reasons.push('project title width ' + report.titleFit.width + ' needs ' + report.titleFit.need);
   if (!report.titleFit.named) reasons.push('project title aria ' + JSON.stringify(report.titleFit.aria) + ' title ' + JSON.stringify(report.titleFit.titleAttr));
+  if (report.titleFit.cut && !report.titleFit.ellipsis) reasons.push('project title cut off without ellipsis');
   for (const item of report.bad) {
     const flags = [
       item.pastClient ? 'pastClient' : '',
@@ -344,7 +362,7 @@ async function checkExamples(page: Page, id: string, failures: string[]) {
     if (box.clipped) reasons.push('Examples clipped by ' + box.clipOf);
     if (!/Examples/.test(box.label)) reasons.push('Examples aria-label ' + JSON.stringify(box.label));
     if (!box.title) reasons.push('Examples has no title');
-    const list = page.getByRole('listbox', { name: 'Examples' });
+    const list = page.getByRole('listbox', { name: 'Example list' });
     await btn.click();
     await expect(list).toBeVisible();
     await expect(list.getByRole('option').first()).toBeVisible();
@@ -359,6 +377,54 @@ async function checkExamples(page: Page, id: string, failures: string[]) {
   } catch (err) {
     reasons.push(err instanceof Error ? err.message.split('\n')[0] : String(err));
   }
+  if (!reasons.length) return true;
+  fs.mkdirSync(shots, { recursive: true });
+  await page.screenshot({ path: path.join(shots, id + '.png') });
+  failures.push(id + '\n  ' + reasons.join('\n  '));
+  return false;
+}
+
+async function checkExampleLabel(page: Page, id: string, failures: string[]) {
+  const count = await page.getByLabel('Examples').count();
+  if (count === 1) return true;
+  fs.mkdirSync(shots, { recursive: true });
+  await page.screenshot({ path: path.join(shots, id + '.png') });
+  const names = await page.getByLabel('Examples').evaluateAll((els) => els.map((el) => el.id || el.getAttribute('aria-label') || el.tagName));
+  failures.push(id + ' getByLabel(Examples) count ' + count + ' ' + JSON.stringify(names));
+  return false;
+}
+
+async function checkPhoneTitle(page: Page, id: string, failures: string[]) {
+  const box = await page.evaluate(() => {
+    const title = document.getElementById('projTitle');
+    const btn = document.getElementById('bForce2d');
+    if (!title || !btn) return { missing: true, overlaps: [] as string[], titleRight: 0, btnLeft: 0, hidden: true, ellipsis: false, cut: false };
+    const tr = title.getBoundingClientRect();
+    const br = btn.getBoundingClientRect();
+    const cs = getComputedStyle(title);
+    const hidden = cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0 || tr.width < 1 || tr.height < 1;
+    const ellipsis = cs.textOverflow === 'ellipsis' && (cs.overflowX === 'hidden' || cs.overflow === 'hidden');
+    const cut = title.scrollWidth > title.clientWidth + 0.5;
+    const overlaps: string[] = [];
+    const nodes = document.querySelectorAll('header#top button, header#top .brand, header#top #status, header#top #mMenu');
+    for (const el of nodes) {
+      if (el === title || title.contains(el) || el.contains(title)) continue;
+      const s = getComputedStyle(el);
+      if (s.display === 'none' || s.visibility === 'hidden' || Number(s.opacity) === 0) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) continue;
+      const ox = Math.min(tr.right, r.right) - Math.max(tr.left, r.left);
+      const oy = Math.min(tr.bottom, r.bottom) - Math.max(tr.top, r.top);
+      if (ox > 0.5 && oy > 0.5) overlaps.push(el.id || el.className || el.tagName);
+    }
+    return { missing: false, overlaps, titleRight: tr.right, btnLeft: br.left, hidden, ellipsis, cut };
+  });
+  const reasons: string[] = [];
+  if (box.missing) reasons.push('title or 2D button missing');
+  if (box.hidden) reasons.push('project title hidden');
+  if (!(box.titleRight <= box.btnLeft + 0.5)) reasons.push('title right ' + box.titleRight.toFixed(1) + ' past 2D left ' + box.btnLeft.toFixed(1));
+  if (!box.cut || !box.ellipsis) reasons.push('ellipsis not applied cut=' + box.cut + ' ellipsis=' + box.ellipsis);
+  if (box.overlaps.length) reasons.push('title overlaps ' + box.overlaps.join(', '));
   if (!reasons.length) return true;
   fs.mkdirSync(shots, { recursive: true });
   await page.screenshot({ path: path.join(shots, id + '.png') });
@@ -401,12 +467,16 @@ test('header controls stay inside the client width', async () => {
             for (const state of STATES) {
               const id = [scale.id, bar.id, width + 'x' + height, state, 'title-default'].join('-');
               await applyState(page, state, DEFAULT_TITLE);
-              if (await check(page, id, state, DEFAULT_TITLE, failures)) passed += 1;
+              let ok = await check(page, id, state, DEFAULT_TITLE, failures);
+              if (scale.zoom === 1 && width === 821 && state === 'idle') {
+                ok = (await checkExampleLabel(page, id + '-examples', failures)) && ok;
+              }
+              if (ok) passed += 1;
             }
             const idleId = [scale.id, bar.id, width + 'x' + height, 'idle', 'title-long'].join('-');
             await applyState(page, 'idle', LONG_TITLE);
             if (await check(page, idleId, 'idle', LONG_TITLE, failures)) passed += 1;
-            if (width === 940 || width === 1280) {
+            if (width === 940 || width === 950 || width === 1280) {
               const buildId = [scale.id, bar.id, width + 'x' + height, 'building', 'title-long'].join('-');
               await applyState(page, 'building', LONG_TITLE);
               if (await check(page, buildId, 'building', LONG_TITLE, failures)) passed += 1;
@@ -418,6 +488,19 @@ test('header controls stay inside the client width', async () => {
                 const fitOk = await check(page, exId, exState, LONG_TITLE, failures);
                 const openOk = await checkExamples(page, exId, failures);
                 if (fitOk && openOk) passed += 1;
+              }
+            }
+          }
+          if (scale.zoom === 1) {
+            for (const width of PHONE_WIDTHS) {
+              await viewport(page, width, height, scale.zoom);
+              for (const state of ['idle', 'building'] as const) {
+                const id = [scale.id, bar.id, width + 'x' + height, state, 'phone-title'].join('-');
+                await applyState(page, state, PHONE_TITLE);
+                const fitOk = await check(page, id, state, PHONE_TITLE, failures);
+                const edgeOk = await checkPhoneTitle(page, id + '-edge', failures);
+                const nameOk = await checkExampleLabel(page, id + '-examples', failures);
+                if (fitOk && edgeOk && nameOk) passed += 1;
               }
             }
           }

@@ -1160,10 +1160,21 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (tip) tip.textContent = text;
     const sel = document.getElementById && document.getElementById('selExample');
     if (sel && sel.setAttribute) sel.setAttribute('title', text === 'Examples' ? 'Examples (open read-only; edits go to a copy)' : text);
+    const phone = !!(document.body && document.body.classList.contains('m'));
     const btn = document.getElementById && document.getElementById('bExamples');
     if (btn && btn.setAttribute) {
-      btn.setAttribute('aria-label', 'Examples');
+      // One control is named Examples. On a phone the More-sheet label already
+      // says Examples, so the hidden header button drops that aria-label.
+      // Back on the desktop the button keeps it, and the phone select takes
+      // a different name so getByLabel('Examples') stays at one match.
+      if (phone) btn.removeAttribute('aria-label');
+      else btn.setAttribute('aria-label', 'Examples');
       btn.setAttribute('title', text);
+    }
+    const phoneSel = document.getElementById && document.getElementById('mSelExample');
+    if (phoneSel && phoneSel.setAttribute) {
+      if (phone) phoneSel.removeAttribute('aria-label');
+      else phoneSel.setAttribute('aria-label', 'Sample projects');
     }
   }
   function syncDocTitle() {
@@ -1238,6 +1249,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   function syncHeaderFit() {
     placeProj();
     syncProjTitle();
+    syncExampleTip();
     const top = document.getElementById && document.getElementById('top');
     const crumb = document.querySelector && document.querySelector('#top .crumb');
     if (crumb && crumb.classList) crumb.classList.remove('crumb-hide');
@@ -1362,6 +1374,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     syncHeaderFit();
   }
   app.syncHeaderFit = syncHeaderFit;
+  app.syncExampleTip = syncExampleTip;
   function init() {
     watchStripChrome();
     wireHeaderChrome();

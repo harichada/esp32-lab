@@ -537,6 +537,7 @@
       fitIfReady(ed, entered || ed._autoFit || !ed._fitSize);
     }, 60);
     if (window.app && window.app.editor) window.app.editor.setHint();
+    if (window.app && window.app.syncExampleTip) window.app.syncExampleTip();
   }
   window.addEventListener('DOMContentLoaded', () => { bindFitPill(); apply(); if (MQ.addEventListener) MQ.addEventListener('change', apply); else MQ.addListener(apply); if (document.body.classList.contains('m')) setTimeout(() => fitIfReady(window.app && window.app.editor, true), 200); });
   bindFitPill();
