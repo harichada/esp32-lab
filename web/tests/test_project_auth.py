@@ -29,7 +29,7 @@ except ImportError:
 from fastapi.testclient import TestClient  # noqa: E402
 
 PROJ = {'name': 'Blink', 'parts': [{'id': 'ESP1', 'type': 'esp32', 'x': 0, 'y': 0}], 'wires': []}
-VIEW = {'error': 'view_only', 'message': 'You can view this project but not change it. Tap Make a copy to get your own version.'}
+VIEW = {'error': 'view_only', 'message': 'You can view this project but not change it. Make a copy, or just start editing, to get your own version.'}
 ROOT = Path(__file__).resolve().parents[2]
 
 

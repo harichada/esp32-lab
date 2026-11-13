@@ -24,7 +24,10 @@ test('the copy and lockout sentences are the ones learners see', () => {
   assert.match(appSrc, /Anyone with the edit link can change it\./);
   assert.match(storeSrc, /Couldn't make your copy\. Please try again\./);
   assert.match(storeSrc, /To edit this on another device, copy your edit link and keep it somewhere safe\./);
-  assert.match(storeSrc, /Backup pending/);
+  assert.match(storeSrc, /Saved on this device\. Online backup will try again shortly\./);
+  assert.doesNotMatch(storeSrc, /Backup pending/);
+  assert.match(appSrc, /Open an online backup…/);
+  assert.match(appSrc, /Make a copy, or just start editing, to get your own version\./);
   assert.match(appSrc, /role="status"/);
   assert.match(appSrc, /aria-live="polite"/);
   assert.match(appSrc, /keepalive: true/);
@@ -84,7 +87,7 @@ test('the first edit does not call the network until Back up online is flushed',
   store.serverSync = true;
   await store.flushBackup(local, { reason: 'save' });
   assert.equal(puts, 0);
-  assert.equal(calls, 2);
+  assert.equal(calls, 1);
 });
 
 test('a 403 is not followed by another PUT of that id', async () => {
@@ -162,7 +165,7 @@ test('server backup waits 10s and a hidden page sends one keepalive fetch', asyn
   assert.equal(sent('PUT')[0].keepalive, true);
 });
 
-test('a 429 keeps the local project, shows Backup pending, and retries once', async () => {
+test('a 429 keeps the local project, shows the quiet status, and retries once', async () => {
   let posts = 0;
   const fetch = async (url, opts) => {
     const method = (opts && opts.method) || 'GET';
@@ -186,7 +189,7 @@ test('a 429 keeps the local project, shows Backup pending, and retries once', as
   const result = await store.flushBackup(store.get(id), { reason: 'save' });
   assert.equal(result, false);
   assert.equal(posts, 1);
-  assert.equal(store.backupNote, 'Backup pending');
+  assert.equal(store.backupNote, 'Saved on this device. Online backup will try again shortly.');
   assert.equal(store.get(id).name, 'View');
   assert.equal(alarms.length, 0);
   assert.equal(pending.length, 1);
@@ -197,6 +200,36 @@ test('a 429 keeps the local project, shows Backup pending, and retries once', as
   assert.equal(store.get('srv9').name, 'View');
   assert.equal(store.backupNote, '');
   assert.equal(pending.length, 1);
+});
+
+test('two consecutive 429s make exactly 2 requests and then stop', async () => {
+  let requests = 0;
+  const fetch = async () => {
+    requests += 1;
+    return { status: 429, ok: false, headers: headers({ 'retry-after': '1' }), json: async () => ({ error: 'rate_limit' }) };
+  };
+  const store = new ProjectStore(mem(), fetch);
+  store.serverSync = true;
+  store.jitter = () => 0;
+  const pending = [];
+  store.later = (fn, ms) => { pending.push({ fn, ms }); return 0; };
+  const id = store.save(proj(), { remote: false });
+  await store.flushBackup(store.get(id), { reason: 'save' });
+  const retries = () => pending.filter((item) => item.ms < 5000);
+  assert.equal(requests, 1);
+  assert.equal(retries().length, 1);
+  await retries()[0].fn();
+  let guard = 0;
+  while (retries().length > 1 && guard < 5) {
+    const extra = retries()[1];
+    pending.splice(pending.indexOf(extra), 1);
+    await extra.fn();
+    guard += 1;
+  }
+  assert.equal(requests, 2);
+  assert.equal(retries().length, 1);
+  assert.equal(store.backupNote, 'Saved on this device. Online backup will try again shortly.');
+  assert.equal(store.get(id).name, 'View');
 });
 
 test('the edit-link reminder is stored once', async () => {

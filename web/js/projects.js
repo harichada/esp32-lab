@@ -8,6 +8,7 @@
   const NOPUT = 'esp32lab.noPut.v1', HINT = 'esp32lab.editLinkHint.v1';
   const BACKUP_MS = 10000;
   const LOCKOUT = "This browser can't edit this project. Open your edit link, or make your own copy.";
+  const BACKUP_WAIT = 'Saved on this device. Online backup will try again shortly.';
   const COPY_FAIL = "Couldn't make your copy. Please try again.";
   const HINT_MSG = 'To edit this on another device, copy your edit link and keep it somewhere safe.';
   function shouldSendBackup(last, now, reason) {
@@ -37,6 +38,7 @@
       this._timers = new Map();
       this._inflight = new Map();
       this._retried = new Set();
+      this._localOnly = new Set();
       this._hideSent = new Set();
       this.backupMs = BACKUP_MS;
       this.backupNote = '';
@@ -115,7 +117,7 @@
     save(proj, opts) {
       const msg = this._check(proj);
       if (msg) throw fail(msg, 'invalid');
-      if (!proj.id) proj.id = newId();
+      if (!proj.id) { proj.id = newId(); this._localOnly.add(proj.id); }
       const all = this._all(); const p = clone(proj); delete p.readOnly; delete p.editSecret; delete p.editSecretHash; delete p.secret;
       all[p.id] = { id: p.id, name: p.name || 'Untitled', updated: Date.now(), from: p.copiedFrom || '', proj: p, viewOnly: false }; this._put(all);
       this.ls.setItem(CUR, p.id);
@@ -168,6 +170,7 @@
     async _sendBackup(proj, opts) {
       const reason = opts.reason || 'save';
       const hide = reason === 'hide' || reason === 'pagehide';
+      if (reason !== 'retry') this._retried.delete(proj.id);
       this._clearTimer(proj.id);
       this._lastBackup.set(proj.id, this.now());
       if (hide) this._hideSent.add(proj.id);
@@ -188,9 +191,10 @@
         const cur = this.current();
         if (cur) this._dirty.add(cur);
         if (err && err.code === 'rate_limit') {
-          this._setNote('Backup pending');
+          this._setNote(BACKUP_WAIT);
           const retryId = cur || proj.id;
-          if (!this._retried.has(retryId)) {
+          // One retry after Retry-After. A second 429 waits for the next edit or the next 10 s window.
+          if (reason !== 'retry' && !this._retried.has(retryId)) {
             this._retried.add(retryId);
             const extra = typeof this.jitter === 'function' ? this.jitter() : 0;
             const wait = ((err.retryAfter || 1) + extra) * 1000;
@@ -200,6 +204,11 @@
               const again = (retryId && this.get(retryId)) || proj;
               return this.flushBackup(again, { reason: 'retry', keepalive: !!opts.keepalive });
             }, wait);
+          } else {
+            this._retried.add(retryId);
+            const held = this.get(retryId) || proj;
+            this._lastBackup.set(held.id || retryId, this.now());
+            this.scheduleBackup(held);
           }
           return false;
         }
@@ -209,7 +218,7 @@
     }
     // copy any project (example or user project) into a new user project
     copy(proj, name, opts) {
-      const p = clone(proj); p.id = newId(); p.copiedFrom = proj.example || proj.copiedFrom || proj.id || ''; delete p.example; delete p.readOnly; delete p.editSecret; delete p.secret;
+      const p = clone(proj); p.id = newId(); this._localOnly.add(p.id); p.copiedFrom = proj.example || proj.copiedFrom || proj.id || ''; delete p.example; delete p.readOnly; delete p.editSecret; delete p.secret;
       const base = name || ((proj.name || 'Project').replace(/\s*\(copy( \d+)?\)$/, '') + ' (copy)');
       const names = new Set(this.list().map((e) => e.name)); let n = base, i = 2; while (names.has(n)) n = base.replace(/\)$/, ` ${i++})`);
       p.name = n; this.save(p, opts); return p;
@@ -254,7 +263,7 @@
       let body = {};
       try { body = await r.json(); } catch (e) { body = {}; }
       if (r.status === 429) {
-        const err = fail('Backup pending', 'rate_limit');
+        const err = fail(BACKUP_WAIT, 'rate_limit');
         err.retryAfter = this._retryAfter(r);
         throw err;
       }
@@ -304,10 +313,11 @@
         return created && created.id;
       }
       let secret = this.secretFor(p.id);
-      if (this.isPutBlocked(p.id)) {
+      if (this.isPutBlocked(p.id) || this._localOnly.has(p.id)) {
         const old = p.id;
         const created = await this.createServer(p, opts);
         if (created && created.id !== old && this.onServerId) this.onServerId(old, created.id);
+        this._localOnly.delete(old);
         return created && created.id;
       }
       if (!secret) {

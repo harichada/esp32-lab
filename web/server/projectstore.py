@@ -32,7 +32,7 @@ from fastapi.responses import JSONResponse
 
 VIEW_ONLY = {
     'error': 'view_only',
-    'message': 'You can view this project but not change it. Tap Make a copy to get your own version.',
+    'message': 'You can view this project but not change it. Make a copy, or just start editing, to get your own version.',
 }
 FILE_RE = re.compile(r'^[\w.-]+\.(h|hpp|c|cpp|ino)$')
 PART_RE = re.compile(r'^[A-Za-z0-9_-]{1,32}$')
