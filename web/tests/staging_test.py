@@ -333,9 +333,7 @@ class StagingTests(unittest.TestCase):
         seen = self.http_log[0]
         self.assertEqual(seen['method'], 'GET')
         self.assertEqual(seen['target'], '/api/health?x=1')
-        self.assertNotIn('x-forwarded-for', seen['headers'])
-        self.assertNotIn('x-real-ip', seen['headers'])
-        self.assertNotIn('forwarded', seen['headers'])
+        self._assert_peer_ip_only(seen, ('1.2.3.4', '8.8.8.8', '9.9.9.9'))
         self.assertEqual(seen['headers'].get('x-lab-test'), 'kept')
         self.assertEqual(seen['headers'].get('cookie'), 'cl_stage=abc')
         self.assertTrue(seen['headers'].get('host', '').startswith('127.0.0.1:'))
@@ -442,9 +440,14 @@ class StagingTests(unittest.TestCase):
         self.assertEqual(text, 'hi')
         self.assertEqual(binary, b'\x00\x01')
         self.assertEqual(self.ws_log[-1]['path'], '/api/run/abc')
-        self.assertNotIn('x-forwarded-for', self.ws_log[-1]['headers'])
-        self.assertNotIn('x-real-ip', self.ws_log[-1]['headers'])
-        self.assertNotIn('forwarded', self.ws_log[-1]['headers'])
+        ws_headers = self.ws_log[-1]['headers']
+        self.assertEqual(ws_headers.get('x-forwarded-for'), '127.0.0.1')
+        self.assertNotIn('x-real-ip', ws_headers)
+        self.assertNotIn('x-forwarded-host', ws_headers)
+        self.assertNotIn('x-forwarded-proto', ws_headers)
+        self.assertNotIn('x-client-ip', ws_headers)
+        self.assertNotIn('forwarded', ws_headers)
+        self.assertNotIn('9.9.9.9', ws_headers.get('x-forwarded-for', ''))
         self.assertIn('cl_stage=abc', self.ws_log[-1]['headers'].get('cookie', ''))
 
         async def bye():
@@ -571,11 +574,14 @@ class StagingTests(unittest.TestCase):
             ('x-real-ip', '198.51.100.4'),
             ('Forwarded', 'for=203.0.113.5'),
             ('FORWARDED', 'for=198.51.100.6'),
+            ('X-Forwarded-Host', 'evil.example'),
+            ('x-forwarded-proto', 'https'),
+            ('X-Client-IP', '203.0.113.7'),
             ('X-Lab-Test', 'kept'),
             ('Host', 'evil.example'),
         ]
         names = [name.lower() for name, _value in staging._drop_hop(items)]
-        for banned in ('x-forwarded-for', 'x-real-ip', 'forwarded', 'host'):
+        for banned in ('x-forwarded-for', 'x-real-ip', 'x-forwarded-host', 'x-forwarded-proto', 'x-client-ip', 'forwarded', 'host'):
             self.assertNotIn(banned, names)
         self.assertEqual(names.count('x-lab-test'), 1)
 
@@ -587,14 +593,18 @@ class StagingTests(unittest.TestCase):
             ('x-real-ip', '198.51.100.4'),
             ('Forwarded', 'for=203.0.113.5'),
             ('forwarded', 'for=198.51.100.6'),
+            ('X-Forwarded-Host', 'evil.example'),
+            ('X-Forwarded-Proto', 'https'),
+            ('X-Client-IP', '203.0.113.7'),
             ('X-Lab-Test', 'kept'),
         ])
         self.assertEqual(status, 200)
         self.assertEqual(body, b'upstream-ok')
         seen = self.http_log[0]
-        for banned in ('x-forwarded-for', 'x-real-ip', 'forwarded'):
-            self.assertNotIn(banned, seen['names'])
-            self.assertNotIn(banned, seen['headers'])
+        self._assert_peer_ip_only(seen, (
+            '203.0.113.1', '203.0.113.2', '198.51.100.3', '198.51.100.4',
+            '203.0.113.5', '198.51.100.6', 'evil.example', '203.0.113.7',
+        ))
         self.assertEqual(seen['names'].count('x-lab-test'), 1)
         self.assertEqual(seen['headers'].get('x-lab-test'), 'kept')
         joined = '\n'.join(self.logs)
@@ -661,7 +671,7 @@ class StagingTests(unittest.TestCase):
         def wrapped(request):
             inner.append({
                 'host': None if request.client is None else request.client.host,
-                'names': [key.decode('latin1').lower() for key, _value in request.headers.raw],
+                'pairs': [(key.decode('latin1').lower(), value.decode('latin1')) for key, value in request.headers.raw],
             })
             return saved[1](request)
 
@@ -677,6 +687,9 @@ class StagingTests(unittest.TestCase):
                 ('X-Forwarded-For', '203.0.113.10'),
                 ('X-Real-IP', '203.0.113.11'),
                 ('Forwarded', 'for=203.0.113.12'),
+                ('X-Forwarded-Host', 'spoof-a.example'),
+                ('X-Forwarded-Proto', 'https'),
+                ('X-Client-IP', '203.0.113.13'),
             ]
             headers_b = [
                 ('X-Client-Id', 'tab-xff'),
@@ -686,6 +699,9 @@ class StagingTests(unittest.TestCase):
                 ('x-real-ip', '192.0.2.31'),
                 ('Forwarded', 'for=198.51.100.22'),
                 ('forwarded', 'for=192.0.2.32'),
+                ('X-Forwarded-Host', 'spoof-b.example'),
+                ('x-forwarded-proto', 'http'),
+                ('X-Client-IP', '198.51.100.23'),
             ]
 
             def first():
@@ -700,13 +716,29 @@ class StagingTests(unittest.TestCase):
             status, data = self.exchange('POST', '/staging/api/compile', headers_b, body_b, timeout=5)
             self.assertEqual(status, 429)
             self.assertEqual(json.loads(data)['reason'], 'rate')
+            status_c, data_c = self.exchange('POST', '/staging/api/compile', [
+                ('X-Client-Id', 'tab-xff'),
+                ('X-Forwarded-For', '192.0.2.40'),
+                ('X-Client-IP', '192.0.2.41'),
+            ], json.dumps({'sketch': 'void setup(){} void loop(){} // xff-c'}).encode(), timeout=5)
+            self.assertEqual(status_c, 429)
+            self.assertEqual(json.loads(data_c)['reason'], 'rate')
             self.assertGreaterEqual(len(inner), 2)
+            spoofed = (
+                '203.0.113.10', '198.51.100.20', '192.0.2.30', '192.0.2.40',
+                '203.0.113.11', '198.51.100.22', 'spoof-a.example', 'spoof-b.example',
+            )
             for hit in inner:
                 self.assertEqual(hit['host'], '127.0.0.1')
-                for banned in ('x-forwarded-for', 'forwarded', 'x-real-ip'):
-                    self.assertNotIn(banned, hit['names'])
+                names = [name for name, _value in hit['pairs']]
+                values = ' '.join(value for _name, value in hit['pairs'])
+                for banned in ('forwarded', 'x-real-ip', 'x-forwarded-host', 'x-forwarded-proto', 'x-client-ip'):
+                    self.assertNotIn(banned, names)
+                self.assertEqual([value for name, value in hit['pairs'] if name == 'x-forwarded-for'], ['127.0.0.1'])
+                for ip in spoofed:
+                    self.assertNotIn(ip, values)
             joined = '\n'.join(self.logs)
-            for ip in ('203.0.113.10', '198.51.100.20', '192.0.2.30', '203.0.113.11', '198.51.100.22'):
+            for ip in spoofed:
                 self.assertNotIn(ip, joined)
         finally:
             release.set()
@@ -866,7 +898,68 @@ class StagingTests(unittest.TestCase):
             self.assertNotIn(b'zz-ws-header', body)
             self.assertNotIn(('%d' % self.ws_port).encode(), body)
 
+    def _assert_peer_ip_only(self, seen, spoofed):
+        """The capture upstream got the connection peer, not any inbound client-IP header."""
+        for name in ('x-forwarded-host', 'x-forwarded-proto', 'x-real-ip', 'x-client-ip', 'forwarded'):
+            self.assertNotIn(name, seen['names'])
+            self.assertNotIn(name, seen['headers'])
+        self.assertEqual(seen['names'].count('x-forwarded-for'), 1)
+        self.assertEqual(seen['headers'].get('x-forwarded-for'), '127.0.0.1')
+        blob = ' '.join(seen['headers'].values())
+        for value in spoofed:
+            self.assertNotIn(value, blob)
+
+    def test_capture_upstream_drops_spoofed_client_headers(self):
+        self._env(upstream='http://127.0.0.1:%d' % self.http_port)
+        status, body = self.exchange('GET', '/staging/api/health', [
+            ('X-Forwarded-For', '203.0.113.50'),
+            ('Forwarded', 'for=203.0.113.51;proto=https'),
+            ('X-Real-IP', '203.0.113.52'),
+            ('X-Forwarded-Host', 'spoof.example'),
+            ('X-Forwarded-Proto', 'https'),
+            ('X-Client-IP', '203.0.113.53'),
+        ])
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b'upstream-ok')
+        self.assertEqual(len(self.http_log), 1)
+        self._assert_peer_ip_only(self.http_log[0], (
+            '203.0.113.50', '203.0.113.51', '203.0.113.52', '203.0.113.53', 'spoof.example',
+        ))
+
+    def test_mixed_case_and_duplicate_client_headers_are_stripped(self):
+        self._env(upstream='http://127.0.0.1:%d' % self.http_port)
+        status, body = self.exchange('GET', '/staging/api/health', [
+            ('X-Forwarded-For', '203.0.113.60'),
+            ('x-forwarded-for', '203.0.113.61'),
+            ('X-FORWARDED-HOST', 'AAA.example'),
+            ('x-forwarded-host', 'bbb.example'),
+            ('X-Forwarded-Proto', 'https'),
+            ('x-forwarded-proto', 'http'),
+            ('X-Real-IP', '198.51.100.62'),
+            ('x-real-ip', '198.51.100.63'),
+            ('X-Client-IP', '192.0.2.64'),
+            ('x-client-ip', '192.0.2.65'),
+            ('Forwarded', 'for=203.0.113.66'),
+            ('FORWARDED', 'for=198.51.100.67'),
+        ])
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b'upstream-ok')
+        self._assert_peer_ip_only(self.http_log[0], (
+            '203.0.113.60', '203.0.113.61', 'AAA.example', 'bbb.example',
+            '198.51.100.62', '198.51.100.63', '192.0.2.64', '192.0.2.65',
+            '203.0.113.66', '198.51.100.67',
+        ))
+
     def test_error_pages_hide_the_request_and_set_guard_headers(self):
+        for page in (staging.PRIVATE_HTML, staging.DOWN_HTML):
+            self.assertIn('body{min-height:100vh;box-sizing:border-box;margin:0', page)
+            self.assertIn('display:flex', page)
+            self.assertIn('white-space:nowrap', page)
+            self.assertIn('padding:4px 6px', page)
+            self.assertIn('min-height:30px', page)
+            self.assertIn('a:focus-visible{', page)
+            self.assertIn('a:hover{', page)
+        self.assertEqual(staging.PAGE_CSP, "default-src 'none'; style-src 'unsafe-inline'")
         marker = 'zz-secret-path-9f3'
         header = 'zz-header-9f3'
         upstream = '127.0.0.1:%d' % self.http_port

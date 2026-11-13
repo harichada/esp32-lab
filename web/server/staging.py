@@ -30,14 +30,17 @@ def _main_link(label):
 # One template for the 401 and the 502/504 pages. Inline CSS, system fonts, no
 # network requests. The copy is fixed; nothing from the request is inserted.
 _PAGE_CSS = (
-    "html,body{margin:0;min-height:100%;background:#08090b;color:#e6e8eb;"
+    "html{background:#08090b;color:#e6e8eb;"
     "font-family:system-ui,-apple-system,'Segoe UI',sans-serif;}"
-    "body{display:flex;align-items:center;justify-content:center;text-align:center;padding:32px 20px;}"
+    "body{min-height:100vh;box-sizing:border-box;margin:0;display:flex;align-items:center;justify-content:center;"
+    "text-align:center;padding:32px 20px;background:#08090b;color:#e6e8eb;"
+    "font-family:system-ui,-apple-system,'Segoe UI',sans-serif;}"
     "main{max-width:34rem;}"
     "p{margin:0 0 14px;line-height:1.5;}"
-    "a{color:#fff4d4;background:#4a2f00;text-decoration:underline;text-underline-offset:3px;border-radius:2px;}"
-    "a:focus,a:focus-visible{outline:2px solid #fff4d4;outline-offset:3px;}"
+    "a{display:inline-block;box-sizing:border-box;min-height:30px;padding:4px 6px;white-space:nowrap;line-height:22px;"
+    "color:#fff4d4;background:#4a2f00;text-decoration:underline;text-underline-offset:3px;border-radius:2px;}"
     "a:hover{color:#4a2f00;background:#fff4d4;}"
+    "a:focus-visible{outline:2px solid #fff4d4;outline-offset:3px;}"
     "a:active{color:#fff4d4;background:#241500;}"
 )
 PAGE_CSP = "default-src 'none'; style-src 'unsafe-inline'"
@@ -67,8 +70,12 @@ _HOP = {
     'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'proxy-connection',
     'te', 'trailer', 'trailers', 'transfer-encoding', 'upgrade',
 }
-# Client address headers. Dropped on every hop, any letter case, including duplicates.
-_FORWARDED_IP = {'x-forwarded-for', 'forwarded', 'x-real-ip'}
+# Inbound client-address headers. Dropped on every hop, any letter case, including duplicates.
+# The proxy may then set one X-Forwarded-For from the connection peer, never from these.
+_FORWARDED_IP = {
+    'x-forwarded-for', 'forwarded', 'x-real-ip',
+    'x-forwarded-host', 'x-forwarded-proto', 'x-client-ip',
+}
 _WS_SKIP = _HOP | _FORWARDED_IP | {
     'host', 'content-length',
     'sec-websocket-key', 'sec-websocket-version', 'sec-websocket-extensions',
@@ -261,11 +268,25 @@ def strip_prefix(path):
     return path
 
 
-def _drop_hop(items):
-    """Drop hop-by-hop headers and every forwarded client-address header.
+def _peer_host(client):
+    """The TCP peer, or '' . Never read from a forwarded header."""
+    host = ''
+    if client is None:
+        return ''
+    if hasattr(client, 'host'):
+        host = client.host or ''
+    elif isinstance(client, (tuple, list)) and client:
+        host = client[0] or ''
+    host = str(host)
+    if not host or any(ch in host for ch in '\r\n\x00'):
+        return ''
+    return host
 
-    The match is case-insensitive. Each duplicate of X-Forwarded-For, Forwarded,
-    and X-Real-IP is removed, not just the first.
+
+def _drop_hop(items):
+    """Drop hop-by-hop headers and every inbound client-address header.
+
+    The match is case-insensitive. Each duplicate is removed, not just the first.
     """
     connection = set()
     for name, value in items:
@@ -419,7 +440,8 @@ async def maybe_proxy(request):
     t0 = time.perf_counter()
     try:
         status, headers, payload = await asyncio.wait_for(
-            _forward(request.method, strip_prefix(request.url.path), request.url.query, request.headers.raw, body),
+            _forward(request.method, strip_prefix(request.url.path), request.url.query, request.headers.raw, body,
+                     _peer_host(request.client)),
             PROXY_TIMEOUT,
         )
     except asyncio.TimeoutError:
@@ -432,7 +454,7 @@ async def maybe_proxy(request):
     return seal(_response(status, headers, payload))
 
 
-async def _forward(method, path, query, raw_headers, body):
+async def _forward(method, path, query, raw_headers, body, client_host=''):
     target = path or '/'
     if query:
         target += '?' + query
@@ -442,6 +464,9 @@ async def _forward(method, path, query, raw_headers, body):
         if name.lower() == 'content-length':
             continue
         kept.append((name, value))
+    # One value, from the connection. Inbound X-Forwarded-For was already dropped.
+    if client_host:
+        kept.append(('X-Forwarded-For', client_host))
     head = [('%s %s HTTP/1.1' % (method, target)).encode('latin1')]
     head.append(('Host: 127.0.0.1:%d' % UPSTREAM_PORT).encode('ascii'))
     for name, value in kept:
@@ -693,6 +718,12 @@ async def _proxy_ws(scope, receive, send):
         if low in _WS_SKIP:
             continue
         headers.append((low, value.decode('latin1')))
+    peer = ''
+    client = scope.get('client')
+    if client:
+        peer = _peer_host((client[0], client[1] if len(client) > 1 else 0))
+    if peer:
+        headers.append(('x-forwarded-for', peer))
     try:
         import websockets
     except ImportError:
