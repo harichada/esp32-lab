@@ -272,6 +272,10 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     return rest.length ? rest.join('\n') + '\n' : '';
   }
   let compileBusy = false;
+  function setRunLabel(text) {
+    const label = $('#bRun') && $('#bRun').querySelector('span');
+    if (label) label.textContent = text;
+  }
   function setRunBusy(on) {
     compileBusy = !!on;
     const b = $('#bRun');
@@ -279,8 +283,18 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     b.disabled = !!on;
     b.classList.toggle('spinning', !!on);
     b.setAttribute('aria-busy', on ? 'true' : 'false');
-    const label = b.querySelector('span');
-    if (label) label.textContent = on ? 'Compiling…' : 'Run';
+    setRunLabel(on ? 'Compiling…' : 'Run');
+  }
+  function tabClientId() {
+    try {
+      let id = sessionStorage.getItem('esp32client');
+      if (!id || !/^[A-Za-z0-9_-]{1,64}$/.test(id)) {
+        const raw = (globalThis.crypto && crypto.randomUUID && crypto.randomUUID()) || ('t' + Math.random().toString(36).slice(2) + Date.now().toString(36));
+        id = String(raw).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64) || 'tab';
+        sessionStorage.setItem('esp32client', id);
+      }
+      return id;
+    } catch (e) { return ''; }
   }
   function retryAfterSeconds(r) {
     const h = r && r.headers && r.headers.get && r.headers.get('Retry-After');
@@ -307,15 +321,42 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     setRunBusy(true);
     setStatus('busy', 'compiling…'); $('#buildLog').textContent = '';
     let res;
+    const clientHeaders = { 'X-Client-Id': tabClientId() };
+    let shownWait = '';
     try {
       const bl = $('#buildLog'); bl.textContent = 'compiling…\n';
-      run.poll = setInterval(async () => { try { const q = await (await fetch('api/compile/progress')).json(); if (app.run !== run || !run.poll || run.settled) return; if (q.unpacking) setStatus('busy', `unpacking toolchain… ${Math.round((q.unpackProgress || 0) * 100)}%`); else if (q.active) { const stage = q.stage || 'compiling…'; bl.textContent = q.log || (stage + '\n'); bl.scrollTop = bl.scrollHeight; setStatus('busy', `${stage} ${Math.round(q.elapsed)}s`); } } catch (e) {} }, 400);
-      const r = await fetchRetry('api/compile', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sketch: app.proj.code, files: app.proj.files, defines: app.proj.defines }) });
+      const poll = async () => {
+        try {
+          const q = await (await fetch('api/compile/progress', { headers: clientHeaders })).json();
+          if (app.run !== run || !run.poll || run.settled) return;
+          if (q.wait && q.wait.message) {
+            setRunLabel('Waiting…');
+            setStatus('busy', q.wait.message);
+            if (shownWait !== q.wait.message) {
+              shownWait = q.wait.message;
+              bl.textContent = q.wait.message + '\n';
+              serialAppend('\n[' + q.wait.message + ']\n');
+            }
+          } else if (q.unpacking) setStatus('busy', `unpacking toolchain… ${Math.round((q.unpackProgress || 0) * 100)}%`);
+          else if (q.active) {
+            setRunLabel('Compiling…');
+            const stage = q.stage || 'compiling…';
+            bl.textContent = q.log || (stage + '\n'); bl.scrollTop = bl.scrollHeight; setStatus('busy', `${stage} ${Math.round(q.elapsed)}s`);
+          }
+        } catch (e) {}
+      };
+      run.poll = setInterval(poll, 400);
+      poll();
+      const r = await fetchRetry('api/compile', { method: 'POST', headers: { 'content-type': 'application/json', ...clientHeaders }, body: JSON.stringify({ sketch: app.proj.code, files: app.proj.files, defines: app.proj.defines }) });
       clearInterval(run.poll); run.poll = null;
       if (r.status === 429) {
+        let body = {};
+        try { body = await r.json(); } catch (e) { /* the status line is the message */ }
+        const reason = body && body.reason;
         const wait = retryAfterSeconds(r);
-        try { await r.json(); } catch (e) { /* the status line is the message */ }
-        const msg = `Please wait ${wait} second${wait === 1 ? '' : 's'} before compiling again`;
+        const msg = (reason === 'full' || reason === 'timeout') && body.log
+          ? body.log
+          : `Please wait ${wait} second${wait === 1 ? '' : 's'} before compiling again`;
         setStatus('warn', msg); toast(msg);
         $('#buildLog').textContent = msg + '\n';
         serialAppend('\n[' + msg + ']\n');
@@ -798,6 +839,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       el.addEventListener('click', () => app.editor.addPartInView(el.dataset.type));
     });
   }
+  app.buildPalette = buildPalette;
   function about() {
     $('#aboutBox').innerHTML = `<h3>What is emulated — honestly</h3>
 <ul>
@@ -822,7 +864,37 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
 <h3>Circuit solver</h3><p>Modified nodal analysis with Newton–Raphson (diode/LED Shockley, zener breakdown, Ebers–Moll BJT, square-law MOSFET, LDO), backward-Euler transient for capacitors. LEDs burn out above 2× their rating; supply/GPIO shorts are flagged.</p>
 <h3>Shortcuts</h3><p>Ctrl+Enter run · click pin → click pin to wire · R rotate · F flip (two-lead parts, or the schematic symbol) · Shift+F fit · Del/Backspace delete · right-click wire for menu · double-click wire adds a bend · Ctrl+Z / Ctrl+Y undo/redo · Ctrl+S save (examples: makes a copy) · Esc cancel · keys/buttons respond to their labelled keyboard key while running.</p>`;
   }
-  function keyPart(k) { const kp = app.proj.parts.find((q) => q.type === 'keypad' && P.T.keypad.keyAt(q, k) >= 0); if (kp) { kp._kidx = P.T.keypad.keyAt(kp, k); return kp; } return app.proj.parts.find((q) => P.T[q.type] && P.T[q.type].interactive && q.props.key && (q.props.key === k || q.props.key.toLowerCase() === String(k).toLowerCase())); }
+  function typingTarget(e) { const tag = e && e.target && e.target.tagName; return /INPUT|TEXTAREA|SELECT/.test(tag || ''); }
+  function keyPart(k) {
+    if (!app.proj || !app.proj.parts) return null;
+    const kp = app.proj.parts.find((q) => q.type === 'keypad' && P.T.keypad.keyAt(q, k) >= 0);
+    if (kp) { kp._kidx = P.T.keypad.keyAt(kp, k); return kp; }
+    return app.proj.parts.find((q) => P.T[q.type] && P.T[q.type].interactive && q.props.key && (q.props.key === k || q.props.key.toLowerCase() === String(k).toLowerCase()));
+  }
+  function onWindowKeyDown(e) {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); if (app.proj) startRun(); return; }
+    if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); if (app.proj) save(); return; }
+    // Value fields keep native text undo. A project that is still loading (?ex= fetch) has no proj yet.
+    if (typingTarget(e) || !app.proj || !app.editor) return;
+    const chord = Editor.editChord(e);
+    if (chord === 'undo') { e.preventDefault(); app.editor.undo(); return; }
+    if (chord === 'redo') { e.preventDefault(); app.editor.redo(); return; }
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const kp = app.run ? keyPart(e.key) : null; if (kp) { e.preventDefault(); if (!e.repeat) press(kp, true); return; }   // labelled keys only act as buttons while running
+    if (e.key === 'Escape') { app.editor.cancelWire(); app.editor.select(null); if (app.schematic) app.schematic.select(null); }
+    else if (viewMode === 'schematic' && (e.key === 'Delete' || e.key === 'Backspace' || e.key === 'r' || e.key === 'R')) { if (e.key === 'Delete' || e.key === 'Backspace') e.preventDefault(); }
+    else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); app.editor.deleteSel(); }
+    else if (e.key === 'r' || e.key === 'R') app.editor.rotateSel();
+    else if (e.key === 'f' || e.key === 'F') {
+      if (e.shiftKey) { if (viewMode === 'schematic' && app.schematic) app.schematic.fit(); else app.editor.fit(); }
+      else app.editor.flipSel('x');
+    }
+  }
+  function onWindowKeyUp(e) {
+    if (typingTarget(e) || !app.proj || !app.sim) return;
+    const kp = keyPart(e.key);
+    if (kp && app.sim.partState(kp).pressed) press(kp, false);
+  }
   const MIN_SCANS = 400, MAX_LATCH_MS = 6000;   // ~400 GPIO updates ≈ 30+ matrix scans ≈ well past the firmware's 30 ms debounce
   function press(p, v, kidx) {
     const st = app.sim.partState(p);
@@ -938,27 +1010,6 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     $('#cbWifi').onchange = (e) => { app.world.wifiUp = e.target.checked; };
     $('#bTvPower').onclick = () => { const tv = app.world.tv; tv.power = tv.power === 'on' ? 'off' : 'on'; app.devDirty = true; renderDevices(); };
     $('#cbDiodes').onchange = (e) => { for (const q of app.proj.parts) if (q.type === 'diode') q.props.bypass = !e.target.checked; app.sim.dirty = true; app.editor.render(); toast(e.target.checked ? 'Diodes fitted' : 'Diodes replaced by wires — press 3 keys forming a rectangle corner to see a ghost key'); };
-    const typing = (e) => /INPUT|TEXTAREA|SELECT/.test(e.target.tagName);
-    window.addEventListener('keydown', (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); startRun(); return; }
-      if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); save(); return; }
-      // Value fields keep native text undo. Delete moves focus back to the canvas first, so Ctrl+Z still undoes that delete.
-      if (typing(e)) return;
-      const chord = Editor.editChord(e);
-      if (chord === 'undo') { e.preventDefault(); app.editor.undo(); return; }
-      if (chord === 'redo') { e.preventDefault(); app.editor.redo(); return; }
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
-      const kp = app.run ? keyPart(e.key) : null; if (kp) { e.preventDefault(); if (!e.repeat) press(kp, true); return; }   // labelled keys only act as buttons while running
-      if (e.key === 'Escape') { app.editor.cancelWire(); app.editor.select(null); if (app.schematic) app.schematic.select(null); }
-      else if (viewMode === 'schematic' && (e.key === 'Delete' || e.key === 'Backspace' || e.key === 'r' || e.key === 'R')) { if (e.key === 'Delete' || e.key === 'Backspace') e.preventDefault(); }
-      else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); app.editor.deleteSel(); }
-      else if (e.key === 'r' || e.key === 'R') app.editor.rotateSel();
-      else if (e.key === 'f' || e.key === 'F') {
-        if (e.shiftKey) { if (viewMode === 'schematic' && app.schematic) app.schematic.fit(); else app.editor.fit(); }
-        else app.editor.flipSel('x');
-      }
-    });
-    window.addEventListener('keyup', (e) => { if (typing(e)) return; const kp = keyPart(e.key); if (kp && app.sim.partState(kp).pressed) press(kp, false); });
     // start-up: ?p=<project> > ?ex=<example, read-only> > last open project > legacy single-slot save > Blink example
     const sp = new URLSearchParams(location.search), q = sp.get('ex'), pid = sp.get('p'), saved = localStorage.getItem(STORE);
     if (saved && !store.list().length) { try { const o = JSON.parse(saved); if (!o.example) { o.name = o.name || 'My saved project'; store.importJson(o); } } catch (e) { /* ignore */ } localStorage.removeItem(STORE); }
@@ -1167,6 +1218,10 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     window.addEventListener('orientationchange', () => setTimeout(applyNo3d, 300));
   }
 
+  // Registered at load, not inside init: ?ex= fetches the sketch before app.proj exists,
+  // and a key event in that window must not read proj.parts.
+  window.addEventListener('keydown', onWindowKeyDown);
+  window.addEventListener('keyup', onWindowKeyUp);
   window.addEventListener('DOMContentLoaded', init);
 })();
 

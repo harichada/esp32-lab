@@ -12,6 +12,7 @@
     doc = doc || document;
     const tabs = [...doc.querySelectorAll('#tabs [data-tab]')];
     let btn = tabs.find((b) => b.dataset.tab === name && b.style.display !== 'none');
+    if (!btn) btn = tabs.find((b) => b.dataset.tab === 'code' && b.style.display !== 'none');
     if (!btn) btn = tabs.find((b) => b.style.display !== 'none') || tabs[0];
     if (!btn) return '';
     for (const b of doc.querySelectorAll('#tabs button')) b.classList.toggle('on', b === btn);
@@ -30,11 +31,16 @@
     const dh = get('dockH', 0);
     const rootStyle = doc.documentElement && doc.documentElement.style;
     if (dh && rootStyle) rootStyle.setProperty('--dockH', dh + 'px');
+    // A hard reload ships with Code marked .on in the HTML. A saved tab still wins;
+    // a name that is not on the page falls back to Code inside selectDockTab.
+    const saved = get('dockTab', '');
+    if (saved) return selectDockTab(saved, doc);
     const on = doc.querySelector('#tabs [data-tab].on');
     if (on && on.style.display !== 'none') return on.dataset.tab;
-    return selectDockTab(get('dockTab', ''), doc);
+    return selectDockTab('code', doc);
   }
   function init(app) {
+    restoreDock();
     const ed = app.editor, body = document.body;
     // ----- code view -----
     if (root.CodeViewMod) app.codeview = new CodeViewMod.CodeView($('#code'), $('#codeHl'), $('#codeGutter'), () => app.file);
