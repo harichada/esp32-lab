@@ -102,9 +102,19 @@ async def main():
         imp = await pg.evaluate("(()=>{const o=JSON.parse(app.store.exportJson(app.proj.id));o.name='Imported X';return app.store.importJson(JSON.stringify(o)).id})()")
         check('export → import round-trips a project', await pg.evaluate(f"app.store.get('{imp}').wires.length") == nw + 1)
         await pg.check('#cbSrv'); await pg.wait_for_timeout(200); await pg.evaluate('app.store.save(app.proj)'); await pg.wait_for_timeout(800)
-        srv = await pg.evaluate("fetch('api/projects').then(r=>r.json())")
-        check('server copy: project is stored on the server', any(x['id'] == pid for x in srv), srv)
-        await pg.evaluate(f"fetch('api/projects/{pid}',{{method:'DELETE'}})"); await pg.evaluate('app.store.serverSync=false')
+        saved = await pg.evaluate("""async () => {
+          const id = app.proj.id, secret = app.store.secretFor(id);
+          const list = await fetch('api/projects').then(r => r.json());
+          const got = await fetch('api/projects/' + encodeURIComponent(id));
+          const denied = await fetch('api/projects/' + encodeURIComponent(id), {method:'DELETE'});
+          const removed = await fetch('api/projects/' + encodeURIComponent(id), {method:'DELETE', headers:{'X-Edit-Secret': secret}});
+          return {hasSecret: !!secret, list, got: got.status, denied: denied.status, removed: removed.status};
+        }""")
+        check('server copy: the list does not enumerate projects', saved['list'] == [] and saved['hasSecret'], saved)
+        check('server copy: the project is readable by id', saved['got'] == 200, saved)
+        check('server copy: delete without the edit secret is rejected', saved['denied'] == 403, saved)
+        check('server copy: delete with the edit secret removes it', saved['removed'] == 200, saved)
+        await pg.evaluate('app.store.serverSync=false')
         check('no page errors', not errs, errs)
         await b.close()
     print(f"\n{sum(o for _, o in res)}/{len(res)} passed"); sys.exit(0 if all(o for _, o in res) else 1)

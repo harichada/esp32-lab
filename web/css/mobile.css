@@ -46,6 +46,7 @@ body.m .hint{left:50%;transform:translateX(-50%);bottom:calc(176px + env(safe-ar
 body.m.m-has-sel .hint,body.m.m-wiring .hint{opacity:0}
 body.m .projbanner{top:10px;left:12px;right:12px;font-size:13px}body.m .projbanner .pb-ex,body.m .projbanner .pb-my{height:36px;border-radius:11px;background:var(--glass);border-color:var(--hair)}
 body.m .projbanner .muted,body.m .projbanner .pb-ex,body.m .projbanner .pb-my{display:none}body.m .projbanner #bCopy{height:40px;min-height:40px;padding:0 14px;font-size:14px;border-radius:12px}
+body.m .projbanner #bEditLink,body.m .projbanner #bShareLink,body.m .projbanner .share-warn,body.m .projbanner .pb-view{min-height:40px;display:inline-flex;align-items:center}
 body.m .warnbox{top:56px;max-width:calc(100% - 24px);font-size:13px}
 body.m .tip{display:none!important}
 /* selection pill + wiring bar */

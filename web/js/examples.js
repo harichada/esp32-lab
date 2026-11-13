@@ -379,7 +379,8 @@ void loop() {
     for (let r = 0; r < 4; r++) for (let c = 0; c < 5; c++) {
       const name = MAP[r][c]; if (!name) continue;
       const d = part('diode', cx(c) + 30, ry(r), {}, 2, `D${r}${c}`);     // A at key pin 1, K toward the row bus
-      const k = part('key', cx(c) + 30, ry(r), { key: KEY[name], label: name.replace('Roku', 'R.').replace('Sony', '').replace('EcoToggle', 'Eco').replace('Select', 'Sel') || name }, 0, `K_${name}`);
+      const kid = 'K_' + name.replace(/\+/g, 'Plus').replace(/[^A-Za-z0-9_-]/g, '');
+      const k = part('key', cx(c) + 30, ry(r), { key: KEY[name], label: name.replace('Roku', 'R.').replace('Sony', '').replace('EcoToggle', 'Eco').replace('Select', 'Sel') || name }, 0, kid);
       parts.push(d, k);
       wires.push(wire(pt(cx(c), ry(r)), pt(cx(c), ry(r) - 30), ROWCOL[r]));                         // diode K -> row bus
       if (c > 0) wires.push(wire(pt(cx(c - 1), ry(r) - 30), pt(cx(c), ry(r) - 30), ROWCOL[r]));   // row bus segment
