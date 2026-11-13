@@ -507,7 +507,7 @@ test('the busy Run button is grey, keeps its spinner, and theme.css is cache-bus
   const mv = html.match(/mobile\.css\?v=(\d+)/);
   assert.equal(mv && mv[1], '69');
   const av = html.match(/app\.js\?v=(\d+)/);
-  assert.equal(av && av[1], '78');
+  assert.equal(av && av[1], '80');
   const mj = html.match(/mobile\.js\?v=(\d+)/);
   assert.equal(mj && mj[1], '70');
   const ev = html.match(/editor\.js\?v=(\d+)/);
