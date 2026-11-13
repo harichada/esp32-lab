@@ -178,7 +178,9 @@ test('the queue line clears the ticker, keeps Make a copy clickable, and stays f
           which: el.id,
           text: el.textContent,
           pill: pill.textContent,
-          both: strip.textContent === toast.textContent && toast.textContent === pill.textContent,
+          pillTitle: document.getElementById('status').getAttribute('title'),
+          live: document.getElementById('stLive').textContent,
+          both: strip.textContent === toast.textContent && toast.textContent === document.getElementById('stLive').textContent,
           whiteSpace: s.whiteSpace,
           overflow: s.overflow,
           textOverflow: s.textOverflow,
@@ -206,7 +208,10 @@ test('the queue line clears the ticker, keeps Make a copy clickable, and stays f
       assert.equal(report.which, size.surface === 'toast' ? 'mCompileToast' : 'compileStrip', size.w + ' surface');
       assert.equal(report.text, MSG);
       assert.match(report.text, /\(position 8\)/);
-      assert.equal(report.both, true, 'pill, strip and toast share the sentence');
+      assert.equal(report.both, true, 'strip, toast and the live text share the sentence');
+      assert.equal(report.pill, 'Queued', size.w + ' status shows Queued');
+      assert.equal(report.pillTitle, MSG);
+      assert.equal(report.live, MSG);
       assert.equal(report.whiteSpace, 'normal');
       assert.notEqual(report.overflow, 'hidden');
       assert.notEqual(report.textOverflow, 'ellipsis');
@@ -269,34 +274,136 @@ test('the queue line clears the ticker, keeps Make a copy clickable, and stays f
     assert.equal(widths.label, 'Building…');
     assert.ok(Math.abs(widths.statusBusy - widths.statusIdle) < 0.5, 'status width idle ' + widths.statusIdle + ' busy ' + widths.statusBusy);
     assert.equal(widths.main, widths.mainAfter);
-    const headerWidths = [821, 850, 900, 940, 1280];
+    const headerWidths = [821, 850, 900, 940, 1000, 1100, 1280];
+    const clip = {};
     for (const w of headerWidths) {
-      await send('Emulation.setDeviceMetricsOverride', { width: w, height: 800, deviceScaleFactor: 1, mobile: false }, sessionId);
+      await send('Emulation.setDeviceMetricsOverride', { width: w, height: 780, deviceScaleFactor: 1, mobile: false }, sessionId);
       const edges = await evalJs(`(async () => {
         for (let i = 0; i < 30; i++) {
           if (!document.body.classList.contains('m')) break;
           await new Promise((r) => setTimeout(r, 40));
         }
-        const buttons = () => [...document.querySelectorAll('header#top button')].filter((b) => {
-          const s = getComputedStyle(b);
-          const r = b.getBoundingClientRect();
-          return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 1;
-        }).map((b) => ({ id: b.id || b.getAttribute('aria-label') || b.title, right: b.getBoundingClientRect().right }));
-        app.setCompilePhase('idle');
-        const idle = buttons();
-        app.setCompilePhase('building');
-        const building = buttons();
-        return { idle, building, vw: innerWidth };
-      })()`);
-      for (const state of ['idle', 'building']) {
-        for (const b of edges[state]) {
-          assert.ok(b.right <= edges.vw + 1, w + ' ' + state + ' ' + b.id + ' right ' + b.right + ' viewport ' + edges.vw);
+        const read = (state) => {
+          app.setCompilePhase(state === 'building' ? 'building' : 'idle');
+          const nodes = [...document.querySelectorAll('header#top button, header#top select, header#top #status, header#top label.btn, header#top .conn')];
+          const vis = [];
+          for (const el of nodes) {
+            const s = getComputedStyle(el);
+            const r = el.getBoundingClientRect();
+            if (s.display === 'none' || s.visibility === 'hidden' || Number(s.opacity) === 0) continue;
+            if (r.width < 2 || r.height < 2) continue;
+            vis.push({
+              id: el.id || el.getAttribute('aria-label') || el.className,
+              left: r.left, right: r.right, top: r.top, bottom: r.bottom,
+              sw: el.scrollWidth, cw: el.clientWidth,
+              text: (el.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 32),
+            });
+          }
+          const st = document.getElementById('stText');
+          const title = document.getElementById('projTitle');
+          const crumb = title && title.closest('.crumb');
+          const crumbOn = !!(crumb && getComputedStyle(crumb).display !== 'none' && title.getClientRects().length);
+          let crumbOk = !crumbOn;
+          if (crumbOn) {
+            const probe = document.createElement('span');
+            probe.textContent = '00000000';
+            probe.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;font:' + getComputedStyle(title).font;
+            document.body.appendChild(probe);
+            crumbOk = title.clientWidth + 1 >= probe.getBoundingClientRect().width;
+            probe.remove();
+          }
+          const menu = document.getElementById('tbMore');
+          const more = document.getElementById('bMore');
+          return {
+            vis,
+            face: st.textContent,
+            live: document.getElementById('stLive').textContent,
+            titleAttr: document.getElementById('status').getAttribute('title'),
+            crumbOn,
+            crumbOk,
+            doc: document.title,
+            moreOn: !!(more && getComputedStyle(more).display !== 'none'),
+            menuOpen: menu.classList.contains('open'),
+            exText: (document.getElementById('bExamples').innerText || '').trim(),
+            exLabel: document.getElementById('bExamples').getAttribute('aria-label'),
+            stageH: document.getElementById('stageWrap').getBoundingClientRect().height,
+          };
+        };
+        const idle = read('idle');
+        const building = read('building');
+        let menu = null;
+        if (idle.moreOn) {
+          document.getElementById('bMore').click();
+          const panel = document.getElementById('tbMore');
+          const items = [...panel.querySelectorAll('button, label')].filter((el) => getComputedStyle(el).display !== 'none').map((el) => ({
+            id: el.id,
+            text: (el.innerText || '').replace(/\\s+/g, ' ').trim(),
+            label: el.getAttribute('aria-label') || '',
+            right: el.getBoundingClientRect().right,
+            sw: el.scrollWidth,
+            cw: el.clientWidth,
+          }));
+          menu = { items, right: panel.getBoundingClientRect().right };
+          document.getElementById('bMore').click();
         }
-        assert.ok(edges[state].some((b) => b.id === 'bCmdk'), w + ' ' + state + ' has Search commands');
-        assert.ok(edges[state].some((b) => b.id === 'bKeys'), w + ' ' + state + ' has Keyboard shortcuts');
-        assert.ok(edges[state].some((b) => b.id === 'bTheme'), w + ' ' + state + ' has Theme');
+        return { idle, building, menu, vw: innerWidth, vh: innerHeight };
+      })()`);
+      clip[w] = { idle: edges.idle.vis.map((b) => b.id + ':' + b.text), building: edges.building.face, menu: edges.menu && edges.menu.items.map((i) => i.id + ':' + i.text), stageH: edges.idle.stageH };
+      for (const state of ['idle', 'building']) {
+        const block = edges[state];
+        assert.equal(block.face, state === 'building' ? 'Building…' : 'Idle', w + ' ' + state + ' face ' + block.face);
+        if (state === 'building') {
+          assert.equal(block.live, 'Building your code… the first build takes longer.');
+          assert.equal(block.titleAttr, 'Building your code… the first build takes longer.');
+        }
+        for (const b of block.vis) {
+          assert.ok(b.left >= -1 && b.right <= edges.vw + 1 && b.top >= -1 && b.bottom <= edges.vh + 1, w + ' ' + state + ' ' + b.id + ' box ' + JSON.stringify(b));
+          assert.ok(b.sw <= b.cw + 1, w + ' ' + state + ' ' + b.id + ' clipped sw ' + b.sw + ' cw ' + b.cw + ' text ' + b.text);
+        }
+        assert.ok(block.vis.some((b) => b.id === 'bRun'), w + ' ' + state + ' keeps Run');
+        assert.ok(block.vis.some((b) => b.id === 'status'), w + ' ' + state + ' keeps status');
+        if (w < 950) assert.ok(block.vis.some((b) => b.id === 'bExamples'), w + ' ' + state + ' keeps Examples');
+        else assert.ok(block.vis.some((b) => b.id === 'selExample'), w + ' ' + state + ' keeps the examples menu');
+        if (w <= 1279) assert.ok(block.moreOn, w + ' shows More');
+        if (w <= 879) {
+          assert.equal(block.exLabel, 'Examples');
+          assert.ok(!/^[A-Za-z]$/.test(block.exText), w + ' examples is not a single letter');
+        } else if (w < 950) {
+          assert.match(block.exText, /Examples/);
+        }
+        if (block.crumbOn) assert.equal(block.crumbOk, true, w + ' title shows at least 8 characters');
+        else assert.match(block.doc, /Blink/);
+      }
+      if (edges.menu) {
+        for (const item of edges.menu.items) {
+          assert.ok(item.right <= edges.vw + 1, w + ' menu ' + item.id);
+          assert.ok(item.sw <= item.cw + 1, w + ' menu clip ' + item.id);
+        }
+        const ids = edges.menu.items.map((i) => i.id);
+        assert.ok(ids.indexOf('bCmdk') >= 0 && ids.indexOf('bKeys') >= 0 && ids.indexOf('bTheme') >= 0, w + ' menu has the overflow buttons');
+        const search = edges.menu.items.find((i) => i.id === 'bCmdk');
+        assert.match(search.text, /Search commands/);
       }
     }
+    console.log('HEADER_CLIP ' + JSON.stringify(clip));
+    await send('Emulation.setDeviceMetricsOverride', { width: 821, height: 780, deviceScaleFactor: 1, mobile: false }, sessionId);
+    const tip = await evalJs(`(async () => {
+      for (let i = 0; i < 20; i++) { if (!document.body.classList.contains('m')) break; await new Promise((r) => setTimeout(r, 30)); }
+      const btn = document.getElementById('bExamples');
+      const tip = document.getElementById('exTip');
+      btn.focus();
+      const focused = getComputedStyle(tip).display;
+      btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 500));
+      const held = btn.classList.contains('tip-hold') && getComputedStyle(tip).display !== 'none';
+      btn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+      const text = tip.textContent;
+      return { focused, held, text, label: btn.getAttribute('aria-label') };
+    })()`);
+    assert.notEqual(tip.focused, 'none', 'examples tooltip shows on focus');
+    assert.equal(tip.held, true, 'examples tooltip shows on long-press');
+    assert.match(tip.text, /Blink/);
+    assert.equal(tip.label, 'Examples');
     await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }, sessionId);
     const drag = await evalJs(`(async () => {
       for (let i = 0; i < 20; i++) { if (!document.body.classList.contains('m')) break; await new Promise((r) => setTimeout(r, 30)); }

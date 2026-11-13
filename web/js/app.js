@@ -62,6 +62,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (app.readOnly) b.innerHTML = `<span class="pb-ex">📘 Example: <b>${P.esc(app.proj.name || '')}</b> — read-only</span><button id="bCopy" class="primary">Make a copy</button><span class="muted">editing anything makes a copy automatically</span>`;
     else b.innerHTML = `<span class="pb-my">✎ My project: <b id="pbName" title="Click to rename">${P.esc(app.proj.name || 'Untitled')}</b></span><span class="muted">${saved ? 'saved ' + new Date().toLocaleTimeString() : 'auto-saved'}</span>`;
     const pt = $('#projTitle'); if (pt) { pt.textContent = app.proj.name || 'Untitled'; const k = $('#projKind'); k.textContent = app.readOnly ? 'Example · read-only' : 'My project'; k.className = 'chip-tag ' + (app.readOnly ? 'ex' : 'mine'); }
+    syncExampleTip(); syncDocTitle();
     const bc = $('#bCopy'); if (bc) bc.onclick = () => makeCopy(false);
     const pn = $('#pbName'); if (pn) pn.onclick = () => { const n = prompt('Rename project', app.proj.name); if (n) { app.proj.name = n; store.rename(app.proj.id, n); renderBanner(true); } };
   }
@@ -220,7 +221,35 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   // ---------------- runtimes ----------------
   function sendRun(m) { if (app.run && app.run.ws && app.run.ws.readyState === 1) app.run.ws.send(JSON.stringify(m)); }
   function espPart() { return app.proj.parts.find((q) => q.type === 'esp32'); }
-  function setStatus(kind, text) { $('#stDot').className = 'dot ' + kind; $('#stText').textContent = text; document.body.classList.toggle('busy', kind === 'busy'); document.body.classList.toggle('running', kind === 'run'); const st = $('#stage'); if (st) st.classList.toggle('live', kind === 'run'); }
+  function statusFace(kind, text) {
+    const t = String(text || '').trim();
+    if (kind === 'run' || /^running\b/i.test(t)) return { short: 'Running', full: t || 'Running' };
+    if (kind === 'busy') {
+      const queued = app.compilePhase === 'queued' || /\bqueued\b|ahead of yours|position \d|waiting for another build/i.test(t);
+      return queued ? { short: 'Queued', full: t || 'Queued' } : { short: 'Building…', full: t || 'Building…' };
+    }
+    if (!t || /^(idle|stopped)$/i.test(t)) return { short: 'Idle', full: t ? (t === 'idle' || t === 'stopped' ? 'Idle' : t) : 'Idle' };
+    if (t === 'error') return { short: 'Run error', full: 'error' };
+    return { short: t, full: t };
+  }
+  function paintStatus(short, full) {
+    const face = short || 'Idle';
+    const sentence = full || face;
+    const pill = document.getElementById && document.getElementById('stText');
+    if (pill) pill.textContent = face;
+    const st = document.getElementById && document.getElementById('status');
+    if (st && st.setAttribute) st.setAttribute('title', sentence);
+    const live = document.getElementById && document.getElementById('stLive');
+    if (live) live.textContent = sentence;
+  }
+  function setStatus(kind, text) {
+    const face = statusFace(kind, text);
+    const dot = $('#stDot'); if (dot) dot.className = 'dot ' + kind;
+    paintStatus(face.short, face.full);
+    document.body.classList.toggle('busy', kind === 'busy');
+    document.body.classList.toggle('running', kind === 'run');
+    const st = $('#stage'); if (st) st.classList.toggle('live', kind === 'run');
+  }
   window.addEventListener('pagehide', (ev) => { if (ev.persisted || !app.run || app.run.kind !== 'qemu') return; if (app.run.ws && app.run.ws.readyState === 1) { try { app.run.ws.send(JSON.stringify({ t: 'stop', why: STOP_ON_CLOSE ? 'user' : 'pagehide' })); } catch (e) { /* closing */ } if (STOP_ON_CLOSE) try { clStorage.session.removeItem('esp32run'); } catch (e) { /* none */ } } });
   // ?keeprun=0 restores the old "closing the tab stops QEMU" behaviour; by default a closed/discarded/reloaded tab can
   // re-attach to its still-running QEMU session (saved in sessionStorage), and the server reaps it after SIM_RESUME_GRACE.
@@ -302,40 +331,21 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const label = $('#bRun') && $('#bRun').querySelector('span');
     if (label) label.textContent = text;
   }
-  let paintedStatus = '';
-  let statusLocked = false;
   let lastQueueDetail = '';
   let stripPointers = 0;
-  function lockStatusBox() {
-    try {
-      const st = document.getElementById && document.getElementById('status');
-      if (!st || statusLocked || typeof st.getBoundingClientRect !== 'function') return;
-      const w = st.getBoundingClientRect().width;
-      if (!(w > 0)) return;
-      st.style.flex = '0 0 ' + w + 'px';
-      st.style.width = w + 'px';
-      st.style.maxWidth = w + 'px';
-      statusLocked = true;
-    } catch (e) {}
-  }
-  function unlockStatusBox() {
-    try {
-      const st = document.getElementById && document.getElementById('status');
-      if (!st || !statusLocked) return;
-      st.style.flex = '';
-      st.style.width = '';
-      st.style.maxWidth = '';
-      statusLocked = false;
-    } catch (e) {}
-  }
   function setCompilePhase(phase, detail) {
     const next = phase === 'queued' || phase === 'building' || phase === 'running' ? phase : 'idle';
     app.compilePhase = next;
     compileBusy = next === 'queued' || next === 'building';
     const sentence = next === 'queued' ? (detail || QUEUE_FALLBACK) : next === 'building' ? BUILDING_TEXT : '';
     if (next === 'queued') lastQueueDetail = detail || '';
-    if (sentence) lockStatusBox();
-    else unlockStatusBox();
+    const short = next === 'queued' ? 'Queued' : next === 'building' ? 'Building…' : next === 'running' ? 'Running' : '';
+    if (short) paintStatus(short, sentence || short);
+    else {
+      const pill = document.getElementById && document.getElementById('stText');
+      const cur = pill ? pill.textContent : '';
+      if (!cur || cur === 'Queued' || cur === 'Building…' || cur === 'Running') paintStatus('Idle', 'Idle');
+    }
     const buttonLabel = next === 'queued' ? 'Queued' : next === 'building' ? 'Building…' : 'Run';
     const b = $('#bRun');
     if (b) {
@@ -361,11 +371,6 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       toast.textContent = sentence;
       toast.hidden = !showToast;
       toast.setAttribute('aria-hidden', showToast ? 'false' : 'true');
-    }
-    const pill = document.getElementById && document.getElementById('stText');
-    if (pill) {
-      if (sentence) { pill.textContent = sentence; paintedStatus = sentence; }
-      else if (paintedStatus && pill.textContent === paintedStatus) { pill.textContent = ''; paintedStatus = ''; }
     }
     if (window.Mobile && typeof window.Mobile.syncIgnite === 'function') window.Mobile.syncIgnite();
     syncStripMetrics();
@@ -1114,8 +1119,123 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       if (!app.run || directReleaseOk(p, st) || (st.gpioAtPress != null && !directButton(p) && (app.gpioCount || 0) - st.gpioAtPress >= (p.type === 'keypad' ? KP_SCANS : MIN_SCANS)) || performance.now() - st.tPress >= MAX_LATCH_MS) press(p, false); }
   }
   setInterval(latchTick, 20);
+  const DOC_BASE = 'ESP32 Circuit Lab — real-firmware ESP32 + electronics simulator';
+  function syncExampleTip() {
+    const name = app.proj && (app.proj.example || app.readOnly) ? (app.proj.name || '') : '';
+    const text = name ? 'Examples — ' + name : 'Examples';
+    const tip = document.getElementById && document.getElementById('exTip');
+    if (tip) tip.textContent = text;
+    const sel = document.getElementById && document.getElementById('selExample');
+    if (sel && sel.setAttribute) sel.setAttribute('title', text === 'Examples' ? 'Examples (open read-only; edits go to a copy)' : text);
+    const btn = document.getElementById && document.getElementById('bExamples');
+    if (btn && btn.setAttribute) btn.setAttribute('aria-label', 'Examples');
+  }
+  function syncDocTitle() {
+    const name = (app.proj && app.proj.name) || '';
+    const el = document.getElementById && document.getElementById('projTitle');
+    const crumb = el && el.closest ? el.closest('.crumb') : null;
+    let shown = false, clipped = false;
+    try {
+      if (el && crumb && typeof getComputedStyle === 'function') {
+        const cs = getComputedStyle(crumb);
+        const rects = el.getClientRects ? el.getClientRects() : [];
+        shown = cs.display !== 'none' && cs.visibility !== 'hidden' && rects.length > 0;
+        clipped = shown && el.scrollWidth > el.clientWidth + 1;
+      }
+    } catch (e) {}
+    if (typeof document !== 'undefined') document.title = name && (!shown || clipped) ? name + ' — ' + DOC_BASE : DOC_BASE;
+  }
+  function placeProj() {
+    const proj = document.getElementById && document.getElementById('tbProj');
+    const menu = document.getElementById && document.getElementById('tbMore');
+    const fold = document.getElementById && document.getElementById('tbFold');
+    const more = document.getElementById && document.getElementById('bMore');
+    if (!proj || !menu || !fold || !more) return;
+    const tight = !!(window.matchMedia && window.matchMedia('(max-width: 1180px)').matches) && !(document.body && document.body.classList.contains('m'));
+    if (tight) { if (proj.parentElement !== menu) menu.insertBefore(proj, menu.firstChild); }
+    else if (proj.parentElement !== fold) fold.insertBefore(proj, more);
+  }
+  function closeMore() {
+    const menu = document.getElementById('tbMore');
+    const more = document.getElementById('bMore');
+    if (menu) menu.classList.remove('open');
+    if (more) more.setAttribute('aria-expanded', 'false');
+  }
+  let headerFitW = -1;
+  function syncHeaderFit() {
+    placeProj();
+    const top = document.getElementById && document.getElementById('top');
+    const crumb = document.querySelector && document.querySelector('#top .crumb');
+    const phone = !!(document.body && document.body.classList.contains('m'));
+    if (!top || !crumb || phone || typeof top.clientWidth !== 'number') { if (crumb && crumb.classList) crumb.classList.remove('crumb-hide'); syncDocTitle(); return; }
+    if (top.clientWidth !== headerFitW) {
+      headerFitW = top.clientWidth;
+      crumb.classList.remove('crumb-hide');
+      if (top.scrollWidth > top.clientWidth + 1) crumb.classList.add('crumb-hide');
+    }
+    syncDocTitle();
+  }
+  function wireHeaderChrome() {
+    placeProj();
+    const more = document.getElementById('bMore');
+    const menu = document.getElementById('tbMore');
+    if (more && menu && !more.__wired) {
+      more.__wired = true;
+      more.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const open = !menu.classList.contains('open');
+        menu.classList.toggle('open', open);
+        more.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
+      document.addEventListener('click', (e) => {
+        if (!menu.classList.contains('open')) return;
+        if (e.target && e.target.closest && e.target.closest('#tbFold')) return;
+        closeMore();
+      });
+      document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMore(); });
+      menu.addEventListener('click', (e) => { if (e.target && e.target.closest && e.target.closest('button, label')) closeMore(); });
+    }
+    const ex = document.getElementById('bExamples');
+    const sel = document.getElementById('selExample');
+    if (ex && sel && !ex.__wired) {
+      ex.__wired = true;
+      ex.addEventListener('click', () => {
+        ex.setAttribute('aria-expanded', 'true');
+        const shut = () => ex.setAttribute('aria-expanded', 'false');
+        if (typeof sel.showPicker === 'function') { try { sel.showPicker(); setTimeout(shut, 0); return; } catch (e) {} }
+        sel.focus();
+        shut();
+      });
+      ex.addEventListener('contextmenu', (e) => e.preventDefault());
+      let hold = 0;
+      const arm = () => { clearTimeout(hold); hold = setTimeout(() => ex.classList.add('tip-hold'), 450); };
+      const end = () => { clearTimeout(hold); ex.classList.remove('tip-hold'); };
+      ex.addEventListener('pointerdown', arm);
+      ex.addEventListener('pointerup', end);
+      ex.addEventListener('pointercancel', end);
+      ex.addEventListener('pointerleave', end);
+    }
+    const listen = (q) => {
+      if (!window.matchMedia) return;
+      const mq = window.matchMedia(q);
+      const fn = () => syncHeaderFit();
+      if (mq.addEventListener) mq.addEventListener('change', fn);
+      else if (mq.addListener) mq.addListener(fn);
+    };
+    listen('(max-width: 1180px)');
+    listen('(max-width: 949px)');
+    listen('(max-width: 820px), (pointer: coarse) and (max-height: 520px)');
+    if (typeof ResizeObserver === 'function' && document.getElementById('top') && !document.getElementById('top').__hdrWatch) {
+      const top = document.getElementById('top');
+      top.__hdrWatch = true;
+      new ResizeObserver(() => syncHeaderFit()).observe(top);
+    }
+    syncExampleTip();
+    syncHeaderFit();
+  }
   function init() {
     watchStripChrome();
+    wireHeaderChrome();
     app.editor = new Editor($('#stage'), {
       changed: (topo) => {
         if (window.Netlist && app.proj) { try { Netlist.syncFromWires(app.proj); } catch (e) { /* the wires stay; the next load rebuilds the netlist */ } }
@@ -1390,6 +1510,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   // and a key event in that window must not read proj.parts.
   window.addEventListener('keydown', onWindowKeyDown);
   window.addEventListener('keyup', onWindowKeyUp);
+  placeProj();
   window.addEventListener('DOMContentLoaded', init);
 })();
 
