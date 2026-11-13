@@ -12,12 +12,12 @@ body.m header#top{position:fixed;left:0;right:0;top:0;height:var(--mTop);padding
   background:var(--glass2);backdrop-filter:saturate(1.4) blur(18px);-webkit-backdrop-filter:saturate(1.4) blur(18px);border-bottom:1px solid var(--hair)}
 body.m .brand-t,body.m header .tb,body.m header .runctl,body.m #bRestart,body.m #bReset,body.m .crumb-sep,body.m #projKind{display:none!important}
 body.m .brand .logo{width:30px;height:30px;border-radius:9px}
-body.m .crumb{display:flex!important;flex:1;min-width:0;max-width:none;flex-direction:column;align-items:flex-start;gap:0}
-body.m .proj-title{font-size:15px;font-weight:600;letter-spacing:-.01em;max-width:100%}
+body.m header#top>.crumb,body.m .crumb{display:flex!important;flex:1 1 auto;min-width:0;max-width:100%;overflow:hidden;flex-direction:row;align-items:center;gap:0}
+body.m .proj-title{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:15px;font-weight:600;letter-spacing:-.01em;max-width:100%}
 body.m #status{min-width:0;height:auto;padding:0;background:none;border:0;font-size:11.5px;color:var(--mut);gap:6px;order:0;overflow:visible;position:static}
 body.m #status #stTime{display:none}body.m #status .prog{top:auto;bottom:0}
 body.m header#top{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;grid-template-rows:auto auto;align-content:center;row-gap:1px;column-gap:10px}
-body.m .brand{grid-row:1/3}body.m .crumb{grid-column:2;grid-row:1}body.m #status{grid-column:2;grid-row:2}body.m .runctl{grid-column:3;grid-row:1/3}body.m #mMenu{grid-column:4;grid-row:1/3}
+body.m .brand{grid-column:1;grid-row:1/3}body.m .crumb{grid-column:2;grid-row:1}body.m #status{grid-column:2;grid-row:2}body.m #bForce2d{grid-column:3;grid-row:1/3}body.m .runctl{grid-column:3;grid-row:1/3}body.m #mMenu{grid-column:4;grid-row:1/3}
 body.m .runctl{background:none;border:0;padding:0;gap:6px}
 body.m .runctl .run{height:40px;padding:0 18px;border-radius:12px;font-size:15px;gap:8px;letter-spacing:.01em}body.m .runctl .run .ic{width:13px;height:13px}
 body.m #bStop{display:none}body.m.running #bStop{display:inline-flex;width:40px;height:40px;border-radius:12px;background:rgba(248,113,113,.12);border:1px solid rgba(248,113,113,.35);color:var(--err)}
@@ -35,6 +35,13 @@ body.m .canvas-tools{left:max(12px,env(safe-area-inset-left))}body.m .zoom-tools
 body.m .canvas-tools,body.m .zoom-tools{gap:8px}
 body.m .canvas-tools .iconbtn,body.m .zoom-tools .iconbtn{width:44px;height:44px;min-width:44px;min-height:44px;border-radius:10px}body.m .canvas-tools .ic,body.m .zoom-tools .ic{width:20px;height:20px}
 body.m #zoomPct{min-width:44px;min-height:44px;font-size:12px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;box-sizing:border-box;padding:0 4px}
+/* Phone-only fit control beside the %. The zoom cluster stays dark in both themes, so these colours are fixed. Each state keeps the 44px box. */
+#bFitPill{display:none}
+body.m #bFitPill{display:inline-flex!important;align-items:center;justify-content:center;flex:0 0 44px;width:44px;min-width:44px;height:44px;min-height:44px;padding:0;box-sizing:border-box;background:transparent;border-color:transparent;color:#f4f6f8;transform:none}
+body.m #bFitPill:hover{background:#2a3038;border-color:#9aa3af;color:#ffffff;transform:none}
+body.m #bFitPill:active{background:#12161b;border-color:#9aa3af;color:#ffffff;transform:none}
+body.m #bFitPill:focus-visible{background:#2a3038;border-color:#9aa3af;color:#ffffff;outline:2px solid #67e8f9;outline-offset:2px;transform:none}
+body.m #bFitPill:disabled,body.m #bFitPill[aria-disabled="true"]{background:transparent;border-color:transparent;color:#c5c9d0;opacity:1;cursor:default;transform:none}
 body.m .hint{left:50%;transform:translateX(-50%);bottom:calc(176px + env(safe-area-inset-bottom));max-width:calc(100% - 32px)!important;font-size:12.5px;padding:7px 14px;background:var(--glass);border-color:var(--hair);transition:opacity .3s}
 body.m.m-has-sel .hint,body.m.m-wiring .hint{opacity:0}
 body.m .projbanner{top:10px;left:12px;right:12px;font-size:13px}body.m .projbanner .pb-ex,body.m .projbanner .pb-my{height:36px;border-radius:11px;background:var(--glass);border-color:var(--hair)}
@@ -115,7 +122,7 @@ body.m #insp input[type=checkbox]{width:24px;height:24px}body.m #insp .row butto
 body.m table.pins{font-size:13px}body.m table.pins td{padding:8px}body.m .sw{width:32px;height:32px}
 /* more sheet */
 .m-more-b{overflow:auto;padding:4px 16px calc(18px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:18px}
-.m-lbl{font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--mut);margin:0 2px 8px}
+.m-lbl{display:block;font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--mut);margin:0 2px 8px}
 .m-selwrap select{width:100%;height:50px;border-radius:12px}
 .m-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
 .m-grid button{height:76px;flex-direction:column;justify-content:center;gap:7px;border-radius:14px;font-size:12px;white-space:normal;text-align:center;line-height:1.2;background:var(--l2);border-color:var(--hair)}.m-grid .ic{width:22px;height:22px;color:var(--acc)}
@@ -215,6 +222,26 @@ body.m #mIgnite.m-only{display:flex!important}
 #mIgnite.arming{transform:scale(.94);transition:transform .15s}
 #mIgnite.live{border-color:var(--err);color:#ffd9d9;background:radial-gradient(circle at 50% 35%,rgba(248,113,113,.35),rgba(12,3,3,.95) 72%);box-shadow:0 0 34px rgba(248,113,113,.45);animation:mLive 1.6s ease-in-out infinite}
 @keyframes mLive{50%{box-shadow:0 0 14px rgba(248,113,113,.25)}}
+body.m #mIgnite:focus-visible{outline:2px solid #0891b2;outline-offset:2px}
+body.m #mIgnite.compiling,body.m #mIgnite.compiling:disabled,body.m #mIgnite.compiling[aria-disabled="true"]{width:76px;height:76px;min-width:76px;min-height:76px;flex:none;background:#1b1f24!important;border-color:#9aa3af;color:#e8eaed;box-shadow:none;animation:none;opacity:1;cursor:default;transform:none}
+body.m #mIgnite.compiling:hover{background:#2a3038!important;border-color:#c5c9d0;color:#ffffff;transform:none}
+body.m #mIgnite.compiling:active{background:#12161b!important;border-color:#9aa3af;color:#e8eaed;transform:none}
+body.m #mIgnite.compiling:focus-visible{background:#1b1f24!important;color:#e8eaed;outline:2px solid #0891b2;outline-offset:2px;transform:none}
+html[data-theme=light] body.m #mIgnite.compiling,html[data-theme=light] body.m #mIgnite.compiling:disabled,html[data-theme=light] body.m #mIgnite.compiling[aria-disabled="true"],html[data-theme=light] body.m #mIgnite.compiling:focus-visible{background:#eceef1!important;border-color:#3d4550;color:#2c333c}
+html[data-theme=light] body.m #mIgnite.compiling:hover{background:#e2e5e9!important;border-color:#3d4550;color:#15181c}
+html[data-theme=light] body.m #mIgnite.compiling:active{background:#d5d9df!important;border-color:#3d4550;color:#15181c}
+body.m #mIgnite.compiling .m-ig-i,body.m #mIgnite.compiling .m-ig-t{visibility:hidden}
+body.m #mIgnite.compiling .m-ig-bg{animation:none;stroke:currentColor;stroke-dasharray:none;filter:none}
+body.m #mIgnite.compiling .m-ig-p{animation:none;opacity:0;filter:none}
+body.m #mIgnite.compiling::after{content:"";position:absolute;left:50%;top:50%;width:18px;height:18px;margin:-9px 0 0 -9px;border-radius:50%;border:2px solid currentColor;border-right-color:transparent;box-sizing:border-box;animation:runspin .7s linear infinite}
+/* Narrow phones use the toast. Wider phone shells (tablet width) use the strip under the bar. */
+.m-compile-toast{display:none}
+@media (max-width:640px){
+  body.m .m-compile-toast{position:fixed;right:max(16px,env(safe-area-inset-right));bottom:calc(102px + env(safe-area-inset-bottom));z-index:60;display:block;width:min(280px,calc(100vw - 24px));margin:0;padding:8px 10px;border-radius:12px;background:#1b1f24;color:#e8eaed;border:1px solid #9aa3af;font-size:13px;line-height:1.4;font-weight:500;text-align:left;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;height:auto;min-height:calc(2 * 1.4em + 18px);pointer-events:none;box-shadow:0 8px 24px rgba(0,0,0,.35)}
+  body.m .m-compile-toast[hidden]{display:none!important}
+  #compileStrip{display:none!important}
+}
+html[data-theme=light] body.m .m-compile-toast{background:#eceef1;color:#2c333c;border-color:#3d4550}
 body.busy #mIgnite .m-ig-bg{stroke:var(--warn);stroke-dasharray:8 6;animation:mSpin 1.2s linear infinite;transform-origin:center}
 #mCount{position:fixed;inset:0;z-index:85;pointer-events:none;place-items:center;font:700 min(60px,12vw) var(--mono);letter-spacing:.06em;color:#e6fdff;text-shadow:0 0 30px var(--acc),0 0 60px rgba(34,211,238,.5)}
 body.m #mCount.on{display:grid!important;animation:mCnt .23s ease-out infinite}
@@ -281,18 +308,22 @@ body.m #mScope .ich button,body.m #mScope .ich-r select{height:28px}
 body.m .telstrip{left:6px;right:6px;bottom:auto;top:calc(var(--mTop) + 28px);max-width:none;padding:3px 4px;overflow-x:auto}
 body.m .tel-i canvas{width:84px;height:22px}body.m .tel-h{display:none}body.m .tel-l{min-width:60px}
 /* narrow phones: a horizontal zoom pill overlapped the 2D/Sch/3D toggle.
-   Stack − / % / + on the right, under the Parts chip and clear of the ignition button.
-   The % is the fit control, so the separate fit icon is not repeated here. */
+   Stack − / % / fit / + on the right, under the Parts chip and clear of the ignition button.
+   #bFit stays hidden here; #bFitPill is the visible fit control next to the %. */
 @media (max-width:430px){
   body.m .zoom-tools{top:88px;bottom:auto;right:max(8px,env(safe-area-inset-right));left:auto;flex-direction:column;gap:6px;padding:4px;z-index:14}
-  body.m .zoom-tools #bZoomOut,body.m .zoom-tools #bZoomIn,body.m .zoom-tools #zoomPct{display:inline-flex!important;width:44px;min-width:44px;height:44px;min-height:44px;padding:0;align-items:center;justify-content:center;box-sizing:border-box}
+  body.m .zoom-tools #bZoomOut,body.m .zoom-tools #bZoomIn,body.m .zoom-tools #zoomPct,body.m .zoom-tools #bFitPill{display:inline-flex!important;width:44px;min-width:44px;height:44px;min-height:44px;padding:0;align-items:center;justify-content:center;box-sizing:border-box}
   body.m .zoom-tools #bFit{display:none!important}
-  body.m.view3d .zoom-tools #zoomPct{display:inline-flex!important}
+  body.m.view3d .zoom-tools #zoomPct,body.m.view3d .zoom-tools #bFitPill{display:inline-flex!important}
 }
+/* data-fit-pill=off, or PHONE_FIT_BUTTON = false, hides the icon. The % tap still fits. */
+html[data-fit-pill=off] #bFitPill,
+html[data-fit-pill=off] body.m #bFitPill,
+html[data-fit-pill=off] body.m .zoom-tools #bFitPill{display:none!important}
 
-/* header view chip on phones: fixed, dark, above everything. Names the current view. */
-body.m #bForce2d{position:fixed;top:calc(env(safe-area-inset-top) + 12px);right:64px;height:32px;min-height:32px;min-width:44px;max-width:46vw;z-index:2147483647;margin:0;border-radius:16px;overflow:hidden;text-overflow:ellipsis}
-/* Staging banner sits above the fixed header and the ticker. The header's backdrop-filter is the containing block for #bForce2d, so moving the header moves that chip with it. The narrow-phone zoom stack is positioned on the viewport, so it gets the same offset. */
+/* Header view chip on phones: in the bar, after the title, with the column gap between them. */
+body.m #bForce2d{position:relative;top:auto;right:auto;align-self:center;justify-self:start;height:32px;min-height:32px;min-width:44px;max-width:46vw;z-index:3;margin:0;border-radius:16px;overflow:visible;text-overflow:clip}
+/* Staging banner sits above the header and the ticker. The narrow-phone zoom stack is positioned on the viewport, so it gets the same offset. */
 html[data-cl-env=staging] body.m{--stage-offset:calc(var(--stage-h) + env(safe-area-inset-top))}
 html[data-cl-env=staging] body.m #stageBanner{position:fixed;top:0;left:0;right:0;z-index:80;height:var(--stage-offset);padding-top:env(safe-area-inset-top)}
 html[data-cl-env=staging] body.m header#top{top:var(--stage-offset);height:54px;padding-top:0}

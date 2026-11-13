@@ -14,9 +14,13 @@
     '<symbol id="m-sliders" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol>' +
     '</svg>';
   let built = false, app, ed, sheet = null;
+  // Set false to hide the phone fit icon. html[data-fit-pill=off] does the same. The % tap still fits.
+  const PHONE_FIT_BUTTON = true;
 
   function setSheet(name) {
     sheet = name || null; document.body.dataset.msheet = sheet || '';
+    const menu = $('#mMenu');
+    if (menu) menu.setAttribute('aria-expanded', sheet === 'more' ? 'true' : 'false');
     $$('.m-tab').forEach((b) => b.classList.toggle('on', b.dataset.m === (sheet === 'dock' ? 'more' : sheet || 'circuit')));
     const si = $('#scopeInst'), ms = $('#mScope');
     if (si && ms) { if (sheet === 'scope') { if (si.parentNode !== ms) ms.appendChild(si); } else if (si.parentNode === ms) $('#tab-scope').appendChild(si); }
@@ -73,7 +77,7 @@
     document.body.insertAdjacentHTML('afterbegin', ICONS);
     // top bar: overflow + compact stop
     const top = $('header#top');
-    top.insertAdjacentHTML('beforeend', `<button id="mMenu" class="iconbtn m-only" aria-label="More">${ic('m-more')}</button>`);
+    top.insertAdjacentHTML('beforeend', `<button id="mMenu" class="iconbtn m-only" type="button" aria-label="More options" aria-haspopup="dialog" aria-expanded="false" aria-controls="mMore">${ic('m-more')}</button>`);
     $('#mMenu').onclick = () => setSheet(sheet === 'more' ? null : 'more');
     // orbital command dial (bottom centre) + ignition (bottom right) + telemetry ticker
     const modes = [['circuit', 'Circuit', 'm-circuit'], ['code', 'Code', 'm-code'], ['parts', 'Parts', 'm-parts'], ['serial', 'Serial', 'm-serial'], ['insp', 'Inspect', 'm-sliders'], ['scope', 'Scope', 'm-scope'], ['more', 'More', 'm-more']];
@@ -127,7 +131,7 @@
     // More sheet
     const more = document.createElement('section'); more.id = 'mMore'; more.className = 'panel m-sheet m-only';
     more.innerHTML = `<div class="m-more-b">
-      <div class="m-grp"><div class="m-lbl">Examples</div><div class="m-selwrap" id="mExWrap"></div></div>
+      <div class="m-grp"><label class="m-lbl" for="mSelExample">Examples</label><div class="m-selwrap" id="mExWrap"></div></div>
       <div class="m-grp"><div class="m-lbl">Project</div><div class="m-grid">
         <button data-a="projects">${ic('i-folder')}<span>My projects</span></button><button data-a="save">${ic('i-save')}<span>Save</span></button>
         <button data-a="download">${ic('i-download')}<span>Download</span></button><button data-a="import">${ic('i-upload')}<span>Import</span></button></div></div>
@@ -212,22 +216,10 @@
     // The round control used to say HOLD: a 650 ms press, then a T−3 countdown, before it
     // clicked the real Run button (which is hidden on a phone). A tap did nothing useful.
     const b = $('#mIgnite');
-    const running = () => document.body.classList.contains('running') || !!app.run;
-    const paint = () => {
-      const on = running(), busy = !on && document.body.classList.contains('busy');
-      b.classList.toggle('live', on);
-      b.querySelector('use').setAttribute('href', on ? '#i-stop' : '#i-play');
-      b.querySelector('.m-ig-t').textContent = on ? 'STOP' : busy ? 'BOOT' : 'RUN';
-      b.setAttribute('aria-label', on ? 'Stop' : busy ? 'Starting' : 'Run');
-    };
-    b.addEventListener('click', (e) => {
-      e.preventDefault();
-      if (running()) { haptic(20); $('#bStop').click(); return; }
-      haptic(12); sound(440); $('#bRun').click();
-    });
+    bindIgnite(b);
     b.addEventListener('contextmenu', (e) => e.preventDefault());
-    new MutationObserver(paint).observe(document.body, { attributes: true, attributeFilter: ['class'] });
-    paint();
+    new MutationObserver(syncIgnite).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+    syncIgnite();
   }
   function telemetry() {
     const el = $('#mTickT'), wrap = $('#stageWrap'); let burned0 = 0, t = 0;
@@ -383,6 +375,155 @@
     if (forceFit) ed.fit(); else ed.applyView();
     return true;
   }
+  // Same dispatch as the zoom % tap (ui.js fitActive). No project: do nothing,
+  // matching fitIfReady, including while a 3D or schematic view is open.
+  function fitFromPill() {
+    const a = window.app, ed = a && a.editor;
+    if (!ed || !ed.proj) return;
+    if (a.view3d && a.view3d.active && typeof a.view3d.fit === 'function') { a.view3d.fit(); return; }
+    if (a.schematic && a.schematic.active) { a.schematic.fit(); return; }
+    ed.fit();
+  }
+  function fitPillOn() {
+    if (PHONE_FIT_BUTTON === false) return false;
+    const root = document.documentElement;
+    if (root && root.getAttribute && root.getAttribute('data-fit-pill') === 'off') return false;
+    return true;
+  }
+  function applyFitPillFlag() {
+    const on = fitPillOn();
+    const root = document.documentElement;
+    if (!on && PHONE_FIT_BUTTON === false && root && root.setAttribute && (!root.getAttribute || root.getAttribute('data-fit-pill') !== 'off')) root.setAttribute('data-fit-pill', 'off');
+    const b = document.getElementById && document.getElementById('bFitPill');
+    if (!b) return on;
+    b.hidden = !on;
+    if (!on) {
+      b.setAttribute('aria-hidden', 'true');
+      b.tabIndex = -1;
+    } else {
+      if (typeof b.removeAttribute === 'function') b.removeAttribute('aria-hidden');
+      else b.setAttribute('aria-hidden', 'false');
+      if (!(b.tabIndex >= 0)) b.tabIndex = 0;
+    }
+    return on;
+  }
+  function bindFitPill() {
+    applyFitPillFlag();
+    const b = document.getElementById && document.getElementById('bFitPill');
+    if (!b || b._fitBound) return;
+    b._fitBound = true;
+    const go = (e) => {
+      if (!fitPillOn()) return;
+      if (e && e.preventDefault) e.preventDefault();
+      fitFromPill();
+    };
+    b.addEventListener('click', go);
+    b.addEventListener('keydown', (e) => {
+      if (!e || e.repeat || (e.key !== 'Enter' && e.key !== ' ')) return;
+      go(e);
+    });
+  }
+  function ignitePress(e) {
+    if (e && e.preventDefault) e.preventDefault();
+    const b = $('#mIgnite');
+    if (!b || b.classList.contains('compiling') || b.getAttribute('aria-disabled') === 'true') return;
+    if (b.classList.contains('live')) { haptic(20); const stop = $('#bStop'); if (stop && stop.click) stop.click(); return; }
+    haptic(12); sound(440); const run = $('#bRun'); if (run && run.click) run.click();
+  }
+  function bindIgnite(b) {
+    if (!b || b._igBound) return;
+    b._igBound = true;
+    b.addEventListener('click', ignitePress);
+    b.addEventListener('keydown', (e) => {
+      if (!e || e.repeat || (e.key !== 'Enter' && e.key !== ' ')) return;
+      ignitePress(e);
+    });
+  }
+  // Grey, disabled, spinner, labelled Compiling… while a compile is in flight.
+  // STOP once the run is actually up (body.running, or a live session that is
+  // not busy). A compile error clears app.run and the busy flag, so this
+  // returns to Run.
+  function syncIgnite() {
+    const b = document.querySelector && document.querySelector('#mIgnite');
+    if (!b) return;
+    const body = document.body;
+    const live = !!(body && body.classList.contains('running'));
+    const busy = !!(body && body.classList.contains('busy'));
+    const runBtn = document.querySelector('#bRun');
+    const spinning = !!(runBtn && runBtn.classList && runBtn.classList.contains('spinning'));
+    const hasRun = !!(window.app && window.app.run);
+    const phase = (window.app && window.app.compilePhase) || 'idle';
+    const compiling = phase === 'queued' || phase === 'building' || (phase !== 'running' && !live && (spinning || (hasRun && busy)));
+    const on = !compiling && (phase === 'running' || live || hasRun);
+    b.classList.toggle('compiling', compiling);
+    b.classList.toggle('live', on);
+    // Stay in the tab order so the compiling name can be read. Activation is ignored.
+    b.disabled = false;
+    if (!(b.tabIndex >= 0)) b.tabIndex = 0;
+    b.setAttribute('aria-busy', compiling ? 'true' : 'false');
+    b.setAttribute('aria-disabled', compiling ? 'true' : 'false');
+    const label = compiling ? (phase === 'queued' ? 'Queued' : 'Building…') : on ? 'Stop' : 'Run';
+    b.setAttribute('aria-label', label);
+    b.setAttribute('title', label);
+    b.title = label;
+    const use = b.querySelector && b.querySelector('use');
+    if (use && use.setAttribute) use.setAttribute('href', on ? '#i-stop' : '#i-play');
+    const t = b.querySelector && b.querySelector('.m-ig-t');
+    if (t) t.textContent = compiling ? '' : on ? 'STOP' : 'RUN';
+  }
+  // Widen Editor.fit so the picture, not only the pin box, sits 16px inside the
+  // clear area. Phone chrome still comes from Pinch.frameOf. Remove this to
+  // restore the editor's own fit.
+  function installFitMargin() {
+    const Ed = window.Editor;
+    if (!Ed || !Ed.prototype || Ed.prototype._fitMargin) return;
+    const bounds0 = Ed.prototype.bounds;
+    const pad = 16;
+    const boxOk = (b) => !!(b && [b.x, b.y, b.w, b.h].every(Number.isFinite) && b.w > 0 && b.h > 0 && b.w <= 1e6 && b.h <= 1e6);
+    Ed.prototype.bounds = function () {
+      let base = null;
+      try { base = bounds0.call(this); } catch (e) { base = null; }
+      if (!this.proj || !Array.isArray(this.proj.parts)) return boxOk(base) ? base : null;
+      const seed = boxOk(base) ? base : null;
+      let x0 = seed ? seed.x : 1e9, y0 = seed ? seed.y : 1e9, x1 = seed ? seed.x + seed.w : -1e9, y1 = seed ? seed.y + seed.h : -1e9;
+      const add = (x, y) => { if (!Number.isFinite(x) || !Number.isFinite(y)) return; x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); };
+      const P = window.Parts;
+      if (P && P.gfxBox) for (const p of this.proj.parts) {
+        if (!p || !Number.isFinite(+p.x) || !Number.isFinite(+p.y)) continue;
+        let box = null;
+        try { box = P.gfxBox(p); } catch (e) { box = null; }
+        if (!boxOk(box)) continue;
+        add(box.x, box.y); add(box.x + box.w, box.y + box.h);
+      }
+      const wires = Array.isArray(this.proj.wires) ? this.proj.wires : [];
+      for (const w of wires) for (const q of [w && w.a, w && w.b, ...((w && w.pts) || [])]) if (q && Number.isFinite(+q.x) && Number.isFinite(+q.y)) { add(q.x - 2, q.y - 2); add(q.x + 2, q.y + 2); }
+      const out = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+      return boxOk(out) ? out : (seed || null);
+    };
+    Ed.prototype.fit = function () {
+      if (!this.proj) return;
+      let bb = null;
+      try { bb = this.bounds(); } catch (e) { return; }
+      if (!boxOk(bb)) return;
+      const r = this.svg && this.svg.getBoundingClientRect ? this.svg.getBoundingClientRect() : null;
+      const vw = r ? +r.width : NaN, vh = r ? +r.height : NaN;
+      if (!Number.isFinite(vw) || !Number.isFinite(vh) || vw < 2 || vh < 2) return;
+      const frame = window.Pinch.frameOf(this.svg);
+      const limits = { min: 0.15, max: 3 };
+      const clear = window.Pinch.resolveClear(frame, bb, pad, limits);
+      const fit = window.Pinch.fitView(bb, frame.stage, clear, pad, limits);
+      if (!fit || ![fit.x, fit.y, fit.s].every(Number.isFinite)) return;
+      const s = Math.min(limits.max, Math.max(limits.min, fit.s));
+      if (!(s > 0) || !Number.isFinite(s)) return;
+      this.view = { s: s, x: fit.x, y: fit.y };
+      this._autoFit = true; this._fitSize = Math.round(vw) + 'x' + Math.round(vh); this.applyView();
+      const z = document.getElementById('zoomPct');
+      const pct = Math.round(s * 100);
+      if (z && Number.isFinite(pct) && !document.body.classList.contains('viewsch') && !document.body.classList.contains('view3d')) z.textContent = pct + '%';
+    };
+    Ed.prototype._fitMargin = true;
+  }
+  installFitMargin();
   function apply() {
     const m = MQ.matches, entered = m && !document.body.classList.contains('m');
     document.body.classList.toggle('m', m);
@@ -396,7 +537,9 @@
       fitIfReady(ed, entered || ed._autoFit || !ed._fitSize);
     }, 60);
     if (window.app && window.app.editor) window.app.editor.setHint();
+    if (window.app && window.app.syncExampleTip) window.app.syncExampleTip();
   }
-  window.addEventListener('DOMContentLoaded', () => { apply(); if (MQ.addEventListener) MQ.addEventListener('change', apply); else MQ.addListener(apply); if (document.body.classList.contains('m')) setTimeout(() => fitIfReady(window.app && window.app.editor, true), 200); });
-  window.Mobile = { setSheet, openDock, fitIfReady, sheetHead, syncPhoneChrome };
+  window.addEventListener('DOMContentLoaded', () => { bindFitPill(); apply(); if (MQ.addEventListener) MQ.addEventListener('change', apply); else MQ.addListener(apply); if (document.body.classList.contains('m')) setTimeout(() => fitIfReady(window.app && window.app.editor, true), 200); });
+  bindFitPill();
+  window.Mobile = { setSheet, openDock, fitIfReady, fitFromPill, bindFitPill, applyFitPillFlag, ignitePress, bindIgnite, syncIgnite, sheetHead, syncPhoneChrome };
 })();

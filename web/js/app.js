@@ -57,11 +57,23 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   function autosave() { if (app.readOnly || !app.proj) return; clearTimeout(saveT); saveT = setTimeout(() => { syncCode(); store.save(app.proj); renderBanner(true); }, 600); }
   function syncDefines() { if (app.proj) app.proj.defines = $('#inDefines').value.split(',').map((x) => x.trim()).filter(Boolean); }
   function openProject(id) { const p = store.get(id); if (!p) { toast('Project not found', true); return false; } setProject(p); setUrl({ p: id }); store.save(app.proj); return true; }
+  function setProjectTitle(name) {
+    const el = document.getElementById && document.getElementById('projTitle');
+    if (!el) return;
+    const text = name ? String(name) : 'Untitled';
+    el.textContent = text;
+    if (el.setAttribute) {
+      el.setAttribute('title', text);
+      el.setAttribute('aria-label', text);
+    }
+  }
   function renderBanner(saved) {
     const b = $('#projBanner'); if (!b || !app.proj) return;
     if (app.readOnly) b.innerHTML = `<span class="pb-ex">📘 Example: <b>${P.esc(app.proj.name || '')}</b> — read-only</span><button id="bCopy" class="primary">Make a copy</button><span class="muted">editing anything makes a copy automatically</span>`;
     else b.innerHTML = `<span class="pb-my">✎ My project: <b id="pbName" title="Click to rename">${P.esc(app.proj.name || 'Untitled')}</b></span><span class="muted">${saved ? 'saved ' + new Date().toLocaleTimeString() : 'auto-saved'}</span>`;
-    const pt = $('#projTitle'); if (pt) { pt.textContent = app.proj.name || 'Untitled'; const k = $('#projKind'); k.textContent = app.readOnly ? 'Example · read-only' : 'My project'; k.className = 'chip-tag ' + (app.readOnly ? 'ex' : 'mine'); }
+    setProjectTitle(app.proj.name);
+    const k = $('#projKind'); if (k) { k.textContent = app.readOnly ? 'Example · read-only' : 'My project'; k.className = 'chip-tag ' + (app.readOnly ? 'ex' : 'mine'); }
+    syncExampleTip(); syncDocTitle();
     const bc = $('#bCopy'); if (bc) bc.onclick = () => makeCopy(false);
     const pn = $('#pbName'); if (pn) pn.onclick = () => { const n = prompt('Rename project', app.proj.name); if (n) { app.proj.name = n; store.rename(app.proj.id, n); renderBanner(true); } };
   }
@@ -220,7 +232,69 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   // ---------------- runtimes ----------------
   function sendRun(m) { if (app.run && app.run.ws && app.run.ws.readyState === 1) app.run.ws.send(JSON.stringify(m)); }
   function espPart() { return app.proj.parts.find((q) => q.type === 'esp32'); }
-  function setStatus(kind, text) { $('#stDot').className = 'dot ' + kind; $('#stText').textContent = text; document.body.classList.toggle('busy', kind === 'busy'); document.body.classList.toggle('running', kind === 'run'); const st = $('#stage'); if (st) st.classList.toggle('live', kind === 'run'); }
+  function statusFace(kind, text) {
+    const t = String(text || '').trim();
+    if (kind === 'run' || /^running\b/i.test(t)) return { short: 'Running', full: t || 'Running' };
+    if (kind === 'busy') {
+      const queued = app.compilePhase === 'queued' || /\bqueued\b|ahead of yours|position \d|waiting for another build/i.test(t);
+      return queued ? { short: 'Queued', full: t || 'Queued' } : { short: 'Building…', full: t || 'Building…' };
+    }
+    if (!t || /^(idle|stopped)$/i.test(t)) return { short: 'Idle', full: t ? (t === 'idle' || t === 'stopped' ? 'Idle' : t) : 'Idle' };
+    if (t === 'error') return { short: 'Run error', full: 'error' };
+    return { short: t, full: t };
+  }
+  let statusWord = 'Idle';
+  function statusShort(word) {
+    if (word === 'Building…' || word === 'Building...') return 'Build';
+    if (word === 'Queued') return 'Wait';
+    if (word === 'Running') return 'Run';
+    if (word === 'Idle') return 'Idle';
+    if (word === 'Run error') return 'Error';
+    const one = String(word || '').split(/\s+/)[0] || 'Status';
+    return one.length > 8 ? one.slice(0, 8) : one;
+  }
+  function applyStatusTier(tier) {
+    const st = document.getElementById && document.getElementById('status');
+    const pill = document.getElementById && document.getElementById('stText');
+    if (!st || !pill) return;
+    const word = statusWord || 'Idle';
+    pill.textContent = tier === 1 ? statusShort(word) : word;
+    if (!st.classList || !st.setAttribute || !st.removeAttribute) return;
+    st.classList.toggle('st-short', tier === 1);
+    st.classList.toggle('st-icon', tier === 2);
+    pill.textContent = tier === 1 ? statusShort(word) : word;
+    if (tier === 2) {
+      st.setAttribute('role', 'img');
+      st.setAttribute('aria-label', word);
+      if (pill.removeAttribute) pill.removeAttribute('aria-label');
+    } else if (tier === 1 && pill.textContent !== word) {
+      st.removeAttribute('role');
+      st.removeAttribute('aria-label');
+      if (pill.setAttribute) pill.setAttribute('aria-label', word);
+    } else {
+      st.removeAttribute('role');
+      st.removeAttribute('aria-label');
+      if (pill.removeAttribute) pill.removeAttribute('aria-label');
+    }
+  }
+  function paintStatus(short, full) {
+    statusWord = short || 'Idle';
+    const sentence = full || statusWord;
+    const st = document.getElementById && document.getElementById('status');
+    if (st && st.setAttribute) st.setAttribute('title', sentence);
+    const live = document.getElementById && document.getElementById('stLive');
+    if (live) live.textContent = sentence;
+    applyStatusTier(0);
+    if (typeof syncHeaderFit === 'function') syncHeaderFit();
+  }
+  function setStatus(kind, text) {
+    const face = statusFace(kind, text);
+    const dot = $('#stDot'); if (dot) dot.className = 'dot ' + kind;
+    paintStatus(face.short, face.full);
+    document.body.classList.toggle('busy', kind === 'busy');
+    document.body.classList.toggle('running', kind === 'run');
+    const st = $('#stage'); if (st) st.classList.toggle('live', kind === 'run');
+  }
   window.addEventListener('pagehide', (ev) => { if (ev.persisted || !app.run || app.run.kind !== 'qemu') return; if (app.run.ws && app.run.ws.readyState === 1) { try { app.run.ws.send(JSON.stringify({ t: 'stop', why: STOP_ON_CLOSE ? 'user' : 'pagehide' })); } catch (e) { /* closing */ } if (STOP_ON_CLOSE) try { clStorage.session.removeItem('esp32run'); } catch (e) { /* none */ } } });
   // ?keeprun=0 restores the old "closing the tab stops QEMU" behaviour; by default a closed/discarded/reloaded tab can
   // re-attach to its still-running QEMU session (saved in sessionStorage), and the server reaps it after SIM_RESUME_GRACE.
@@ -256,10 +330,11 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   };
   function stopRun() {
     const r = app.run; app.run = null; if (!r) return; try { clStorage.session.removeItem('esp32run'); } catch (e) { /* */ }
-    clearTimeout(r.retryT); clearInterval(r.hbT); document.body.classList.remove('reconnecting');
+    clearTimeout(r.retryT); clearInterval(r.hbT); clearInterval(r.poll); r.poll = null; document.body.classList.remove('reconnecting');
     if (r.ws) { try { r.ws.send(JSON.stringify({ t: 'stop', why: 'stop button' })); r.ws.close(); } catch (e) { /* closed */ } }
     if (r.sketch) r.sketch.stop();
     const e = espPart(); if (e) app.sim.espRuntime(e).reset(); app.sim.dirty = true; setStatus('idle', 'stopped');
+    setCompilePhase('idle');
   }
   // A firmware-cache hit must not keep the stage lines a previous build (or this
   // request's progress poll) wrote into the log. One summary line replaces them.
@@ -272,19 +347,156 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     return rest.length ? rest.join('\n') + '\n' : '';
   }
   let compileBusy = false;
+  const BUILDING_TEXT = 'Building your code… the first build takes longer.';
+  const QUEUE_FALLBACK = 'Waiting for another build to finish…';
+  // One phase for the Run button and the status line: idle, queued, building, running.
+  // A 429, a compile error, and a dropped socket return to idle.
+  function queuedCopy(wait) {
+    const msg = wait && typeof wait.message === 'string' ? wait.message.trim() : '';
+    const bare = !msg || msg === 'Waiting…' || msg === 'Waiting';
+    const stock = /^Waiting for another build to finish…/.test(msg);
+    let pos = null;
+    if (wait && wait.position != null && wait.position !== '') {
+      const n = Number(wait.position);
+      if (Number.isFinite(n) && n >= 1 && n < 1e6) pos = Math.floor(n);
+    }
+    if (!bare && !stock) {
+      if (pos != null && pos > 1 && !new RegExp('(?:^|\\D)' + pos + '(?:\\D|$)').test(msg)) {
+        const sep = /[.!?…]$/.test(msg) ? ' ' : '. ';
+        return msg + sep + 'Position ' + pos + '.';
+      }
+      return msg;
+    }
+    if (pos != null && pos > 1) return 'Another build is ahead of yours. You are number ' + pos + '.';
+    if (pos === 1) return 'Another build is ahead of yours. Yours starts next.';
+    if (!bare && stock) return msg;
+    return QUEUE_FALLBACK;
+  }
   function setRunLabel(text) {
     const label = $('#bRun') && $('#bRun').querySelector('span');
     if (label) label.textContent = text;
   }
-  function setRunBusy(on) {
-    compileBusy = !!on;
+  let lastQueueDetail = '';
+  const stripDown = new Set();
+  function setCompilePhase(phase, detail) {
+    const next = phase === 'queued' || phase === 'building' || phase === 'running' ? phase : 'idle';
+    app.compilePhase = next;
+    compileBusy = next === 'queued' || next === 'building';
+    const sentence = next === 'queued' ? (detail || QUEUE_FALLBACK) : next === 'building' ? BUILDING_TEXT : '';
+    if (next === 'queued') lastQueueDetail = detail || '';
+    const short = next === 'queued' ? 'Queued' : next === 'building' ? 'Building…' : next === 'running' ? 'Running' : '';
+    if (short) paintStatus(short, sentence || short);
+    else if (!statusWord || statusWord === 'Queued' || statusWord === 'Building…' || statusWord === 'Running') paintStatus('Idle', 'Idle');
+    const buttonLabel = next === 'queued' ? 'Queued' : next === 'building' ? 'Building…' : 'Run';
     const b = $('#bRun');
-    if (!b) return;
-    b.disabled = !!on;
-    b.classList.toggle('spinning', !!on);
-    b.setAttribute('aria-busy', on ? 'true' : 'false');
-    setRunLabel(on ? 'Compiling…' : 'Run');
+    if (b) {
+      b.disabled = compileBusy;
+      b.classList.toggle('spinning', compileBusy);
+      b.setAttribute('aria-busy', compileBusy ? 'true' : 'false');
+      const title = compileBusy ? sentence : 'Compile & run (Ctrl+Enter)';
+      b.title = title;
+      b.setAttribute('title', title);
+      setRunLabel(buttonLabel);
+    }
+    const narrow = !!(window.matchMedia && window.matchMedia('(max-width: 640px)').matches);
+    const showToast = !!(sentence && narrow);
+    const showStrip = !!(sentence && !narrow);
+    const strip = document.getElementById && document.getElementById('compileStrip');
+    if (strip) {
+      strip.textContent = sentence;
+      strip.hidden = !showStrip;
+      strip.setAttribute('aria-hidden', showStrip ? 'false' : 'true');
+    }
+    const toast = document.getElementById && document.getElementById('mCompileToast');
+    if (toast) {
+      toast.textContent = sentence;
+      toast.hidden = !showToast;
+      toast.setAttribute('aria-hidden', showToast ? 'false' : 'true');
+    }
+    if (window.Mobile && typeof window.Mobile.syncIgnite === 'function') window.Mobile.syncIgnite();
+    syncStripMetrics();
+    if (typeof syncHeaderFit === 'function') syncHeaderFit();
   }
+  function shownChrome(el) {
+    if (!el || typeof getComputedStyle !== 'function') return null;
+    const s = getComputedStyle(el);
+    if (s.display === 'none' || s.visibility === 'hidden') return null;
+    const r = el.getBoundingClientRect();
+    if (r.height < 1 || r.width < 1) return null;
+    return r;
+  }
+  // --strip-top is the bottom of whatever top chrome is actually on screen (the bar, plus the ticker when it is shown).
+  function syncStripMetrics() {
+    try {
+      const root = document.documentElement;
+      if (!root || !root.style || typeof root.style.setProperty !== 'function') return;
+      if (typeof getComputedStyle !== 'function') return;
+      const bar = shownChrome(document.getElementById('top'));
+      const ticker = shownChrome(document.getElementById('mTicker'));
+      let edge = 0;
+      if (bar) edge = Math.max(edge, bar.bottom);
+      if (ticker) edge = Math.max(edge, ticker.bottom);
+      root.style.setProperty('--strip-top', edge + 'px');
+      const strip = document.getElementById('compileStrip');
+      const open = !!(strip && !strip.hidden && shownChrome(strip));
+      if (open) {
+        root.style.setProperty('--strip-h', strip.getBoundingClientRect().height + 'px');
+        if (root.classList) root.classList.add('strip-on');
+      } else if (stripDown.size > 0 && root.classList && root.classList.contains('strip-on')) {
+        // A part drag uses this translate. Dropping it before the pointer ends jumps the part.
+      } else {
+        root.style.setProperty('--strip-h', '0px');
+        if (root.classList) root.classList.remove('strip-on');
+      }
+    } catch (e) {}
+  }
+  let stripObserver = null;
+  function watchStripChrome() {
+    syncStripMetrics();
+    if (typeof ResizeObserver !== 'function' || stripObserver) return;
+    stripObserver = new ResizeObserver(() => syncStripMetrics());
+    const attach = () => {
+      ['top', 'mTicker', 'compileStrip'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el && !el.__stripWatch) { stripObserver.observe(el); el.__stripWatch = true; }
+      });
+    };
+    attach();
+    if (!document.getElementById('mTicker') && typeof MutationObserver === 'function' && document.body) {
+      const mo = new MutationObserver(() => { if (document.getElementById('mTicker')) { attach(); mo.disconnect(); syncStripMetrics(); } });
+      mo.observe(document.body, { childList: true, subtree: true });
+    }
+    window.addEventListener('resize', syncStripMetrics);
+    window.addEventListener('pointerdown', (e) => { if (e && e.pointerId != null) stripDown.add(e.pointerId); }, true);
+    const releaseStrip = (e) => {
+      if (!e || e.pointerId == null || !stripDown.has(e.pointerId)) return;
+      stripDown.delete(e.pointerId);
+      if (!stripDown.size) setTimeout(syncStripMetrics, 0);
+    };
+    window.addEventListener('pointerup', releaseStrip, true);
+    window.addEventListener('pointercancel', releaseStrip, true);
+    window.addEventListener('lostpointercapture', releaseStrip, true);
+    const reapplyStrip = () => {
+      const phase = app.compilePhase;
+      if (phase === 'queued') setCompilePhase('queued', lastQueueDetail);
+      else if (phase === 'building') setCompilePhase('building');
+      else syncStripMetrics();
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(syncStripMetrics);
+    };
+    const listenMq = (q) => {
+      if (!window.matchMedia) return;
+      const mq = window.matchMedia(q);
+      if (mq.addEventListener) mq.addEventListener('change', reapplyStrip);
+      else if (mq.addListener) mq.addListener(reapplyStrip);
+    };
+    listenMq('(max-width: 820px), (pointer: coarse) and (max-height: 520px)');
+    listenMq('(max-width: 640px)');
+  }
+  app.syncStripMetrics = syncStripMetrics;
+  function setRunBusy(on) { setCompilePhase(on ? 'building' : 'idle'); }
+  app.queuedCopy = queuedCopy;
+  app.setCompilePhase = setCompilePhase;
+  app.BUILDING_TEXT = BUILDING_TEXT;
   function tabClientId() {
     try {
       let id = clStorage.session.getItem('esp32client');
@@ -318,30 +530,32 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     }
     const run = app.run = { kind: 'qemu', t0: performance.now() };
     app.netlog.add({ k: 'info', msg: `—— run: ${app.proj.name || 'sketch'} ——` });
-    setRunBusy(true);
-    setStatus('busy', 'compiling…'); $('#buildLog').textContent = '';
+    setCompilePhase('building');
+    setStatus('busy', BUILDING_TEXT); $('#buildLog').textContent = '';
     let res;
     const clientHeaders = { 'X-Client-Id': tabClientId() };
     let shownWait = '';
+    let holdBuilding = false;
     try {
-      const bl = $('#buildLog'); bl.textContent = 'compiling…\n';
+      const bl = $('#buildLog'); bl.textContent = BUILDING_TEXT + '\n';
       const poll = async () => {
         try {
           const q = await (await fetch('api/compile/progress', { headers: clientHeaders })).json();
           if (app.run !== run || !run.poll || run.settled) return;
-          if (q.wait && q.wait.message) {
-            setRunLabel('Waiting…');
-            setStatus('busy', q.wait.message);
-            if (shownWait !== q.wait.message) {
-              shownWait = q.wait.message;
-              bl.textContent = q.wait.message + '\n';
-              serialAppend('\n[' + q.wait.message + ']\n');
+          const waiting = q.wait && (q.wait.message || q.wait.position != null || q.wait.reason);
+          if (waiting) {
+            const copy = queuedCopy(q.wait);
+            setCompilePhase('queued', copy);
+            setStatus('busy', copy);
+            if (shownWait !== copy) {
+              shownWait = copy;
+              bl.textContent = copy + '\n';
+              serialAppend('\n[' + copy + ']\n');
             }
-          } else if (q.unpacking) setStatus('busy', `unpacking toolchain… ${Math.round((q.unpackProgress || 0) * 100)}%`);
-          else if (q.active) {
-            setRunLabel('Compiling…');
-            const stage = q.stage || 'compiling…';
-            bl.textContent = q.log || (stage + '\n'); bl.scrollTop = bl.scrollHeight; setStatus('busy', `${stage} ${Math.round(q.elapsed)}s`);
+          } else if (q.unpacking || q.active) {
+            setCompilePhase('building');
+            setStatus('busy', BUILDING_TEXT);
+            if (q.active) { const stage = q.stage || 'compiling…'; bl.textContent = q.log || (stage + '\n'); bl.scrollTop = bl.scrollHeight; }
           }
         } catch (e) {}
       };
@@ -357,6 +571,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
         const msg = (reason === 'full' || reason === 'timeout') && body.log
           ? body.log
           : `Please wait ${wait} second${wait === 1 ? '' : 's'} before compiling again`;
+        setCompilePhase('idle');
         setStatus('warn', msg); toast(msg);
         $('#buildLog').textContent = msg + '\n';
         serialAppend('\n[' + msg + ']\n');
@@ -365,11 +580,12 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       }
       res = await r.json();
       run.settled = true;
-    } catch (e) { clearInterval(run.poll); run.poll = null; setStatus('err', 'backend unreachable'); serialAppend('\n[backend] cannot reach /api/compile — start server/server.py (see README) or switch to JS sketch mode.\n'); app.run = null; return; }
-    finally { setRunBusy(false); }
+      holdBuilding = !!(res && res.ok && app.run === run);
+    } catch (e) { clearInterval(run.poll); run.poll = null; setCompilePhase('idle'); setStatus('err', 'backend unreachable'); serialAppend('\n[backend] cannot reach /api/compile — start server/server.py (see README) or switch to JS sketch mode.\n'); app.run = null; return; }
+    finally { if (!holdBuilding || app.run !== run) setCompilePhase('idle'); }
     if (app.run !== run) return;
     $('#buildLog').textContent = res.cached ? cachedCompileLog(res.log) : (res.log || ''); if (app.codeview) app.codeview.setLog(res.ok ? '' : (res.log || ''));
-    if (!res.ok) { setStatus('err', 'compile error'); $('#buildDet').open = true; document.querySelector('[data-tab=build]').click(); if (app.codeview) app.codeview.setLog(res.log || ''); serialAppend('\n[compile failed — see build log in Code tab]\n'); app.run = null; return; }
+    if (!res.ok) { setCompilePhase('idle'); setStatus('err', 'compile error'); $('#buildDet').open = true; document.querySelector('[data-tab=build]').click(); if (app.codeview) app.codeview.setLog(res.log || ''); serialAppend('\n[compile failed — see build log in Code tab]\n'); app.run = null; return; }
     serialAppend(`\n[compiled ${res.cached ? '(cached)' : ''}${res.netShim ? ' + QemuNet shim' : ''}; starting QEMU]\n`);
     run.bid = res.id; run.lastN = 0; run.tries = 0; connectRun(run);
   }
@@ -381,10 +597,10 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const q = resume ? `?sid=${run.sid}&since=${run.lastN}` : '';
     let ws;
     try { ws = run.ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + location.pathname.replace(/[^/]*$/, '') + 'api/run/' + run.bid + q); }
-    catch (e) { setRunBusy(false); setStatus('err', 'connection lost'); app.run = null; return; }
+    catch (e) { setCompilePhase('idle'); setStatus('err', 'connection lost'); app.run = null; return; }
     ws.onopen = () => {
       ws.send(JSON.stringify({ t: 'sync', on: true })); ws.send(JSON.stringify({ t: 'i2cfast', on: new URLSearchParams(location.search).get('i2cfast') !== '0' })); if (!app.netlog.enabled) ws.send(JSON.stringify({ t: 'netlog', on: false })); if (new URLSearchParams(location.search).get('gcache') === '0') ws.send(JSON.stringify({ t: 'gcache', on: false }));
-      app.spiMask = -1; spiCfg(); setStatus('run', 'running (QEMU)'); document.body.classList.remove('reconnecting'); run.tq = run.tq || performance.now();
+      app.spiMask = -1; spiCfg(); setCompilePhase('running'); setStatus('run', 'running (QEMU)'); document.body.classList.remove('reconnecting'); run.tq = run.tq || performance.now();
       if (resume) { ws.send(JSON.stringify({ t: 'inv' })); app.lastBits = null; replyInputs(true); app.netlog.add({ k: 'info', msg: `websocket resumed (attempt ${run.tries})` }); toast('Reconnected — simulation kept running'); }
       run.tries = 0; run.openedAt = Date.now();
     };
@@ -405,8 +621,8 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const lost = () => {
       if (app.run !== run || run.ws !== ws) return;
       run.ws = null; ws.onclose = ws.onmessage = null; try { ws.close(); } catch (e) { /* already closed */ }
-      // A dropped socket is no longer a compile. The Run control must not stay on Compiling….
-      setRunBusy(false);
+      // A dropped socket is no longer a compile. The Run control must not stay on Building….
+      setCompilePhase('idle');
       if (run.ended || !run.sid) { setStatus(run.ended ? 'idle' : 'err', run.ended ? 'QEMU exited' : 'connection lost'); document.body.classList.remove('reconnecting'); app.run = null; return; }
       if (!run.lostAt || run.tries === 0) run.lostAt = Date.now();
       if (run.grace && Date.now() - run.lostAt > run.grace + 600000) { setStatus('err', 'connection lost'); document.body.classList.remove('reconnecting'); serialAppend('\n[connection lost — run expired on the server]\n'); app.run = null; return; }
@@ -947,7 +1163,228 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       if (!app.run || directReleaseOk(p, st) || (st.gpioAtPress != null && !directButton(p) && (app.gpioCount || 0) - st.gpioAtPress >= (p.type === 'keypad' ? KP_SCANS : MIN_SCANS)) || performance.now() - st.tPress >= MAX_LATCH_MS) press(p, false); }
   }
   setInterval(latchTick, 20);
+  const DOC_BASE = 'ESP32 Circuit Lab — real-firmware ESP32 + electronics simulator';
+  function syncExampleTip() {
+    const name = app.proj && (app.proj.example || app.readOnly) ? (app.proj.name || '') : '';
+    const text = name ? 'Examples — ' + name : 'Examples';
+    const tip = document.getElementById && document.getElementById('exTip');
+    if (tip) tip.textContent = text;
+    const sel = document.getElementById && document.getElementById('selExample');
+    if (sel && sel.setAttribute) sel.setAttribute('title', text === 'Examples' ? 'Examples (open read-only; edits go to a copy)' : text);
+    const phone = !!(document.body && document.body.classList.contains('m'));
+    const btn = document.getElementById && document.getElementById('bExamples');
+    if (btn && btn.setAttribute) {
+      // One control is named Examples. On a phone the More-sheet label already
+      // says Examples, so the hidden header button drops that aria-label.
+      // Back on the desktop the button keeps it, and the phone select takes
+      // a different name so getByLabel('Examples') stays at one match.
+      if (phone) btn.removeAttribute('aria-label');
+      else btn.setAttribute('aria-label', 'Examples');
+      btn.setAttribute('title', text);
+    }
+    const phoneSel = document.getElementById && document.getElementById('mSelExample');
+    if (phoneSel && phoneSel.setAttribute) {
+      if (phone) phoneSel.removeAttribute('aria-label');
+      else phoneSel.setAttribute('aria-label', 'Sample projects');
+    }
+  }
+  function syncDocTitle() {
+    const name = (app.proj && app.proj.name) || '';
+    const el = document.getElementById && document.getElementById('projTitle');
+    const crumb = el && el.closest ? el.closest('.crumb') : null;
+    let shown = false, clipped = false;
+    try {
+      if (el && crumb && typeof getComputedStyle === 'function') {
+        const cs = getComputedStyle(crumb);
+        const rects = el.getClientRects ? el.getClientRects() : [];
+        shown = cs.display !== 'none' && cs.visibility !== 'hidden' && rects.length > 0;
+        clipped = shown && el.scrollWidth > el.clientWidth + 1;
+      }
+    } catch (e) {}
+    if (typeof document !== 'undefined') document.title = name && (!shown || clipped) ? name + ' — ' + DOC_BASE : DOC_BASE;
+  }
+  // Content box of #top. Same number the topbar container queries use, so a classic
+  // scrollbar is included and window.innerWidth is not.
+  function headerInline() {
+    const top = document.getElementById && document.getElementById('top');
+    if (!top || typeof top.clientWidth !== 'number') return null;
+    let pad = 0;
+    try {
+      if (typeof getComputedStyle === 'function') {
+        const cs = getComputedStyle(top);
+        pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+      }
+    } catch (e) {}
+    return top.clientWidth - pad;
+  }
+  function placeProj() {
+    const proj = document.getElementById && document.getElementById('tbProj');
+    const menu = document.getElementById && document.getElementById('tbMore');
+    const fold = document.getElementById && document.getElementById('tbFold');
+    const more = document.getElementById && document.getElementById('bMore');
+    if (!proj || !menu || !fold || !more) return;
+    const box = headerInline();
+    const phone = !!(document.body && document.body.classList.contains('m'));
+    const tight = box != null && box <= 1156 && !phone;
+    if (tight) { if (proj.parentElement !== menu) menu.insertBefore(proj, menu.firstChild); }
+    else if (proj.parentElement !== fold) fold.insertBefore(proj, more);
+  }
+  function closeMore() {
+    const menu = document.getElementById('tbMore');
+    const more = document.getElementById('bMore');
+    if (menu) menu.classList.remove('open');
+    if (more) more.setAttribute('aria-expanded', 'false');
+  }
+  let headerFitKey = '';
+  function syncProjTitle() {
+    setProjectTitle((app.proj && app.proj.name) || '');
+  }
+  function titleNeedsRoom() {
+    const title = document.getElementById && document.getElementById('projTitle');
+    const phone = !!(document.body && document.body.classList.contains('m'));
+    if (!title || phone) return false;
+    const cs = getComputedStyle(title);
+    if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+    return title.scrollWidth > title.clientWidth + 0.5;
+  }
+  function headerOverflows() {
+    const top = document.getElementById && document.getElementById('top');
+    if (!top || top.clientWidth < 1) return false;
+    return top.scrollWidth > top.clientWidth + 0.5;
+  }
+  function syncHeaderFit() {
+    placeProj();
+    syncProjTitle();
+    syncExampleTip();
+    const top = document.getElementById && document.getElementById('top');
+    const crumb = document.querySelector && document.querySelector('#top .crumb');
+    if (crumb && crumb.classList) crumb.classList.remove('crumb-hide');
+    const phone = !!(document.body && document.body.classList.contains('m'));
+    if (!top || typeof top.clientWidth !== 'number' || top.clientWidth < 1) {
+      headerFitKey = '';
+      applyStatusTier(0);
+      syncDocTitle();
+      return;
+    }
+    // The name stays on screen. When it would ellipsize, or the bar overflows, shorten
+    // the status word first, then drop it to the dot. The title may still ellipsize,
+    // but it keeps a 12ch minimum and is never hidden.
+    const title = document.getElementById && document.getElementById('projTitle');
+    const titleText = title ? title.textContent : '';
+    const runLabel = document.querySelector && document.querySelector('#bRun span');
+    const runText = runLabel ? runLabel.textContent : '';
+    const key = top.clientWidth + (phone ? 'p' : 'd') + titleText + '|' + statusWord + '|' + runText;
+    const st = document.getElementById('status');
+    let tier = st && st.classList && st.classList.contains('st-icon') ? 2 : st && st.classList && st.classList.contains('st-short') ? 1 : 0;
+    // A new width or label starts from the full word. The same key still steps up
+    // when a later layout (fonts, the Examples button) makes the bar overflow.
+    if (key !== headerFitKey) {
+      tier = 0;
+      applyStatusTier(0);
+    }
+    if ((headerOverflows() || titleNeedsRoom()) && tier < 1) { applyStatusTier(1); tier = 1; }
+    if ((headerOverflows() || titleNeedsRoom()) && tier < 2) { applyStatusTier(2); tier = 2; }
+    headerFitKey = key;
+    syncDocTitle();
+  }
+  function wireHeaderChrome() {
+    placeProj();
+    const more = document.getElementById('bMore');
+    const menu = document.getElementById('tbMore');
+    if (more && menu && !more.__wired) {
+      more.__wired = true;
+      more.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const open = !menu.classList.contains('open');
+        menu.classList.toggle('open', open);
+        more.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
+      document.addEventListener('click', (e) => {
+        if (!menu.classList.contains('open')) return;
+        if (e.target && e.target.closest && e.target.closest('#tbFold')) return;
+        closeMore();
+      });
+      document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMore(); });
+      menu.addEventListener('click', (e) => { if (e.target && e.target.closest && e.target.closest('button, label')) closeMore(); });
+    }
+    const ex = document.getElementById('bExamples');
+    const sel = document.getElementById('selExample');
+    const exList = document.getElementById('exList');
+    function closeExamples() {
+      if (exList) { exList.hidden = true; exList.replaceChildren(); }
+      if (ex) ex.setAttribute('aria-expanded', 'false');
+    }
+    function openExamples() {
+      if (!ex || !sel || !exList) return;
+      exList.replaceChildren();
+      for (const opt of sel.options) {
+        if (!opt.value) continue;
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.setAttribute('role', 'option');
+        item.textContent = opt.textContent;
+        item.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          sel.value = opt.value;
+          sel.dispatchEvent(new Event('change'));
+          closeExamples();
+        });
+        exList.appendChild(item);
+      }
+      exList.hidden = false;
+      ex.setAttribute('aria-expanded', 'true');
+      exList.style.left = '0';
+      exList.style.right = 'auto';
+      const edge = exList.getBoundingClientRect().right;
+      if (edge > document.documentElement.clientWidth - 4) {
+        exList.style.left = 'auto';
+        exList.style.right = '0';
+      }
+    }
+    if (ex && sel && exList && !ex.__wired) {
+      ex.__wired = true;
+      ex.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (ex.getAttribute('aria-expanded') === 'true') closeExamples();
+        else openExamples();
+      });
+      document.addEventListener('click', (ev) => {
+        if (ex.getAttribute('aria-expanded') !== 'true') return;
+        if (ev.target && ev.target.closest && ev.target.closest('#exSlot')) return;
+        closeExamples();
+      });
+      document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closeExamples(); });
+      ex.addEventListener('contextmenu', (e) => e.preventDefault());
+      let hold = 0;
+      const arm = () => { clearTimeout(hold); hold = setTimeout(() => ex.classList.add('tip-hold'), 450); };
+      const end = () => { clearTimeout(hold); ex.classList.remove('tip-hold'); };
+      ex.addEventListener('pointerdown', arm);
+      ex.addEventListener('pointerup', end);
+      ex.addEventListener('pointercancel', end);
+      ex.addEventListener('pointerleave', end);
+    }
+    const listen = (q) => {
+      if (!window.matchMedia) return;
+      const mq = window.matchMedia(q);
+      const fn = () => syncHeaderFit();
+      if (mq.addEventListener) mq.addEventListener('change', fn);
+      else if (mq.addListener) mq.addListener(fn);
+    };
+    listen('(max-width: 820px), (pointer: coarse) and (max-height: 520px)');
+    if (typeof ResizeObserver === 'function' && document.getElementById('top') && !document.getElementById('top').__hdrWatch) {
+      const top = document.getElementById('top');
+      top.__hdrWatch = true;
+      new ResizeObserver(() => syncHeaderFit()).observe(top);
+    }
+    syncExampleTip();
+    syncHeaderFit();
+  }
+  app.syncHeaderFit = syncHeaderFit;
+  app.syncExampleTip = syncExampleTip;
+  app.setProjectTitle = setProjectTitle;
   function init() {
+    watchStripChrome();
+    wireHeaderChrome();
     app.editor = new Editor($('#stage'), {
       changed: (topo) => {
         if (window.Netlist && app.proj) { try { Netlist.syncFromWires(app.proj); } catch (e) { /* the wires stay; the next load rebuilds the netlist */ } }
@@ -1222,6 +1659,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   // and a key event in that window must not read proj.parts.
   window.addEventListener('keydown', onWindowKeyDown);
   window.addEventListener('keyup', onWindowKeyUp);
+  placeProj();
   window.addEventListener('DOMContentLoaded', init);
 })();
 

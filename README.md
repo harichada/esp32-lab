@@ -5,6 +5,8 @@ patched Espressif QEMU with virtual parts (LEDs, buttons, keypad, OLED/LCD/TFT, 
 
 **Live:** http://129.158.200.25/
 
+Header fit on every UI change: `npm run test:e2e`
+
 ## Structure
 | Path | What |
 |---|---|

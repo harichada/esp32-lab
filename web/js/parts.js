@@ -976,7 +976,166 @@
     return { x: seat.x, y: seat.y, moved: seat.x !== part.x || seat.y !== part.y };
   }
 
-  const api = { T, fmt, parseVal, parseProp, stampResistance, resistanceWarning, invalidValueWarning, WIRE_R, scopeChannel, bands, espGpio, ESP_TOP, ESP_BOT, INPUT_ONLY, STRAPPING, ADC1, ADC2, rotPt, orientPt, pinWorld, bodySpin, partTransform, canPhysicalFlip, isTwoTerminal, ALLOW_MIRROR_MULTIPIN, NO_FLIP_TIP, seating, placeNewPart, placeDroppedPart, placeOnEmptyStrips, reseat, G, VTH, esc, LEDCOL };
+  // Artwork extent in world space. size() and the pin box miss horns, labels and
+  // the USB plug, so a fit that only uses those clips the drawing. Null when the
+  // picture cannot be read; the caller keeps its own fallback box.
+  function gfxBox(part) {
+    const spec = T[part && part.type];
+    if (!spec || typeof spec.svg !== 'function') return null;
+    let svg = '';
+    try { svg = spec.svg(part, null) || ''; } catch (e) { return null; }
+    if (typeof svg !== 'string') return null;
+    const local = svgLocalBox(svg);
+    if (!local || !(local.w > 0) || !(local.h > 0) || local.w > 4000 || local.h > 4000) return null;
+    let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+    for (const [a, b] of [[local.x, local.y], [local.x + local.w, local.y], [local.x, local.y + local.h], [local.x + local.w, local.y + local.h]]) {
+      const [rx, ry] = orientPt(a, b, part);
+      x0 = Math.min(x0, part.x + rx); y0 = Math.min(y0, part.y + ry);
+      x1 = Math.max(x1, part.x + rx); y1 = Math.max(y1, part.y + ry);
+    }
+    if (!(x1 > x0) || !(y1 > y0)) return null;
+    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  }
+  function svgLocalBox(svg) {
+    const src = String(svg).replace(/<!--[\s\S]*?-->/g, '');
+    const skipTag = { defs: 1, lineargradient: 1, radialgradient: 1, filter: 1, clippath: 1, mask: 1, pattern: 1, marker: 1, symbol: 1, style: 1, title: 1, desc: 1, metadata: 1 };
+    const fontOf = { plbl: 8, 'bb-num': 6, 'bb-lbl': 6, 'esp-t': 12, 'esp-t2': 7, 'esp-t3': 5, 'esp-t4': 3.4, 'esp-pl': 5.5, 'esp-can-t': 5.4, 'esp-can-t2': 3.6, 'to92-t': 6, 'pb-key': 6.5, 'pb-key2': 6.5, 'key-t': 6.6, 'bat-t': 7, 'sup-t': 8, 'meter-t': 8, 'ccap-t': 4.2, 'ecap-t': 4.2, 'free-lbl': 12 };
+    const midClass = /\b(plbl|bb-num|bb-lbl|esp-t3|esp-t4|esp-can-t|esp-can-t2|to92-t|pb-key|pb-key2|key-t|bat-t|sup-t|meter-t|ccap-t|ecap-t)\b/;
+    const stack = [[1, 0, 0, 1, 0, 0]];
+    let skip = 0, any = false, x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    const mul = (A, B) => [A[0] * B[0] + A[2] * B[1], A[1] * B[0] + A[3] * B[1], A[0] * B[2] + A[2] * B[3], A[1] * B[2] + A[3] * B[3], A[0] * B[4] + A[2] * B[5] + A[4], A[1] * B[4] + A[3] * B[5] + A[5]];
+    const apply = (m, x, y) => [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
+    const addP = (m, x, y) => {
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      const p = apply(m, x, y);
+      if (!Number.isFinite(p[0]) || !Number.isFinite(p[1])) return;
+      any = true; x0 = Math.min(x0, p[0]); y0 = Math.min(y0, p[1]); x1 = Math.max(x1, p[0]); y1 = Math.max(y1, p[1]);
+    };
+    const num = (v, d) => { const n = parseFloat(v); return Number.isFinite(n) ? n : d; };
+    const attrsOf = (s) => { const o = {}, re = /([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g; let m; while ((m = re.exec(s))) o[m[1]] = m[2] != null ? m[2] : m[3]; return o; };
+    const styleVal = (style, key) => { if (!style) return ''; const m = new RegExp('(?:^|;)\\s*' + key + '\\s*:\\s*([^;]+)').exec(style); return m ? m[1].trim().replace(/px$/, '') : ''; };
+    const xform = (kind, a) => {
+      if (kind === 'matrix') return [a[0], a[1], a[2], a[3], a[4] || 0, a[5] || 0];
+      if (kind === 'translate') return [1, 0, 0, 1, a[0] || 0, a[1] || 0];
+      if (kind === 'scale') { const sx = a[0] == null ? 1 : a[0], sy = a.length > 1 ? a[1] : sx; return [sx, 0, 0, sy, 0, 0]; }
+      if (kind === 'skewX') { const t = Math.tan((a[0] || 0) * Math.PI / 180); return [1, 0, t, 1, 0, 0]; }
+      if (kind === 'skewY') { const t = Math.tan((a[0] || 0) * Math.PI / 180); return [1, t, 0, 1, 0, 0]; }
+      const ang = (a[0] || 0) * Math.PI / 180, c = Math.cos(ang), s = Math.sin(ang), r = [c, s, -s, c, 0, 0];
+      if (a.length < 3) return r;
+      return mul(mul([1, 0, 0, 1, a[1], a[2]], r), [1, 0, 0, 1, -a[1], -a[2]]);
+    };
+    const parseTransform = (s) => {
+      if (!s) return null;
+      let m = null, hit, re = /(matrix|translate|scale|rotate|skewX|skewY)\s*\(([^)]*)\)/g;
+      while ((hit = re.exec(s))) {
+        const args = hit[2].split(/[\s,]+/).map(parseFloat).filter((n) => Number.isFinite(n));
+        const t = xform(hit[1], args);
+        m = m ? mul(m, t) : t;
+      }
+      return m;
+    };
+    const tracePath = (d) => {
+      const toks = [], re = /([MmLlHhVvCcSsQqTtAaZz])|(-?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)/g; let m;
+      while ((m = re.exec(d || ''))) toks.push(m[1] || m[2]);
+      let i = 0, cx = 0, cy = 0, sx0 = 0, sy0 = 0, cmd = '', qx = 0, qy = 0, lastC = false, lastQ = false;
+      const take = () => parseFloat(toks[i++]);
+      const more = () => i < toks.length && !/^[A-Za-z]$/.test(toks[i]);
+      while (i < toks.length) {
+        if (/^[A-Za-z]$/.test(toks[i])) cmd = toks[i++];
+        else if (!cmd) break;
+        const rel = cmd === cmd.toLowerCase(), c = cmd.toUpperCase();
+        if (c === 'Z') { cx = sx0; cy = sy0; addP(tm, cx, cy); lastC = lastQ = false; continue; }
+        if (!more()) break;
+        if (c === 'M') {
+          const x = take(), y = take(); cx = rel ? cx + x : x; cy = rel ? cy + y : y; sx0 = cx; sy0 = cy; addP(tm, cx, cy); cmd = rel ? 'l' : 'L'; lastC = lastQ = false; continue;
+        }
+        if (c === 'L') { const x = take(), y = take(); cx = rel ? cx + x : x; cy = rel ? cy + y : y; addP(tm, cx, cy); lastC = lastQ = false; }
+        else if (c === 'H') { const x = take(); cx = rel ? cx + x : x; addP(tm, cx, cy); lastC = lastQ = false; }
+        else if (c === 'V') { const y = take(); cy = rel ? cy + y : y; addP(tm, cx, cy); lastC = lastQ = false; }
+        else if (c === 'C') {
+          const x1 = take(), y1 = take(), x2 = take(), y2 = take(), x = take(), y = take();
+          const X1 = rel ? cx + x1 : x1, Y1 = rel ? cy + y1 : y1, X2 = rel ? cx + x2 : x2, Y2 = rel ? cy + y2 : y2, X = rel ? cx + x : x, Y = rel ? cy + y : y;
+          addP(tm, X1, Y1); addP(tm, X2, Y2); addP(tm, X, Y); qx = X2; qy = Y2; lastC = true; lastQ = false; cx = X; cy = Y;
+        } else if (c === 'S') {
+          const x2 = take(), y2 = take(), x = take(), y = take();
+          const X1 = lastC ? 2 * cx - qx : cx, Y1 = lastC ? 2 * cy - qy : cy, X2 = rel ? cx + x2 : x2, Y2 = rel ? cy + y2 : y2, X = rel ? cx + x : x, Y = rel ? cy + y : y;
+          addP(tm, X1, Y1); addP(tm, X2, Y2); addP(tm, X, Y); qx = X2; qy = Y2; lastC = true; lastQ = false; cx = X; cy = Y;
+        } else if (c === 'Q') {
+          const x1 = take(), y1 = take(), x = take(), y = take();
+          const X1 = rel ? cx + x1 : x1, Y1 = rel ? cy + y1 : y1, X = rel ? cx + x : x, Y = rel ? cy + y : y;
+          addP(tm, X1, Y1); addP(tm, X, Y); qx = X1; qy = Y1; lastQ = true; lastC = false; cx = X; cy = Y;
+        } else if (c === 'T') {
+          const x = take(), y = take();
+          const X1 = lastQ ? 2 * cx - qx : cx, Y1 = lastQ ? 2 * cy - qy : cy, X = rel ? cx + x : x, Y = rel ? cy + y : y;
+          addP(tm, X1, Y1); addP(tm, X, Y); qx = X1; qy = Y1; lastQ = true; lastC = false; cx = X; cy = Y;
+        } else if (c === 'A') {
+          const rx = Math.abs(take()), ry = Math.abs(take()); take(); take(); take(); const x = take(), y = take();
+          const X = rel ? cx + x : x, Y = rel ? cy + y : y;
+          addP(tm, cx - rx, cy - ry); addP(tm, cx + rx, cy + ry); addP(tm, X - rx, Y - ry); addP(tm, X + rx, Y + ry); addP(tm, X, Y);
+          lastC = lastQ = false; cx = X; cy = Y;
+        } else break;
+      }
+    };
+    let tm = stack[0];
+    const tagRe = /<(\/?)([A-Za-z][\w:.-]*)\b([^>]*?)(\/?)>/g;
+    let m;
+    while ((m = tagRe.exec(src))) {
+      const closing = m[1] === '/', name = m[2].toLowerCase().replace(/^.*:/, ''), self = m[4] === '/';
+      if (closing) {
+        if (skipTag[name]) skip = Math.max(0, skip - 1);
+        else if ((name === 'g' || name === 'svg' || name === 'a') && stack.length > 1) stack.pop();
+        continue;
+      }
+      if (skipTag[name]) { if (!self) skip++; continue; }
+      if (skip) continue;
+      const attrs = attrsOf(m[3] || '');
+      const localT = parseTransform(attrs.transform);
+      const parent = stack[stack.length - 1];
+      tm = localT ? mul(parent, localT) : parent;
+      if ((name === 'g' || name === 'svg' || name === 'a') && !self) { stack.push(tm); continue; }
+      const pad = Math.min(Math.abs(num(attrs['stroke-width'], 0)) / 2, 8);
+      if (name === 'rect' || name === 'image') {
+        const x = num(attrs.x, 0), y = num(attrs.y, 0), w = num(attrs.width, 0), h = num(attrs.height, 0);
+        addP(tm, x - pad, y - pad); addP(tm, x + w + pad, y - pad); addP(tm, x - pad, y + h + pad); addP(tm, x + w + pad, y + h + pad);
+      } else if (name === 'circle') {
+        const r = num(attrs.r, 0) + pad, cx = num(attrs.cx, 0), cy = num(attrs.cy, 0);
+        addP(tm, cx - r, cy - r); addP(tm, cx + r, cy - r); addP(tm, cx - r, cy + r); addP(tm, cx + r, cy + r);
+      } else if (name === 'ellipse') {
+        const rx = num(attrs.rx, 0) + pad, ry = num(attrs.ry, 0) + pad, cx = num(attrs.cx, 0), cy = num(attrs.cy, 0);
+        addP(tm, cx - rx, cy - ry); addP(tm, cx + rx, cy - ry); addP(tm, cx - rx, cy + ry); addP(tm, cx + rx, cy + ry);
+      } else if (name === 'line') { addP(tm, num(attrs.x1, 0), num(attrs.y1, 0)); addP(tm, num(attrs.x2, 0), num(attrs.y2, 0)); }
+      else if (name === 'polyline' || name === 'polygon') {
+        const pts = (attrs.points || '').trim().split(/[\s,]+/).map(parseFloat).filter((n) => Number.isFinite(n));
+        for (let i = 0; i + 1 < pts.length; i += 2) addP(tm, pts[i], pts[i + 1]);
+      } else if (name === 'path') tracePath(attrs.d || '');
+      else if ((name === 'text' || name === 'tspan') && !self) {
+        const j = src.indexOf('<', tagRe.lastIndex), raw = src.slice(tagRe.lastIndex, j < 0 ? src.length : j);
+        const text = raw.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/\s+/g, ' ').trim();
+        if (!text) continue;
+        const cls = attrs.class || '';
+        let fs = num(styleVal(attrs.style, 'font-size'), NaN);
+        if (!Number.isFinite(fs)) {
+          fs = 0;
+          if (/\bplbl\b/.test(cls) && /\bsmall\b/.test(cls)) fs = 6.5;
+          else for (const k of cls.split(/\s+/)) if (fontOf[k]) fs = Math.max(fs, fontOf[k]);
+          if (!fs) fs = 8;
+        }
+        const anchor = styleVal(attrs.style, 'text-anchor') || attrs['text-anchor'] || (midClass.test(cls) ? 'middle' : 'start');
+        const x = num(attrs.x, 0), y = num(attrs.y, 0);
+        text.split(/\n/).forEach((line, i) => {
+          const w = [...line].length * fs * 0.72, yy = y + i * fs * 1.15;
+          let lx = x;
+          if (anchor === 'middle') lx = x - w / 2; else if (anchor === 'end') lx = x - w;
+          const top = yy - fs * 0.82, bot = yy + fs * 0.28;
+          addP(tm, lx, top); addP(tm, lx + w, top); addP(tm, lx, bot); addP(tm, lx + w, bot);
+        });
+      }
+    }
+    if (!any || !(x1 > x0) || !(y1 > y0)) return null;
+    return { x: x0 - 1, y: y0 - 1, w: x1 - x0 + 2, h: y1 - y0 + 2 };
+  }
+
+  const api = { T, fmt, parseVal, parseProp, stampResistance, resistanceWarning, invalidValueWarning, WIRE_R, scopeChannel, bands, espGpio, ESP_TOP, ESP_BOT, INPUT_ONLY, STRAPPING, ADC1, ADC2, rotPt, orientPt, pinWorld, bodySpin, partTransform, canPhysicalFlip, isTwoTerminal, ALLOW_MIRROR_MULTIPIN, NO_FLIP_TIP, seating, placeNewPart, placeDroppedPart, placeOnEmptyStrips, reseat, gfxBox, G, VTH, esc, LEDCOL };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.Parts = api;
 })(typeof window !== 'undefined' ? window : globalThis);
