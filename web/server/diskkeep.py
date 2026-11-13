@@ -40,7 +40,21 @@ _YAML_PATH = re.compile(r'^\s+path:\s*(.*?)\s*$')
 _COMPILE_LINE = re.compile(r'^\[(\d+(?:\.\d+)?)s\] compile(.*)$', re.M)
 _NETSTACK_KEY = re.compile(r'^[0-9a-f]{16,64}$')
 # Same filter /api/compile applies to the defines array the browser posts.
-_DEFINE_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*(=[A-Za-z0-9_."]*)?$')
+# NAME, NAME=value, or one quoted address NAME="value". The value is 1..64 of
+# [A-Za-z0-9._:-] and must not start with '-'. Any other quote, slash, space,
+# backslash, or flag is rejected. The remote example posts SIM only.
+_DEFINE_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*(=[A-Za-z0-9_.]*)?$')
+_QUOTED_DEFINE_RE = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)="([^"]*)"$')
+_QUOTED_VALUE_RE = re.compile(r'^[A-Za-z0-9._:-]{1,64}$')
+_DANGEROUS_DEFINE = re.compile(r'(?:^|[\s=])-{1,2}[A-Za-z]')
+FLAG_MSG = (
+    'The Defines box only accepts simple names like SIM or FEATURE=1, '
+    'or a quoted address like HOST="192.168.1.50". For anything else, '
+    'put #define NAME "value" at the top of your sketch.')
+_BUILD_KEYS = {
+    'build_properties', 'buildproperties', 'build_property', 'buildproperty',
+    'properties', 'extra_flags', 'compiler_flags', 'build_flags',
+}
 _REMOTE_DEFINES = re.compile(
     r"Wi-Fi/IR TV Remote[\s\S]{0,2000}?defines\s*:\s*\[([^\]]*)\]")
 
@@ -602,11 +616,118 @@ def netstack_key(*, toolchain: str, core: str, shim_hash: str, fqbn: str, define
     return hashlib.sha256('\n'.join(parts).encode()).hexdigest()[:24]
 
 
+def quoted_define_ok(text: str) -> bool:
+    """True for ``NAME="value"`` with one pair of double quotes and a plain value.
+
+    The value matches ``^[A-Za-z0-9._:-]{1,64}$`` and does not start with ``-``.
+    Slashes, spaces, backslashes, and inner quotes do not match.
+    """
+    if not isinstance(text, str):
+        return False
+    match = _QUOTED_DEFINE_RE.fullmatch(text)
+    if not match:
+        return False
+    value = match.group(2)
+    if not value or value.startswith('-'):
+        return False
+    return _QUOTED_VALUE_RE.fullmatch(value) is not None
+
+
+def define_is_dangerous(text: str) -> bool:
+    """True when a posted define would smuggle a compiler flag or a bad quote.
+
+    ``-I``, ``-include``, ``-iquote``, ``-isystem``, ``-imacros``, ``--sysroot``,
+    ``-B``, ``-specs``, ``@file`` and the same shape of flag are rejected, not
+    silently dropped. A quote is rejected too, except one ``NAME="value"``
+    address that :func:`quoted_define_ok` accepts.
+    """
+    if quoted_define_ok(text):
+        return False
+    if any(ch in text for ch in '"\'@/\\'):
+        return True
+    return _DANGEROUS_DEFINE.search(text) is not None
+
+
+def define_is_allowed(text: str) -> bool:
+    """True when ``/api/compile`` may pass this string as one ``-D`` token."""
+    if not isinstance(text, str) or define_is_dangerous(text):
+        return False
+    return quoted_define_ok(text) or _DEFINE_RE.fullmatch(text) is not None
+
+
+def blocked_define_reason(raw) -> str | None:
+    """User-facing error when ``defines`` tries to pass compiler flags. None when it does not."""
+    if raw is None or raw == '' or raw == []:
+        return None
+    if isinstance(raw, str) or not isinstance(raw, (list, tuple)):
+        return FLAG_MSG
+    for item in raw:
+        if isinstance(item, str) and define_is_dangerous(item):
+            return FLAG_MSG
+    return None
+
+
+def blocked_build_request(req) -> bool:
+    """True when the JSON body carries build properties other than ``defines``."""
+    if not isinstance(req, dict):
+        return False
+    return any(str(key).lower() in _BUILD_KEYS for key in req)
+
+
+def flags_are_safe(defines) -> bool:
+    """True when every entry is one ``-D`` token the recipe will not split."""
+    try:
+        items = list(defines)
+    except TypeError:
+        return False
+    return all(define_is_allowed(item) for item in items)
+
+
 def sanitize_defines(raw) -> list[str]:
     """Keep the ``-D`` tokens ``/api/compile`` will actually pass to the compiler."""
-    if not raw:
+    if not raw or isinstance(raw, str):
         return []
-    return [d for d in raw if isinstance(d, str) and _DEFINE_RE.fullmatch(d)]
+    return [d for d in raw if define_is_allowed(d)]
+
+
+def extra_flags_value(defines) -> str:
+    """The ``compiler.cpp.extra_flags`` property value for these defines."""
+    return ' '.join('-D' + d for d in defines)
+
+
+def split_quoted_string(src: str, quote_chars: str = "'\"", accept_empty: bool = False) -> list[str]:
+    """Arduino CLI ``properties.SplitQuotedString`` (quotes are not escaped).
+
+    A space-separated token is quoted only when it starts with a quote. A quote
+    later in the token stays in the token, so ``-DNAME="192.168.1.50"`` is one
+    compiler argument and the quotes reach gcc.
+    """
+    is_quote = set(quote_chars)
+    result = []
+    escaping = ''
+    escaped = ''
+    for current in (src or '').split(' '):
+        if not escaping:
+            if not current or current[0] not in is_quote:
+                if accept_empty or current.strip():
+                    result.append(current)
+                continue
+            escaping = current[0]
+            current = current[1:]
+            escaped = ''
+        if not current or current[-1] != escaping:
+            escaped += current + ' '
+            continue
+        escaped += current[:-1]
+        if accept_empty or escaped.strip():
+            result.append(escaped)
+        escaping = ''
+    return result
+
+
+def recipe_define_args(defines) -> list[str]:
+    """Compiler arguments after arduino-cli splits ``extra_flags``."""
+    return split_quoted_string(extra_flags_value(defines), "'\"", False)
 
 
 def defines_from_examples_js(text: str) -> list[str]:

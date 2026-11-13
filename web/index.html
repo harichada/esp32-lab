@@ -128,6 +128,7 @@
       </div>
       <div class="tab" id="tab-serial">
         <div class="row termbar"><input id="serialIn" placeholder="Send to UART0 — Enter"><label class="tgl"><input type="checkbox" id="cbSerTs"><span>time</span></label><label class="tgl"><input type="checkbox" id="cbFollow" checked><span>follow</span></label><label class="tgl"><input type="checkbox" id="cbNetLines"><span>@NET</span></label><button id="bSerialCopy" class="iconbtn" title="Copy serial"><svg class="ic"><use href="#i-copy"/></svg></button><button id="bSerialClr">Clear</button></div>
+        <p id="netNotice" role="status" style="min-height:1.6em;margin:0 0 4px;color:var(--txt);font:12px/1.6 var(--mono)"></p>
         <div id="serial" class="term"></div>
       </div>
       <div class="tab" id="tab-net">
@@ -179,7 +180,7 @@
 <script src="js/i2cdev.js?v=40"></script>
   <script src="js/spidev.js?v=40"></script>
 <script src="js/jssketch.js?v=40"></script>
-<script src="js/examples.js?v=42"></script>
+<script src="js/examples.js?v=45"></script>
 <script src="js/basic.js?v=41"></script>
 <script src="js/bom.js?v=41"></script>
 <script src="js/parts/registry.js?v=40"></script>

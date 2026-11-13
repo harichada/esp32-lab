@@ -1,6 +1,6 @@
 FROM --platform=linux/amd64 debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-fastapi python3-uvicorn python3-websockets python3-httptools python3-uvloop \
-      libglib2.0-0t64 libpixman-1-0 libgcrypt20 libslirp0 zlib1g libatomic1 ca-certificates \
+      libglib2.0-0t64 libpixman-1-0 libgcrypt20 libslirp0 zlib1g libatomic1 ca-certificates bubblewrap \
     && rm -rf /var/lib/apt/lists/* && useradd -m -u 1000 sim
 COPY --chown=sim:sim home/ /home/sim/
 COPY --chown=sim:sim app/ /app/
