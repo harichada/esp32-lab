@@ -252,20 +252,162 @@ test('the queue line clears the ticker, keeps Make a copy clickable, and stays f
       const read = () => btn.getBoundingClientRect().width;
       app.setCompilePhase('idle');
       const run = read();
+      const statusIdle = document.getElementById('status').getBoundingClientRect().width;
       app.setCompilePhase('queued', ${JSON.stringify(MSG)});
       const queued = read();
       app.setCompilePhase('building');
       const building = read();
-      btn.querySelector('span').textContent = 'Compiling…';
-      const compiling = read();
+      const statusBusy = document.getElementById('status').getBoundingClientRect().width;
       const main = document.getElementById('main').getBoundingClientRect().top;
+      const label = btn.querySelector('span').textContent;
       app.setCompilePhase('idle');
-      return { run, queued, building, compiling, main, mainAfter: document.getElementById('main').getBoundingClientRect().top };
+      return { run, queued, building, label, statusIdle, statusBusy, main, mainAfter: document.getElementById('main').getBoundingClientRect().top };
     })()`);
-    for (const key of ['queued', 'building', 'compiling']) {
+    for (const key of ['queued', 'building']) {
       assert.ok(Math.abs(widths[key] - widths.run) < 0.5, key + ' width ' + widths[key] + ' vs Run ' + widths.run);
     }
+    assert.equal(widths.label, 'Building…');
+    assert.ok(Math.abs(widths.statusBusy - widths.statusIdle) < 0.5, 'status width idle ' + widths.statusIdle + ' busy ' + widths.statusBusy);
     assert.equal(widths.main, widths.mainAfter);
+    const headerWidths = [821, 850, 900, 940, 1280];
+    for (const w of headerWidths) {
+      await send('Emulation.setDeviceMetricsOverride', { width: w, height: 800, deviceScaleFactor: 1, mobile: false }, sessionId);
+      const edges = await evalJs(`(async () => {
+        for (let i = 0; i < 30; i++) {
+          if (!document.body.classList.contains('m')) break;
+          await new Promise((r) => setTimeout(r, 40));
+        }
+        const buttons = () => [...document.querySelectorAll('header#top button')].filter((b) => {
+          const s = getComputedStyle(b);
+          const r = b.getBoundingClientRect();
+          return s.display !== 'none' && s.visibility !== 'hidden' && r.width > 1;
+        }).map((b) => ({ id: b.id || b.getAttribute('aria-label') || b.title, right: b.getBoundingClientRect().right }));
+        app.setCompilePhase('idle');
+        const idle = buttons();
+        app.setCompilePhase('building');
+        const building = buttons();
+        return { idle, building, vw: innerWidth };
+      })()`);
+      for (const state of ['idle', 'building']) {
+        for (const b of edges[state]) {
+          assert.ok(b.right <= edges.vw + 1, w + ' ' + state + ' ' + b.id + ' right ' + b.right + ' viewport ' + edges.vw);
+        }
+        assert.ok(edges[state].some((b) => b.id === 'bCmdk'), w + ' ' + state + ' has Search commands');
+        assert.ok(edges[state].some((b) => b.id === 'bKeys'), w + ' ' + state + ' has Keyboard shortcuts');
+        assert.ok(edges[state].some((b) => b.id === 'bTheme'), w + ' ' + state + ' has Theme');
+      }
+    }
+    await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }, sessionId);
+    const drag = await evalJs(`(async () => {
+      for (let i = 0; i < 20; i++) { if (!document.body.classList.contains('m')) break; await new Promise((r) => setTimeout(r, 30)); }
+      app.setCompilePhase('building');
+      const stage = document.getElementById('stage');
+      const on = getComputedStyle(stage).transform;
+      stage.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 1, clientX: 400, clientY: 300 }));
+      app.setCompilePhase('idle');
+      const held = getComputedStyle(stage).transform;
+      stage.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 1, clientX: 400, clientY: 300 }));
+      await new Promise((r) => setTimeout(r, 40));
+      const released = getComputedStyle(stage).transform;
+      return { on, held, released };
+    })()`);
+    assert.match(drag.on, /matrix/, 'strip shifts the canvas');
+    assert.equal(drag.held, drag.on, 'translate stays until pointerup');
+    assert.equal(drag.released, 'none', 'translate releases after pointerup');
+    const reach = await evalJs(`(() => {
+      app.setCompilePhase('building');
+      const stripH = document.getElementById('compileStrip').getBoundingClientRect().height;
+      const pal = document.getElementById('palList');
+      const insp = document.querySelector('.insp-body');
+      const palPad = parseFloat(getComputedStyle(pal).paddingBottom);
+      const inspPad = parseFloat(getComputedStyle(insp).paddingBottom);
+      const items = [...pal.querySelectorAll('.pitem')];
+      const last = items[items.length - 1];
+      pal.scrollTop = pal.scrollHeight;
+      const lr = last.getBoundingClientRect();
+      const pr = pal.getBoundingClientRect();
+      const part = app.proj && app.proj.parts && app.proj.parts[0];
+      if (part && app.editor) app.editor.select({ part: part.id });
+      insp.scrollTop = insp.scrollHeight;
+      const rows = [...insp.children];
+      const lastRow = rows[rows.length - 1];
+      const ir = lastRow ? lastRow.getBoundingClientRect() : null;
+      const ib = insp.getBoundingClientRect();
+      return { stripH, palPad, inspPad, lastBottom: lr.bottom, palBottom: pr.bottom, rowBottom: ir && ir.bottom, inspBottom: ib.bottom, n: items.length };
+    })()`);
+    assert.ok(reach.palPad >= reach.stripH - 1, 'palette padding ' + reach.palPad + ' strip ' + reach.stripH);
+    assert.ok(reach.inspPad >= reach.stripH - 1, 'inspector padding ' + reach.inspPad);
+    assert.ok(reach.lastBottom <= reach.palBottom + 1, 'last palette item stays in the scrollport');
+    assert.ok(reach.rowBottom != null && reach.rowBottom <= reach.inspBottom + 1, 'last inspector row stays in the scrollport');
+    const views = await evalJs(`(async () => {
+      app.setCompilePhase('queued', ${JSON.stringify(MSG)});
+      const before = app.editor.view.s;
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'F', shiftKey: true, bubbles: true }));
+      const fitted = app.editor.view.s;
+      app.cmd.viewSch();
+      const sch = document.body.classList.contains('viewsch');
+      if (app.schematic && app.schematic.fit) app.schematic.fit();
+      const schFit = !!(app.schematic && Number.isFinite(app.schematic.view ? app.schematic.view.s : app.editor.view.s));
+      app.cmd.view2d();
+      let three = 'skipped';
+      try {
+        await Promise.race([
+          app.cmd.view3d(),
+          new Promise((resolve) => setTimeout(() => resolve('timeout'), 4000)),
+        ]);
+        three = document.body.classList.contains('view3d') ? 'on' : 'back-to-2d';
+        if (app.view3d && app.view3d.fit) app.view3d.fit();
+      } catch (e) { three = 'error'; }
+      app.cmd.view2d();
+      const strip = document.getElementById('compileStrip');
+      return { before, fitted, finite: Number.isFinite(fitted), sch, schFit, three, phase: app.compilePhase, text: strip.textContent, hidden: strip.hidden };
+    })()`);
+    assert.equal(views.finite, true, 'Shift+F fit stays finite');
+    assert.equal(views.sch, true, 'schematic opens with the strip up');
+    assert.equal(views.schFit, true);
+    assert.notEqual(views.three, 'error');
+    assert.equal(views.phase, 'queued');
+    assert.equal(views.hidden, false);
+    assert.match(views.text, /\(position 8\)/);
+    await send('Emulation.setDeviceMetricsOverride', { width: 900, height: 800, deviceScaleFactor: 1, mobile: false }, sessionId);
+    const crossed = await evalJs(`(async () => {
+      const wait = async (pred) => {
+        for (let i = 0; i < 40; i++) { if (pred()) return true; await new Promise((r) => setTimeout(r, 40)); }
+        return pred();
+      };
+      await wait(() => !document.body.classList.contains('m'));
+      app.setCompilePhase('queued', ${JSON.stringify(MSG)});
+      return true;
+    })()`);
+    assert.equal(crossed, true);
+    await send('Emulation.setDeviceMetricsOverride', { width: 820, height: 800, deviceScaleFactor: 1, mobile: true }, sessionId);
+    const at820 = await evalJs(`(async () => {
+      for (let i = 0; i < 40; i++) {
+        const phone = document.body.classList.contains('m');
+        const ticker = document.getElementById('mTicker');
+        const tickerOn = ticker && getComputedStyle(ticker).display !== 'none' && ticker.getBoundingClientRect().height > 1;
+        const strip = document.getElementById('compileStrip').getBoundingClientRect();
+        if (phone && tickerOn && strip.top >= ticker.getBoundingClientRect().bottom - 1) return { ok: true, top: strip.top, ticker: ticker.getBoundingClientRect().bottom };
+        await new Promise((r) => setTimeout(r, 40));
+      }
+      const ticker = document.getElementById('mTicker');
+      return { ok: false, phone: document.body.classList.contains('m'), top: document.getElementById('compileStrip').getBoundingClientRect().top, ticker: ticker && ticker.getBoundingClientRect().bottom };
+    })()`);
+    assert.equal(at820.ok, true, '820 ' + JSON.stringify(at820));
+    await send('Emulation.setDeviceMetricsOverride', { width: 821, height: 800, deviceScaleFactor: 1, mobile: false }, sessionId);
+    const at821 = await evalJs(`(async () => {
+      for (let i = 0; i < 40; i++) {
+        const phone = document.body.classList.contains('m');
+        const bar = document.getElementById('top').getBoundingClientRect().bottom;
+        const strip = document.getElementById('compileStrip').getBoundingClientRect();
+        const ticker = document.getElementById('mTicker');
+        const tickerOn = ticker && getComputedStyle(ticker).display !== 'none' && ticker.getBoundingClientRect().height > 1;
+        if (!phone && !tickerOn && Math.abs(strip.top - bar) < 1.5 && strip.height > 2) return { ok: true, top: strip.top, bar };
+        await new Promise((r) => setTimeout(r, 40));
+      }
+      return { ok: false, phone: document.body.classList.contains('m'), top: document.getElementById('compileStrip').getBoundingClientRect().top };
+    })()`);
+    assert.equal(at821.ok, true, '821 ' + JSON.stringify(at821));
     ws.close();
   } catch (err) {
     err.message += '\nchrome: ' + chromeLog.slice(-500);

@@ -303,11 +303,39 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (label) label.textContent = text;
   }
   let paintedStatus = '';
+  let statusLocked = false;
+  let lastQueueDetail = '';
+  let stripPointers = 0;
+  function lockStatusBox() {
+    try {
+      const st = document.getElementById && document.getElementById('status');
+      if (!st || statusLocked || typeof st.getBoundingClientRect !== 'function') return;
+      const w = st.getBoundingClientRect().width;
+      if (!(w > 0)) return;
+      st.style.flex = '0 0 ' + w + 'px';
+      st.style.width = w + 'px';
+      st.style.maxWidth = w + 'px';
+      statusLocked = true;
+    } catch (e) {}
+  }
+  function unlockStatusBox() {
+    try {
+      const st = document.getElementById && document.getElementById('status');
+      if (!st || !statusLocked) return;
+      st.style.flex = '';
+      st.style.width = '';
+      st.style.maxWidth = '';
+      statusLocked = false;
+    } catch (e) {}
+  }
   function setCompilePhase(phase, detail) {
     const next = phase === 'queued' || phase === 'building' || phase === 'running' ? phase : 'idle';
     app.compilePhase = next;
     compileBusy = next === 'queued' || next === 'building';
     const sentence = next === 'queued' ? (detail || QUEUE_FALLBACK) : next === 'building' ? BUILDING_TEXT : '';
+    if (next === 'queued') lastQueueDetail = detail || '';
+    if (sentence) lockStatusBox();
+    else unlockStatusBox();
     const buttonLabel = next === 'queued' ? 'Queued' : next === 'building' ? 'Building…' : 'Run';
     const b = $('#bRun');
     if (b) {
@@ -367,6 +395,8 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       if (open) {
         root.style.setProperty('--strip-h', strip.getBoundingClientRect().height + 'px');
         if (root.classList) root.classList.add('strip-on');
+      } else if (stripPointers > 0 && root.classList && root.classList.contains('strip-on')) {
+        // A part drag uses this translate. Dropping it before pointerup jumps the part.
       } else {
         root.style.setProperty('--strip-h', '0px');
         if (root.classList) root.classList.remove('strip-on');
@@ -390,6 +420,28 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       mo.observe(document.body, { childList: true, subtree: true });
     }
     window.addEventListener('resize', syncStripMetrics);
+    window.addEventListener('pointerdown', () => { stripPointers++; }, true);
+    const releaseStrip = () => {
+      stripPointers = Math.max(0, stripPointers - 1);
+      if (!stripPointers) setTimeout(syncStripMetrics, 0);
+    };
+    window.addEventListener('pointerup', releaseStrip, true);
+    window.addEventListener('pointercancel', releaseStrip, true);
+    const reapplyStrip = () => {
+      const phase = app.compilePhase;
+      if (phase === 'queued') setCompilePhase('queued', lastQueueDetail);
+      else if (phase === 'building') setCompilePhase('building');
+      else syncStripMetrics();
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(syncStripMetrics);
+    };
+    const listenMq = (q) => {
+      if (!window.matchMedia) return;
+      const mq = window.matchMedia(q);
+      if (mq.addEventListener) mq.addEventListener('change', reapplyStrip);
+      else if (mq.addListener) mq.addListener(reapplyStrip);
+    };
+    listenMq('(max-width: 820px), (pointer: coarse) and (max-height: 520px)');
+    listenMq('(max-width: 640px)');
   }
   app.syncStripMetrics = syncStripMetrics;
   function setRunBusy(on) { setCompilePhase(on ? 'building' : 'idle'); }

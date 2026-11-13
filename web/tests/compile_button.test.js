@@ -440,7 +440,9 @@ test('the busy Run button is grey, keeps its spinner, and theme.css is cache-bus
   assert.match(css, /#compileStrip\{[^}]*position:fixed;[^}]*top:var\(--strip-top,0px\);[^}]*left:0;[^}]*right:0;/);
   assert.match(css, /html\.strip-on #stage,html\.strip-on #projBanner[^\{]*\{transform:translateY\(var\(--strip-h,0px\)\)\}/);
   assert.doesNotMatch(css, /html\.strip-on[^\{]*\{[^}]*(?:margin-top|top:)/);
-  assert.match(css, /#bRun\{min-width:11em;flex-shrink:0\}/);
+  assert.match(css, /#bRun\{min-width:8\.4em;flex-shrink:0\}/);
+  assert.doesNotMatch(css, /#bRun\{min-width:11em/);
+  assert.match(css, /html\.strip-on body:not\(\.m\) #palList,html\.strip-on body:not\(\.m\) \.insp-body\{padding-bottom:calc\(var\(--s3\) \+ var\(--strip-h,0px\)\)\}/);
   assert.match(css, /#compileStrip\{[^}]*background:#1b1f24;[^}]*color:#e8eaed;/);
   assert.match(css, /#compileStrip\{[^}]*white-space:normal;[^}]*overflow:visible;[^}]*text-overflow:clip/);
   assert.match(css, /html\[data-theme=light\] #compileStrip\{[^}]*background:#eceef1;[^}]*color:#2c333c/);
@@ -489,4 +491,10 @@ test('the busy Run button is grey, keeps its spinner, and theme.css is cache-bus
   assert.match(appjs, /stripObserver\.observe\(el\)/);
   assert.match(appjs, /--strip-top/);
   assert.match(appjs, /--strip-h/);
+  assert.match(appjs, /listenMq\('\(max-width: 820px\), \(pointer: coarse\) and \(max-height: 520px\)'\)/);
+  assert.match(appjs, /window\.matchMedia\(q\)/);
+  assert.match(appjs, /addEventListener\('change', reapplyStrip\)/);
+  assert.match(appjs, /pointerup/);
+  assert.match(appjs, /pointercancel/);
+  assert.match(appjs, /stripPointers > 0/);
 });
