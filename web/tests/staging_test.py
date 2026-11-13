@@ -1,5 +1,6 @@
 """Staging flags and the /staging/ pass-through. Flags default off."""
-import asyncio, http.client, inspect, json, os, sys, threading, unittest, urllib.request
+import asyncio, http.client, inspect, json, os, shutil, sys, tempfile, threading, unittest, urllib.request
+from contextlib import contextmanager
 from pathlib import Path
 
 os.environ['SIM_PREWARM'] = '0'
@@ -9,6 +10,7 @@ os.environ['SIM_ACCESS_TOKEN'] = ''
 os.environ['SIM_STAGING_UPSTREAM'] = ''
 os.environ['SIM_BASE_PATH'] = ''
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'server'))
+import diskkeep
 import server
 import staging
 import uvicorn
@@ -39,10 +41,13 @@ def _http_app(record):
             lines = head.split(b'\r\n')
             method, target, _ = lines[0].decode('latin1').split(' ', 2)
             headers = {}
+            names = []
             for line in lines[1:]:
                 if b':' in line:
                     k, v = line.split(b':', 1)
-                    headers[k.decode('latin1').lower()] = v.decode('latin1').strip()
+                    name = k.decode('latin1').lower()
+                    names.append(name)
+                    headers[name] = v.decode('latin1').strip()
             n = int(headers.get('content-length') or '0')
             body = rest
             while len(body) < n:
@@ -50,7 +55,7 @@ def _http_app(record):
                 if not chunk:
                     break
                 body += chunk
-            record.append({'method': method, 'target': target, 'headers': headers, 'body': body})
+            record.append({'method': method, 'target': target, 'headers': headers, 'names': names, 'body': body})
             if target.startswith('/hang'):
                 await asyncio.sleep(30)
                 return
@@ -105,7 +110,10 @@ class StagingTests(unittest.TestCase):
         cls.dead_port = sock.getsockname()[1]
         sock.close()
 
-        config = uvicorn.Config(server.app, host='127.0.0.1', port=0, log_level='error', access_log=False)
+        config = uvicorn.Config(
+            server.app, host='127.0.0.1', port=0, log_level='error', access_log=False,
+            proxy_headers=False, forwarded_allow_ips='',
+        )
         cls.uvicorn = uvicorn.Server(config)
         cls.uvicorn.install_signal_handlers = lambda: None
         cls.serve_thread = threading.Thread(target=cls.uvicorn.run, daemon=True)
@@ -155,6 +163,22 @@ class StagingTests(unittest.TestCase):
         status = resp.status
         conn.close()
         return status, body
+
+    def exchange(self, method, path, header_pairs, body=None, timeout=5):
+        """One request. Repeated header names stay as separate lines."""
+        conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=timeout)
+        conn.putrequest(method, path)
+        for name, value in header_pairs:
+            conn.putheader(name, value)
+        if body is not None:
+            conn.putheader('Content-Type', 'application/json')
+            conn.putheader('Content-Length', str(len(body)))
+        conn.endheaders(body)
+        resp = conn.getresponse()
+        data = resp.read()
+        status = resp.status
+        conn.close()
+        return status, data
 
     def _assert_static(self, body, *parts):
         text = body.decode()
@@ -249,7 +273,7 @@ class StagingTests(unittest.TestCase):
     def test_prefix_stripped_and_forwarded_headers(self):
         self._env(upstream='http://127.0.0.1:%d' % self.http_port)
         code, headers, body = self.fetch('/staging/api/health?x=1', headers={
-            'X-Lab-Test': 'kept', 'X-Forwarded-For': '1.2.3.4',
+            'X-Lab-Test': 'kept', 'X-Forwarded-For': '1.2.3.4', 'X-Real-IP': '8.8.8.8',
             'Forwarded': 'for=9.9.9.9;proto=https', 'Cookie': 'cl_stage=abc',
         })
         self.assertEqual(code, 200)
@@ -260,12 +284,13 @@ class StagingTests(unittest.TestCase):
         self.assertEqual(seen['method'], 'GET')
         self.assertEqual(seen['target'], '/api/health?x=1')
         self.assertNotIn('x-forwarded-for', seen['headers'])
+        self.assertNotIn('x-real-ip', seen['headers'])
         self.assertNotIn('forwarded', seen['headers'])
         self.assertEqual(seen['headers'].get('x-lab-test'), 'kept')
         self.assertEqual(seen['headers'].get('cookie'), 'cl_stage=abc')
         self.assertTrue(seen['headers'].get('host', '').startswith('127.0.0.1:'))
         self.assertTrue(any(line.startswith('staging_proxy status=200 ms=') for line in self.logs))
-        self.assertFalse(any('?' in line or '1.2.3.4' in line or '9.9.9.9' in line or 'abc' in line for line in self.logs))
+        self.assertFalse(any('?' in line or '1.2.3.4' in line or '8.8.8.8' in line or '9.9.9.9' in line or 'abc' in line for line in self.logs))
         slash, slh, _ = self.fetch('/staging?z=1')
         self.assertEqual(slash, 302)
         self.assertTrue(slh['Location'].endswith('/staging/?z=1') or slh['Location'] == '/staging/?z=1')
@@ -353,7 +378,10 @@ class StagingTests(unittest.TestCase):
             url = 'ws://127.0.0.1:%d/staging/api/run/abc' % self.port
             async with websockets.connect(
                 url, open_timeout=3, proxy=None,
-                additional_headers={'X-Forwarded-For': '9.9.9.9', 'Forwarded': 'for=198.51.100.4', 'Cookie': 'cl_stage=abc'},
+                additional_headers={
+                    'X-Forwarded-For': '9.9.9.9', 'X-Real-IP': '203.0.113.8',
+                    'Forwarded': 'for=198.51.100.4', 'Cookie': 'cl_stage=abc',
+                },
             ) as ws:
                 await ws.send('hi')
                 text = await ws.recv()
@@ -365,6 +393,7 @@ class StagingTests(unittest.TestCase):
         self.assertEqual(binary, b'\x00\x01')
         self.assertEqual(self.ws_log[-1]['path'], '/api/run/abc')
         self.assertNotIn('x-forwarded-for', self.ws_log[-1]['headers'])
+        self.assertNotIn('x-real-ip', self.ws_log[-1]['headers'])
         self.assertNotIn('forwarded', self.ws_log[-1]['headers'])
         self.assertIn('cl_stage=abc', self.ws_log[-1]['headers'].get('cookie', ''))
 
@@ -381,6 +410,7 @@ class StagingTests(unittest.TestCase):
         self.assertEqual(asyncio.run(bye()), 4002)
         joined = '\n'.join(self.logs)
         self.assertNotIn('9.9.9.9', joined)
+        self.assertNotIn('203.0.113.8', joined)
         self.assertNotIn('198.51.100.4', joined)
         self.assertNotIn('?', joined)
 
@@ -440,7 +470,11 @@ class StagingTests(unittest.TestCase):
         from starlette.requests import Request
 
         def make(cid, xff, fwd, client):
-            headers = [(b'x-forwarded-for', xff.encode()), (b'forwarded', fwd.encode())]
+            headers = [
+                (b'x-forwarded-for', xff.encode()),
+                (b'x-real-ip', b'192.0.2.9'),
+                (b'forwarded', fwd.encode()),
+            ]
             if cid is not None:
                 headers.insert(0, (b'x-client-id', cid.encode()))
             scope = {
@@ -461,6 +495,7 @@ class StagingTests(unittest.TestCase):
         self.assertEqual(server._client_id_from(no_id), '')
         ident = inspect.getsource(server._client_id_from).lower()
         self.assertNotIn('x-forwarded-for', ident)
+        self.assertNotIn('x-real-ip', ident)
         self.assertNotIn('forwarded', ident)
         self.assertNotIn('request.client', ident)
 
@@ -474,6 +509,166 @@ class StagingTests(unittest.TestCase):
             await q.leave(token)
 
         asyncio.run(rate())
+
+    def test_upstream_request_drops_every_forwarded_client_header(self):
+        items = [
+            ('X-Forwarded-For', '203.0.113.1'),
+            ('x-forwarded-for', '203.0.113.2'),
+            ('X-Real-IP', '198.51.100.3'),
+            ('x-real-ip', '198.51.100.4'),
+            ('Forwarded', 'for=203.0.113.5'),
+            ('FORWARDED', 'for=198.51.100.6'),
+            ('X-Lab-Test', 'kept'),
+            ('Host', 'evil.example'),
+        ]
+        names = [name.lower() for name, _value in staging._drop_hop(items)]
+        for banned in ('x-forwarded-for', 'x-real-ip', 'forwarded', 'host'):
+            self.assertNotIn(banned, names)
+        self.assertEqual(names.count('x-lab-test'), 1)
+
+        self._env(upstream='http://127.0.0.1:%d' % self.http_port)
+        status, body = self.exchange('GET', '/staging/api/health', [
+            ('X-Forwarded-For', '203.0.113.1'),
+            ('x-forwarded-for', '203.0.113.2'),
+            ('X-Real-IP', '198.51.100.3'),
+            ('x-real-ip', '198.51.100.4'),
+            ('Forwarded', 'for=203.0.113.5'),
+            ('forwarded', 'for=198.51.100.6'),
+            ('X-Lab-Test', 'kept'),
+        ])
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b'upstream-ok')
+        seen = self.http_log[0]
+        for banned in ('x-forwarded-for', 'x-real-ip', 'forwarded'):
+            self.assertNotIn(banned, seen['names'])
+            self.assertNotIn(banned, seen['headers'])
+        self.assertEqual(seen['names'].count('x-lab-test'), 1)
+        self.assertEqual(seen['headers'].get('x-lab-test'), 'kept')
+        joined = '\n'.join(self.logs)
+        for ip in ('203.0.113.1', '203.0.113.2', '198.51.100.3', '198.51.100.4', '203.0.113.5', '198.51.100.6'):
+            self.assertNotIn(ip, joined)
+
+    def test_server_never_trusts_forwarded_headers(self):
+        self.assertFalse(self.uvicorn.config.proxy_headers)
+        self.assertEqual(self.uvicorn.config.forwarded_allow_ips, '')
+        src = Path(server.__file__).read_text()
+        self.assertIn(
+            "uvicorn.run(app, host=a.host, port=a.port, log_level='warning', proxy_headers=False, forwarded_allow_ips='')",
+            src,
+        )
+        seen = {}
+        orig = server._client_id_from
+
+        def wrapped(request):
+            seen['host'] = None if request.client is None else request.client.host
+            return orig(request)
+
+        server._client_id_from = wrapped
+        try:
+            code, _, _ = self.fetch('/api/compile/progress', headers={
+                'X-Forwarded-For': '203.0.113.50',
+                'X-Real-IP': '203.0.113.51',
+                'Forwarded': 'for=198.51.100.20',
+            })
+        finally:
+            server._client_id_from = orig
+        self.assertEqual(code, 200)
+        self.assertEqual(seen['host'], '127.0.0.1')
+
+    def test_rotating_forwarded_for_through_staging_still_429(self):
+        """A new X-Forwarded-For on each /staging/ compile does not open another rate-limit bucket."""
+        @contextmanager
+        def scratch():
+            path = Path(tempfile.mkdtemp(prefix='esp32xff-'))
+            try:
+                yield path
+            finally:
+                shutil.rmtree(path, ignore_errors=True)
+
+        started = threading.Event()
+        release = threading.Event()
+        inner = []
+        result = {}
+        saved_env = os.environ.get('SIM_COMPILE_QUEUE')
+        saved = (
+            server._compile_in, server._client_id_from,
+            diskkeep.prepare_for_compile, diskkeep.forget_sketch_builds_since, diskkeep.request_build_dir,
+        )
+        os.environ['SIM_COMPILE_QUEUE'] = '1'
+        diskkeep.prepare_for_compile = lambda **_k: None
+        diskkeep.forget_sketch_builds_since = lambda *_a, **_k: None
+        diskkeep.request_build_dir = scratch
+
+        async def fake(*_args, **_kwargs):
+            started.set()
+            while not release.is_set():
+                await asyncio.sleep(0.01)
+            return {'ok': True, 'id': 'xff', 'log': 'ok'}
+
+        def wrapped(request):
+            inner.append({
+                'host': None if request.client is None else request.client.host,
+                'names': [key.decode('latin1').lower() for key, _value in request.headers.raw],
+            })
+            return saved[1](request)
+
+        server._compile_in = fake
+        server._client_id_from = wrapped
+        self._env(upstream='http://127.0.0.1:%d' % self.port)
+        worker = None
+        try:
+            body_a = json.dumps({'sketch': 'void setup(){} void loop(){} // xff-a'}).encode()
+            body_b = json.dumps({'sketch': 'void setup(){} void loop(){} // xff-b'}).encode()
+            headers_a = [
+                ('X-Client-Id', 'tab-xff'),
+                ('X-Forwarded-For', '203.0.113.10'),
+                ('X-Real-IP', '203.0.113.11'),
+                ('Forwarded', 'for=203.0.113.12'),
+            ]
+            headers_b = [
+                ('X-Client-Id', 'tab-xff'),
+                ('X-Forwarded-For', '198.51.100.20'),
+                ('x-forwarded-for', '192.0.2.30'),
+                ('X-Real-IP', '198.51.100.21'),
+                ('x-real-ip', '192.0.2.31'),
+                ('Forwarded', 'for=198.51.100.22'),
+                ('forwarded', 'for=192.0.2.32'),
+            ]
+
+            def first():
+                try:
+                    result['pair'] = self.exchange('POST', '/staging/api/compile', headers_a, body_a, timeout=15)
+                except Exception as exc:
+                    result['error'] = exc
+
+            worker = threading.Thread(target=first)
+            worker.start()
+            self.assertTrue(started.wait(5), result)
+            status, data = self.exchange('POST', '/staging/api/compile', headers_b, body_b, timeout=5)
+            self.assertEqual(status, 429)
+            self.assertEqual(json.loads(data)['reason'], 'rate')
+            self.assertGreaterEqual(len(inner), 2)
+            for hit in inner:
+                self.assertEqual(hit['host'], '127.0.0.1')
+                for banned in ('x-forwarded-for', 'forwarded', 'x-real-ip'):
+                    self.assertNotIn(banned, hit['names'])
+            joined = '\n'.join(self.logs)
+            for ip in ('203.0.113.10', '198.51.100.20', '192.0.2.30', '203.0.113.11', '198.51.100.22'):
+                self.assertNotIn(ip, joined)
+        finally:
+            release.set()
+            if worker is not None:
+                worker.join(5)
+            server._compile_in, server._client_id_from = saved[0], saved[1]
+            diskkeep.prepare_for_compile = saved[2]
+            diskkeep.forget_sketch_builds_since = saved[3]
+            diskkeep.request_build_dir = saved[4]
+            if saved_env is None:
+                os.environ.pop('SIM_COMPILE_QUEUE', None)
+            else:
+                os.environ['SIM_COMPILE_QUEUE'] = saved_env
+        self.assertNotIn('error', result)
+        self.assertEqual(result['pair'][0], 200)
 
 
 if __name__ == '__main__':

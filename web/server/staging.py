@@ -49,8 +49,10 @@ _HOP = {
     'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'proxy-connection',
     'te', 'trailer', 'trailers', 'transfer-encoding', 'upgrade',
 }
-_WS_SKIP = _HOP | {
-    'host', 'x-forwarded-for', 'forwarded', 'content-length',
+# Client address headers. Dropped on every hop, any letter case, including duplicates.
+_FORWARDED_IP = {'x-forwarded-for', 'forwarded', 'x-real-ip'}
+_WS_SKIP = _HOP | _FORWARDED_IP | {
+    'host', 'content-length',
     'sec-websocket-key', 'sec-websocket-version', 'sec-websocket-extensions',
     'sec-websocket-protocol', 'sec-websocket-accept',
 }
@@ -233,7 +235,11 @@ def strip_prefix(path):
 
 
 def _drop_hop(items):
-    """Drop hop-by-hop headers. Never forward X-Forwarded-For or Forwarded."""
+    """Drop hop-by-hop headers and every forwarded client-address header.
+
+    The match is case-insensitive. Each duplicate of X-Forwarded-For, Forwarded,
+    and X-Real-IP is removed, not just the first.
+    """
     connection = set()
     for name, value in items:
         if name.lower() == 'connection':
@@ -242,7 +248,7 @@ def _drop_hop(items):
     out = []
     for name, value in items:
         low = name.lower()
-        if low in _HOP or low in connection or low in ('x-forwarded-for', 'forwarded', 'host'):
+        if low in _HOP or low in connection or low in _FORWARDED_IP or low == 'host':
             continue
         out.append((name, value))
     return out
