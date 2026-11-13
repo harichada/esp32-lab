@@ -2,7 +2,7 @@
 
     python3 -m unittest tests/save_log_test.py
 """
-import asyncio, io, json, re, sys, tempfile, unittest
+import asyncio, io, json, os, re, socket, subprocess, sys, tempfile, time, unittest, urllib.request
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -197,6 +197,69 @@ class SaveLogTests(unittest.TestCase):
         self.assertEqual(got['status'], '500')
         self.assertEqual(got['op'], 'create')
         self.assertEqual(text.count('\n'), 1)
+
+
+class RealServerProxyTests(unittest.TestCase):
+    def test_put_logs_the_peer_not_x_forwarded_for(self):
+        spoof = '203.0.113.99'
+        web = Path(__file__).resolve().parents[1]
+        proj = tempfile.TemporaryDirectory(prefix='savelog-peer-')
+        sock = socket.socket()
+        sock.bind(('127.0.0.1', 0))
+        port = sock.getsockname()[1]
+        sock.close()
+        env = os.environ.copy()
+        env['SIM_PREWARM'] = '0'
+        env['SIM_NETSTACK_WARM'] = '0'
+        env['SIM_TOKEN'] = ''
+        env['SIM_PROJECT_DIR'] = proj.name
+        env['FORWARDED_ALLOW_IPS'] = '*'
+        proc = subprocess.Popen(
+            [sys.executable, 'server.py', '--host', '127.0.0.1', '--port', str(port)],
+            cwd=str(web / 'server'), env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        out = err = ''
+        try:
+            deadline = time.time() + 30
+            up = False
+            while time.time() < deadline:
+                if proc.poll() is not None:
+                    break
+                try:
+                    urllib.request.urlopen(f'http://127.0.0.1:{port}/api/projects', timeout=1)
+                    up = True
+                    break
+                except Exception:
+                    time.sleep(0.1)
+            self.assertTrue(up, 'server did not start')
+            body = json.dumps({'parts': []}).encode()
+            req = urllib.request.Request(
+                f'http://127.0.0.1:{port}/api/projects/peer-1',
+                data=body, method='PUT',
+                headers={'Content-Type': 'application/json', 'X-Forwarded-For': spoof},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                self.assertEqual(resp.status, 200)
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+            try:
+                out, err = proc.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                out, err = proc.communicate()
+            proj.cleanup()
+        lines = [ln for ln in out.splitlines() if 'project_save' in ln]
+        self.assertEqual(len(lines), 1, out)
+        got = LINE.match(lines[0])
+        self.assertIsNotNone(got, lines[0])
+        self.assertEqual(got.group('id'), 'peer-1')
+        self.assertEqual(got.group('ip'), '127.0.0.1')
+        self.assertEqual(got.group('status'), '200')
+        self.assertEqual(got.group('op'), 'create')
+        self.assertNotIn(spoof, out)
+        self.assertNotIn(spoof, err)
 
 
 if __name__ == '__main__':
