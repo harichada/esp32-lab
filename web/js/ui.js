@@ -1,7 +1,12 @@
 /* Workspace chrome: collapsible/resizable panels, command palette (Ctrl+K), shortcut overlay (?), theme switch,
  * minimap + zoom controls, pinch-zoom, code view wiring. Initialised by app.js once the editor exists: UI.init(app). */
 (function (root) {
-  const $ = (s) => document.querySelector(s), LS = root.localStorage;
+  const $ = (s) => document.querySelector(s);
+  const LS = {
+    getItem(k) { return root.clStorage.local.getItem(k); },
+    setItem(k, v) { root.clStorage.local.setItem(k, v); },
+    removeItem(k) { root.clStorage.local.removeItem(k); },
+  };
   const get = (k, d) => { try { const v = LS.getItem('esp32lab.ui.' + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } };
   const put = (k, v) => { try { LS.setItem('esp32lab.ui.' + k, JSON.stringify(v)); } catch (e) { /* ignore */ } };
   const SHORTCUTS = [['Run / compile', 'Ctrl Enter'], ['Command palette', 'Ctrl K'], ['Save (copies an example)', 'Ctrl S'], ['Undo / redo', 'Ctrl Z · Ctrl Y'], ['Wire: click pin → click pin', 'Click'], ['Add bend while wiring', 'Click empty'], ['Cancel wire / deselect', 'Esc'], ['Delete selection', 'Del · ⌫'], ['Rotate part', 'R'], ['Flip part / mirror symbol', 'F'], ['Fit to view', 'Shift F'], ['Zoom in / out', '+ · −'], ['Wire menu', 'Right-click'], ['Add bend to a wire', 'Double-click'], ['Pan canvas', 'Drag background'], ['Toggle parts / inspector / dock', 'Ctrl 1 · 2 · 3'], ['This overlay', '?']];

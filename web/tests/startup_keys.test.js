@@ -58,6 +58,7 @@ global.requestAnimationFrame = (fn) => global.setTimeout(fn, 0);
 global.fetch = () => Promise.resolve({ status: 200, ok: true, json: async () => ({}) });
 
 require('./tools/load-parts');
+require(path.join(__dirname, '../js/storage.js'));
 require(path.join(__dirname, '../js/projects.js'));
 require(path.join(__dirname, '../js/app.js'));
 

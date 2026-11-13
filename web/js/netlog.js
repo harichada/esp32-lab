@@ -5,7 +5,7 @@
   class NetLog {
     constructor() {
       let off = false;
-      try { off = new URLSearchParams(location.search).get('netlog') === '0' || localStorage.getItem('netlog') === '0'; } catch (e) { /* node */ }
+      try { off = new URLSearchParams(location.search).get('netlog') === '0' || clStorage.local.getItem('netlog') === '0'; } catch (e) { /* node */ }
       this.enabled = !off; this.rows = []; this.filter = ''; this.el = null; this.dirty = false;
     }
     clear() { this.rows = []; this.dirty = true; this.render(); }

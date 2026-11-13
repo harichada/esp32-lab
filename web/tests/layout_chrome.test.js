@@ -165,6 +165,7 @@ const palette = makeEl('aside'); palette.id = 'palette';
 const side = makeEl('aside'); side.id = 'side';
 document.body.appendChild(palette); document.body.appendChild(dock); document.body.appendChild(side);
 
+require('../js/storage.js');
 require('../js/ui.js');
 require('../js/mobile.js');
 

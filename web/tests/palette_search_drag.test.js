@@ -235,6 +235,7 @@ palette.appendChild(search); palette.appendChild(list);
 document.body.appendChild(palette);
 
 require('./tools/load-parts');
+require(path.join(__dirname, '../js/storage.js'));
 require(path.join(__dirname, '../js/projects.js'));
 require(path.join(__dirname, '../js/editor.js'));
 require(path.join(__dirname, '../js/app.js'));

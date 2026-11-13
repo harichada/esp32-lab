@@ -221,11 +221,11 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   function sendRun(m) { if (app.run && app.run.ws && app.run.ws.readyState === 1) app.run.ws.send(JSON.stringify(m)); }
   function espPart() { return app.proj.parts.find((q) => q.type === 'esp32'); }
   function setStatus(kind, text) { $('#stDot').className = 'dot ' + kind; $('#stText').textContent = text; document.body.classList.toggle('busy', kind === 'busy'); document.body.classList.toggle('running', kind === 'run'); const st = $('#stage'); if (st) st.classList.toggle('live', kind === 'run'); }
-  window.addEventListener('pagehide', (ev) => { if (ev.persisted || !app.run || app.run.kind !== 'qemu') return; if (app.run.ws && app.run.ws.readyState === 1) { try { app.run.ws.send(JSON.stringify({ t: 'stop', why: STOP_ON_CLOSE ? 'user' : 'pagehide' })); } catch (e) { /* closing */ } if (STOP_ON_CLOSE) try { sessionStorage.removeItem('esp32run'); } catch (e) { /* none */ } } });
+  window.addEventListener('pagehide', (ev) => { if (ev.persisted || !app.run || app.run.kind !== 'qemu') return; if (app.run.ws && app.run.ws.readyState === 1) { try { app.run.ws.send(JSON.stringify({ t: 'stop', why: STOP_ON_CLOSE ? 'user' : 'pagehide' })); } catch (e) { /* closing */ } if (STOP_ON_CLOSE) try { clStorage.session.removeItem('esp32run'); } catch (e) { /* none */ } } });
   // ?keeprun=0 restores the old "closing the tab stops QEMU" behaviour; by default a closed/discarded/reloaded tab can
   // re-attach to its still-running QEMU session (saved in sessionStorage), and the server reaps it after SIM_RESUME_GRACE.
   const STOP_ON_CLOSE = new URLSearchParams(location.search).get('keeprun') === '0';
-  function saveRun(run) { try { if (run && run.sid && !run.ended) sessionStorage.setItem('esp32run', JSON.stringify({ bid: run.bid, sid: run.sid, at: Date.now() })); else sessionStorage.removeItem('esp32run'); } catch (e) { /* storage off */ } }
+  function saveRun(run) { try { if (run && run.sid && !run.ended) clStorage.session.setItem('esp32run', JSON.stringify({ bid: run.bid, sid: run.sid, at: Date.now() })); else clStorage.session.removeItem('esp32run'); } catch (e) { /* storage off */ } }
   function kickReconnect() {   // tab visible again / network back: don't wait out a (throttled) backoff timer
     const r = app.run; if (!r || r.kind !== 'qemu' || !r.sid || r.ended) return;
     if (!r.ws) { clearTimeout(r.retryT); r.tries = Math.min(r.tries, 1); connectRun(r); }
@@ -249,13 +249,13 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   window.addEventListener('online', kickReconnect); window.addEventListener('focus', kickReconnect);
   window.addEventListener('pageshow', kickReconnect);
   app.resumeSavedRun = function () {   // after a reload / tab discard: re-attach to the QEMU run that kept going on the server
-    let s; try { s = JSON.parse(sessionStorage.getItem('esp32run') || 'null'); } catch (e) { s = null; }
+    let s; try { s = JSON.parse(clStorage.session.getItem('esp32run') || 'null'); } catch (e) { s = null; }
     if (!s || !s.sid || app.run || !espPart()) return false;
     const run = app.run = { kind: 'qemu', t0: performance.now(), bid: s.bid, sid: s.sid, lastN: 0, tries: 1, resumedFromStorage: true };
     app.sim.resetState(); serialAppend('\n[re-attaching to the QEMU run still running on the server…]\n'); connectRun(run); return true;
   };
   function stopRun() {
-    const r = app.run; app.run = null; if (!r) return; try { sessionStorage.removeItem('esp32run'); } catch (e) { /* */ }
+    const r = app.run; app.run = null; if (!r) return; try { clStorage.session.removeItem('esp32run'); } catch (e) { /* */ }
     clearTimeout(r.retryT); clearInterval(r.hbT); document.body.classList.remove('reconnecting');
     if (r.ws) { try { r.ws.send(JSON.stringify({ t: 'stop', why: 'stop button' })); r.ws.close(); } catch (e) { /* closed */ } }
     if (r.sketch) r.sketch.stop();
@@ -287,11 +287,11 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
   function tabClientId() {
     try {
-      let id = sessionStorage.getItem('esp32client');
+      let id = clStorage.session.getItem('esp32client');
       if (!id || !/^[A-Za-z0-9_-]{1,64}$/.test(id)) {
         const raw = (globalThis.crypto && crypto.randomUUID && crypto.randomUUID()) || ('t' + Math.random().toString(36).slice(2) + Date.now().toString(36));
         id = String(raw).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64) || 'tab';
-        sessionStorage.setItem('esp32client', id);
+        clStorage.session.setItem('esp32client', id);
       }
       return id;
     } catch (e) { return ''; }
@@ -975,8 +975,8 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     $('#code').addEventListener('input', () => { syncCode(); autosave(); }); $('#inDefines').addEventListener('input', () => { syncDefines(); autosave(); });
     $('#bProjects').onclick = projectsDialog;
     $('#bRestart').onclick = () => { stopRun(); startRun(); };
-    $('#cbFlow').checked = localStorage.getItem('esp32lab.flow') !== '0'; $('#stage').classList.toggle('flow', $('#cbFlow').checked);
-    $('#cbFlow').onchange = (e) => { $('#stage').classList.toggle('flow', e.target.checked); localStorage.setItem('esp32lab.flow', e.target.checked ? '1' : '0'); };
+    $('#cbFlow').checked = clStorage.local.getItem('esp32lab.flow') !== '0'; $('#stage').classList.toggle('flow', $('#cbFlow').checked);
+    $('#cbFlow').onchange = (e) => { $('#stage').classList.toggle('flow', e.target.checked); clStorage.local.setItem('esp32lab.flow', e.target.checked ? '1' : '0'); };
     if (window.Schematic) {
       app.schematic = new Schematic.SchematicView($('#stageWrap'), {
         select: (id) => app.editor.select(id ? { part: id } : null),
@@ -988,7 +988,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     }
     setupViewToggle();
     app.cmd = { run: startRun, stop: stopRun, restart: () => { stopRun(); startRun(); }, save, projects: projectsDialog, loadExample, makeCopy: () => makeCopy(false), toast, download, view3d: () => setViewMode('3d'), view2d: () => setViewMode('2d'), viewSch: () => setViewMode('schematic') };
-    $('#cbOrtho').checked = localStorage.getItem('esp32lab.ortho') !== '0'; app.editor.ortho = $('#cbOrtho').checked; $('#cbOrtho').onchange = (e) => { app.editor.ortho = e.target.checked; localStorage.setItem('esp32lab.ortho', e.target.checked ? '1' : '0'); };
+    $('#cbOrtho').checked = clStorage.local.getItem('esp32lab.ortho') !== '0'; app.editor.ortho = $('#cbOrtho').checked; $('#cbOrtho').onchange = (e) => { app.editor.ortho = e.target.checked; clStorage.local.setItem('esp32lab.ortho', e.target.checked ? '1' : '0'); };
     app.editor.setHint();
     $('#code').addEventListener('keydown', (e) => { if (e.key === 'Tab') { e.preventDefault(); const t = e.target, s = t.selectionStart; t.setRangeText('  ', s, t.selectionEnd, 'end'); syncCode(); } });
     $('#serialIn').addEventListener('keydown', (e) => { if (e.key === 'Enter') { sendRun({ t: 'uart', d: e.target.value + '\n' }); serialAppend('» ' + e.target.value + '\n'); e.target.value = ''; } });
@@ -1011,8 +1011,8 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     $('#bTvPower').onclick = () => { const tv = app.world.tv; tv.power = tv.power === 'on' ? 'off' : 'on'; app.devDirty = true; renderDevices(); };
     $('#cbDiodes').onchange = (e) => { for (const q of app.proj.parts) if (q.type === 'diode') q.props.bypass = !e.target.checked; app.sim.dirty = true; app.editor.render(); toast(e.target.checked ? 'Diodes fitted' : 'Diodes replaced by wires — press 3 keys forming a rectangle corner to see a ghost key'); };
     // start-up: ?p=<project> > ?ex=<example, read-only> > last open project > legacy single-slot save > Blink example
-    const sp = new URLSearchParams(location.search), q = sp.get('ex'), pid = sp.get('p'), saved = localStorage.getItem(STORE);
-    if (saved && !store.list().length) { try { const o = JSON.parse(saved); if (!o.example) { o.name = o.name || 'My saved project'; store.importJson(o); } } catch (e) { /* ignore */ } localStorage.removeItem(STORE); }
+    const sp = new URLSearchParams(location.search), q = sp.get('ex'), pid = sp.get('p'), saved = clStorage.local.getItem(STORE);
+    if (saved && !store.list().length) { try { const o = JSON.parse(saved); if (!o.example) { o.name = o.name || 'My saved project'; store.importJson(o); } } catch (e) { /* ignore */ } clStorage.local.removeItem(STORE); }
     if (pid && store.get(pid)) openProject(pid);
     else if (q && Examples.EX[q]) loadExample(q);
     else if (store.current() && store.get(store.current())) openProject(store.current());
@@ -1111,7 +1111,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   // button, Esc) is always reachable because those controls sit above the 3D canvas.
   let viewSeq = 0;
   const LSV = 'esp32lab.view';
-  const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (_) {} };
+  const lsSet = (k, v) => { try { clStorage.local.setItem(k, v); } catch (_) {} };
   function show3dLoad(on) {
     const el = $('#view3dLoad');
     if (el) { el.hidden = !on; el.setAttribute('aria-busy', on ? 'true' : 'false'); }
@@ -1171,14 +1171,14 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       try { if (app.view3d) app.view3d.setActive(false); } catch (e) { console.error(e); }
     }
     if (viewMode === '2d') {
-      try { localStorage.removeItem(LSV); } catch (_) {}
+      try { clStorage.local.removeItem(LSV); } catch (_) {}
       leaveSchematic();
       try { app.editor && app.editor.render && app.editor.render(); } catch (_) {}
       const z = $('#zoomPct'); if (z && app.editor) z.textContent = Math.round(app.editor.view.s * 100) + '%';
       return;
     }
     if (viewMode === 'schematic') {
-      try { localStorage.removeItem(LSV); } catch (_) {}
+      try { clStorage.local.removeItem(LSV); } catch (_) {}
       app.schematic.setProject(app.proj);
       app.schematic.setActive(true);
       if (!quiet) toast('Schematic — view only · select a part to inspect · pan and zoom · edit in 2D');
@@ -1209,7 +1209,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const ex = $('#bExit3d'); if (ex) ex.onclick = () => setViewMode('2d');
     window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && viewMode === '3d' && !document.querySelector('#newBlankDlg:not([hidden])')) { e.preventDefault(); setViewMode('2d'); } }, true);
     // HOTFIX: always boot in 2D and drop any saved 3D preference.
-    try { localStorage.removeItem(LSV); } catch (_) {}
+    try { clStorage.local.removeItem(LSV); } catch (_) {}
     const f2 = $('#bForce2d'); if (f2) f2.onclick = () => { if (viewMode === '2d') return; setViewMode('2d'); toast('2D editor'); };
     applyNo3d();
     applyViewChrome();

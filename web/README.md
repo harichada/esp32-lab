@@ -118,10 +118,63 @@ On this machine the same Blink took 7.8 s with an empty core cache, 4.2 s once `
 
 A repeated Run from the **same tab** (the `X-Client-Id` sent from that tab's `sessionStorage`) is still 429 with `Retry-After: 3` while that tab's compile is in flight. A different tab waits. The page polls `/api/compile/progress` and, while it is queued, shows `Waiting for another build to finish…` (with the queue position) on the status line, in the build log, and in the Serial pane. The Run button stays disabled and spinning, labelled `Waiting…`. A compile queued on the startup network warm-up says `Preparing network stack (first run after restart), about 40 s…` instead. The server logs `waited X.X s for warm-up` or `waited X.X s for build`. A firmware-cache hit returns before the queue and stays instant.
 
+## Staging copy
+
+The public server stays the live lab. A test copy is a second process on `127.0.0.1`, and the live server forwards `http://<live>/staging/` to it. Nothing about `/staging` changes until `SIM_STAGING_UPSTREAM` is a loopback URL. With the flag empty, `/staging` and `/staging/*` are 404 and every other response is unchanged.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SIM_STAGING` | `0` | On the test-copy process, `1` adds `X-Robots-Tag: noindex, nofollow` to every response, serves `User-agent: *` / `Disallow: /` at `/robots.txt`, and marks the page `data-cl-env="staging"` so the banner and the `esp32lab-staging:` storage prefix are on at first paint. `/api/health` includes `"staging": true` only then. |
+| `SIM_ACCESS_TOKEN` | empty (off) | On the test-copy process. A request without the token is 401: `This is a private test copy of Circuit Lab.` Open `/?t=<token>` (through the live prefix, `/staging/?t=<token>`). The server sets cookie `cl_stage` (an HMAC of the token, not the token) `HttpOnly; SameSite=Strict`, no `Domain`, no `Secure`, and redirects to the same URL without `t`. Later requests, including the WebSocket upgrade, send that cookie. Comparison is constant-time. The log line is only `stage_auth=ok` or `stage_auth=denied`. |
+| `SIM_STAGING_UPSTREAM` | empty (off) | On the live process. Must be exactly `http://127.0.0.1:<port>`. Any other value is logged as an error and the pass-through stays off. `/staging/<rest>` is forwarded to `<upstream>/<rest>` with the method, query, body and safe headers. Hop-by-hop headers are dropped. `X-Forwarded-For` is never forwarded. `/staging` redirects to `/staging/`. WebSocket `/staging/api/run/*` is bridged both ways, including binary frames and close codes. Timeout is 30 seconds. Body limit is the same `MAX_BODY` as live (200 KiB); a larger body is `413 request too large` and is not forwarded. If the upstream is down the response is 502, and if it times out it is 504, both with the plain page `The test copy isn't running right now.` The log line is `staging_proxy status=<code> ms=<n>` with no body, token or query string. |
+| `SIM_BASE_PATH` | `/staging` when `SIM_STAGING=1`, otherwise empty | Public path of the test copy. The access cookie uses `Path=<base>/` (so `Path=/staging/` by default). Redirects after `?t=` use the same prefix, which keeps the browser on the live origin. Set `SIM_BASE_PATH=/` only when the test copy is opened directly, with no live prefix. |
+| `SIM_PROJECT_DIR` | `~/.esp32lab/projects` | Give the test copy its own directory, for example `/data/staging-projects`. |
+| `SIM_COMPILE_QUEUE_MAX` | `4` | Set `1` on the test copy so it cannot queue a pile of compiles. |
+
+`SIM_TOKEN` (cookie `simtok`) is unchanged and is checked first. Leave it unset on the test-copy process. The two tokens are independent: the live `t` query and the staging `t` query are not the same secret.
+
+Both processes share the browser origin, so the storage prefix is mandatory whenever `SIM_STAGING=1`. `js/storage.js` is the only module that reads `localStorage` or `sessionStorage`. With the page flag off, keys are exactly the live keys.
+
+Local two-process start, from `web/`:
+
+```
+SIM_STAGING=1 SIM_ACCESS_TOKEN=test123 SIM_PROJECT_DIR=/tmp/staging-projects \
+  SIM_COMPILE_QUEUE_MAX=1 python3 server/server.py --port 8766
+SIM_STAGING_UPSTREAM=http://127.0.0.1:8766 python3 server/server.py --port 8765
+```
+
+Open http://127.0.0.1:8765/staging/?t=test123 . Checks:
+
+```
+curl -sI http://127.0.0.1:8765/staging/api/health          # 404 while the upstream flag is empty
+curl -sI 'http://127.0.0.1:8766/?t=test123'               # 302 Location: /staging/  and Set-Cookie cl_stage; Path=/staging/
+curl -sI http://127.0.0.1:8766/api/health                 # 401, plain private-copy page
+curl -sI -H "Cookie: cl_stage=<value>" http://127.0.0.1:8766/api/health   # 200, X-Robots-Tag: noindex, nofollow
+curl -sI 'http://127.0.0.1:8765/staging/?t=test123'       # same 302, through the live server
+curl -s  http://127.0.0.1:8765/staging/api/health -H "Cookie: cl_stage=<value>"   # upstream JSON, "staging": true
+```
+
+Stop forwarding by unsetting `SIM_STAGING_UPSTREAM` and restarting the live process. `/staging/` is 404 again and the live site is otherwise the same process.
+
+A container for the test copy stays on loopback and does not publish port 8080:
+
+```
+docker run -d --name esp32lab-staging --cpus 0.5 \
+  -e SIM_STAGING=1 -e SIM_ACCESS_TOKEN=... -e SIM_BASE_PATH=/staging \
+  -e SIM_PROJECT_DIR=/data/staging-projects -e SIM_COMPILE_QUEUE_MAX=1 \
+  -p 127.0.0.1:8766:8765 \
+  -v esp32lab-staging:/data/staging-projects \
+  esp32-lab
+```
+
+The live container then gets `-e SIM_STAGING_UPSTREAM=http://127.0.0.1:8766`. That address is the live container's own loopback, so the test-copy container has to be reachable there (host network, or a published `127.0.0.1:8766` on the same host). Do not point the variable at a hostname, another address, or `https`.
+
 ## Tests
 - `node --test tests/*.test.js`: solver, JS-sketch runner, remote logic and the network log.
 - `python3 tests/diskkeep_test.py`: firmware-image reclaim, sketch/core LRU eviction, orphan sweep, the low-disk guard, the network-stack cache (it survives sketch cleanup and the orphan sweep, the size cap evicts the oldest entry, a shim-hash change misses, a firmware-cache hit is only the `[0.0s] cached` line, and the startup warm-up uses the browser's `SIM` define so its key matches a browser compile), and the compile-queue flags.
 - `python3 -m unittest tests/compile_queue_test.py` (from `web/`): two clients compile at once and the second waits, the same tab is still rate-limited, the queue cap and the timeout answer 429, a warm-up wait is logged, `SIM_COMPILE_QUEUE=0` restores the old 429, and a cache hit does not wait.
+- `python3 -m unittest tests/staging_test.py` (from `web/`): noindex and the page flag only when `SIM_STAGING=1`, the access-token 401 / cookie / redirect, a WebSocket upgrade without the cookie, `/staging` 404 when the upstream is empty, a rejected upstream URL, prefix stripping, `X-Forwarded-For` dropped, the body limit, 502 and 504, and a WebSocket echo (text, binary, close code).
+- `node --test tests/storage.test.js`: the storage prefix is off by default and on in staging, and the app does not touch an unprefixed key in staging mode.
 - `node --test` also covers the project store (`tests/projects.test.js`).
 - `python3 tests/ui/projects_wiring_ui.py [url]`: copy-on-edit, My Projects persistence and server copy, click-click wiring, hover labels, net highlight, Delete/Backspace, right-click menu, double-click bend, Esc, undo.
 - `python3 tests/ui/remote_net_ui.py [url]`: remote example end to end in Chrome (80 ms key taps, virtual TV/Roku/Eco change, Network tab content). Tests read the token from `SIM_TOKEN` or `/tmp/sim_token`.
