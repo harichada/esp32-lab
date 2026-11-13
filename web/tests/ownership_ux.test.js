@@ -48,6 +48,11 @@ test('the copy and lockout sentences are the ones learners see', () => {
   assert.ok(links[1].indexOf('id="bShareLink"') < links[1].indexOf('id="bEditLink"'));
   assert.ok(links[1].indexOf('id="bEditLink"') < links[1].indexOf('editLinkWarn'));
   assert.match(appSrc, /class="pn-name" title="\$\{nm\}" aria-label="\$\{nm\}"/);
+  const row = appSrc.match(/return `<tr data-id=[\s\S]*?<\/tr>`/);
+  assert.ok(row, 'project row');
+  assert.ok(row[0].indexOf('data-a="share"') < row[0].indexOf('data-a="editlink"'));
+  assert.ok(row[0].indexOf('data-a="editlink"') < row[0].indexOf('class="share-warn"'));
+  assert.doesNotMatch(row[0], / disabled/);
   assert.match(appSrc, /aria-describedby="editLinkWarn"/);
   assert.match(appSrc, /This is your copy\./);
   assert.match(appSrc, /Examples can't be changed, so we made you a copy: \$\{app\.proj\.name\}\. It's in My Projects\./);
