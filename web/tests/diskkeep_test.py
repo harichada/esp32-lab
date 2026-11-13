@@ -496,6 +496,10 @@ class NetstackTests(unittest.TestCase):
         self.assertEqual(
             diskkeep.sanitize_defines(['SIM', 'bad define', 3, 'SIM_SONY_HOST="h"']),
             ['SIM', 'SIM_SONY_HOST="h"'])
+        self.assertIsNone(diskkeep.blocked_define_reason(['SIM', 'bad define', 'SIM_NO_LAN_REMAP']))
+        self.assertIsNone(diskkeep.blocked_define_reason(['SIM_SONY_HOST="h"']))
+        self.assertIsNone(diskkeep.blocked_define_reason(['SIM_SONY_HOST="192.168.1.50"']))
+        self.assertIsNotNone(diskkeep.blocked_define_reason(['SIM_SONY_HOST="a b"']))
         common = dict(toolchain='esp32 3.3.12|gcc| /tools/xtensa-esp32-elf-g++', core='3.3.12',
                       shim_hash='abc123', fqbn='esp32:esp32:esp32doit-devkit-v1')
         lookup = diskkeep.netstack_key(**common, defines=tuple(posted))

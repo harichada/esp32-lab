@@ -8,14 +8,24 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       SIM_IMAGE_CACHE_MAX_MB, SIM_CORE_CACHE_MAX_MB, SIM_SKETCH_CACHE_MAX_MB,
       SIM_NETSTACK_CACHE_DIR, SIM_NETSTACK_CACHE_MAX_MB, SIM_NETSTACK_WARM,
       SIM_COMPILE_QUEUE, SIM_COMPILE_QUEUE_MAX, SIM_COMPILE_QUEUE_TIMEOUT_S,
+      SIM_COMPILE_SANDBOX (default on; only the literal "off" runs arduino-cli unsandboxed;
+      SIM_SANDBOX=off is the same switch when SIM_COMPILE_SANDBOX is unset),
+      SIM_QEMU_NET_RESTRICT (default 1; 0 is the old open slirp network),
+      SIM_QEMU_LIB_DIRS (optional, os.pathsep-separated absolute directories
+      appended after QEMU's own lib dirs on LD_LIBRARY_PATH only; each entry
+      must resolve to a root-owned directory with no group/world-writable
+      component, and must not be under /tmp, /var/tmp, /dev/shm, the projects
+      directory, or the build directory),
+      SIM_NET_NOTICE (default 1; 0 omits net_blocked_notice on the compile response),
       SIM_ORPHAN_MAX_AGE_S and the matching *_MAX_AGE_S knobs.
       Staging (off unless set): SIM_STAGING, SIM_ACCESS_TOKEN, SIM_STAGING_UPSTREAM, SIM_BASE_PATH.
 """
-import asyncio, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, argparse
+import asyncio, contextvars, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, argparse
 import diskkeep
 import staging
+import compileguard
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request, Response
 import secrets
 from fastapi.responses import PlainTextResponse
 from fastapi.responses import JSONResponse, FileResponse
@@ -54,7 +64,15 @@ _CLIENT_ID = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 # ---------------- public-exposure hardening ----------------
 TOKEN = os.environ.get('SIM_TOKEN', '')
 MAX_BODY = 200 * 1024; COMPILE_TIMEOUT = int(os.environ.get('SIM_COMPILE_TIMEOUT', '300'))
-PROGRESS = {'active': False, 'log': '', 't0': 0.0, 'stage': '', 'stages': '', 'compiler': ''}
+# One record per compile. The id is secrets.token_urlsafe(16), never a client value.
+# Polls before the POST returns use X-Client-Id only. After that they send the server id.
+_PROGRESS_CAP = 20000
+_PROGRESS_TTL_S = 900
+_PROGRESS_MAX = 64
+_progress_records = {}
+_progress_by_client = {}
+_progress_ctx = contextvars.ContextVar('esp32_progress', default=None)
+_reject_client = contextvars.ContextVar('esp32_reject_client', default='')
 RUN_CAP = float(os.environ.get('SIM_RUN_CAP', '0'))          # seconds; 0 = unlimited
 RESUME_GRACE = float(os.environ.get('SIM_RESUME_GRACE', '1800'))  # 0 = keep forever (until user stops / QEMU exits)
 STOP_ON_1001 = os.environ.get('SIM_STOP_ON_1001', '0') == '1'   # old behaviour: a 1001 'going away' close ends the run
@@ -125,18 +143,33 @@ def _index_headers():
     return names
 KNOWN_HEADERS = _index_headers()
 INC_RE = re.compile(r'^\s*#\s*include\b(.*)$', re.M)
-def check_sources(srcs, uploaded):
+def _check_sources_literal(srcs, uploaded):
+    """The original literal allow-list. ``#include MACRO`` is left for the dependency scan."""
     for txt in srcs:
-        if re.search(r'incbin|__has_include|#\s*(include_next|import)\b', txt): return 'forbidden directive (.incbin/__has_include/include_next/import)'
+        # include_next and import are reported on their own so they are not treated as .incbin.
+        if re.search(r'#\s*include_next\b', txt): return 'forbidden directive: include_next'
+        if re.search(r'#\s*import\b', txt): return 'forbidden directive: import'
+        if re.search(r'incbin', txt): return 'forbidden directive: incbin'
         for m in INC_RE.finditer(txt):
             arg = m.group(1).strip()
             mm = re.match(r'^[<"]([^<>"]+)[>"]', arg)
-            if not mm: return f'unsupported #include form: {arg[:60]}'
+            if not mm:
+                head = (arg.split() or [''])[0]
+                if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', head): continue
+                return f'unsupported #include form: {arg[:60]}'
             h = mm.group(1)
             if h.startswith('/') or '\\' in h or '..' in h or ':' in h: return f'forbidden include path: {h}'
             base = h.rsplit('/', 1)[-1]
             if h in uploaded or base in KNOWN_HEADERS: continue
             return f'include not in allowlist: {h}'
+    return None
+def check_sources(srcs, uploaded):
+    """Fast first pass, repeated after line splicing and comment removal."""
+    err = _check_sources_literal(srcs, uploaded)
+    if err: return err
+    folded = [compileguard.normalize_source(txt) for txt in srcs]
+    if folded != list(srcs):
+        return _check_sources_literal(folded, uploaded)
     return None
 def sanitize(log):
     for pth in sorted({str(BUILDS), str(HOME), tempfile.gettempdir(), str(HERE)}, key=len, reverse=True):
@@ -144,9 +177,17 @@ def sanitize(log):
     return re.sub(r'(/[A-Za-z0-9_.+-]+){2,}/', '.../', log)
 
 @app.get('/api/health')
+@app.get('/health')
 def health():
     ok_q = Path(QEMU).exists(); ok_c = Path(CLI).exists() if CLI else False
-    body = {'ok': ok_q and ok_c, 'qemu': QEMU if ok_q else None, 'arduino_cli': CLI if ok_c else None, 'fqbn': FQBN, 'runs': len(runs),
+    # qemu_ok and sandbox_ok are redone every 60s. Stderr from the qemu probe stays in the log.
+    qemu_ok = qemu_ready()
+    sandbox_ok = compileguard.sandbox_ok()
+    compile_ok = bool(ok_c)
+    ready = bool(ok_q and compile_ok and qemu_ok and sandbox_ok)
+    body = {'ok': ready, 'qemu': QEMU if ok_q else None, 'qemu_ok': qemu_ok,
+            'sandbox_ok': sandbox_ok, 'compile_ok': compile_ok,
+            'arduino_cli': CLI if ok_c else None, 'fqbn': FQBN, 'runs': len(runs),
             'notes': 'Real Xtensa emulation (Espressif QEMU, patched esp32.gpio/iomux/rtcio). Wi-Fi radio not emulated: network sketches use the QemuNet shim (WiFi/HTTPClient/WiFiUdp -> mock devices).'}
     if staging.staging_on():
         body['staging'] = True
@@ -161,23 +202,124 @@ def merged_image(outdir: Path) -> Path:
         return p
     raise RuntimeError('no merged image produced')
 
+def _empty_progress():
+    return {'active': False, 'elapsed': 0, 'log': '', 'stage': ''}
+
+def _progress_current():
+    return _progress_ctx.get()
+
+def _drop_progress(pid: str):
+    rec = _progress_records.pop(pid, None)
+    if rec is None:
+        return
+    owner = rec.get('client') or ''
+    if owner and _progress_by_client.get(owner) == pid:
+        _progress_by_client.pop(owner, None)
+
+def _expire_progress(now=None):
+    """Drop finished records that are too old, and the oldest if the table is full."""
+    now = time.time() if now is None else now
+    stale = [pid for pid, rec in _progress_records.items()
+             if not rec.get('active') and now - rec.get('updated', now) >= _PROGRESS_TTL_S]
+    for pid in stale:
+        _drop_progress(pid)
+    while len(_progress_records) > _PROGRESS_MAX:
+        oldest = min(_progress_records.values(), key=lambda rec: rec.get('updated', 0))
+        _drop_progress(oldest['id'])
+
+def _new_progress(client_id: str, compile_id: str = ''):
+    """One record. Any compile id the client sent is ignored."""
+    del compile_id
+    _expire_progress()
+    pid = secrets.token_urlsafe(16)
+    while pid in _progress_records:
+        pid = secrets.token_urlsafe(16)
+    rec = _progress_records.get(pid)
+    if rec is None:
+        rec = {'id': pid, 'client': client_id, 'active': False, 't0': time.time(),
+               'stage': '', 'stages': '', 'compiler': '', 'updated': time.time()}
+        _progress_records[pid] = rec
+    rec['client'] = client_id or rec.get('client') or ''
+    rec['updated'] = time.time()
+    if client_id:
+        _progress_by_client[client_id] = pid
+    _expire_progress()
+    return rec
+
+def _bind_progress(client_id: str, compile_id: str):
+    """Attach this task's compile record. Returns the token ``_unbind_progress`` expects."""
+    rec = _new_progress(client_id, compile_id)
+    return _progress_ctx.set(rec)
+
+def _unbind_progress(token):
+    rec = _progress_ctx.get()
+    if rec is not None:
+        rec['active'] = False
+        rec['updated'] = time.time()
+    if token is not None:
+        _progress_ctx.reset(token)
+
 def _begin_progress():
-    PROGRESS.update(active=True, log='', t0=time.time(), stage='', stages='', compiler='')
+    """Start (or clear) the stage log for the compile running in this task."""
+    rec = _progress_current()
+    if rec is None:
+        rec = _new_progress('', '')
+        _progress_ctx.set(rec)
+    now = time.time()
+    rec.update(active=True, t0=now, stage='', stages='', compiler='', updated=now)
 
 def _stage(msg: str):
     """Append a stage line the UI can show while arduino-cli is still running."""
-    PROGRESS['stage'] = msg
-    line = msg.rstrip() + '\n'
-    if line not in PROGRESS['stages']:
-        PROGRESS['stages'] += line
-    PROGRESS['log'] = PROGRESS['stages'] + PROGRESS['compiler']
+    rec = _progress_current()
+    if rec is None:
+        return
+    rec['stage'] = (msg or '')[:_PROGRESS_CAP]
+    line = (msg or '').rstrip() + '\n'
+    if line not in rec['stages']:
+        rec['stages'] = (rec['stages'] + line)[-_PROGRESS_CAP:]
+    rec['updated'] = time.time()
 
 def _compiler_log(text: str):
-    PROGRESS['compiler'] = text
-    PROGRESS['log'] = PROGRESS['stages'] + text
+    rec = _progress_current()
+    if rec is None:
+        return
+    rec['compiler'] = (text or '')[-_PROGRESS_CAP:]
+    rec['updated'] = time.time()
+
+def _progress_log(rec) -> str:
+    return ((rec.get('stages') or '') + (rec.get('compiler') or ''))[-_PROGRESS_CAP:]
+
+def _progress_body(rec, now):
+    active = bool(rec.get('active'))
+    return {'active': active,
+            'elapsed': round(now - rec['t0'], 1) if active else 0,
+            'log': _progress_log(rec),
+            'stage': rec.get('stage') or ''}
+
+def _lookup_progress(compile_id: str, client_id: str):
+    """This client's record, or None.
+
+    A compile id returns a log only when ``rec.client`` is the requester. Anyone
+    else, including a guessed id, gets the same miss as an unknown id. A poll
+    with only ``X-Client-Id`` still sees that client's current record, so the
+    live log works before the POST has returned the server id.
+    """
+    _expire_progress()
+    if compile_id:
+        rec = _progress_records.get(compile_id)
+        if rec is None or (rec.get('client') or '') != (client_id or ''):
+            return None
+        return rec
+    if not client_id:
+        return None
+    pid = _progress_by_client.get(client_id)
+    rec = _progress_records.get(pid) if pid else None
+    if rec is None or (rec.get('client') or '') != client_id:
+        return None
+    return rec
 
 def _note_compiler_line(line: str):
-    if 'xtensa-esp32-elf-g' not in line:
+    if 'xtensa-esp32-elf-g' not in line and 'xtensa-esp-elf-g' not in line:
         return
     if '--start-group' in line:
         _stage('Linking...')
@@ -194,14 +336,22 @@ def _normalize_client_id(raw) -> str:
 def _client_id_from(request: Request) -> str:
     return _normalize_client_id(request.headers.get('x-client-id', ''))
 
+def _compile_id_from(request: Request) -> str:
+    """Per-compile id from ``X-Compile-Id`` or ``?id=``. Empty when missing or odd."""
+    raw = request.headers.get('x-compile-id', '') or request.query_params.get('id', '')
+    return _normalize_client_id(raw)
+
 @app.get('/api/compile/progress')
 async def compile_progress(request: Request):
-    # Keep the stage lines even when the compiler tail is long.
-    # ``wait`` is set while this tab is queued, so the page can say so before the POST returns.
-    log = (PROGRESS.get('stages') or '') + (PROGRESS.get('compiler') or '')[-20000:]
-    body = {'active': PROGRESS['active'], 'elapsed': round(time.time() - PROGRESS['t0'], 1) if PROGRESS['active'] else 0,
-            'log': log, 'stage': PROGRESS.get('stage') or ''}
+    """This client's compile only. No id, or an id this server does not know, is an empty 200.
+
+    ``wait`` is set while this tab is queued, so the page can say so before the POST returns.
+    It is this tab's queue position, not another compile's log.
+    """
     cid = _client_id_from(request)
+    compile_id = _compile_id_from(request)
+    rec = _lookup_progress(compile_id, cid)
+    body = _progress_body(rec, time.time()) if rec is not None else _empty_progress()
     wait = await _cqueue.view(cid) if _cqueue is not None else None
     if wait is None and cid and cid in _legacy_warm:
         wait = {'reason': 'warm-up', 'position': None, 'queued': 0,
@@ -222,6 +372,12 @@ async def _prewarm():
         print('disk startup', summary, flush=True)
     except Exception as e:
         print('disk startup failed:', repr(e), flush=True)
+    print(compileguard.startup_banner(), '; qemu net',
+          'restricted' if qemu_net_restrict() else 'unrestricted')
+    sandbox_error = compileguard.startup_sandbox_error()
+    if sandbox_error:
+        print(sandbox_error)
+    run_qemu_selfcheck()
     if os.environ.get('SIM_PREWARM', '1') == '1' or diskkeep.netstack_warm_enabled():
         asyncio.get_event_loop().create_task(_startup_compiles())
 
@@ -311,6 +467,25 @@ def _build_key(sketch, files, defines, net, netmode, simlibs) -> str:
     blob = [sketch, files, defines, net, netmode, FQBN, SHIM_VER if (net or simlibs) else '', simlibs]
     return hashlib.sha256(json.dumps(blob, sort_keys=True).encode()).hexdigest()[:16]
 
+def _reject(log: str, status: int | None = None):
+    """Learner-facing refusal. One server line: reason code and client id, nothing from the sketch."""
+    code = 'flag' if log == diskkeep.FLAG_MSG else compileguard.reason_code(log)
+    body = {'ok': False, 'log': log}
+    if code:
+        body['reason'] = code
+        client = _reject_client.get() or 'anon'
+        line = f'compile rejected reason={code} client={client}'
+        if code == 'infra':
+            problem = compileguard.sandbox_problem()
+            if problem:
+                line += ' ' + problem
+        elif code == 'unknown_library':
+            line += ' lib=' + compileguard.library_log_from_message(log)
+        print(line)
+    if status is None:
+        return JSONResponse(body)
+    return JSONResponse(body, status)
+
 def _compile_plan(req: dict):
     """Sanitized sources and cache key, or a JSONResponse when the body is rejected."""
     sketch = req.get('sketch', '')
@@ -319,13 +494,28 @@ def _compile_plan(req: dict):
         return JSONResponse({'ok': False, 'log': 'bad request'}, 400)
     if len(sketch) + sum(len(v) for v in files.values()) > MAX_BODY:
         return JSONResponse({'ok': False, 'log': 'sources too large'}, 413)
+    blocked = diskkeep.blocked_define_reason(req.get('defines'))
+    if blocked:
+        return _reject(blocked)
+    if diskkeep.blocked_build_request(req):
+        return _reject(diskkeep.FLAG_MSG)
     files = {k: v for k, v in files.items() if re.fullmatch(r'[A-Za-z0-9_.-]+\.(h|hpp|c|cpp|ino)', k) and k != 'sketch.ino'}
+    if any(k.lower() == 'build_opt.h' or k.lower().startswith('build_opt.') for k in files):
+        return _reject(diskkeep.FLAG_MSG)
     err = check_sources([sketch, *files.values()], set(files))
     if err:
-        return JSONResponse({'ok': False, 'log': 'rejected: ' + err})
+        return _reject(compileguard.present_include_error(err))
+    err = compileguard.fast_error(sketch, files)
+    if err:
+        return _reject(err)
     defines = diskkeep.sanitize_defines(req.get('defines'))
-    net = bool(req.get('netShim', False)) or bool(re.search(r'#include\s*[<"](WiFi|HTTPClient|WiFiUdp)\.h', sketch + ''.join(files.values())))
-    netmode = (req.get('net') if req.get('net') in ('lwip', 'shim') else 'lwip') if net else None
+    if compileguard.needs_dependency_scan(sketch, files):
+        err = compileguard.audit_texts(sketch, files, defines=defines)
+        if err:
+            return _reject(err)
+    # Includes choose the stack. net and netShim on the request are ignored.
+    net = bool(re.search(r'#include\s*[<"](WiFi|HTTPClient|WiFiUdp)\.h', sketch + ''.join(files.values())))
+    netmode = 'lwip' if net else None
     allsrc = sketch + ''.join(files.values())
     simlibs = [n for h, n in (('Adafruit_NeoPixel.h', 'QemuNeoPixel'), ('DHT.h', 'QemuDHT')) if re.search(r'#\s*include\s*[<"]' + re.escape(h) + r'[>"]', allsrc) and (SHIMS / n).exists()]
     key = _build_key(sketch, files, defines, net, netmode, simlibs)
@@ -500,8 +690,9 @@ def _install_queue():
 _install_queue()
 
 @app.post('/api/compile')
-async def compile_(req: dict, request: Request):
-    return await _compile_request(req, client_id=_client_id_from(request))
+async def compile_(req: dict, request: Request, response: Response):
+    return await _compile_request(req, client_id=_client_id_from(request),
+                                  compile_id=_compile_id_from(request), response=response)
 
 async def _legacy_busy(client_id: str):
     """SIM_COMPILE_QUEUE=0: 429 while a user compile holds the lock; block on the warm-up."""
@@ -535,7 +726,9 @@ async def _compile_holding_lock(owner, plan, *, rebuild_netstack: bool = False):
     _lock_owner = owner
     try:
         if plan['img'].exists() and not (rebuild_netstack and not _netstack_cached(plan['defines'])):
-            return _cached_compile(plan['key'], plan['bdir'], plan['net'], plan['netmode'])
+            return _attach_notice(
+                _cached_compile(plan['key'], plan['bdir'], plan['net'], plan['netmode']),
+                plan['sketch'], plan['files'])
         roots = _cache_roots()
         try:
             diskkeep.prepare_for_compile(builds=BUILDS, cache_roots=roots, temp_roots=[Path(tempfile.gettempdir())],
@@ -555,15 +748,76 @@ async def _compile_holding_lock(owner, plan, *, rebuild_netstack: bool = False):
                 print('sketch cache cleanup failed:', repr(e))
     finally:
         _lock_owner = None
-        PROGRESS['active'] = False
+        rec = _progress_current()
+        if rec is not None:
+            rec['active'] = False
+            rec['updated'] = time.time()
 
-async def _compile_request(req: dict, *, queue: bool = False, rebuild_netstack: bool = False, client_id: str = ''):
+def _attach_notice(result, sketch, files):
+    """``net_blocked_notice`` on a successful compile body. Failures stay as they are."""
+    if isinstance(result, dict) and result.get('ok'):
+        result['net_blocked_notice'] = compileguard.net_blocked_notice(sketch, files)
+    return result
+
+def _stamp_progress(result, response=None):
+    """Add the server compile id to the body and to ``X-Compile-Id``."""
+    rec = _progress_current()
+    if rec is None:
+        return result
+    pid = rec['id']
+    if response is not None:
+        response.headers['X-Compile-Id'] = pid
+    if isinstance(result, dict):
+        result['compile_id'] = pid
+        result['progressId'] = pid
+        return result
+    if isinstance(result, JSONResponse):
+        try:
+            payload = json.loads(result.body)
+        except (TypeError, json.JSONDecodeError):
+            result.headers['X-Compile-Id'] = pid
+            return result
+        if isinstance(payload, dict):
+            payload['compile_id'] = pid
+            payload['progressId'] = pid
+            headers = {key: value for key, value in result.headers.items()
+                       if key.lower() not in ('content-length', 'content-type')}
+            headers['X-Compile-Id'] = pid
+            return JSONResponse(payload, result.status_code, headers=headers)
+        result.headers['X-Compile-Id'] = pid
+    return result
+
+async def _compile_request(req: dict, *, queue: bool = False, rebuild_netstack: bool = False,
+                           client_id: str = '', compile_id: str = '', response=None):
+    """Run one compile against its own progress record.
+
+    The compile id is always ``secrets.token_urlsafe(16)``. An id from the
+    client (header or ``?id=``) is ignored. Two requests never share a stage log.
+    """
+    del compile_id
+    token = _bind_progress(client_id, '')
+    client_token = _reject_client.set(client_id or 'anon')
+    try:
+        result = await _compile_request_inner(
+            req, queue=queue, rebuild_netstack=rebuild_netstack, client_id=client_id)
+        if isinstance(result, dict) and result.get('ok') and 'net_blocked_notice' not in result:
+            sketch = req.get('sketch') if isinstance(req.get('sketch'), str) else ''
+            files = req.get('files') if isinstance(req.get('files'), dict) else {}
+            result['net_blocked_notice'] = compileguard.net_blocked_notice(sketch, files)
+        return _stamp_progress(result, response)
+    finally:
+        _reject_client.reset(client_token)
+        _unbind_progress(token)
+
+async def _compile_request_inner(req: dict, *, queue: bool = False, rebuild_netstack: bool = False, client_id: str = ''):
     plan = _compile_plan(req)
     if isinstance(plan, JSONResponse):
         return plan
     # A firmware hit does not wait, and it does not count as this tab's in-flight compile.
     if plan['img'].exists() and not rebuild_netstack:
-        return _cached_compile(plan['key'], plan['bdir'], plan['net'], plan['netmode'])
+        return _attach_notice(
+            _cached_compile(plan['key'], plan['bdir'], plan['net'], plan['netmode']),
+            plan['sketch'], plan['files'])
     if queue:
         # The startup warm-up. It may wait for a user compile, then it owns the lock.
         try:
@@ -776,6 +1030,14 @@ async def _compile_in(work, bdir, key, sketch, files, defines, net, netmode, sim
     for name, content in files.items():
         if re.fullmatch(r'[A-Za-z0-9_.-]+\.(h|hpp|c|cpp|ino)', name) and name != 'sketch.ino':
             (sk / name).write_text(content)
+    refusal = compileguard.sandbox_refusal()
+    if refusal:
+        return _reject(refusal)
+    if not diskkeep.flags_are_safe(defines):
+        return _reject(diskkeep.FLAG_MSG)
+    scanned = compileguard.scan_sketch_dir(sk, defines=defines)
+    if scanned:
+        return _reject(scanned)
     # --build-path is intentionally not set. On arduino-cli 1.x it disables the core cache and
     # rebuilds the ESP32 core on every sketch (minutes, not the ~8 s warm Blink).
     _begin_progress()
@@ -800,28 +1062,69 @@ async def _compile_in(work, bdir, key, sketch, files, defines, net, netmode, sim
     else:
         _stage('Compiling sketch...')
     cmd = [CLI, 'compile', '-b', FQBN, '--output-dir', str(out), '--warnings', 'none']
-    if defines:
-        cmd += ['--build-property', 'compiler.cpp.extra_flags=' + ' '.join('-D' + d for d in defines),
-                '--build-property', 'compiler.c.extra_flags=' + ' '.join('-D' + d for d in defines)]
+    c_flags = cpp_flags = diskkeep.extra_flags_value(defines) if defines else ''
+    elf_flags = ''
     if netmode == 'lwip':
         # Object files go in compiler.c.elf.extra_flags, which the link recipe places before
         # --start-group and core.a. build.extra_libs is after core.a and lets core.a win weak
         # symbols (the image grew by about 76 bytes). One libstdc++ COMDAT,
         # basic_string::_M_dispose, can still differ by a few bytes from a full link.
-        link = '-Wl,--wrap=lwip_getaddrinfo,--wrap=lwip_connect'
+        elf_flags = '-Wl,--wrap=lwip_getaddrinfo,--wrap=lwip_connect'
         if use_stack:
-            link += ' ' + ' '.join(str(p) for p in objs)
-        cmd += ['--library', str(SHIMS / 'QemuEth'), '--build-property', 'compiler.c.elf.extra_flags=' + link]
-    elif net: cmd += ['--library', str(SHIMS / 'QemuNet')]
+            elf_flags += ' ' + ' '.join(str(p) for p in objs)
+        cmd += ['--library', str(SHIMS / 'QemuEth')]
+    try:
+        recipe = compileguard.toolchain_recipe(c_flags=c_flags, cpp_flags=cpp_flags, elf_flags=elf_flags)
+    except compileguard.ToolchainError:
+        return _reject(compileguard.SANDBOX_MSG)
+    if recipe:
+        # The real xtensa-esp-elf binaries, not the Rust wrappers that need /proc/self/exe.
+        # ``prop`` must not be named ``key``: that name is the firmware id.
+        for prop, val in recipe:
+            cmd += ['--build-property', prop + '=' + val]
+    else:
+        if defines:
+            cmd += ['--build-property', 'compiler.cpp.extra_flags=' + cpp_flags,
+                    '--build-property', 'compiler.c.extra_flags=' + c_flags]
+        if elf_flags:
+            cmd += ['--build-property', 'compiler.c.elf.extra_flags=' + elf_flags]
+    if netmode != 'lwip' and net:
+        cmd += ['--library', str(SHIMS / 'QemuNet')]
     for n in simlibs: cmd += ['--library', str(SHIMS / n)]   # simulator back ends: NeoPixel show() -> UART frame, DHT read() -> lock-step bits
     if use_stack:
         # Library discovery would rebuild QemuEth, Network, HTTPClient and NetworkClientSecure
         # into the sketch tree, which is deleted after every compile.
         cmd += ['--skip-libraries-discovery']
     cmd.append(str(sk))
-    t0 = PROGRESS['t0']
+    t0 = (_progress_current() or {}).get('t0') or time.time()
     cmd[2:2] = ['-v', '--no-color']
-    p = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+    config_file = (os.environ.get('SIM_ARDUINO_CONFIG_FILE') or '').strip()
+    if config_file:
+        # Global flags belong before the compile subcommand. A fresh cache path
+        # lives in that file's build_cache.path; arduino-cli 1.6 has no cache flag.
+        cmd[1:1] = ['--config-file', config_file]
+    wrapped, wrap_err = compileguard.wrap_command(
+        cmd, work=work, read_only=compileguard._ro_for(work), read_write=compileguard._rw_for(work))
+    if wrap_err:
+        return _reject(wrap_err)
+    cmd = wrapped
+    # bwrap and docker are the host process. Their environ is visible in
+    # /proc/<pid>/environ, so they do not inherit the server environment.
+    # An unsandboxed compiler is that process too: minimal env, not os.environ.
+    if Path(cmd[0]).name == 'bwrap':
+        spawn_env = compileguard.host_sandbox_env()
+    else:
+        spawn_env = compileguard._direct_compiler_env()
+    cmd, seccomp_fds = compileguard.attach_seccomp(cmd)
+    if cmd is None:
+        compileguard.close_fds(seccomp_fds)
+        return _reject(compileguard.SANDBOX_MSG)
+    try:
+        p = await asyncio.create_subprocess_exec(
+            *cmd, env=spawn_env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+            pass_fds=seccomp_fds)
+    finally:
+        compileguard.close_fds(seccomp_fds)
     buf = []
     async def _pump():
         async for ln in p.stdout:
@@ -833,9 +1136,11 @@ async def _compile_in(work, bdir, key, sketch, files, defines, net, netmode, sim
         await asyncio.wait_for(_pump(), COMPILE_TIMEOUT)
     except asyncio.TimeoutError:
         p.kill(); await p.wait()
-        return JSONResponse({'ok': False, 'log': PROGRESS['stages'] + sanitize(''.join(buf[-200:])) + f'\ncompile timed out ({COMPILE_TIMEOUT}s) - the first build after a restart compiles the ESP32 core; press Run again.'})
+        stages = (_progress_current() or {}).get('stages') or ''
+        return JSONResponse({'ok': False, 'log': stages + sanitize(''.join(buf[-200:])) + f'\ncompile timed out ({COMPILE_TIMEOUT}s) - the first build after a restart compiles the ESP32 core; press Run again.'})
     body = ''.join(buf[-300:]) if len(buf) > 300 else ''.join(buf).replace(str(sk) + '/', '')
-    log = PROGRESS['stages'] + sanitize(body)
+    stages = (_progress_current() or {}).get('stages') or ''
+    log = stages + sanitize(body)
     if netmode == 'lwip' and use_stack:
         tag = '(+QemuEth: open_eth + lwIP, cached network stack)'
     elif netmode == 'lwip':
@@ -855,7 +1160,9 @@ async def _compile_in(work, bdir, key, sketch, files, defines, net, netmode, sim
     except RuntimeError as e:
         return JSONResponse({'ok': False, 'log': log + '\n' + str(e)})
     diskkeep.publish_firmware(bdir, produced, log, netmode or '')
-    return {'ok': True, 'id': key, 'cached': False, 'log': log, 'netShim': net, 'net': netmode}
+    return _attach_notice(
+        {'ok': True, 'id': key, 'cached': False, 'log': log, 'netShim': net, 'net': netmode},
+        sketch, files)
 
 # ---------------- raw Ethernet frame tap (real lwIP UDP <-> browser mock devices) ----------------
 import socket, struct
@@ -867,9 +1174,10 @@ def ip_csum(b):
     t = sum(struct.unpack('!%dH' % (len(b) // 2), b)); t = (t >> 16) + (t & 0xffff); t += t >> 16
     return (~t) & 0xffff
 class FrameTap(asyncio.DatagramProtocol):
-    """QEMU '-net socket,udp=' carries whole Ethernet frames over UDP. We watch the hub for IPv4/UDP datagrams that
-    the guest sends to non-slirp addresses (LAN devices like the Eco plug at 10.13.37.2, or broadcasts), hand them to the
-    browser's mock devices and inject the replies as frames that appear to come from the device via the gateway."""
+    """QEMU ``-netdev dgram`` carries whole Ethernet frames over a unix datagram socket. We watch the hub for
+    IPv4/UDP datagrams that the guest sends to non-slirp addresses (LAN devices like the Eco plug at 10.13.37.2,
+    or broadcasts), hand them to the browser's mock devices and inject the replies as frames that appear to come
+    from the device via the gateway."""
     GW_MAC = bytes.fromhex('525500000202')   # overwritten from observed frames
     def __init__(self, ws, log=None): self.ws = ws; self.peer = None; self.tr = None; self.n = 0; self.ctx = {}; self.gw = self.GW_MAC; self.log = log; self.gmac = None
     def connection_made(self, tr): self.tr = tr
@@ -924,7 +1232,7 @@ class FrameTap(asyncio.DatagramProtocol):
         elif proto == 6 and len(l4) >= 14:
             sport, dport = struct.unpack('!HH', l4[:4]); fl = l4[13]
             if fl & 0x02 and not fl & 0x10 and not dst.startswith('10.0.2.15'):
-                self.log('tcp', f'TCP connect {src}:{sport} -> {dst}:{dport}' + ('' if dst == '10.0.2.100' else '  (not a simulator address: goes to the box network via slirp)'), dst=dst, dport=dport)
+                self.log('tcp', f'TCP connect {src}:{sport} -> {dst}:{dport}' + ('' if dst == '10.0.2.100' else '  (not a simulator address: slirp has no host route)'), dst=dst, dport=dport)
             elif fl & 0x04 and dst == '10.0.2.15':
                 self.log('tcp', f'TCP reset from {src}:{sport} (connection refused / closed)', ok=False)
     def reply(self, m):
@@ -1003,6 +1311,423 @@ async def _quiet_close(ws):
     try: await ws.close()
     except Exception: pass
 
+RUN_EXPIRED_MSG = 'This build has expired. Press Run to build it again.'
+QEMU_FAIL_MSG = "The simulator couldn't start. Try again in a minute."
+# Startup ``qemu-system-xtensa --version`` with the run spawn environment.
+# done is False until that check runs. A failed check makes runs fail fast.
+_qemu_check = {'done': False, 'ok': False, 'rc': None, 'at': 0.0}
+_dgram_cache: dict[str, bool] = {}
+BAD_BUILD_MSG = "That build id is not valid. Press Run to build it again."
+_BUILD_ID = re.compile(r'[0-9a-f]{16}\Z')
+
+
+def _build_image(bid: str):
+    """``(flash.bin, None)`` or ``(None, reason)``.
+
+    A value that is not 16 lowercase hex characters is ``bad_build_id`` and
+    no path is built. A well-formed id whose directory is not a direct child
+    of the build root (a symlink that leaves that root) is the same refusal.
+    A missing image keeps the expired-build reason.
+    """
+    if not isinstance(bid, str) or _BUILD_ID.fullmatch(bid) is None:
+        return None, 'bad_build_id'
+    root = BUILDS.resolve()
+    try:
+        parent = (root / bid).resolve()
+    except OSError:
+        return None, 'bad_build_id'
+    if parent.parent != root or parent.name != bid:
+        return None, 'bad_build_id'
+    image = parent / 'flash.bin'
+    if not image.is_file():
+        return None, 'unknown'
+    return image, None
+
+
+def _qemu_private_lib_dirs(qemu_bin) -> list[str]:
+    """Directories under QEMU's prefix that hold its own shared libraries."""
+    if not qemu_bin:
+        return []
+    root = Path(qemu_bin).resolve().parent
+    base = root.parent / 'lib' if root.name == 'bin' else root / 'lib'
+    if not base.is_dir():
+        return []
+    found = []
+    for dirpath, dirnames, files in os.walk(base):
+        dirnames[:] = [name for name in dirnames if not name.startswith('.')][:8]
+        if any('.so' in name for name in files):
+            found.append(dirpath)
+        if len(found) >= 4:
+            break
+    return found
+
+
+def _lib_log(reason: str, path: str) -> None:
+    # One line. repr keeps a newline or other control character from splitting it.
+    print('qemu lib dir ignored reason=%s path=%r' % (reason, path))
+
+
+def _symlink_component(path: Path) -> bool:
+    current = Path(path.anchor)
+    for name in path.parts[1:]:
+        current = current / name
+        try:
+            if current.is_symlink():
+                return True
+        except OSError:
+            return False
+        if not current.exists():
+            return False
+    return False
+
+
+def _component_writable(path: Path) -> bool:
+    """True when ``path`` or any parent through ``/`` is group- or world-writable."""
+    current = Path(path.anchor)
+    try:
+        if os.lstat(current).st_mode & 0o022:
+            return True
+    except OSError:
+        return True
+    for name in path.parts[1:]:
+        current = current / name
+        try:
+            if os.lstat(current).st_mode & 0o022:
+                return True
+        except OSError:
+            return True
+    return False
+
+
+def _lib_forbidden(resolved: Path) -> str | None:
+    roots = (
+        (Path('/tmp'), 'under-tmp'),
+        (Path('/var/tmp'), 'under-var-tmp'),
+        (Path('/dev/shm'), 'under-dev-shm'),
+        (PROJ_DIR, 'under-projects'),
+        (BUILDS, 'under-builds'),
+    )
+    for root, reason in roots:
+        try:
+            resolved.relative_to(Path(root).resolve())
+        except (OSError, ValueError):
+            continue
+        return reason
+    return None
+
+
+def _qemu_extra_lib_dirs(env) -> list[str]:
+    """Accepted directories from ``SIM_QEMU_LIB_DIRS``.
+
+    Each entry is absolute, has no ``..`` and no symlink component, and its
+    real path is a root-owned directory whose parents through ``/`` are not
+    group- or world-writable. ``/tmp``, ``/var/tmp``, ``/dev/shm``, the
+    projects directory, and the build directory are refused. A ``:`` is the
+    separator, so it cannot occur inside an entry; a control character is
+    refused and logged with ``repr`` on one line.
+    """
+    raw = (env.get('SIM_QEMU_LIB_DIRS') or '') if env else ''
+    good: list[str] = []
+    for part in raw.split(os.pathsep):
+        if part == '':
+            continue
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in part) or (os.pathsep != ':' and ':' in part):
+            _lib_log('bad-character', part)
+            continue
+        path = Path(part)
+        if not path.is_absolute() or '..' in path.parts:
+            _lib_log('not-absolute', part)
+            continue
+        if _symlink_component(path):
+            _lib_log('symlink', part)
+            continue
+        try:
+            resolved = path.resolve()
+        except OSError:
+            _lib_log('missing', part)
+            continue
+        forbidden = _lib_forbidden(resolved)
+        if forbidden:
+            _lib_log(forbidden, part)
+            continue
+        if not resolved.is_dir():
+            _lib_log('missing', part)
+            continue
+        if _component_writable(resolved):
+            _lib_log('writable', part)
+            continue
+        try:
+            uid = resolved.stat().st_uid
+        except OSError:
+            _lib_log('missing', part)
+            continue
+        if uid != 0:
+            _lib_log('not-root', part)
+            continue
+        directory = str(resolved)
+        if directory not in good:
+            good.append(directory)
+    return good
+
+
+def qemu_run_env(env=None, romdir=None, qemu_bin=None) -> dict[str, str]:
+    """Environment for the QEMU process inside the sandbox.
+
+    The bwrap process itself uses ``host_sandbox_env()`` (``PATH``, ``LANG``,
+    and an already-set ``LD_LIBRARY_PATH``). QEMU's environment is passed with
+    ``--setenv`` and is only the keys copied here. ``LD_PRELOAD``, ``LD_AUDIT``,
+    and every other ``LD_*`` except the constructed ``LD_LIBRARY_PATH`` are
+    left out. That path is QEMU's own library directories, then the accepted
+    ``SIM_QEMU_LIB_DIRS`` entries, then an inherited ``LD_LIBRARY_PATH``. The
+    xtensa toolchain lib is not added. ``SIM_TOKEN`` is not copied.
+    """
+    src = os.environ if env is None else env
+    out: dict[str, str] = {}
+    for key in (
+        'PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE',
+        'TMPDIR', 'TMP', 'TEMP',
+        'XDG_RUNTIME_DIR', 'XDG_CACHE_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME',
+        'QEMU_MODULE_DIR',
+    ):
+        if key.startswith('LD_'):
+            continue
+        value = src.get(key)
+        if value:
+            out[key] = value
+    lib_parts: list[str] = []
+    for directory in _qemu_private_lib_dirs(qemu_bin):
+        if directory not in lib_parts:
+            lib_parts.append(directory)
+    for directory in _qemu_extra_lib_dirs(src):
+        if directory not in lib_parts:
+            lib_parts.append(directory)
+    inherited = src.get('LD_LIBRARY_PATH')
+    if inherited:
+        for part in inherited.split(os.pathsep):
+            if part and part not in lib_parts:
+                lib_parts.append(part)
+    if lib_parts:
+        out['LD_LIBRARY_PATH'] = os.pathsep.join(lib_parts)
+    rom = str(romdir).strip() if romdir else ''
+    if not rom:
+        rom = (src.get('QEMU_ROM_DIR') or '').strip()
+    if rom:
+        out['QEMU_ROM_DIR'] = rom
+    return out
+
+
+def _check_fresh(at, ok, refresh: bool) -> bool:
+    if not at:
+        return False
+    if time.monotonic() - at >= 60:
+        return False
+    if not ok and refresh:
+        return False
+    return True
+
+
+def qemu_selfcheck_failed() -> bool:
+    return bool(_qemu_check['done'] and not _qemu_check['ok'])
+
+
+def qemu_ready(*, refresh: bool = False) -> bool:
+    """``--version`` with the spawn env. A success is reused for 60s; a failure is retried on the next run."""
+    if _qemu_check.get('done') and _check_fresh(_qemu_check.get('at') or 0, _qemu_check.get('ok'), refresh):
+        return bool(_qemu_check['ok'])
+    return run_qemu_selfcheck()
+
+
+def run_qemu_selfcheck(qemu_bin=None, romdir=None, env=None) -> bool:
+    """Run ``<qemu_bin> --version`` once with the run spawn environment.
+
+    A failure is logged as ``ERROR qemu selfcheck failed rc=… stderr=…``.
+    The stderr is not copied into ``/health``. A later run then fails with
+    ``QEMU_FAIL_MSG`` and does not start a machine.
+    """
+    binary = qemu_bin or QEMU
+    rom = ROMDIR if romdir is None else romdir
+    spawn = qemu_run_env(env=env, romdir=rom, qemu_bin=binary)
+    rc = 127
+    err = ''
+    try:
+        proc = subprocess.run(
+            [binary, '--version'], env=spawn,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15)
+        rc = proc.returncode
+        err = (proc.stderr or b'').decode(errors='replace')
+        if not err.strip():
+            err = (proc.stdout or b'').decode(errors='replace')
+    except subprocess.TimeoutExpired as exc:
+        rc = 124
+        raw = exc.stderr or b''
+        err = raw.decode(errors='replace') if isinstance(raw, bytes) else str(raw)
+        if not err.strip():
+            err = 'timeout'
+    except OSError as exc:
+        rc = 127
+        err = str(exc)
+    ok = rc == 0
+    _qemu_check['done'] = True
+    _qemu_check['ok'] = ok
+    _qemu_check['rc'] = rc
+    _qemu_check['at'] = time.monotonic()
+    if not ok:
+        flat = ' '.join((err or '').split())
+        print('ERROR qemu selfcheck failed rc=%s stderr=%s' % (rc, flat[:500]))
+    return ok
+
+
+def _popen_qemu(args, env, pass_fds=()):
+    """Start QEMU without asyncio's child watcher.
+
+    The run loop is uvicorn's thread. ``asyncio.create_subprocess_exec`` registers
+    the child with the process-wide watcher, and a later ``asyncio.run`` on the
+    main thread (the toolchain test's websocket client) can reattach that watcher.
+    The spawn then never returns, the chardev sockets never connect, and
+    ``qemu-last.log`` is never created. ``Popen`` does not use the watcher.
+    ``pass_fds`` is the seccomp program bwrap reads.
+    """
+    return subprocess.Popen(
+        list(args), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        pass_fds=tuple(pass_fds), close_fds=True)
+
+
+def _mount_ro(argv: list, path: Path, seen: set) -> None:
+    if not path.exists():
+        return
+    key = str(path)
+    if key in seen:
+        return
+    seen.add(key)
+    argv += ['--ro-bind', key, key]
+
+
+def qemu_dgram_supported(binary, env) -> bool:
+    """QEMU 9.2 has ``-netdev dgram``. An older binary cannot replace the UDP tap."""
+    binary = str(binary)
+    if binary in _dgram_cache:
+        return _dgram_cache[binary]
+    try:
+        proc = subprocess.run(
+            [binary, '-netdev', 'help'], env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=15)
+        text = (proc.stdout or b'').decode(errors='replace')
+        ok = 'dgram' in text
+    except (OSError, subprocess.SubprocessError):
+        ok = False
+    _dgram_cache[binary] = ok
+    return ok
+
+
+def qemu_sandbox_argv(cmd: list[str], env: dict, rundir) -> tuple[list[str] | None, tuple]:
+    """bwrap argv for a QEMU run, and the seccomp fd the caller must pass and close.
+
+    ``--unshare-all`` includes ``--unshare-net``, so the namespace has only
+    ``lo`` and slirp has no route to the host. Host ``/proc`` is not mounted:
+    QEMU 9.2.2's esp32 machine, chardevs, slirp, and the unix dgram netdev
+    start without it. The run directory is a private 0700 host directory
+    bind-mounted read-write, because the host listens on the chardev sockets
+    and QEMU connects to them. ``/tmp`` is otherwise a fresh tmpfs. The
+    published flash image is not mounted; the mtd drive is a private copy in
+    the run directory because the firmware writes NVS into that file.
+
+    ``sys.executable``'s prefix and ``relay.py`` are read-only so slirp's
+    guestfwd command can run. The QEMU prefix, ROM directory, and library
+    directories are read-only too. ``--tmpfs /tmp`` is applied before those
+    binds, so a prefix or ``relay.py`` that lives under the temp directory
+    is not covered by the tmpfs.
+    """
+    rundir = Path(rundir)
+    argv = ['bwrap', '--die-with-parent', '--unshare-all', '--new-session']
+    # Fresh /tmp before every bind. A --ro-bind of a path under the temp
+    # directory (a venv, relay.py, the QEMU prefix) is hidden if it is
+    # applied first and the tmpfs lands on top of it.
+    argv += ['--tmpfs', '/tmp']
+    seen: set = set()
+    for path in ('/usr', '/bin', '/lib', '/lib64'):
+        _mount_ro(argv, Path(path), seen)
+    for name in ('null', 'zero', 'full', 'random', 'urandom', 'tty'):
+        node = Path('/dev') / name
+        if node.exists():
+            argv += ['--dev-bind', str(node), str(node)]
+    binary = Path(cmd[0])
+    try:
+        prefix = binary.resolve().parent
+    except OSError:
+        prefix = binary.parent
+    if prefix.name == 'bin':
+        prefix = prefix.parent
+    _mount_ro(argv, prefix, seen)
+    rom = env.get('QEMU_ROM_DIR') or ''
+    if rom:
+        _mount_ro(argv, Path(rom), seen)
+    for part in (env.get('LD_LIBRARY_PATH') or '').split(os.pathsep):
+        if not part:
+            continue
+        _mount_ro(argv, Path(part), seen)
+    _mount_ro(argv, Path(sys.prefix), seen)
+    # The path a guestfwd command actually execs, plus the resolved binary
+    # when a venv symlink points outside that prefix.
+    exe = Path(sys.executable)
+    try:
+        resolved = exe.resolve()
+    except OSError:
+        resolved = exe
+    for one in (exe, resolved):
+        text = str(one)
+        if not one.exists():
+            continue
+        if any(text == root or text.startswith(root + os.sep) for root in seen):
+            continue
+        seen.add(text)
+        argv += ['--ro-bind', text, text]
+    relay = HERE / 'relay.py'
+    relay_text = str(relay)
+    if relay.exists() and not any(relay_text == root or relay_text.startswith(root + os.sep) for root in seen):
+        argv += ['--ro-bind', relay_text, relay_text]
+    argv += ['--bind', str(rundir), str(rundir)]
+    argv.append('--clearenv')
+    for key, value in env.items():
+        if not value or (key.startswith('LD_') and key != 'LD_LIBRARY_PATH'):
+            continue
+        if any(ord(ch) < 32 for ch in key) or any(ord(ch) < 32 for ch in str(value)):
+            continue
+        argv += ['--setenv', key, str(value)]
+    argv += ['--', *list(cmd)]
+    return compileguard.attach_seccomp(argv)
+
+
+class _QemuProc:
+    """The bits of an asyncio subprocess this run uses, over a ``Popen``."""
+
+    def __init__(self, popen):
+        self._p = popen
+        self.pid = popen.pid
+        self.stdout = self
+
+    @property
+    def returncode(self):
+        return self._p.returncode
+
+    def kill(self):
+        try:
+            self._p.kill()
+        except ProcessLookupError:
+            pass
+
+    def _close_stdout(self):
+        stream = self._p.stdout
+        if stream is not None and not stream.closed:
+            stream.close()
+
+    async def wait(self):
+        rc = await asyncio.to_thread(self._p.wait)
+        self._close_stdout()
+        return rc
+
+    async def read(self, n):
+        return await asyncio.to_thread(self._p.stdout.read, n)
+
 @app.websocket('/api/run/{bid}')
 async def run(ws: WebSocket, bid: str):
     if not _authed(ws.query_params, ws.cookies):
@@ -1018,9 +1743,27 @@ async def run(ws: WebSocket, bid: str):
         try: await link.attach(ws, since)
         except Exception: link.detach(ws); return
         await link.read(ws); return
-    img = BUILDS / re.sub(r'[^0-9a-f]', '', bid) / 'flash.bin'
-    if not img.exists():
-        await ws.send_json({'t': 'error', 'msg': 'unknown build id'}); await ws.close(); return
+    img, why = _build_image(bid)
+    if why == 'bad_build_id':
+        # No path is built for a value that is not 16 lowercase hex characters.
+        print('run rejected reason=bad_build_id')
+        await ws.send_json({'t': 'error', 'msg': BAD_BUILD_MSG, 'reason': 'bad_build_id'})
+        await ws.close(code=4400); return
+    if why == 'unknown' or img is None:
+        # The log keeps a reason code. The page shows RUN_EXPIRED_MSG.
+        print('run rejected reason=unknown')
+        await ws.send_json({'t': 'error', 'msg': RUN_EXPIRED_MSG, 'reason': 'unknown'})
+        await ws.close(); return
+    if not compileguard.sandbox_ok_for_run():
+        problem = compileguard.sandbox_problem() or 'unavailable'
+        print('run rejected reason=infra sandbox ' + problem)
+        await ws.send_json({'t': 'error', 'msg': compileguard.SANDBOX_MSG, 'reason': 'infra'})
+        await ws.close(); return
+    if not qemu_ready(refresh=bool(_qemu_check.get('done') and not _qemu_check.get('ok'))):
+        # The log keeps the reason code and the selfcheck rc. The page shows QEMU_FAIL_MSG.
+        print('run rejected reason=infra qemu rc=%s' % _qemu_check['rc'])
+        await ws.send_json({'t': 'error', 'msg': QEMU_FAIL_MSG, 'reason': 'infra', 'rc': _qemu_check['rc']})
+        await ws.close(); return
     if len(runs) >= MAX_RUNS:   # make room by ending runs whose browser is gone (waiting out their resume grace)
         for l_ in sorted((l_ for l_ in SESSIONS.values() if l_.ws is None and not l_.done and (l_.soft or time.monotonic() - l_.detached_at > EVICT_AFTER)), key=lambda l_: l_.detached_at):
             if len(runs) < MAX_RUNS: break
@@ -1051,7 +1794,7 @@ async def session_main(ws, bid, img):
 
 async def _session_main(ws, bid, img):
     """One QEMU run. The private flash copy is removed when this returns, including a failed start."""
-    safe = re.sub(r'[^0-9a-f]', '', bid)
+    safe = bid if isinstance(bid, str) and _BUILD_ID.fullmatch(bid) else ''
     if safe: _live_images.add(safe)
     tmp = Path(tempfile.mkdtemp(prefix='esp32run-'))
     hold = {}
@@ -1079,7 +1822,50 @@ async def _session_main(ws, bid, img):
         _live_images.discard(safe)
         shutil.rmtree(tmp, ignore_errors=True)
 
+def qemu_net_restrict(env=None) -> bool:
+    """Slirp ``restrict=on``. Default on. ``SIM_QEMU_NET_RESTRICT=0`` is the old open network."""
+    env = os.environ if env is None else env
+    return env.get('SIM_QEMU_NET_RESTRICT', '1') != '0'
+
+def user_net_arg(forwards, env=None) -> str:
+    """``-net user,...`` with only the simulator guest-forwards, plus ``restrict=on`` by default.
+
+    Guest forwards are ``guestfwd=tcp:10.0.2.100:<port>-cmd:...`` (the mock devices).
+    No ``hostfwd``. ``restrict=on`` stops the guest reaching the host at 10.0.2.2,
+    link-local 169.254.0.0/16, RFC1918 via the host, and the public internet.
+    Explicit guestfwd rules still reach the virtual devices.
+    """
+    checked = []
+    for item in forwards:
+        if not re.match(r'^guestfwd=tcp:10\.0\.2\.100:\d+-cmd:.+', item):
+            raise ValueError('refusing network forward')
+        if 'hostfwd' in item or item.count('guestfwd') != 1:
+            raise ValueError('refusing network forward')
+        checked.append(item)
+    parts = []
+    if qemu_net_restrict(env):
+        parts.append('restrict=on')
+    parts.extend(checked)
+    return 'user,' + ','.join(parts) if parts else 'user'
+
+def lwip_nic_args(forwards, qemu_path, srv_path, env=None) -> list:
+    """open_eth and slirp on hub 0, plus a unix datagram tap on that same hub.
+
+    QEMU binds ``qemu_path``. The server already bound ``srv_path``. There is
+    no ``127.0.0.1`` socket: the guest's frames never use the host network.
+    """
+    dgram = (
+        'dgram,id=tap0,local.type=unix,local.path=%s,remote.type=unix,remote.path=%s'
+        % (qemu_path, srv_path))
+    return ['-net', 'nic,model=open_eth', '-net', user_net_arg(forwards, env),
+            '-netdev', dgram,
+            '-netdev', 'hubport,id=tap0hub,hubid=0,netdev=tap0']
+
 async def _qemu_session(ws, bid, img, tmp, hold):
+    if qemu_selfcheck_failed():
+        print('run rejected reason=infra qemu rc=%s' % _qemu_check['rc'])
+        await ws.send_json({'t': 'error', 'msg': QEMU_FAIL_MSG, 'reason': 'infra', 'rc': _qemu_check['rc']})
+        return
     link = ws
     flash = tmp / 'flash.bin'; shutil.copy(img, flash)      # private copy (NVS writes)
     gsock, ssock = str(tmp / 'gpio.sock'), str(tmp / 'uart.sock')
@@ -1134,15 +1920,19 @@ async def _qemu_session(ws, bid, img, tmp, hold):
         for port in (8080, 8060, 80):
             sp = str(tmp / f'http{port}.sock'); hsrvs.append(await asyncio.start_unix_server(http_handler(port), sp))
             fw.append(f'guestfwd=tcp:10.0.2.100:{port}-cmd:{sys.executable} {HERE / "relay.py"} {sp}')
-        # hub 0: open_eth NIC + slirp (DHCP/DNS/TCP guest-forwards) + a raw-frame tap to this server (real UDP to LAN devices)
-        loop = asyncio.get_event_loop()
+        # hub 0: open_eth + slirp guestfwd + a unix datagram tap. QEMU binds qemu.dgram;
+        # the server binds srv.dgram first so the remote path exists. No host UDP.
+        qemu_path = str(tmp / 'qemu.dgram')
+        srv_path = str(tmp / 'srv.dgram')
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        sock.bind(srv_path)
+        sock.setblocking(False)
         tap = FrameTap(ws, nlog)
-        tr, _ = await loop.create_datagram_endpoint(lambda: tap, local_addr=('127.0.0.1', 0))
-        tport = tr.get_extra_info('sockname')[1]
-        qport = free_udp_port()
-        tap.peer = ('127.0.0.1', qport); taps.append(tr); udp_taps[id(ws)] = tap
-        nic = ['-net', 'nic,model=open_eth', '-net', 'user,' + ','.join(fw),
-               '-net', f'socket,udp=127.0.0.1:{tport},localaddr=127.0.0.1:{qport}']
+        tap.peer = qemu_path
+        loop = asyncio.get_running_loop()
+        tr, _ = await loop.create_datagram_endpoint(lambda: tap, sock=sock)
+        taps.append(tr); udp_taps[id(ws)] = tap
+        nic = lwip_nic_args(fw, qemu_path, srv_path)
     gsrv = await asyncio.start_unix_server(on_gpio, gsock); hold['gsrv'] = gsrv
     ssrv = await asyncio.start_unix_server(on_uart, ssock); hold['ssrv'] = ssrv
     args = [QEMU, '-display', 'none', '-machine', 'esp32', '-drive', f'file={flash},if=mtd,format=raw', *nic,
@@ -1152,21 +1942,76 @@ async def _qemu_session(ws, bid, img, tmp, hold):
             '-L', ROMDIR, '-monitor', 'none']
     if ICOUNT: args += ['-icount', ICOUNT]
     if bid in runs: pass
-    proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+    # The private flash copy is ``tmp/flash.bin``, not the published image.
+    # The mtd device writes NVS, so that copy lives in the read-write run
+    # directory. The published file is not mounted into the sandbox. ``-L`` is ROMDIR.
+    spawn_env = qemu_run_env(romdir=ROMDIR, qemu_bin=args[0])
+    log_path = BUILDS / 'qemu-last.log'
+    if netmode == 'lwip' and not qemu_dgram_supported(args[0], spawn_env):
+        print('run rejected reason=infra qemu netdev dgram unsupported')
+        await ws.send_json({'t': 'error', 'msg': QEMU_FAIL_MSG, 'reason': 'infra', 'rc': None})
+        return
+    if not compileguard.sandbox_ok_for_run():
+        problem = compileguard.sandbox_problem() or 'unavailable'
+        print('run rejected reason=infra sandbox ' + problem)
+        await ws.send_json({'t': 'error', 'msg': compileguard.SANDBOX_MSG, 'reason': 'infra'})
+        return
+    launched, seccomp_fds = qemu_sandbox_argv(args, spawn_env, tmp)
+    if launched is None:
+        compileguard.close_fds(seccomp_fds)
+        print('run rejected reason=infra sandbox seccomp')
+        await ws.send_json({'t': 'error', 'msg': compileguard.SANDBOX_MSG, 'reason': 'infra'})
+        return
+    try:
+        popen = await asyncio.to_thread(
+            _popen_qemu, launched, compileguard.host_sandbox_env(), seccomp_fds)
+    except OSError as exc:
+        try:
+            log_path.write_text('qemu spawn failed: %s\n' % exc)
+        except OSError:
+            pass
+        print('run rejected reason=infra qemu rc=spawn')
+        await ws.send_json({'t': 'error', 'msg': QEMU_FAIL_MSG, 'reason': 'infra', 'rc': None})
+        return
+    finally:
+        compileguard.close_fds(seccomp_fds)
+    proc = _QemuProc(popen)
     hold['proc'] = proc; runs[id(ws)] = proc
+
+    async def pump_qemu():
+        # Open the log before the chardev handshake. A QEMU that rejects
+        # ``-icount`` or cannot load a library exits before those sockets
+        # exist; waiting for them used to leave this file missing.
+        with open(log_path, 'wb') as f:
+            while True:
+                d = await proc.stdout.read(4096)
+                if not d:
+                    break
+                f.write(d); f.flush()
+        await proc.wait()
+
+    pump_task = asyncio.create_task(pump_qemu())
     await ws.send_json({'t': 'status', 'msg': 'qemu started', 'pid': proc.pid, 'cap_s': RUN_CAP})
     nlog('wifi', 'network: ' + ('open_eth NIC + slirp (DHCP 10.0.2.x, virtual devices at 10.0.2.100:80/8060/8080, LAN UDP via frame tap)' if netmode == 'lwip' else 'UART shim' if netmode else 'no network library in this sketch'))
-    try:
-        await asyncio.wait_for(ready.wait(), 10)
-    except asyncio.TimeoutError:
-        out = (await proc.stdout.read(4000)).decode(errors='replace') if proc.stdout else ''
-        await ws.send_json({'t': 'error', 'msg': 'qemu did not connect: ' + sanitize(out)})
+    connect_task = asyncio.create_task(ready.wait())
+    await asyncio.wait({connect_task, pump_task}, timeout=10, return_when=asyncio.FIRST_COMPLETED)
+    if not ready.is_set():
+        connect_task.cancel()
+        try:
+            await connect_task
+        except (asyncio.CancelledError, Exception):
+            pass
         if proc.returncode is None:
             proc.kill()
-            try: await proc.wait()
-            except Exception: pass
-        try: await ws.close()
-        except Exception: pass
+        if not pump_task.done():
+            try:
+                await asyncio.wait_for(pump_task, 2)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                pump_task.cancel()
+        runs.pop(id(ws), None)
+        # The log keeps the reason code and qemu's rc. The page shows QEMU_FAIL_MSG.
+        print('run rejected reason=infra qemu rc=%s' % proc.returncode)
+        await ws.send_json({'t': 'error', 'msg': QEMU_FAIL_MSG, 'reason': 'infra', 'rc': proc.returncode})
         return
     gr, gw = conns['g']; sr, sw = conns['s']
     gc = {'on': GPIO_CACHE, 'cache': {}, 'ep': 0, 'muxver': 0, 'S': None, 'seq': 0, 'pend': {}, 'out': None, 'hits': 0,
@@ -1328,14 +2173,9 @@ async def _qemu_session(ws, bid, img, tmp, hold):
                 link.soft = True; print(f'run {link.sid}: tab closed/reloaded -> {CLOSED_GRACE:.0f}s grace')
             elif t == 'stop':
                 print(f'run {link.sid}: stop requested by browser ({m.get("why", "user")})'); break
-    async def pump_qemu():
-        with open(BUILDS / 'qemu-last.log', 'wb') as f:
-            while True:
-                d = await proc.stdout.read(4096)
-                if not d: break
-                f.write(d); f.flush()
-        await proc.wait()
-    tasks = [asyncio.create_task(x) for x in (pump_gpio(), pump_uart(), pump_ws(), pump_qemu(), watchdog())]
+    tasks = [
+        asyncio.create_task(pump_gpio()), asyncio.create_task(pump_uart()),
+        asyncio.create_task(pump_ws()), pump_task, asyncio.create_task(watchdog())]
     try:
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for t in done:

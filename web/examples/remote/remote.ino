@@ -1,4 +1,5 @@
 // ESP32 Wi-Fi remote: Sony Bravia (IRCC-IP + JSON-RPC) and Roku (ECP)
+// Sketches can reach the simulated devices in Circuit Lab, but not the internet, which is blocked for safety. Requests to real websites will fail even if your code is fine.
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiUdp.h>
