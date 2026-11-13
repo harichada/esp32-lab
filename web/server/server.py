@@ -1351,17 +1351,34 @@ def proj_get(pid: str):
     i = _pid(pid); f = PROJ_DIR / f'{i}.json'
     if not i or not f.exists(): return JSONResponse({'error': 'not found'}, 404)
     return JSONResponse(json.loads(f.read_text()))
+def _save_log_id(pid):
+    # One field, one line: keep [A-Za-z0-9_-], cap at 64, and turn everything else into '?'.
+    return re.sub(r'[^A-Za-z0-9_-]', '?', ('' if pid is None else str(pid))[:64])
+def _log_project_save(request, pid, status, op):
+    when = _dt.datetime.now(_dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    ip = request.client.host if request.client else ''
+    # builtins print: uvicorn.run uses log_level='warning', so this has to be stdout, not a quieter logger.
+    _b.print(f'{when} project_save id={_save_log_id(pid)} ip={ip} status={status} op={op}', flush=True)
 @app.put('/api/projects/{pid}')
 async def proj_put(pid: str, request: Request):
-    i = _pid(pid); body = await request.body()
-    if not i: return JSONResponse({'error': 'bad id'}, 400)
-    if len(body) > MAX_BODY: return JSONResponse({'error': 'too large'}, 413)
-    try: o = json.loads(body); assert isinstance(o, dict) and isinstance(o.get('parts'), list)
-    except Exception: return JSONResponse({'error': 'not a project'}, 400)
-    PROJ_DIR.mkdir(parents=True, exist_ok=True)
-    if len(list(PROJ_DIR.glob('*.json'))) >= PROJ_MAX and not (PROJ_DIR / f'{i}.json').exists(): return JSONResponse({'error': 'project limit'}, 507)
-    tmp = PROJ_DIR / f'.{i}.tmp'; tmp.write_text(json.dumps(o)); tmp.replace(PROJ_DIR / f'{i}.json')
-    return {'ok': True, 'id': i}
+    i = _pid(pid)
+    op = 'create'
+    status = 500
+    try:
+        if i and (PROJ_DIR / f'{i}.json').exists(): op = 'update'
+        body = await request.body()
+        if not i: status = 400; return JSONResponse({'error': 'bad id'}, 400)
+        if len(body) > MAX_BODY: status = 413; return JSONResponse({'error': 'too large'}, 413)
+        try: o = json.loads(body); assert isinstance(o, dict) and isinstance(o.get('parts'), list)
+        except Exception: status = 400; return JSONResponse({'error': 'not a project'}, 400)
+        PROJ_DIR.mkdir(parents=True, exist_ok=True)
+        if len(list(PROJ_DIR.glob('*.json'))) >= PROJ_MAX and not (PROJ_DIR / f'{i}.json').exists():
+            status = 507; return JSONResponse({'error': 'project limit'}, 507)
+        tmp = PROJ_DIR / f'.{i}.tmp'; tmp.write_text(json.dumps(o)); tmp.replace(PROJ_DIR / f'{i}.json')
+        status = 200
+        return {'ok': True, 'id': i}
+    finally:
+        _log_project_save(request, pid, status, op)
 @app.delete('/api/projects/{pid}')
 def proj_del(pid: str):
     i = _pid(pid)
