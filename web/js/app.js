@@ -4,7 +4,26 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   const P = window.Parts, { Sim } = window.SimCore, R = window.RemoteLogic, $ = (s) => document.querySelector(s);
   const STORE = 'esp32lab.project.v1';
   const store = new Projects.ProjectStore();
-  const app = window.app = { store, readOnly: false, netlog: new NetLogMod.NetLog(), proj: null, sim: null, world: new Devices.MockWorld(), run: null, serialText: '', file: 'sketch', irFrames: [], lastBits: null };
+  const app = window.app = { store, readOnly: false, viewOnly: false, netlog: new NetLogMod.NetLog(), proj: null, sim: null, world: new Devices.MockWorld(), run: null, serialText: '', file: 'sketch', irFrames: [], lastBits: null };
+  store.onServerId = (oldId, newId) => {
+    if (app.proj && (app.proj.id === oldId || app.proj.id === newId)) { app.proj.id = newId; if (!app.readOnly) setUrl({ p: newId }); renderBanner(); }
+  };
+  store.onPushError = (err) => {
+    if (!err) return;
+    if (err.code === 'view_only') announce("This browser can't edit this project. Open your edit link, or make your own copy.");
+    else if (err.code === 'invalid') toast(err.message, true);
+  };
+  store.onBackupNote = (msg) => { const el = document.getElementById('backupState'); if (el) el.textContent = msg || ''; };
+  store.onDeviceFail = (msg) => {
+    if (msg) announce(msg);
+    else {
+      const el = document.getElementById('liveStatus');
+      if (el && el.textContent === Projects.DEVICE_FAIL) announce('');
+    }
+    if (app.proj) renderBanner(!msg);
+  };
+  store.onSaved = () => { if (app.proj && !store.deviceFail) renderBanner(true); };
+  store.onEditLinkHint = (msg) => announce(msg);
   // ---------------- project ----------------
   function normalize(p) {
     p.parts = p.parts || []; p.wires = p.wires || []; p.files = p.files || {}; p.mode = p.mode || 'qemu'; p.defines = p.defines || []; p.code = p.code ?? '';
@@ -13,7 +32,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     return p;
   }
   function setProject(p, opts) {
-    stopRun(); app.readOnly = !!(opts && opts.readOnly);
+    stopRun(); app.readOnly = !!(opts && opts.readOnly); app.viewOnly = !!(opts && opts.viewOnly);
     if (window.Netlist) { try { Netlist.migrate(p); } catch (e) { /* open the board even if its netlist cannot be built */ } }
     app.proj = normalize(p); app.sim = new Sim(app.proj); app.file = 'sketch'; app.world = new Devices.MockWorld(); app.world.onchange = () => (app.devDirty = true); app.world.onlog = (e) => app.netlog.add({ k: 'dev', msg: `${e.proto}: ${e.summary}`, ok: !(e.code < 0 || e.code >= 400) });
     app.editor.setProject(app.proj);
@@ -44,19 +63,43 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
   Examples.EX.remote = ((f) => () => { const e = f(); e.files = {}; return e; })(Examples.EX.remote);
   // ---------------- projects: examples are read-only, edits go to a copy in My Projects ----------------
-  function setUrl(o) { const u = new URL(location.href); u.searchParams.delete('ex'); u.searchParams.delete('p'); u.searchParams.delete('t'); for (const k in o) u.searchParams.set(k, o[k]); history.replaceState(null, '', u); }
+  function setUrl(o) { const u = new URL(location.href); u.searchParams.delete('ex'); u.searchParams.delete('p'); u.searchParams.delete('t'); u.hash = ''; for (const k in o) u.searchParams.set(k, o[k]); history.replaceState(null, '', u); }
   function makeCopy(auto) {
     syncDefines(); syncCode(); const was = app.proj.name;
     const c = store.copy(app.proj); Object.assign(app.proj, { id: c.id, name: c.name, copiedFrom: c.copiedFrom }); delete app.proj.example;
-    app.readOnly = false; store.save(app.proj); setUrl({ p: app.proj.id }); renderBanner();
-    toast(auto ? `Examples are read-only — your change is in a copy: “${app.proj.name}” (My Projects)` : `Copied “${was}” to My Projects as “${app.proj.name}”`);
+    app.readOnly = false; app.viewOnly = false; app.linkFallback = false; store.save(app.proj, { remote: false }); setUrl({ p: app.proj.id }); renderBanner();
+    toast(auto ? `Examples can't be changed, so we made you a copy: ${app.proj.name}. It's in My Projects.` : `Copied “${was}” to My Projects as “${app.proj.name}”`);
+    if (store.serverSync) store.scheduleBackup(app.proj);
     return app.proj;
   }
-  function beforeEdit() { if (app.readOnly) makeCopy(true); }
+  function adoptViewOnly() {
+    if (!app.viewOnly || !app.proj) return;
+    syncCode(); syncDefines();
+    const c = store.forkLocal(app.proj);
+    Object.assign(app.proj, { id: c.id, name: c.name, copiedFrom: c.copiedFrom });
+    delete app.proj.example;
+    app.viewOnly = false; app.readOnly = false;
+    setUrl({ p: app.proj.id }); renderBanner();
+    announce('Your copy is ready to edit.');
+    if (store.serverSync) store.scheduleBackup(app.proj);
+  }
+  function beforeEdit() { if (app.viewOnly) { adoptViewOnly(); return; } if (app.readOnly) makeCopy(true); }
   let saveT = 0;
-  function autosave() { if (app.readOnly || !app.proj) return; clearTimeout(saveT); saveT = setTimeout(() => { syncCode(); store.save(app.proj); renderBanner(true); }, 600); }
+  function autosave() {
+    if (app.readOnly || app.viewOnly || !app.proj) return;
+    clearTimeout(saveT);
+    saveT = setTimeout(() => { syncCode(); try { store.save(app.proj, { remote: false }); renderBanner(true); } catch (e) { toast(e.message, true); } if (store.serverSync) store.scheduleBackup(app.proj); }, 600);
+  }
   function syncDefines() { if (app.proj) app.proj.defines = $('#inDefines').value.split(',').map((x) => x.trim()).filter(Boolean); }
-  function openProject(id) { const p = store.get(id); if (!p) { toast('Project not found', true); return false; } setProject(p); setUrl({ p: id }); store.save(app.proj); return true; }
+  function openProject(id) {
+    app.linkFallback = false;
+    const p = store.get(id); if (!p) { toast('Project not found', true); return false; }
+    const viewOnly = store.isViewOnly(id);
+    if (viewOnly) setProject(p, { viewOnly: true }); else setProject(p);
+    setUrl({ p: id });
+    if (!viewOnly) { try { store.save(app.proj, { remote: false, dirty: false }); } catch (e) { toast(e.message, true); } }
+    return true;
+  }
   function setProjectTitle(name) {
     const el = document.getElementById && document.getElementById('projTitle');
     if (!el) return;
@@ -67,25 +110,142 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       el.setAttribute('aria-label', text);
     }
   }
+  async function copyText(text, okMsg, opts) {
+    const said = (msg, err) => { if (opts && opts.live) announce(msg); toast(msg, err); };
+    try { await navigator.clipboard.writeText(text); said(okMsg); }
+    catch (e) {
+      const ta = document.createElement('textarea'); ta.value = text; ta.setAttribute('aria-hidden', 'true'); document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); said(okMsg); } catch (_) { toast('Copy failed', true); }
+      ta.remove();
+    }
+  }
+  function copyEditLink(id) {
+    const pid = id || (app.proj && app.proj.id);
+    if (!pid || !store.canShare(pid)) return;
+    const secret = store.secretFor(pid);
+    if (!secret) { toast('Turn on Back up online to get an edit link.', true); return; }
+    copyText(store.editUrl(location.href, pid, secret), 'Edit link copied.');
+  }
+  function copyShareLink(id) {
+    const pid = id || (app.proj && app.proj.id);
+    if (!pid || !store.canShare(pid)) return;
+    copyText(store.shareUrl(location.href, pid), 'Share link copied. It is view-only.');
+  }
+  let shareLock = null;
+  function markShareBusy(on) {
+    document.querySelectorAll('#bBackupCopy,[data-a="backupcopy"]').forEach((b) => {
+      b.disabled = !!on;
+      if (on) { b.setAttribute('aria-busy', 'true'); b.textContent = 'Backing up…'; }
+      else b.removeAttribute('aria-busy');
+    });
+  }
+  function backupAndCopy(id) {
+    if (shareLock) return shareLock;
+    const before = id || (app.proj && app.proj.id);
+    const proj = (app.proj && app.proj.id === before) ? app.proj : (store.get(before) || app.proj);
+    if (!proj) return Promise.resolve();
+    markShareBusy(true);
+    store.holdHint(true);
+    shareLock = (async () => {
+      try {
+        const url = await store.backupAndShare(proj, location.href);
+        const cb = document.getElementById('cbSrv');
+        if (cb) cb.checked = true;
+        if (app.proj && (app.proj.id === before || app.proj.id === proj.id)) {
+          app.proj.id = proj.id;
+          if (!app.readOnly && !app.viewOnly) setUrl({ p: proj.id });
+        }
+        await copyText(url, Projects.SHARE_OK, { live: true });
+      } catch (err) {
+        const msg = Projects.shareFailMessage(err);
+        announce(msg);
+        toast(msg, true);
+      } finally {
+        shareLock = null;
+        markShareBusy(false);
+        store.holdHint(false);
+        renderBanner();
+        const dlg = document.getElementById('projDlg');
+        if (dlg && !dlg.hidden) projectsDialog();
+      }
+    })();
+    return shareLock;
+  }
+  function forkView() { adoptViewOnly(); }
+  function linkButtons() {
+    const H = window.SafeHtml;
+    const id = app.proj && app.proj.id;
+    const note = H ? H.esc(store.backupNote || '') : '';
+    const controls = Projects.shareControls({
+      backedUp: !!(id && store.canShare(id)),
+      canEdit: !!(id && store.secretFor(id)),
+      busy: !!shareLock,
+      reasonId: 'shareWait',
+      warnId: 'editLinkWarn',
+      shareAttrs: 'id="bShareLink" class="pb-act"',
+      editAttrs: 'id="bEditLink" class="pb-act"',
+      goAttrs: 'id="bBackupCopy" class="primary"',
+    });
+    return controls + `<span id="backupState" class="backup-state" role="status" aria-live="polite">${note}</span>`;
+  }
+  function wireShareButtons() {
+    const edit = $('#bEditLink'); if (edit && !edit.disabled) edit.onclick = () => copyEditLink();
+    const share = $('#bShareLink'); if (share && !share.disabled) share.onclick = () => copyShareLink();
+    const go = $('#bBackupCopy'); if (go) go.onclick = () => backupAndCopy(app.proj && app.proj.id);
+  }
   function renderBanner(saved) {
     const b = $('#projBanner'); if (!b || !app.proj) return;
-    if (app.readOnly) b.innerHTML = `<span class="pb-ex">📘 Example: <b>${P.esc(app.proj.name || '')}</b> — read-only</span><button id="bCopy" class="primary">Make a copy</button><span class="muted">editing anything makes a copy automatically</span>`;
-    else b.innerHTML = `<span class="pb-my">✎ My project: <b id="pbName" title="Click to rename">${P.esc(app.proj.name || 'Untitled')}</b></span><span class="muted">${saved ? 'saved ' + new Date().toLocaleTimeString() : 'auto-saved'}</span>`;
-    setProjectTitle(app.proj.name);
-    const k = $('#projKind'); if (k) { k.textContent = app.readOnly ? 'Example · read-only' : 'My project'; k.className = 'chip-tag ' + (app.readOnly ? 'ex' : 'mine'); }
+    const H = window.SafeHtml;
+    if (app.viewOnly) b.innerHTML = `<span class="pb-view">You can view this project but not change it. Make a copy, or just start editing, to get your own version.</span><button type="button" id="bCopy" class="primary">Make a copy</button><button type="button" id="bShareLink" class="pb-act">Copy link (view only)</button><span id="backupState" class="backup-state" role="status" aria-live="polite">${H.esc(store.backupNote || '')}</span>`;
+    else if (app.readOnly) b.innerHTML = `<span class="pb-ex">📘 Example: <b>${H.esc(app.proj.name || '')}</b> — read-only</span><button type="button" id="bCopy" class="primary">Make a copy</button><span class="muted">editing anything makes a copy automatically</span>`;
+    else b.innerHTML = `<span class="pb-my">✎ My project: <b id="pbName" title="Click to rename">${H.esc(app.proj.name || 'Untitled')}</b></span><span class="link-actions"><span class="pb-own">This is your copy.</span>${linkButtons()}</span><span class="muted">${saved ? 'saved ' + new Date().toLocaleTimeString() : 'auto-saved'}</span>`;
+    const name = (app.linkFallback && app.readOnly ? 'Example: ' : '') + (app.proj.name || 'Untitled');
+    setProjectTitle(name);
+    const k = $('#projKind'); if (k) { k.textContent = app.viewOnly ? 'View-only' : app.readOnly ? 'Example · read-only' : 'My project'; k.className = 'chip-tag ' + (app.viewOnly || app.readOnly ? 'ex' : 'mine'); }
     syncExampleTip(); syncDocTitle();
-    const bc = $('#bCopy'); if (bc) bc.onclick = () => makeCopy(false);
+    const bc = $('#bCopy'); if (bc) bc.onclick = () => { if (app.viewOnly) forkView(); else makeCopy(false); };
+    wireShareButtons();
     const pn = $('#pbName'); if (pn) pn.onclick = () => { const n = prompt('Rename project', app.proj.name); if (n) { app.proj.name = n; store.rename(app.proj.id, n); renderBanner(true); } };
+    seatPhoneChrome();
   }
-  function save() { syncCode(); syncDefines(); if (app.readOnly) { makeCopy(false); return; } store.save(app.proj); renderBanner(true); toast('Saved “' + app.proj.name + '” to My Projects' + (store.serverSync ? ' (+ server copy)' : '')); }
+  async function save() {
+    syncCode(); syncDefines();
+    if (app.viewOnly) adoptViewOnly();
+    if (app.readOnly) { makeCopy(false); return; }
+    try { store.save(app.proj, { remote: false }); } catch (e) { toast(e.message, true); return; }
+    const online = !!(store.serverSync && app.proj && store.secretFor(store._canonical(app.proj.id)));
+    if (store.serverSync) {
+      const ok = await store.flushBackup(app.proj, { reason: 'save' });
+      if (online && !ok) {
+        announce(Projects.DEVICE_FAIL);
+        renderBanner(false);
+        return;
+      }
+    }
+    renderBanner(true); toast('Saved “' + app.proj.name + '”');
+  }
   function projectsDialog() {
     let d = $('#projDlg'); if (!d) { d = document.createElement('div'); d.id = 'projDlg'; d.className = 'modal'; document.body.appendChild(d); }
     const L = store.list();
-    d.innerHTML = `<div class="modal-box"><div class="row"><h3 style="flex:1;margin:0">My Projects</h3><button data-a="close">✕</button></div>
-      <div class="row"><button data-a="new">＋ New blank</button><label class="btn">⤒ Import JSON / diagram.json<input type="file" id="projImp" accept=".json,application/json" hidden></label>
-      <label title="Also keep a copy of each project on the simulator server"><input type="checkbox" id="cbSrv" ${store.serverSync ? 'checked' : ''}> server copy</label><button data-a="srv">From server…</button></div>
-      <table class="projs">${L.map((e) => `<tr data-id="${e.id}" class="${app.proj && app.proj.id === e.id ? 'cur' : ''}"><td class="pn">${P.esc(e.name)}<br><small class="muted">${new Date(e.updated).toLocaleString()}${e.from ? ' · from ' + P.esc(e.from) : ''}</small></td>
-        <td><button data-a="open">Open</button><button data-a="ren">Rename</button><button data-a="dup">Duplicate</button><button data-a="exp">Export</button><button data-a="del">Delete</button></td></tr>`).join('') || '<tr><td class="muted">No projects yet. Open an example and press “Make a copy” (or just start editing it).</td></tr>'}</table><div id="srvList"></div></div>`;
+    const rows = L.map((e) => {
+      const nm = P.esc(e.name || '');
+      const controls = Projects.shareControls({
+        backedUp: store.canShare(e.id),
+        canEdit: !!store.secretFor(e.id),
+        busy: !!shareLock,
+        reasonId: 'shareWait-' + e.id,
+        warnId: 'editWarn-' + e.id,
+        shareAttrs: 'data-a="share" class="pb-act"',
+        editAttrs: 'data-a="editlink" class="pb-act"',
+        goAttrs: 'data-a="backupcopy" class="primary"',
+      });
+      return `<tr data-id="${P.esc(e.id)}" class="${app.proj && app.proj.id === e.id ? 'cur' : ''}"><td class="pn"><span class="pn-name" title="${nm}" aria-label="${nm}">${nm}</span><br><small class="muted">${new Date(e.updated).toLocaleString()}${e.from ? ' · from ' + P.esc(e.from) : ''}</small></td><td><button type="button" data-a="open">Open</button><button type="button" data-a="ren">Rename</button><button type="button" data-a="dup">Duplicate</button><button type="button" data-a="exp">Export</button>${controls}<button type="button" data-a="del">Delete</button></td></tr>`;
+    }).join('') || '<tr><td class="muted">No projects yet. Open an example and press “Make a copy” (or just start editing it).</td></tr>';
+    d.innerHTML = `<div class="modal-box"><div class="row"><h3 style="flex:1;margin:0">My Projects</h3><button type="button" data-a="close" aria-label="Close">✕</button></div>
+      <div class="row proj-tools"><button type="button" data-a="new">＋ New blank</button><label class="btn">⤒ Import JSON / diagram.json<input type="file" id="projImp" accept=".json,application/json" hidden></label>
+      <button type="button" data-a="srv">Open an online backup…</button></div>
+      <label class="backup-row"><input type="checkbox" id="cbSrv" ${store.serverSync ? 'checked' : ''}> Back up online</label>
+      <table class="projs">${rows}</table><div id="srvList"></div></div>`;
     d.hidden = false;
     d.onclick = async (e) => {
       if (e.target === d) { d.hidden = true; return; }
@@ -96,11 +256,14 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       else if (a === 'ren') { const n = prompt('Rename project', store.list().find((x) => x.id === id).name); if (n) { store.rename(id, n); if (app.proj.id === id) { app.proj.name = n; renderBanner(true); } projectsDialog(); } }
       else if (a === 'dup') { store.duplicate(id); projectsDialog(); }
       else if (a === 'exp') { const t = store.exportJson(id); const bl = new Blob([t], { type: 'application/json' }); const l = document.createElement('a'); l.href = URL.createObjectURL(bl); l.download = (JSON.parse(t).name || 'project').replace(/[^\w.-]+/g, '_') + '.json'; l.click(); }
+      else if (a === 'editlink') copyEditLink(id);
+      else if (a === 'share') copyShareLink(id);
+      else if (a === 'backupcopy') { await backupAndCopy(id); }
       else if (a === 'del') { if (confirm('Delete this project? (Export it first if you want a backup)')) { store.remove(id); if (app.proj.id === id) loadExample('blink'); projectsDialog(); } }
-      else if (a === 'srv') { try { const S = await store.listServer(); $('#srvList').innerHTML = '<h4>On the server</h4>' + (S.map((x) => `<div class="row"><span style="flex:1">${P.esc(x.name)}</span><button data-a="pull" data-sid="${P.esc(x.id)}">Open</button></div>`).join('') || '<p class="muted">none</p>'); } catch (er) { toast('Server list failed', true); } }
+      else if (a === 'srv') { try { const S = await store.listServer(); $('#srvList').innerHTML = '<h4>Online backups you can edit</h4>' + (S.map((x) => `<div class="row"><span style="flex:1">${P.esc(x.name)}</span><button type="button" data-a="pull" data-sid="${P.esc(x.id)}">Open</button></div>`).join('') || '<p class="muted">No online backups you can edit yet.</p>'); } catch (er) { toast('Server list failed', true); } }
       else if (a === 'pull') { try { await store.pullServer(b.dataset.sid); openProject(b.dataset.sid); d.hidden = true; } catch (er) { toast(er.message, true); } }
     };
-    $('#cbSrv').onchange = (e) => { store.serverSync = e.target.checked; if (e.target.checked && !app.readOnly) store.save(app.proj); };
+    $('#cbSrv').onchange = (e) => { store.serverSync = e.target.checked; if (e.target.checked && app.proj && !app.readOnly) { if (app.viewOnly) adoptViewOnly(); try { store.save(app.proj, { remote: false }); } catch (err) { toast(err.message, true); return; } store.flushBackup(app.proj, { reason: 'save' }); } };
     $('#projImp').onchange = (e) => { const f = e.target.files[0]; if (!f) return; f.text().then((t) => { try { const o = JSON.parse(t); const p = store.importJson(o.connections && o.parts && !o.wires ? importWokwi(o) : o); openProject(p.id); d.hidden = true; toast('Imported ' + f.name); } catch (er) { toast('Could not import: ' + er.message, true); } }); };
   }
   // "+ New blank" chooser: Basic circuit (bare breadboard, no ESP32) vs ESP32 (DevKit V1, empty sketch, real firmware).
@@ -174,8 +337,9 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   app.importWokwi = importWokwi;
   // ---------------- code editor ----------------
   function renderFileTabs() {
-    const names = ['sketch', ...Object.keys(app.proj.files)];
-    $('#fileTabs').innerHTML = names.map((n) => `<button data-f="${n}" class="${n === app.file ? 'on' : ''}">${n === 'sketch' ? (app.proj.mode === 'js' ? 'sketch.js' : 'sketch.ino') : n}</button>`).join('') + `<button data-f="+" title="Add a header/source file">＋</button>`;
+    const names = ['sketch', ...Object.keys(app.proj.files || {})];
+    const sketchLabel = app.proj.mode === 'js' ? 'sketch.js' : 'sketch.ino';
+    $('#fileTabs').innerHTML = SafeHtml.fileTabsHtml(names, app.file, sketchLabel);
   }
   function syncCode() { const v = $('#code').value; if (app.file === 'sketch') app.proj.code = v; else app.proj.files[app.file] = v; }
   function loadCode() { $('#code').value = app.file === 'sketch' ? app.proj.code : app.proj.files[app.file] || ''; }
@@ -886,7 +1050,8 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const flow = app.sim.wireFlow();
     const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     for (const w of app.proj.wires) {
-      const el = app.editor.lWires && app.editor.lWires.querySelector(`[data-wid="${w.id}"]`); if (!el) continue;
+      const wid = window.CSS && CSS.escape ? CSS.escape(w.id) : String(w.id).replace(/["\\]/g, '');
+      const el = app.editor.lWires && app.editor.lWires.querySelector(`[data-wid="${wid}"]`); if (!el) continue;
       const f = flow[w.id] || { i: 0 }; const mag = Math.abs(f.i || 0);
       if (mag < 1e-6 || reduced) { el.style.setProperty('--wo', '0'); continue; }
       const dur = Math.max(0.25, Math.min(3.2, 0.55 / Math.sqrt(mag * 500 + 0.02)));
@@ -901,8 +1066,8 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
   function renderWarnings() {
     const w = collectWarnings();
-    const list = $('#warnList'); if (list) list.innerHTML = w.length ? w.map((x) => `<div class="w">⚠ ${x.id ? '<b>' + x.id + '</b>: ' : ''}${P.esc(x.msg)}</div>`).join('') : 'none';
-    const box = $('#warnBox'); if (box) { box.hidden = !w.length; box.innerHTML = w.slice(0, 4).map((x) => `⚠ ${x.id || ''} ${P.esc(x.msg)}`).join('<br>'); }
+    const list = $('#warnList'); if (list) list.innerHTML = SafeHtml.warnListHtml(w);
+    const box = $('#warnBox'); if (box) { box.hidden = !w.length; box.innerHTML = SafeHtml.warnBoxHtml(w); }
     if (app.editor) for (const [id, g] of app.editor.partEls) g.classList.toggle('warn', w.some((x) => x.id === id));
   }
   function updatePanels() {
@@ -921,18 +1086,19 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (!sel) { el.innerHTML = '<p class="muted">Select a part or wire.</p>'; return; }
     if (sel.wire) {
       const w = app.proj.wires.find((q) => q.id === sel.wire); if (!w) { el.innerHTML = '<p class="muted">Select a part or wire.</p>'; return; }
-      el.innerHTML = `<h3>Wire ${w.id}</h3><div class="insp-k">Colour</div><div class="row wrap">${Object.keys(window.WIRE_COLORS).map((c) => `<button class="sw ${w.color === c ? 'on' : ''}" data-col="${c}" style="background:${window.WIRE_COLORS[c]}" title="${c}"></button>`).join('')}</div><p id="ro" class="ro"></p><div class="row probe-row"><button class="probe-b" data-probe='${JSON.stringify({ kind: 'wire', wire: w.id })}'>⌁ Probe on scope</button><button class="probe-b" data-watch='${JSON.stringify({ kind: 'wire', wire: w.id })}'>📌 Telemetry</button></div><button id="iDel">Delete wire</button>`;
+      const probe = P.esc(JSON.stringify({ kind: 'wire', wire: w.id }));
+      el.innerHTML = `${SafeHtml.wireTitleHtml(w.id)}<div class="insp-k">Colour</div><div class="row wrap">${Object.keys(window.WIRE_COLORS).map((c) => `<button type="button" class="sw ${w.color === c ? 'on' : ''}" data-col="${c}" style="background:${window.WIRE_COLORS[c]}" title="${c}"></button>`).join('')}</div><p id="ro" class="ro"></p><div class="row probe-row"><button type="button" class="probe-b" data-probe="${probe}">⌁ Probe on scope</button><button type="button" class="probe-b" data-watch="${probe}">📌 Telemetry</button></div><button type="button" id="iDel">Delete wire</button>`;
       el.querySelectorAll('[data-col]').forEach((b) => b.onclick = () => { app.editor.setWireColor(b.dataset.col); renderInspector(sel); });
       $('#iDel').onclick = () => app.editor.deleteSel(); return;
     }
     const p = app.editor.part(sel.part); if (!p) { el.innerHTML = '<p class="muted">Select a part or wire.</p>'; return; } shownPartId = p.id; const d = P.T[p.type];
-    let h = `<h3>${P.esc(d.label)} <small>${p.id}</small></h3>`;
+    let h = SafeHtml.partTitleHtml(d.label, p.id);
     for (const e of d.edit || []) {
       const v = p.props[e.k];
-      if (e.t === 'sel') h += `<label>${e.label}<select data-k="${e.k}">${e.opts.map((o) => `<option ${String(o) === String(v) ? 'selected' : ''}>${o}</option>`).join('')}</select></label>`;
-      else if (e.t === 'bool') h += `<label><input type="checkbox" data-k="${e.k}" ${v ? 'checked' : ''}> ${e.label}</label>`;
-      else if (e.t === 'range') h += `<label>${e.label}<input type="range" data-k="${e.k}" min="${e.log ? Math.log10(e.min) : e.min}" max="${e.log ? Math.log10(e.max) : e.max}" step="${e.log ? 0.01 : e.step}" value="${e.log ? Math.log10(v) : v}" data-log="${e.log ? 1 : ''}"></label>`;
-      else h += `<label>${e.label}<input data-k="${e.k}" value="${P.esc(v)}" data-t="${e.t}"></label>`;
+      if (e.t === 'sel') h += `<label>${P.esc(e.label)}<select data-k="${P.esc(e.k)}">${e.opts.map((o) => `<option ${String(o) === String(v) ? 'selected' : ''}>${P.esc(o)}</option>`).join('')}</select></label>`;
+      else if (e.t === 'bool') h += `<label><input type="checkbox" data-k="${P.esc(e.k)}" ${v ? 'checked' : ''}> ${P.esc(e.label)}</label>`;
+      else if (e.t === 'range') h += SafeHtml.rangeControlHtml(e, v);
+      else h += `<label>${P.esc(e.label)}<input data-k="${P.esc(e.k)}" value="${P.esc(v)}" data-t="${P.esc(e.t || '')}"></label>`;
     }
     if (p.type === 'esp32') h += `<label>Power<select data-k="power"><option ${p.props.power === 'usb' ? 'selected' : ''}>usb</option><option ${p.props.power !== 'usb' ? 'selected' : ''}>external</option></select></label>`;
     const sch = document.body.classList.contains('viewsch');
@@ -951,8 +1117,16 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     el.querySelectorAll('[data-k]').forEach((inp) => {
       const k = inp.dataset.k, ev = inp.type === 'range' ? 'input' : 'change';
       inp.addEventListener(ev, () => {
+        if (app.viewOnly) adoptViewOnly();
         let v = inp.type === 'checkbox' ? inp.checked : inp.value;
         if (inp.type === 'range') v = inp.dataset.log ? Math.pow(10, +v) : +v; else if (inp.dataset.t === 'num') v = +v;
+        if (typeof v === 'number') {
+          if (!Number.isFinite(v)) { toast('A property value must be a finite number.', true); return; }
+          const spec = (d.edit || []).find((f) => f.k === k);
+          if (spec && (spec.t === 'num' || spec.t === 'range') && ((spec.min != null && v < spec.min) || (spec.max != null && v > spec.max))) {
+            toast(k + ' must be between ' + spec.min + ' and ' + spec.max + '.', true); return;
+          }
+        }
         if (inp.type !== 'range') app.editor.push(); else beforeEdit();
         p.props[k] = v; app.sim.dirty = true; app.editor.refreshDynamic(); if (inp.type !== 'range') app.editor.render(); autosave();
       });
@@ -1037,6 +1211,61 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
   // ---------------- misc UI ----------------
   function toast(msg, err) { const t = document.createElement('div'); t.className = 'toast' + (err ? ' err' : ''); t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 2600); }
+  let liveTimer = 0;
+  function showBadLink() {
+    let n = document.getElementById('badLink');
+    if (n) return;
+    n = document.createElement('div');
+    n.id = 'badLink';
+    n.className = 'bad-link';
+    n.setAttribute('role', 'alert');
+    const p = document.createElement('p');
+    p.textContent = Projects.BAD_LINK;
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = 'Dismiss';
+    b.onclick = () => n.remove();
+    n.append(p, b);
+    document.body.appendChild(n);
+  }
+  async function rejectProjectLink() {
+    showBadLink();
+    app.linkFallback = true;
+    await loadExample('blink');
+  }
+  function announce(msg) {
+    let el = document.getElementById('liveStatus');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'liveStatus';
+      el.setAttribute('role', 'status');
+      el.setAttribute('aria-live', 'polite');
+      el.className = 'live-status';
+      document.body.appendChild(el);
+    }
+    el.textContent = msg || '';
+    clearTimeout(liveTimer);
+    if (msg) liveTimer = setTimeout(() => { el.textContent = ''; }, 4000);
+  }
+  let bannerSeat = false;
+  function seatPhoneChrome() {
+    const b = document.getElementById('projBanner');
+    if (!b) return;
+    if (!bannerSeat && window.ResizeObserver) {
+      bannerSeat = true;
+      new ResizeObserver(() => seatPhoneChrome()).observe(b);
+    }
+    if (!document.body.classList.contains('m')) return;
+    const end = Math.ceil(b.offsetTop + b.offsetHeight + 8);
+    document.documentElement.style.setProperty('--banner-end', end + 'px');
+  }
+  window.seatPhoneChrome = seatPhoneChrome;
+  window.addEventListener('resize', seatPhoneChrome);
+  function flushLeaving(reason) {
+    if (!app.proj || app.readOnly || app.viewOnly) return;
+    try { syncCode(); syncDefines(); store.save(app.proj, { remote: false }); } catch (e) { return; }
+    if (store.serverSync) store.flushBackup(app.proj, { keepalive: true, reason: reason });
+  }
   function buildPalette() {
     const cats = {}; for (const [k, d] of Object.entries(P.T)) (cats[d.cat || 'Misc'] = cats[d.cat || 'Misc'] || []).push([k, d]);
     const thumb = (k, d) => { try { const p = { id: 'T', type: k, x: 0, y: 0, rot: 0, props: JSON.parse(JSON.stringify(d.props || {})) }; const sz = d.size(p); const pins = d.pins(p);
@@ -1237,7 +1466,9 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
   let headerFitKey = '';
   function syncProjTitle() {
-    setProjectTitle((app.proj && app.proj.name) || '');
+    if (!app.proj) { setProjectTitle(''); return; }
+    const name = (app.linkFallback && app.readOnly ? 'Example: ' : '') + (app.proj.name || 'Untitled');
+    setProjectTitle(name);
   }
   function titleNeedsRoom() {
     const title = document.getElementById && document.getElementById('projTitle');
@@ -1406,9 +1637,10 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     $('#bUndo').onclick = () => app.editor.undo(); $('#bRedo').onclick = () => app.editor.redo(); $('#bRot').onclick = () => app.editor.rotateSel(); $('#bDel').onclick = () => app.editor.deleteSel();
     $('#bSave').onclick = save; $('#bDownload').onclick = download; $('#fileIn').onchange = (e) => { if (e.target.files[0]) openFile(e.target.files[0]); e.target.value = ''; }; $('#bFit').onclick = () => { if (viewMode === '3d' && app.view3d && app.view3d.fit) app.view3d.fit(); else if (viewMode === 'schematic' && app.schematic) app.schematic.fit(); else app.editor.fit(); };
     $('#tabs').onclick = (e) => { if (!UI.dockTabClick(e)) return; const tab = UI.restoreDock(); if (tab === 'dev') { renderDevices(); drawIr(); } if (tab === 'net') { app.netlog.dirty = true; app.netlog.render(); } };
-    $('#selMode').onchange = (e) => { beforeEdit(); app.proj.mode = e.target.value; autosave(); modeNote(); renderFileTabs(); };
-    $('#fileTabs').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; syncCode(); if (b.dataset.f === '+') { const n = prompt('File name (e.g. config.h)'); if (!n || !/^[\w.-]+\.(h|hpp|c|cpp|ino)$/.test(n)) return; beforeEdit(); app.proj.files[n] = ''; autosave(); app.file = n; } else app.file = b.dataset.f; renderFileTabs(); loadCode(); };
-    $('#code').addEventListener('beforeinput', beforeEdit); $('#inDefines').addEventListener('beforeinput', beforeEdit);
+    $('#selMode').onchange = (e) => { if (beforeEdit() === false) { e.target.value = app.proj.mode; return; } app.proj.mode = e.target.value; autosave(); modeNote(); renderFileTabs(); };
+    $('#fileTabs').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; syncCode(); if (b.dataset.f === '+') { const n = prompt('File name (e.g. config.h)'); if (!n) return; if (!/^[\w.-]+\.(h|hpp|c|cpp|ino)$/.test(n)) { toast('That file name is not allowed. Use a name like config.h or extra.ino.', true); return; } if (beforeEdit() === false) return; app.proj.files[n] = ''; autosave(); app.file = n; } else app.file = b.dataset.f; renderFileTabs(); loadCode(); };
+    $('#code').addEventListener('beforeinput', (ev) => { if (beforeEdit() === false) ev.preventDefault(); });
+  $('#inDefines').addEventListener('beforeinput', (ev) => { if (beforeEdit() === false) ev.preventDefault(); });
     $('#code').addEventListener('input', () => { syncCode(); autosave(); }); $('#inDefines').addEventListener('input', () => { syncDefines(); autosave(); });
     $('#bProjects').onclick = projectsDialog;
     $('#bRestart').onclick = () => { stopRun(); startRun(); };
@@ -1447,15 +1679,26 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     $('#cbWifi').onchange = (e) => { app.world.wifiUp = e.target.checked; };
     $('#bTvPower').onclick = () => { const tv = app.world.tv; tv.power = tv.power === 'on' ? 'off' : 'on'; app.devDirty = true; renderDevices(); };
     $('#cbDiodes').onchange = (e) => { for (const q of app.proj.parts) if (q.type === 'diode') q.props.bypass = !e.target.checked; app.sim.dirty = true; app.editor.render(); toast(e.target.checked ? 'Diodes fitted' : 'Diodes replaced by wires — press 3 keys forming a rectangle corner to see a ghost key'); };
-    // start-up: ?p=<project> > ?ex=<example, read-only> > last open project > legacy single-slot save > Blink example
+    // start-up: #edit= is stored then stripped. ?p=<project> > ?ex=<example, read-only> > last open project > legacy single-slot save > Blink example
+    store.consumeEditFragment(location, history);
     const sp = new URLSearchParams(location.search), q = sp.get('ex'), pid = sp.get('p'), saved = clStorage.local.getItem(STORE);
     if (saved && !store.list().length) { try { const o = JSON.parse(saved); if (!o.example) { o.name = o.name || 'My saved project'; store.importJson(o); } } catch (e) { /* ignore */ } clStorage.local.removeItem(STORE); }
-    if (pid && store.get(pid)) openProject(pid);
-    else if (q && Examples.EX[q]) loadExample(q);
-    else if (store.current() && store.get(store.current())) openProject(store.current());
-    else loadExample('blink');
+    (async () => {
+      if (pid) {
+        app.linkFallback = false;
+        if (!/^[A-Za-z0-9_-]{1,40}$/.test(pid)) { await rejectProjectLink(); return; }
+        if (!store.get(pid)) { try { await store.pullServer(pid); } catch (e) { await rejectProjectLink(); return; } }
+        if (store.get(pid)) { openProject(pid); return; }
+        await rejectProjectLink(); return;
+      }
+      if (q && Examples.EX[q]) loadExample(q);
+      else if (store.current() && store.get(store.current())) openProject(store.current());
+      else loadExample('blink');
+    })();
     fetch('api/health').then((r) => r.json()).then((h) => { app.health = h; $('#connDot').className = 'conn ' + (h.ok ? 'ok' : 'bad'); $('#connDot').title = h.ok ? 'Backend connected: arduino-cli + QEMU ready' : 'Backend missing QEMU/arduino-cli'; if (!h.ok) toast('Backend found but QEMU/arduino-cli missing — JS sketch mode only', true); }).catch(() => { $('#connDot').className = 'conn bad'; toast('No backend: real-firmware mode needs server/server.py (JS sketch mode still works)', true); });
     requestAnimationFrame(tick); if (window.UI) window.UI.init(app);
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushLeaving('hide'); });
+    window.addEventListener('pagehide', () => flushLeaving('pagehide'));
     if (new URLSearchParams(location.search).get('resume') !== '0') setTimeout(() => app.resumeSavedRun(), 300);
     if (new URLSearchParams(location.search).get('tab')) document.querySelector(`[data-tab=${new URLSearchParams(location.search).get('tab')}]`).click();
   }

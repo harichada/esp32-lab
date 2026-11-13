@@ -4,6 +4,11 @@
   const P = root.Parts, G = 10, NS = 'http://www.w3.org/2000/svg';
   const snap = (v) => Math.round(v / G) * G;
   const WIRE_COLORS = { green: '#3ddc84', red: '#ff4d4d', black: '#1b1b1b', blue: '#4d8dff', yellow: '#ffd23d', orange: '#ff9a3d', white: '#e8e8e8', purple: '#b06bff', gray: '#9aa3b2', brown: '#a0632e' };
+  function wireStroke(color) {
+    if (WIRE_COLORS[color]) return WIRE_COLORS[color];
+    if (typeof color === 'string' && /^#[0-9a-fA-F]{6}$/.test(color)) return color;
+    return '#3ddc84';
+  }
   class Editor {
     constructor(svg, hooks) {
       this.svg = svg; this.hooks = hooks; this.lParts = svg.querySelector('#lParts'); this.lWires = svg.querySelector('#lWires'); this.lOver = svg.querySelector('#lOver');
@@ -60,7 +65,7 @@
       return x0 > x1 ? null : { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
     }
     // ---------- rendering ----------
-    partSvg(p) { const d = P.T[p.type]; const st = this.hooks.state ? this.hooks.state(p) : null; try { return d.svg(p, st); } catch (e) { return `<text class="plbl">${p.type}?</text>`; } }
+    partSvg(p) { const d = P.T[p.type]; const st = this.hooks.state ? this.hooks.state(p) : null; try { return d.svg(p, st); } catch (e) { return `<text class="plbl">${P.esc(p.type)}?</text>`; } }
     render() {
       this._pinIdx = null; this.lParts.innerHTML = ''; this.partEls.clear(); this.svgCache.clear();
       const sorted = [...this.proj.parts].sort((a, b) => ((P.T[a.type] || {}).layer ?? 2) - ((P.T[b.type] || {}).layer ?? 2));
@@ -97,9 +102,9 @@
       let s = '';
       for (const w of this.proj.wires) {
         const pts = [w.a, ...(w.pts || []), w.b].map((q) => `${q.x},${q.y}`).join(' ');
-        const dP = Editor.roundPath([w.a, ...(w.pts || []), w.b]), col = WIRE_COLORS[w.color] || w.color || '#3ddc84', sel = this.sel && this.sel.wire === w.id;
+        const dP = Editor.roundPath([w.a, ...(w.pts || []), w.b]), col = wireStroke(w.color), sel = this.sel && this.sel.wire === w.id;
         const hd = sel ? (w.pts || []).map((q, i) => `<circle cx="${q.x}" cy="${q.y}" r="3.2" class="w-bend" data-bend="${i}"/>`).join('') : '';
-        s += `<g class="wire${sel ? ' sel' : ''}" data-wid="${w.id}"><path d="${dP}" class="w-hit"/><path d="${dP}" class="w-shadow"/><path d="${dP}" class="w-line" style="stroke:${col}"/><path d="${dP}" class="w-hl"/><path d="${dP}" class="w-flow"/><circle cx="${w.a.x}" cy="${w.a.y}" r="2.2" class="w-end" style="fill:${col}"/><circle cx="${w.b.x}" cy="${w.b.y}" r="2.2" class="w-end" style="fill:${col}"/>${hd}</g>`;
+        s += `<g class="wire${sel ? ' sel' : ''}" data-wid="${P.esc(w.id)}"><path d="${dP}" class="w-hit"/><path d="${dP}" class="w-shadow"/><path d="${dP}" class="w-line" style="stroke:${col}"/><path d="${dP}" class="w-hl"/><path d="${dP}" class="w-flow"/><circle cx="${w.a.x}" cy="${w.a.y}" r="2.2" class="w-end" style="fill:${col}"/><circle cx="${w.b.x}" cy="${w.b.y}" r="2.2" class="w-end" style="fill:${col}"/>${hd}</g>`;
       }
       this.lWires.innerHTML = s;
     }
@@ -421,7 +426,7 @@
     _drawWirePreview(w) {
       const m = this.mode, last = m.pts.length ? m.pts[m.pts.length - 1] : m.a, tgt = this.pinNear(w), end = tgt ? tgt.pos : { x: snap(w.x), y: snap(w.y) };
       const pts = [m.a, ...m.pts, ...this._ortho(last, end)].map((q) => `${q.x},${q.y}`).join(' ');
-      this.ovWire.innerHTML = `<polyline points="${pts}" class="w-preview" style="stroke:${this.wireColor === 'auto' ? this.autoColor(m.start, null) : (WIRE_COLORS[this.wireColor] || this.wireColor)}"/>` + (tgt ? `<circle cx="${end.x}" cy="${end.y}" r="5.5" class="hl-target"/>` : '');
+      this.ovWire.innerHTML = `<polyline points="${pts}" class="w-preview" style="stroke:${this.wireColor === 'auto' ? this.autoColor(m.start, null) : wireStroke(this.wireColor)}"/>` + (tgt ? `<circle cx="${end.x}" cy="${end.y}" r="5.5" class="hl-target"/>` : '');
     }
     _finishWire(b, endPin) {
       const m = this.mode; this.mode = null; this.ovWire.innerHTML = ''; this.highlight(null); this.setHint();

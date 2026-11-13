@@ -46,6 +46,8 @@ body.m .hint{left:50%;transform:translateX(-50%);bottom:calc(176px + env(safe-ar
 body.m.m-has-sel .hint,body.m.m-wiring .hint{opacity:0}
 body.m .projbanner{top:10px;left:12px;right:12px;font-size:13px}body.m .projbanner .pb-ex,body.m .projbanner .pb-my{height:36px;border-radius:11px;background:var(--glass);border-color:var(--hair)}
 body.m .projbanner .muted,body.m .projbanner .pb-ex,body.m .projbanner .pb-my{display:none}body.m .projbanner #bCopy{height:40px;min-height:40px;padding:0 14px;font-size:14px;border-radius:12px}
+body.m .projbanner #bEditLink,body.m .projbanner #bShareLink,body.m .projbanner .pb-view{min-height:40px;display:inline-flex;align-items:center}
+body.m .live-status{top:58px;max-width:calc(100% - 24px)}
 body.m .warnbox{top:56px;max-width:calc(100% - 24px);font-size:13px}
 body.m .tip{display:none!important}
 /* selection pill + wiring bar */
@@ -140,9 +142,21 @@ body.m table.pins{font-size:13px}body.m table.pins td{padding:8px}body.m .sw{wid
 body.m .modal{padding:calc(var(--mTop) + 8px) 10px 10px;align-items:flex-start;z-index:80}
 body.m .modal-box{width:100%;max-height:calc(100% - 20px);border-radius:18px;padding:16px}
 body.m .nb-modal{z-index:90}body.m .nb-opts{grid-template-columns:1fr}body.m .nb-opt{min-height:0;padding:14px}body.m .nb-foot button{height:40px;padding:0 18px}
-body.m .projs td{padding:12px 6px;font-size:14px}body.m .projs td:last-child{white-space:normal}body.m .projs td button{height:40px;min-height:40px;margin:3px}
-body.m .projs tr{display:flex;flex-wrap:wrap;align-items:center}body.m .projs td:last-child{text-align:left;width:100%;border-top:0;padding-top:0}
-body.m .toast{bottom:calc(var(--dock) + 110px);font-size:14px;border-radius:14px;max-width:calc(100vw - 24px)}
+body.m .projs{display:block;width:100%;max-width:100%}
+body.m .projs tbody{display:block;width:100%;max-width:100%}
+body.m .projs tr{display:flex;flex-wrap:wrap;align-items:flex-start;width:100%;max-width:100%}
+body.m .projs td{display:block;box-sizing:border-box;max-width:100%;min-width:0;padding:12px 6px;font-size:14px}
+body.m .projs td.pn{flex:1 1 100%;width:100%}
+body.m .projs .pn-name{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+body.m .projs td:last-child{display:flex;flex-wrap:wrap;align-items:flex-start;gap:8px;width:100%;max-width:100%;text-align:left;white-space:normal;border-top:0;padding-top:0}
+body.m .projs td button{height:44px;min-height:44px;margin:0;max-width:100%;box-sizing:border-box}
+body.m .projs .edit-link{display:flex;flex-direction:column;align-items:flex-start;gap:4px;max-width:100%}
+body.m .projs .edit-link > button:not(:disabled){background:var(--l3);color:var(--txt);border-color:var(--line2);opacity:1}
+body.m .projs .share-warn{max-width:100%;white-space:normal}
+body.m .projs .share-reason{flex:1 0 100%;margin:0;color:#e6e8eb}
+body.m .backup-row{width:100%;min-height:44px;white-space:nowrap}
+body.m .backup-row input{width:24px;height:24px;flex:none}
+body.m .toast{bottom:calc(var(--dock) + 110px);font-size:14px;border-radius:14px;display:block;box-sizing:border-box;width:calc(100vw - 24px);max-width:calc(100vw - 24px);white-space:normal;overflow-wrap:anywhere;line-height:1.35}
 body.m .ctxmenu button{height:48px;font-size:15px}body.m .ctx-colors span{width:28px;height:28px}
 body.m .cmdk-in input{font-size:16px}
 
@@ -338,3 +352,24 @@ html[data-cl-env=staging] body.m .modal{padding-top:calc(54px + var(--stage-offs
 @media (max-width:430px){
   html[data-cl-env=staging] body.m .zoom-tools{top:calc(88px + var(--stage-offset))}
 }
+/* View-only banner: full width under the header and ticker, clear of +PARTS and zoom. The view chip stays in the header bar. */
+body.m .projbanner{top:24px;left:0;right:0;z-index:20;margin:0;padding:8px 12px 10px;box-sizing:border-box;width:auto;background:rgba(4,8,14,.94);border-bottom:1px solid var(--hudl);align-items:flex-start;gap:8px;color:#e6e8eb}
+body.m .projbanner .pb-view{white-space:normal;width:100%;height:auto;min-height:0;box-sizing:border-box;align-items:flex-start;background:transparent;border:0;border-radius:0;padding:0;color:#e6e8eb}
+body.m .projbanner .share-warn{display:block;min-height:0;height:auto;margin:0;padding:0;background:none;border:0;border-radius:0;box-shadow:none;font-size:12px;font-weight:400;line-height:1.35;color:#fbbf24}
+body.m .projbanner .pb-own{display:inline;color:#e6e8eb;font-size:13px;line-height:1.35}
+body.m .projbanner .edit-link{display:flex;flex-direction:column;align-items:flex-start;gap:2px;max-width:100%}
+body.m .projbanner .link-actions{display:flex;flex-wrap:wrap;align-items:flex-start;gap:8px;width:100%}
+body.m .projbanner .backup-state:empty{position:absolute;width:0;height:0;min-height:0;margin:0;padding:0;overflow:hidden;border:0;display:block}
+body.m .projbanner .backup-state:not(:empty){position:static;display:block;width:100%;max-width:100%;height:auto;min-height:0;line-height:1.35;white-space:normal;overflow-wrap:anywhere;overflow:visible}
+@media (max-width:600px){
+  body.m .projbanner .link-actions{flex-direction:column;align-items:stretch;gap:8px;width:100%}
+  body.m .projbanner .link-actions>.pb-own,body.m .projbanner .link-actions>#bShareLink,body.m .projbanner .link-actions>.edit-link,body.m .projbanner .link-actions>#bBackupCopy,body.m .projbanner .link-actions>.share-reason{width:100%;align-self:stretch}
+  body.m .projbanner .link-actions #bShareLink,body.m .projbanner .link-actions #bEditLink,body.m .projbanner .link-actions #bBackupCopy{width:100%;min-height:44px;height:44px;box-sizing:border-box;justify-content:center}
+  body.m .projbanner .link-actions .edit-link{gap:4px}
+  body.m .projbanner .link-actions .pb-own{display:block}
+}
+body.m #mParts,body.m #mWireBar{top:var(--banner-end,168px)}
+@media (max-width:430px){
+  body.m .zoom-tools{top:calc(var(--banner-end, 168px) + 52px)}
+}
+body.m .live-status{top:auto;bottom:calc(180px + env(safe-area-inset-bottom));left:12px;right:12px;max-width:calc(100vw - 24px);box-sizing:border-box;white-space:normal;overflow-wrap:anywhere;z-index:8}

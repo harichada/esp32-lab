@@ -10,6 +10,17 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       SIM_COMPILE_QUEUE, SIM_COMPILE_QUEUE_MAX, SIM_COMPILE_QUEUE_TIMEOUT_S,
       SIM_ORPHAN_MAX_AGE_S and the matching *_MAX_AGE_S knobs.
       Staging (off unless set): SIM_STAGING, SIM_ACCESS_TOKEN, SIM_STAGING_UPSTREAM, SIM_BASE_PATH.
+      Project copies: SIM_PROJECT_DIR, SIM_PROJECTS_LEGACY_OPEN (default 0).
+      Only an explicit 1 lets the next save claim a project that has no owner
+      secret. Unset, 0, and any other value make those projects read-only.
+      An unknown value is logged once. When `python3 -m server.projects_audit
+      --count-legacy <dir>` prints 0, nothing on that volume still needs a claim.
+      SIM_PROJECT_SAVES_PER_MIN (default 10, per project, after the secret checks),
+      SIM_IP_SAVES_PER_MIN (default 600, per TCP peer), SIM_IP_CREATES_PER_MIN
+      (default 60, per TCP peer), SIM_BAD_SECRET_PER_MIN (default 10, per
+      IP and project, wrong secrets only). See server/projectstore.py.
+      This process starts uvicorn with proxy headers off, so X-Forwarded-For
+      is not the client address.
 """
 import asyncio, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, argparse
 import diskkeep
@@ -21,6 +32,7 @@ from fastapi.responses import PlainTextResponse
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
+import projectstore
 
 HERE = Path(__file__).resolve().parent
 SITE = HERE.parent
@@ -59,7 +71,7 @@ RUN_CAP = float(os.environ.get('SIM_RUN_CAP', '0'))          # seconds; 0 = unli
 RESUME_GRACE = float(os.environ.get('SIM_RESUME_GRACE', '1800'))  # 0 = keep forever (until user stops / QEMU exits)
 STOP_ON_1001 = os.environ.get('SIM_STOP_ON_1001', '0') == '1'   # old behaviour: a 1001 'going away' close ends the run
 import builtins as _b, datetime as _dt
-def print(*a, **k): _b.print(_dt.datetime.now().strftime('%F %T'), *a, **{**k, 'flush': True})  # keep QEMU alive this long after the browser websocket drops
+def print(*a, **k): _b.print(_dt.datetime.now().strftime('%F %T'), *[projectstore.redact(x) for x in a], **{**k, 'flush': True})  # keep QEMU alive this long after the browser websocket drops
 staging.set_logger(print)
 RING_BYTES = 48 * 1024 * 1024
 MAX_RUNS = min(MAX_RUNS, int(os.environ.get('SIM_MAX_RUNS_HARD', '6')))
@@ -1357,37 +1369,9 @@ async def _qemu_session(ws, bid, img, tmp, hold):
         except Exception: pass
 
 # ---------------- optional server-side project copies (My Projects "server copy") ----------------
-PROJ_DIR = Path(os.environ.get('SIM_PROJECT_DIR', HOME / '.esp32lab/projects')); PROJ_MAX = 500
-def _pid(i): return i if re.fullmatch(r'[A-Za-z0-9_-]{1,40}', i or '') else None
-@app.get('/api/projects')
-def proj_list():
-    out = []
-    if PROJ_DIR.exists():
-        for f in sorted(PROJ_DIR.glob('*.json'), key=lambda f: -f.stat().st_mtime)[:PROJ_MAX]:
-            try: out.append({'id': f.stem, 'name': json.loads(f.read_text()).get('name', f.stem), 'updated': int(f.stat().st_mtime * 1000)})
-            except Exception: pass
-    return out
-@app.get('/api/projects/{pid}')
-def proj_get(pid: str):
-    i = _pid(pid); f = PROJ_DIR / f'{i}.json'
-    if not i or not f.exists(): return JSONResponse({'error': 'not found'}, 404)
-    return JSONResponse(json.loads(f.read_text()))
-@app.put('/api/projects/{pid}')
-async def proj_put(pid: str, request: Request):
-    i = _pid(pid); body = await request.body()
-    if not i: return JSONResponse({'error': 'bad id'}, 400)
-    if len(body) > MAX_BODY: return JSONResponse({'error': 'too large'}, 413)
-    try: o = json.loads(body); assert isinstance(o, dict) and isinstance(o.get('parts'), list)
-    except Exception: return JSONResponse({'error': 'not a project'}, 400)
-    PROJ_DIR.mkdir(parents=True, exist_ok=True)
-    if len(list(PROJ_DIR.glob('*.json'))) >= PROJ_MAX and not (PROJ_DIR / f'{i}.json').exists(): return JSONResponse({'error': 'project limit'}, 507)
-    tmp = PROJ_DIR / f'.{i}.tmp'; tmp.write_text(json.dumps(o)); tmp.replace(PROJ_DIR / f'{i}.json')
-    return {'ok': True, 'id': i}
-@app.delete('/api/projects/{pid}')
-def proj_del(pid: str):
-    i = _pid(pid)
-    if i and (PROJ_DIR / f'{i}.json').exists(): (PROJ_DIR / f'{i}.json').unlink()
-    return {'ok': True}
+# Ids and edit secrets are issued here. SIM_PROJECTS_LEGACY_OPEN defaults to 0, so an old copy stays read-only unless the flag is explicitly 1.
+PROJ_DIR = Path(os.environ.get('SIM_PROJECT_DIR', HOME / '.esp32lab/projects'))
+projectstore.mount(app, lambda: PROJ_DIR, lambda: MAX_BODY)
 
 @app.get('/robots.txt')
 def robots_txt():
@@ -1406,4 +1390,5 @@ if __name__ == '__main__':
     ap = argparse.ArgumentParser(); ap.add_argument('--port', type=int, default=8765); ap.add_argument('--host', default='127.0.0.1')
     a = ap.parse_args()
     print(f'QEMU={QEMU}\nROMDIR={ROMDIR}\nCLI={CLI}\nFQBN={FQBN}')
+    # proxy_headers stays off so a loopback peer cannot rotate X-Forwarded-For into a new client.
     uvicorn.run(app, host=a.host, port=a.port, log_level='warning', proxy_headers=False, forwarded_allow_ips='')
