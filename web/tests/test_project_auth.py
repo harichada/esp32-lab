@@ -297,6 +297,40 @@ class ProjectAuthTests(unittest.TestCase):
         self.assertIn('ip=testclient', text)
         self.assertNotIn(secret, text)
 
+    def test_save_log_ip_is_truncated_and_ignores_forwarded_headers(self):
+        self.assertTrue(projectstore)
+        self.assertEqual(projectstore._log_ip('203.0.113.9'), '203.0.113.0')
+        self.assertEqual(projectstore._log_ip('2001:db8:abcd:1234::5'), '2001:db8:abcd::')
+        self.assertEqual(projectstore._log_ip('::ffff:203.0.113.50'), '203.0.113.0')
+        self.assertEqual(projectstore._log_ip('not-an-ip'), 'unknown')
+        self.assertEqual(projectstore._log_ip(''), 'unknown')
+        pid, secret = self._seed()
+        self.assertTrue(secret)
+        transport = self.client._transport
+        original = transport.client
+        buf = io.StringIO()
+        try:
+            transport.client = ('203.0.113.9', 50000)
+            with redirect_stdout(buf), redirect_stderr(buf):
+                saved = self.client.put(
+                    '/api/projects/' + pid,
+                    json=dict(PROJ, name='prefix'),
+                    headers={
+                        'X-Edit-Secret': secret,
+                        'X-Forwarded-For': '198.51.100.20',
+                        'Forwarded': 'for=198.51.100.21',
+                    },
+                )
+        finally:
+            transport.client = original
+        self.assertEqual(saved.status_code, 200, saved.text)
+        text = buf.getvalue()
+        self.assertIn('ip=203.0.113.0', text)
+        self.assertNotIn('203.0.113.9', text)
+        self.assertNotIn('198.51.100.20', text)
+        self.assertNotIn('198.51.100.21', text)
+        self.assertNotIn(secret, text)
+
     def test_ten_clients_on_one_ip_stay_under_the_save_limits(self):
         """Ten students, one address, each saving on the 10s backup cadence for a minute."""
         os.environ['SIM_PROJECT_SAVES_PER_MIN'] = '10'

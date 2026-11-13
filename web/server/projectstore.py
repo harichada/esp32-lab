@@ -23,6 +23,7 @@ that (IP, project) pair only. When that budget is exhausted the response is
 blocked by it.
 """
 import hashlib
+import ipaddress
 import json
 import logging
 import math
@@ -165,11 +166,34 @@ def _json(body, status=200, headers=None):
     return JSONResponse(body, status, headers=merged)
 
 
+def _log_ip(ip: str) -> str:
+    """A prefix for a save log. Never the full learner address.
+
+    IPv4 keeps the first three octets and zeroes the last. IPv4-mapped IPv6 is
+    unwrapped and truncated the same way. Other IPv6 is the /48 network address.
+    Anything that is not an IP is ``unknown``.
+    """
+    try:
+        addr = ipaddress.ip_address((ip or '').strip())
+    except ValueError:
+        return 'unknown'
+    mapped = getattr(addr, 'ipv4_mapped', None)
+    if mapped is not None:
+        addr = mapped
+    if isinstance(addr, ipaddress.IPv4Address):
+        parts = str(addr).split('.')
+        parts[-1] = '0'
+        return '.'.join(parts)
+    return str(ipaddress.ip_network(f'{addr}/48', strict=False).network_address)
+
+
 def _audit(request: Request, status: int, note=''):
     secret = request.headers.get('x-edit-secret') or ''
+    # Same peer the limiter uses. X-Forwarded-For and Forwarded are ignored, then truncated.
+    ip = _log_ip(_client_ip(request))
     # The header value is passed through redact before it is printed or logged.
     line = redact(
-        f'project {request.method} {request.url.path} X-Edit-Secret: {secret or "-"} status={status} {note}'.rstrip()
+        f'project {request.method} {request.url.path} X-Edit-Secret: {secret or "-"} status={status} ip={ip} {note}'.rstrip()
     )
     LOG.info('%s', line)
     print(line, flush=True)

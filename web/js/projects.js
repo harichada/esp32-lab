@@ -16,6 +16,7 @@
   const SHARE_OK = 'Backed up online and copied view-only link.';
   const SHARE_FAIL = "Couldn't back up this project, so there's no link to share yet. Try again in a minute.";
   const BAD_LINK = "This project link doesn't work. Ask the person who sent it to share it again.";
+  const DEVICE_FAIL = 'Saved on this device, online backup failed, retrying';
   function escAttr(value) {
     return String(value || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
@@ -75,12 +76,19 @@
       this._dirty = new Set();
       this._timers = new Map();
       this._inflight = new Map();
-      this._retried = new Set();
+      this._uploads = new Map();
+      this._serverOf = new Map();
+      this._nextAt = new Map();
+      this._armed = new Map();
+      this._armGen = new Map();
       this._localOnly = new Set();
       this._hideSent = new Set();
       this._shareFlight = null;
+      this._holdHint = false;
+      this._pendingHint = '';
       this.backupMs = BACKUP_MS;
       this.backupNote = '';
+      this.deviceFail = false;
       this.now = () => Date.now();
       this.later = (fn, ms) => setTimeout(fn, ms);
       this.jitter = () => Math.random();
@@ -94,10 +102,91 @@
     blockPut(id) { if (!id) return; const all = this._blocked(); all[id] = 1; this.ls.setItem(NOPUT, JSON.stringify(all)); }
     isPutBlocked(id) { return !!(id && this._blocked()[id]); }
     _setNote(msg) { this.backupNote = msg || ''; if (this.onBackupNote) this.onBackupNote(this.backupNote); }
+    _canonical(id) {
+      let cur = id;
+      const seen = new Set();
+      while (cur && this._serverOf.has(cur) && !seen.has(cur)) {
+        seen.add(cur);
+        const next = this._serverOf.get(cur);
+        if (!next || next === cur) return cur;
+        cur = next;
+      }
+      return cur || id;
+    }
+    _projectFor(id) { return this.get(this._canonical(id)) || this.get(id) || null; }
+    _online(id) {
+      const sid = this._canonical(id);
+      return !!(this.secretFor(sid) || this.secretFor(id));
+    }
+    _rememberServer(localId, serverId) {
+      if (!serverId) return;
+      this._serverOf.set(serverId, serverId);
+      if (localId && localId !== serverId) {
+        this._serverOf.set(localId, serverId);
+        if (this._nextAt.has(localId)) {
+          const when = this._nextAt.get(localId);
+          this._nextAt.set(serverId, Math.max(this._nextAt.get(serverId) || 0, when));
+          this._nextAt.delete(localId);
+        }
+      }
+    }
+    _deviceFail(on) {
+      const next = !!on;
+      if (this.deviceFail === next) return;
+      this.deviceFail = next;
+      if (this.onDeviceFail) this.onDeviceFail(next ? DEVICE_FAIL : '');
+    }
+    holdHint(on) {
+      this._holdHint = !!on;
+      if (!on) this._emitHint();
+    }
+    _emitHint() {
+      if (!this._pendingHint) return;
+      const msg = this._pendingHint;
+      this._pendingHint = '';
+      if (this.onEditLinkHint) this.onEditLinkHint(msg);
+    }
     _noteSaved(id) {
       if (!id || this.ls.getItem(HINT)) return;
       this.ls.setItem(HINT, '1');
-      if (this.onEditLinkHint) this.onEditLinkHint(HINT_MSG);
+      this._pendingHint = HINT_MSG;
+      if (!this._holdHint) this._emitHint();
+    }
+    _blockedUntil(id) {
+      const next = this._nextAt.get(this._canonical(id)) || 0;
+      return Math.max(0, next - this.now());
+    }
+    _clearArmed(id) {
+      const key = this._canonical(id);
+      this._armGen.set(key, (this._armGen.get(key) || 0) + 1);
+      if (!this._armed.has(key)) return;
+      const handle = this._armed.get(key);
+      this._armed.delete(key);
+      if (handle != null) clearTimeout(handle);
+    }
+    // One timer per project. A new wait replaces the previous timer; it does not stack.
+    _arm(id, waitMs, reason) {
+      const key = this._canonical(id);
+      this._clearArmed(key);
+      const gen = (this._armGen.get(key) || 0) + 1;
+      this._armGen.set(key, gen);
+      const wait = Math.max(0, waitMs);
+      const handle = this.later(() => {
+        if (this._armGen.get(key) !== gen) return;
+        if (this.now() < (this._nextAt.get(key) || 0)) return;
+        this._armed.delete(key);
+        const live = this._projectFor(key);
+        if (!live) return;
+        return this.flushBackup(live, { reason: reason || 'retry' });
+      }, wait);
+      if (handle && typeof handle.unref === 'function') handle.unref();
+      this._armed.set(key, handle);
+    }
+    _hold(id) {
+      const wait = this._blockedUntil(id);
+      if (wait <= 0) return false;
+      this._arm(id, wait, 'retry');
+      return true;
     }
     _all() { try { return JSON.parse(this.ls.getItem(KEY) || '{}') || {}; } catch (e) { return {}; } }
     _put(all) { this.ls.setItem(KEY, JSON.stringify(all)); }
@@ -130,11 +219,28 @@
     }
     async _backupAndShare(proj, href) {
       if (!proj) throw fail(SHARE_FAIL, 'server');
-      const id = await this.pushServer(proj, { reason: 'share' });
-      if (!id || !this.secretFor(id)) throw fail(SHARE_FAIL, 'server');
+      const id = proj.id;
+      const pending = (id && (this._inflight.get(id) || this._inflight.get(this._canonical(id)) || this._uploads.get(id))) || null;
+      if (pending) {
+        try { await pending; } catch (e) { /* the in-flight upload reports its own failure */ }
+        const sid = this._canonical(id);
+        if (this.secretFor(sid)) {
+          this.serverSync = true;
+          const base = href || (root.location && root.location.href) || 'http://localhost/';
+          return this.shareUrl(base, sid);
+        }
+        if (this._blockedUntil(id) > 0) {
+          const err = fail(SHARE_BUSY, 'rate_limit');
+          err.retryAfter = Math.max(1, Math.ceil(this._blockedUntil(id) / 1000));
+          throw err;
+        }
+      }
+      const current = this._projectFor(id) || proj;
+      const made = await this.pushServer(current, { reason: 'share' });
+      if (!made || !this.secretFor(made)) throw fail(SHARE_FAIL, 'server');
       this.serverSync = true;
       const base = href || (root.location && root.location.href) || 'http://localhost/';
-      return this.shareUrl(base, id);
+      return this.shareUrl(base, made);
     }
     // #edit=<secret> is stored for ?p=<id>, then removed from the address bar. The fragment is not a request.
     consumeEditFragment(loc, history) {
@@ -199,83 +305,106 @@
       if (handle != null) clearTimeout(handle);
     }
     scheduleBackup(proj) {
-      if (!this.serverSync || !proj || !proj.id || this._timers.has(proj.id)) return;
+      if (!this.serverSync || !proj || !proj.id) return;
+      if (this._blockedUntil(proj.id) > 0) {
+        this._hold(proj.id);
+        return;
+      }
+      if (this._timers.has(proj.id) || this._armed.has(this._canonical(proj.id))) return;
       const id = proj.id;
       const last = this._lastBackup.has(id) ? this._lastBackup.get(id) : null;
       const wait = last == null ? this.backupMs : Math.max(0, this.backupMs - (this.now() - last));
       const handle = this.later(() => {
         this._timers.delete(id);
-        return this.flushBackup(this.get(id) || proj, { reason: 'timer' });
+        return this.flushBackup(this._projectFor(id) || proj, { reason: 'timer' });
       }, wait);
+      if (handle && typeof handle.unref === 'function') handle.unref();
       this._timers.set(id, handle);
     }
     flushBackup(proj, opts) {
       opts = opts || {};
       if (!proj || !proj.id || !this.serverSync || !this.fetch) return Promise.resolve(false);
       const reason = opts.reason || 'save';
+      const live = this._projectFor(proj.id) || proj;
+      const id = live.id;
       const hide = reason === 'hide' || reason === 'pagehide';
-      if (hide && !this._dirty.has(proj.id)) return Promise.resolve(false);
-      if (hide && this._hideSent.has(proj.id)) {
-        const lastHide = this._lastBackup.has(proj.id) ? this._lastBackup.get(proj.id) : null;
+      if (hide && !this._dirty.has(proj.id) && !this._dirty.has(id)) return Promise.resolve(false);
+      if (hide && this._hideSent.has(id)) {
+        const lastHide = this._lastBackup.has(id) ? this._lastBackup.get(id) : null;
         if (lastHide != null && this.now() - lastHide < this.backupMs) return Promise.resolve(false);
       }
-      const last = this._lastBackup.has(proj.id) ? this._lastBackup.get(proj.id) : null;
+      // A retry timer is the only sender during the window. Invoking it early does not send.
+      if (reason === 'retry' && this._blockedUntil(id) > 0) return Promise.resolve(false);
+      if (reason !== 'retry' && this._hold(id)) return Promise.resolve(false);
+      const last = this._lastBackup.has(id) ? this._lastBackup.get(id) : (this._lastBackup.has(proj.id) ? this._lastBackup.get(proj.id) : null);
       if (!shouldSendBackup(last, this.now(), reason)) {
-        this.scheduleBackup(proj);
+        this.scheduleBackup(live);
         return Promise.resolve(false);
       }
-      if (this._inflight.has(proj.id)) return this._inflight.get(proj.id);
-      const id = proj.id;
-      const job = this._sendBackup(proj, opts).finally(() => { if (this._inflight.get(id) === job) this._inflight.delete(id); });
+      if (this._inflight.has(id)) return this._inflight.get(id);
+      if (id !== proj.id && this._inflight.has(proj.id)) return this._inflight.get(proj.id);
+      const job = this._sendBackup(live, opts).finally(() => {
+        if (this._inflight.get(id) === job) this._inflight.delete(id);
+        if (this._inflight.get(proj.id) === job) this._inflight.delete(proj.id);
+      });
       this._inflight.set(id, job);
+      if (proj.id !== id) this._inflight.set(proj.id, job);
       return job;
     }
     async _sendBackup(proj, opts) {
       const reason = opts.reason || 'save';
       const hide = reason === 'hide' || reason === 'pagehide';
-      if (reason !== 'retry') this._retried.delete(proj.id);
+      const live = this._projectFor(proj.id) || proj;
+      this._clearTimer(live.id);
       this._clearTimer(proj.id);
-      this._lastBackup.set(proj.id, this.now());
-      if (hide) this._hideSent.add(proj.id);
-      else this._hideSent.delete(proj.id);
+      this._clearArmed(live.id);
+      this._lastBackup.set(live.id, this.now());
+      if (hide) this._hideSent.add(live.id);
+      else this._hideSent.delete(live.id);
       try {
-        const savedId = await this.pushServer(proj, opts);
-        const saved = this.get(savedId) || this.get(this.current()) || proj;
-        const cleanId = (saved && saved.id) || savedId || proj.id;
+        const savedId = await this.pushServer(live, opts);
+        const saved = this.get(savedId) || this.get(this.current()) || live;
+        const cleanId = (saved && saved.id) || savedId || live.id;
         this._clean.set(cleanId, this._snap(saved));
         this._dirty.delete(proj.id);
+        this._dirty.delete(live.id);
         this._dirty.delete(cleanId);
-        this._retried.delete(proj.id);
-        this._retried.delete(cleanId);
+        this._nextAt.delete(cleanId);
+        this._nextAt.delete(this._canonical(cleanId));
         if (this.backupNote) this._setNote('');
+        this._deviceFail(false);
+        if (this.onSaved) this.onSaved();
         return true;
       } catch (err) {
         this._dirty.add(proj.id);
+        this._dirty.add(live.id);
         const cur = this.current();
         if (cur) this._dirty.add(cur);
+        const retryId = this._canonical(cur || live.id);
+        const online = this._online(live.id) || this._online(proj.id);
+        if (online) this._deviceFail(true);
         if (err && err.code === 'rate_limit') {
           this._setNote(BACKUP_WAIT);
-          const retryId = cur || proj.id;
-          // One retry after Retry-After. A second 429 waits for the next edit or the next 10 s window.
-          if (reason !== 'retry' && !this._retried.has(retryId)) {
-            this._retried.add(retryId);
-            const extra = typeof this.jitter === 'function' ? this.jitter() : 0;
-            const wait = ((err.retryAfter || 1) + extra) * 1000;
-            this.later(() => {
-              this._lastBackup.delete(retryId);
-              this._lastBackup.delete(proj.id);
-              const again = (retryId && this.get(retryId)) || proj;
-              return this.flushBackup(again, { reason: 'retry', keepalive: !!opts.keepalive });
-            }, wait);
-          } else {
-            this._retried.add(retryId);
-            const held = this.get(retryId) || proj;
-            this._lastBackup.set(held.id || retryId, this.now());
-            this.scheduleBackup(held);
+          const base = Math.max(0, Number(err.retryAfter) || 1);
+          const extra = Math.max(0, Number(typeof this.jitter === 'function' ? this.jitter() : 0) || 0);
+          const retryMs = (base + extra) * 1000;
+          let nextAt = Math.max(this._nextAt.get(retryId) || 0, this.now() + retryMs);
+          let armReason = 'retry';
+          // The automatic retry already ran. The next send waits out the backup window and Retry-After.
+          if (reason === 'retry') {
+            nextAt = Math.max(nextAt, this.now() + this.backupMs);
+            armReason = 'timer';
           }
+          this._nextAt.set(retryId, nextAt);
+          this._arm(retryId, nextAt - this.now(), armReason);
           return false;
         }
-        if (err && (err.code === 'view_only' || err.code === 'invalid') && this.onPushError) this.onPushError(err, proj);
+        if (online) {
+          const nextAt = Math.max(this._nextAt.get(retryId) || 0, this.now() + this.backupMs);
+          this._nextAt.set(retryId, nextAt);
+          this._arm(retryId, nextAt - this.now(), 'retry');
+        }
+        if (err && (err.code === 'view_only' || err.code === 'invalid') && this.onPushError) this.onPushError(err, live);
         return false;
       }
     }
@@ -361,12 +490,31 @@
         this._put(all); this.ls.setItem(CUR, j.id);
       }
       this.rememberSecret(j.id, j.secret);
+      this._rememberServer(localId, j.id);
       this._noteSaved(j.id);
       this._lastBackup.set(j.id, this.now());
       proj.id = j.id;
       return body;
     }
     async pushServer(p, opts) {
+      if (!this.fetch || !p) return false;
+      const mapped = this._canonical(p.id);
+      if (mapped && mapped !== p.id) {
+        const current = this.get(mapped);
+        if (current) return this.pushServer(current, opts);
+        p = Object.assign({}, p, { id: mapped });
+      }
+      if (this._uploads.has(p.id)) return this._uploads.get(p.id);
+      const key = p.id;
+      const job = this._pushServer(p, opts || {});
+      this._uploads.set(key, job);
+      try {
+        return await job;
+      } finally {
+        if (this._uploads.get(key) === job) this._uploads.delete(key);
+      }
+    }
+    async _pushServer(p, opts) {
       if (!this.fetch || !p) return false;
       opts = opts || {};
       if (this.isViewOnly(p.id)) {
@@ -405,6 +553,7 @@
       if (j.secret) { this.rememberSecret(j.id || p.id, j.secret); this._noteSaved(j.id || p.id); }
       if (j.id && j.id !== p.id) {
         const old = p.id;
+        this._rememberServer(old, j.id);
         this.retarget(old, j.id, p);
         p.id = j.id;
         if (this.onServerId) this.onServerId(old, j.id);
@@ -442,7 +591,7 @@
   }
   const api = {
     ProjectStore, newId, shouldSendBackup, BACKUP_MS, shareControls, shareFailMessage,
-    SHARE_WAIT, SHARE_OK, SHARE_FAIL, SHARE_BUSY, BACKUP_WAIT, BAD_LINK, LOCKOUT,
+    SHARE_WAIT, SHARE_OK, SHARE_FAIL, SHARE_BUSY, BACKUP_WAIT, BAD_LINK, LOCKOUT, DEVICE_FAIL, HINT_MSG,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.Projects = api;

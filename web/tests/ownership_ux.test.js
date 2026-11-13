@@ -5,7 +5,7 @@ const path = require('path');
 
 const appSrc = fs.readFileSync(path.join(__dirname, '../js/app.js'), 'utf8');
 const storeSrc = fs.readFileSync(path.join(__dirname, '../js/projects.js'), 'utf8');
-const { ProjectStore, shouldSendBackup, BACKUP_MS, shareControls, shareFailMessage, SHARE_WAIT, SHARE_FAIL, SHARE_BUSY, BACKUP_WAIT, BAD_LINK } = require('../js/projects.js');
+const { ProjectStore, shouldSendBackup, BACKUP_MS, shareControls, shareFailMessage, SHARE_WAIT, SHARE_FAIL, SHARE_BUSY, SHARE_OK, BACKUP_WAIT, BAD_LINK, DEVICE_FAIL, HINT_MSG } = require('../js/projects.js');
 
 const mem = () => {
   const m = new Map();
@@ -196,8 +196,10 @@ test('a 429 keeps the local project, shows the quiet status, and retries once', 
   const store = new ProjectStore(mem(), fetch);
   store.serverSync = true;
   store.jitter = () => 0.25;
+  let clock = 5000;
+  store.now = () => clock;
   const pending = [];
-  store.later = (fn, ms) => { pending.push({ fn, ms }); return 0; };
+  store.later = (fn, ms) => { pending.push({ fn, ms }); return pending.length; };
   const alarms = [];
   store.onPushError = (err) => alarms.push(err && err.code);
   const id = store.save(proj(), { remote: false });
@@ -209,6 +211,7 @@ test('a 429 keeps the local project, shows the quiet status, and retries once', 
   assert.equal(alarms.length, 0);
   assert.equal(pending.length, 1);
   assert.equal(pending[0].ms, 1250);
+  clock += pending[0].ms;
   await pending[0].fn();
   assert.equal(posts, 2);
   assert.equal(store.secretFor('srv9'), 'sek');
@@ -226,13 +229,16 @@ test('two consecutive 429s make exactly 2 requests and then stop', async () => {
   const store = new ProjectStore(mem(), fetch);
   store.serverSync = true;
   store.jitter = () => 0;
+  let clock = 0;
+  store.now = () => clock;
   const pending = [];
-  store.later = (fn, ms) => { pending.push({ fn, ms }); return 0; };
+  store.later = (fn, ms) => { pending.push({ fn, ms }); return pending.length; };
   const id = store.save(proj(), { remote: false });
   await store.flushBackup(store.get(id), { reason: 'save' });
   const retries = () => pending.filter((item) => item.ms < 5000);
   assert.equal(requests, 1);
   assert.equal(retries().length, 1);
+  clock += retries()[0].ms;
   await retries()[0].fn();
   let guard = 0;
   while (retries().length > 1 && guard < 5) {
@@ -394,6 +400,200 @@ test('a double tap creates exactly one project', async () => {
   assert.equal(posts, 1);
   assert.equal(left, right);
   assert.equal(new URL(left).searchParams.get('p'), 'only1');
+});
+
+function clocked(fetch, jitter) {
+  const store = new ProjectStore(mem(), fetch);
+  store.serverSync = true;
+  store.jitter = () => jitter || 0;
+  let clock = 0;
+  store.now = () => clock;
+  const pending = [];
+  store.later = (fn, ms) => {
+    const handle = 100000 + pending.length;
+    pending.push({ fn, ms, handle });
+    return handle;
+  };
+  const live = () => [...store._armed.values()].map((handle) => pending.find((item) => item.handle === handle)).filter(Boolean);
+  return { store, pending, live, advance: (ms) => { clock += ms; } };
+}
+
+test('no backup request leaves before Retry-After', async () => {
+  let posts = 0;
+  const fetch = async () => {
+    posts += 1;
+    if (posts === 1) return { status: 429, ok: false, headers: headers({ 'retry-after': '5' }), json: async () => ({ error: 'rate_limit' }) };
+    return { status: 201, ok: true, headers: headers({}), json: async () => ({ id: 'srv-late', secret: 'sek' }) };
+  };
+  const rig = clocked(fetch);
+  const id = rig.store.save(proj(), { remote: false });
+  await rig.store.flushBackup(rig.store.get(id), { reason: 'save' });
+  assert.equal(posts, 1);
+  assert.equal(rig.live().length, 1);
+  assert.equal(rig.live()[0].ms, 5000);
+  rig.advance(4999);
+  await rig.store.flushBackup(rig.store.get(id), { reason: 'save' });
+  await rig.live()[0].fn();
+  assert.equal(posts, 1);
+  rig.advance(1);
+  await rig.live()[0].fn();
+  assert.equal(posts, 2);
+});
+
+test('a new retry replaces the previous timer', async () => {
+  let posts = 0;
+  const fetch = async () => {
+    posts += 1;
+    return { status: 429, ok: false, headers: headers({ 'retry-after': '5' }), json: async () => ({ error: 'rate_limit' }) };
+  };
+  const rig = clocked(fetch);
+  const id = rig.store.save(proj(), { remote: false });
+  await rig.store.flushBackup(rig.store.get(id), { reason: 'save' });
+  const first = rig.live()[0];
+  await rig.store.flushBackup(rig.store.get(id), { reason: 'save' });
+  assert.equal(posts, 1);
+  assert.equal(rig.live().length, 1);
+  assert.notEqual(rig.live()[0].handle, first.handle);
+  await first.fn();
+  assert.equal(posts, 1);
+  rig.advance(5000);
+  await rig.live()[0].fn();
+  assert.equal(posts, 2);
+});
+
+test('a create is followed by updates, never another create', async () => {
+  const methods = [];
+  const fetch = async (url, opts) => {
+    const method = (opts && opts.method) || 'GET';
+    methods.push(method + ' ' + url);
+    if (method === 'POST') return { status: 201, ok: true, headers: headers({}), json: async () => ({ id: 'srvKeep', secret: 'sek' }) };
+    if (method === 'PUT') return { status: 200, ok: true, headers: headers({}), json: async () => ({ id: 'srvKeep' }) };
+    return missing;
+  };
+  const store = new ProjectStore(mem(), fetch);
+  store.serverSync = true;
+  const localId = store.save(proj(), { remote: false });
+  await store.flushBackup(store.get(localId), { reason: 'save' });
+  const stale = Object.assign(proj(), { id: localId, name: 'Later' });
+  await store.flushBackup(stale, { reason: 'save' });
+  await store.pushServer(stale);
+  assert.deepEqual(methods.filter((line) => line.startsWith('POST')), ['POST api/projects']);
+  assert.ok(methods.filter((line) => line.startsWith('PUT')).length >= 1);
+  assert.ok(methods.every((line) => !line.startsWith('PUT') || line.includes('srvKeep')));
+});
+
+test('sharing during an in-flight upload creates one project', async () => {
+  let posts = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const fetch = async (url, opts) => {
+    if ((opts || {}).method === 'POST') {
+      posts += 1;
+      await gate;
+      return { status: 201, ok: true, headers: headers({}), json: async () => ({ id: 'oneSrv', secret: 'sek' }) };
+    }
+    return missing;
+  };
+  const store = new ProjectStore(mem(), fetch);
+  store.serverSync = true;
+  const id = store.save(proj(), { remote: false });
+  const backup = store.flushBackup(store.get(id), { reason: 'save' });
+  const share = store.backupAndShare(store.get(id), 'http://lab.test/lab');
+  release();
+  const url = await share;
+  await backup;
+  assert.equal(posts, 1);
+  assert.equal(new URL(url).searchParams.get('p'), 'oneSrv');
+});
+
+test('a burst of edits during 429 sends at most one request per Retry-After window', async () => {
+  let posts = 0;
+  const fetch = async () => {
+    posts += 1;
+    if (posts === 1) return { status: 429, ok: false, headers: headers({ 'retry-after': '4' }), json: async () => ({ error: 'rate_limit' }) };
+    return { status: 201, ok: true, headers: headers({}), json: async () => ({ id: 'srvBurst', secret: 'sek' }) };
+  };
+  const rig = clocked(fetch);
+  const id = rig.store.save(proj(), { remote: false });
+  await rig.store.flushBackup(rig.store.get(id), { reason: 'save' });
+  for (let n = 0; n < 8; n += 1) {
+    const edited = rig.store.get(id);
+    edited.name = 'Edit ' + n;
+    rig.store.save(edited, { remote: false });
+    await rig.store.flushBackup(rig.store.get(id), { reason: 'save' });
+  }
+  assert.equal(posts, 1);
+  assert.equal(rig.live().length, 1);
+  rig.advance(3999);
+  await rig.store.flushBackup(rig.store.get(id), { reason: 'save' });
+  assert.equal(posts, 1);
+  rig.advance(1);
+  await rig.live()[0].fn();
+  assert.equal(posts, 2);
+});
+
+test('a failed online save is not Saved, and a later retry clears it', async () => {
+  let puts = 0;
+  const fetch = async (url, opts) => {
+    if ((opts || {}).method === 'PUT') {
+      puts += 1;
+      if (puts === 1) throw new Error('offline');
+      if (puts === 2) return { status: 503, ok: false, headers: headers({}), json: async () => ({ error: 'down' }) };
+      return { status: 200, ok: true, headers: headers({}), json: async () => ({ id: 'owned' }) };
+    }
+    return missing;
+  };
+  const rig = clocked(fetch);
+  const notes = [];
+  rig.store.onDeviceFail = (msg) => notes.push(msg);
+  const id = rig.store.save(Object.assign(proj(), { id: 'owned' }), { remote: false });
+  rig.store.rememberSecret(id, 'sek');
+  const failed = await rig.store.flushBackup(rig.store.get(id), { reason: 'save' });
+  assert.equal(failed, false);
+  assert.equal(notes[0], DEVICE_FAIL);
+  assert.equal(DEVICE_FAIL, 'Saved on this device, online backup failed, retrying');
+  assert.equal(rig.store.deviceFail, true);
+  rig.advance(rig.live()[0].ms);
+  const still = await rig.live()[0].fn();
+  assert.equal(still, false);
+  assert.equal(notes.filter((msg) => msg === DEVICE_FAIL).length >= 1, true);
+  rig.advance(rig.live()[0].ms);
+  const ok = await rig.live()[0].fn();
+  assert.equal(ok, true);
+  assert.equal(rig.store.deviceFail, false);
+  assert.equal(notes[notes.length - 1], '');
+  const saveFn = appSrc.slice(appSrc.indexOf('async function save()'), appSrc.indexOf('function projectsDialog'));
+  assert.match(saveFn, /announce\(Projects\.DEVICE_FAIL\)/);
+  assert.ok(saveFn.indexOf('announce(Projects.DEVICE_FAIL)') < saveFn.indexOf('toast(\'Saved'));
+  assert.match(appSrc, /e\.key === 's'\) \{ e\.preventDefault\(\); if \(app\.proj\) save\(\);/);
+});
+
+test('share results are announced before the edit-link tip', async () => {
+  const events = [];
+  const fetch = async (url, opts) => {
+    if ((opts || {}).method === 'POST') return { status: 201, ok: true, headers: headers({}), json: async () => ({ id: 'srvAnn', secret: 'sek' }) };
+    return missing;
+  };
+  const store = new ProjectStore(mem(), fetch);
+  const id = store.save(proj(), { remote: false });
+  store.holdHint(true);
+  store.onEditLinkHint = (msg) => events.push(msg);
+  await store.backupAndShare(store.get(id), 'http://lab.test/lab');
+  events.push(SHARE_OK);
+  store.holdHint(false);
+  assert.deepEqual(events, [SHARE_OK, HINT_MSG]);
+  const fn = appSrc.slice(appSrc.indexOf('function backupAndCopy'), appSrc.indexOf('function forkView'));
+  assert.match(fn, /copyText\(url, Projects\.SHARE_OK, \{ live: true \}\)/);
+  assert.match(fn, /announce\(msg\)/);
+  assert.match(fn, /shareFailMessage\(err\)/);
+  assert.ok(fn.indexOf('SHARE_OK') < fn.indexOf('holdHint(false)'));
+  assert.match(appSrc, /function announce\(msg\)/);
+  assert.match(appSrc, /aria-live', 'polite'/);
+  assert.equal(appSrc.split("getElementById('liveStatus')").length - 1, 2);
+  const css = fs.readFileSync(path.join(__dirname, '../css/mobile.css'), 'utf8');
+  assert.match(css, /body\.m \.toast\{[^}]*white-space:normal/);
+  assert.match(css, /backup-state:not\(:empty\)\{[^}]*white-space:normal/);
+  assert.match(css, /body\.m \.live-status\{[^}]*overflow-wrap:anywhere/);
 });
 
 test('a missing project and an invalid id show the same recipient notice', () => {

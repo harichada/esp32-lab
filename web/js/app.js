@@ -14,6 +14,15 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     else if (err.code === 'invalid') toast(err.message, true);
   };
   store.onBackupNote = (msg) => { const el = document.getElementById('backupState'); if (el) el.textContent = msg || ''; };
+  store.onDeviceFail = (msg) => {
+    if (msg) announce(msg);
+    else {
+      const el = document.getElementById('liveStatus');
+      if (el && el.textContent === Projects.DEVICE_FAIL) announce('');
+    }
+    if (app.proj) renderBanner(!msg);
+  };
+  store.onSaved = () => { if (app.proj && !store.deviceFail) renderBanner(true); };
   store.onEditLinkHint = (msg) => announce(msg);
   // ---------------- project ----------------
   function normalize(p) {
@@ -101,11 +110,12 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       el.setAttribute('aria-label', text);
     }
   }
-  async function copyText(text, okMsg) {
-    try { await navigator.clipboard.writeText(text); toast(okMsg); }
+  async function copyText(text, okMsg, opts) {
+    const said = (msg, err) => { if (opts && opts.live) announce(msg); toast(msg, err); };
+    try { await navigator.clipboard.writeText(text); said(okMsg); }
     catch (e) {
       const ta = document.createElement('textarea'); ta.value = text; ta.setAttribute('aria-hidden', 'true'); document.body.appendChild(ta); ta.select();
-      try { document.execCommand('copy'); toast(okMsg); } catch (_) { toast('Copy failed', true); }
+      try { document.execCommand('copy'); said(okMsg); } catch (_) { toast('Copy failed', true); }
       ta.remove();
     }
   }
@@ -135,6 +145,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const proj = (app.proj && app.proj.id === before) ? app.proj : (store.get(before) || app.proj);
     if (!proj) return Promise.resolve();
     markShareBusy(true);
+    store.holdHint(true);
     shareLock = (async () => {
       try {
         const url = await store.backupAndShare(proj, location.href);
@@ -144,12 +155,15 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
           app.proj.id = proj.id;
           if (!app.readOnly && !app.viewOnly) setUrl({ p: proj.id });
         }
-        await copyText(url, Projects.SHARE_OK);
+        await copyText(url, Projects.SHARE_OK, { live: true });
       } catch (err) {
-        toast(Projects.shareFailMessage(err), true);
+        const msg = Projects.shareFailMessage(err);
+        announce(msg);
+        toast(msg, true);
       } finally {
         shareLock = null;
         markShareBusy(false);
+        store.holdHint(false);
         renderBanner();
         const dlg = document.getElementById('projDlg');
         if (dlg && !dlg.hidden) projectsDialog();
@@ -194,12 +208,20 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const pn = $('#pbName'); if (pn) pn.onclick = () => { const n = prompt('Rename project', app.proj.name); if (n) { app.proj.name = n; store.rename(app.proj.id, n); renderBanner(true); } };
     seatPhoneChrome();
   }
-  function save() {
+  async function save() {
     syncCode(); syncDefines();
     if (app.viewOnly) adoptViewOnly();
     if (app.readOnly) { makeCopy(false); return; }
     try { store.save(app.proj, { remote: false }); } catch (e) { toast(e.message, true); return; }
-    if (store.serverSync) store.flushBackup(app.proj, { reason: 'save' });
+    const online = !!(store.serverSync && app.proj && store.secretFor(store._canonical(app.proj.id)));
+    if (store.serverSync) {
+      const ok = await store.flushBackup(app.proj, { reason: 'save' });
+      if (online && !ok) {
+        announce(Projects.DEVICE_FAIL);
+        renderBanner(false);
+        return;
+      }
+    }
     renderBanner(true); toast('Saved “' + app.proj.name + '”');
   }
   function projectsDialog() {
@@ -1444,7 +1466,9 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
   let headerFitKey = '';
   function syncProjTitle() {
-    setProjectTitle((app.proj && app.proj.name) || '');
+    if (!app.proj) { setProjectTitle(''); return; }
+    const name = (app.linkFallback && app.readOnly ? 'Example: ' : '') + (app.proj.name || 'Untitled');
+    setProjectTitle(name);
   }
   function titleNeedsRoom() {
     const title = document.getElementById && document.getElementById('projTitle');

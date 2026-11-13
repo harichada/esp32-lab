@@ -156,7 +156,7 @@ body.m .projs .share-warn{max-width:100%;white-space:normal}
 body.m .projs .share-reason{flex:1 0 100%;margin:0;color:#e6e8eb}
 body.m .backup-row{width:100%;min-height:44px;white-space:nowrap}
 body.m .backup-row input{width:24px;height:24px;flex:none}
-body.m .toast{bottom:calc(var(--dock) + 110px);font-size:14px;border-radius:14px;max-width:calc(100vw - 24px)}
+body.m .toast{bottom:calc(var(--dock) + 110px);font-size:14px;border-radius:14px;display:block;box-sizing:border-box;width:calc(100vw - 24px);max-width:calc(100vw - 24px);white-space:normal;overflow-wrap:anywhere;line-height:1.35}
 body.m .ctxmenu button{height:48px;font-size:15px}body.m .ctx-colors span{width:28px;height:28px}
 body.m .cmdk-in input{font-size:16px}
 
@@ -360,7 +360,7 @@ body.m .projbanner .pb-own{display:inline;color:#e6e8eb;font-size:13px;line-heig
 body.m .projbanner .edit-link{display:flex;flex-direction:column;align-items:flex-start;gap:2px;max-width:100%}
 body.m .projbanner .link-actions{display:flex;flex-wrap:wrap;align-items:flex-start;gap:8px;width:100%}
 body.m .projbanner .backup-state:empty{position:absolute;width:0;height:0;min-height:0;margin:0;padding:0;overflow:hidden;border:0;display:block}
-body.m .projbanner .backup-state:not(:empty){position:static;display:block;width:100%;height:auto;min-height:0;line-height:1.35}
+body.m .projbanner .backup-state:not(:empty){position:static;display:block;width:100%;max-width:100%;height:auto;min-height:0;line-height:1.35;white-space:normal;overflow-wrap:anywhere;overflow:visible}
 @media (max-width:600px){
   body.m .projbanner .link-actions{flex-direction:column;align-items:stretch;gap:8px;width:100%}
   body.m .projbanner .link-actions>.pb-own,body.m .projbanner .link-actions>#bShareLink,body.m .projbanner .link-actions>.edit-link,body.m .projbanner .link-actions>#bBackupCopy,body.m .projbanner .link-actions>.share-reason{width:100%;align-self:stretch}
@@ -372,4 +372,4 @@ body.m #mParts,body.m #mWireBar{top:var(--banner-end,168px)}
 @media (max-width:430px){
   body.m .zoom-tools{top:calc(var(--banner-end, 168px) + 52px)}
 }
-body.m .live-status{top:auto;bottom:calc(180px + env(safe-area-inset-bottom));left:12px;right:12px;max-width:none;z-index:8}
+body.m .live-status{top:auto;bottom:calc(180px + env(safe-area-inset-bottom));left:12px;right:12px;max-width:calc(100vw - 24px);box-sizing:border-box;white-space:normal;overflow-wrap:anywhere;z-index:8}
