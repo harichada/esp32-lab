@@ -115,15 +115,34 @@ global.WebSocket = class {
   constructor() {
     if (wsShouldThrow) throw new Error('socket failed');
     this.readyState = 0;
+    global.WebSocket.last = this;
   }
   send() {}
   close() { this.readyState = 3; }
 };
+global.matchMedia = () => ({ matches: false, media: '', addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} });
 
 require('./tools/load-parts');
 require(path.join(__dirname, '../js/storage.js'));
 require(path.join(__dirname, '../js/projects.js'));
 require(path.join(__dirname, '../js/app.js'));
+require(path.join(__dirname, '../js/mobile.js'));
+
+const mIgnite = byId('mIgnite', 'button');
+mIgnite.setAttribute('aria-label', 'Run');
+const igUse = el('use');
+igUse.setAttribute('href', '#i-play');
+const igT = el('span');
+igT.className = 'm-ig-t';
+igT.textContent = 'RUN';
+mIgnite.appendChild(igUse);
+mIgnite.appendChild(igT);
+mIgnite.querySelector = (sel) => {
+  if (sel === 'use') return igUse;
+  if (sel === '.m-ig-t') return igT;
+  if (sel === 'span') return igT;
+  return null;
+};
 
 app.proj = {
   name: 'sketch', mode: 'qemu', code: 'void setup(){}', files: {}, defines: [],
@@ -152,15 +171,60 @@ function idle() {
   assert.equal(bRun.disabled, false);
   assert.equal(bRun.classList.contains('spinning'), false);
 }
+function phoneCompiling() {
+  global.Mobile.syncIgnite();
+  assert.equal(mIgnite.disabled, false);
+  assert.equal(mIgnite.tabIndex, 0);
+  assert.equal(mIgnite.classList.contains('compiling'), true);
+  assert.equal(mIgnite.classList.contains('live'), false);
+  assert.equal(mIgnite.getAttribute('aria-label'), 'Compiling…');
+  assert.equal(mIgnite.getAttribute('title'), 'Compiling…');
+  assert.equal(mIgnite.getAttribute('aria-busy'), 'true');
+  assert.equal(mIgnite.getAttribute('aria-disabled'), 'true');
+  assert.equal(mIgnite.title, 'Compiling…');
+}
+function phoneRun() {
+  global.Mobile.syncIgnite();
+  assert.equal(mIgnite.disabled, false);
+  assert.equal(mIgnite.tabIndex, 0);
+  assert.equal(mIgnite.classList.contains('compiling'), false);
+  assert.equal(mIgnite.classList.contains('live'), false);
+  assert.equal(mIgnite.getAttribute('aria-label'), 'Run');
+  assert.equal(mIgnite.getAttribute('title'), 'Run');
+  assert.equal(mIgnite.getAttribute('aria-busy'), 'false');
+  assert.equal(mIgnite.getAttribute('aria-disabled'), 'false');
+  assert.equal(igT.textContent, 'RUN');
+  assert.equal(igUse.getAttribute('href'), '#i-play');
+}
+function phoneStop() {
+  global.Mobile.syncIgnite();
+  assert.equal(mIgnite.disabled, false);
+  assert.equal(mIgnite.tabIndex, 0);
+  assert.equal(mIgnite.classList.contains('compiling'), false);
+  assert.equal(mIgnite.classList.contains('live'), true);
+  assert.equal(mIgnite.getAttribute('aria-label'), 'Stop');
+  assert.equal(mIgnite.getAttribute('title'), 'Stop');
+  assert.equal(mIgnite.getAttribute('aria-busy'), 'false');
+  assert.equal(mIgnite.getAttribute('aria-disabled'), 'false');
+  assert.equal(igT.textContent, 'STOP');
+  assert.equal(igUse.getAttribute('href'), '#i-stop');
+}
 
 test('Run stays busy for the whole compile, then restores', async () => {
   const pending = gate();
   compileReply = pending.promise;
   const flight = app.startRun();
   busy();
+  phoneCompiling();
   pending.resolve(okResponse());
   await flight;
   idle();
+  // The desktop label returns to Run when the HTTP compile finishes. The phone
+  // button stays on Compiling… until the run socket actually opens.
+  phoneCompiling();
+  assert.equal(typeof global.WebSocket.last.onopen, 'function');
+  global.WebSocket.last.onopen();
+  phoneStop();
 
   const limited = gate();
   compileReply = limited.promise;
@@ -169,6 +233,7 @@ test('Run stays busy for the whole compile, then restores', async () => {
   limited.resolve({ status: 429, headers: { get: () => '2' }, json: async () => ({}) });
   await limitedFlight;
   idle();
+  phoneRun();
 
   const failed = gate();
   compileReply = failed.promise;
@@ -177,6 +242,7 @@ test('Run stays busy for the whole compile, then restores', async () => {
   failed.resolve(okResponse({ ok: false, log: 'error: sketch.ino:1\n' }));
   await failedFlight;
   idle();
+  phoneRun();
   assert.equal(buildTab.clicked, 1);
 
   wsShouldThrow = true;
@@ -187,7 +253,70 @@ test('Run stays busy for the whole compile, then restores', async () => {
   dropped.resolve(okResponse({ id: 'build-2' }));
   await droppedFlight;
   idle();
+  phoneRun();
   assert.equal(ids.stText.textContent, 'connection lost');
+
+  const origFetch = global.fetch;
+  const origTimeout = global.setTimeout;
+  global.setTimeout = (fn, ms, ...a) => (ms >= 1000 ? (fn(), 0) : origTimeout(fn, ms, ...a));
+  global.fetch = (url, opts) => {
+    const u = String(url);
+    if (u.includes('api/compile') && !u.includes('progress')) return Promise.reject(new Error('offline'));
+    return origFetch(url, opts);
+  };
+  try {
+    const offline = app.startRun();
+    phoneCompiling();
+    await offline;
+    idle();
+    phoneRun();
+    assert.equal(app.run, null);
+  } finally {
+    global.fetch = origFetch;
+    global.setTimeout = origTimeout;
+  }
+});
+
+test('the phone Run button is a tab stop, and Enter and Space follow idle, compiling, and running', () => {
+  const handlers = {};
+  mIgnite.addEventListener = (type, fn) => { (handlers[type] = handlers[type] || []).push(fn); };
+  global.Mobile.bindIgnite(mIgnite);
+  let runs = 0, stops = 0;
+  bRun.click = () => { runs += 1; };
+  const bStop = byId('bStop', 'button');
+  bStop.click = () => { stops += 1; };
+  document.body.classList.remove('busy', 'running');
+  bRun.classList.remove('spinning');
+  bRun.disabled = false;
+  app.run = null;
+  phoneRun();
+  const fire = (key) => handlers.keydown.forEach((fn) => fn({ key: key, preventDefault() {}, repeat: false }));
+  fire('Tab');
+  assert.equal(runs, 0);
+  fire('Enter');
+  fire(' ');
+  assert.equal(runs, 2);
+  assert.equal(stops, 0);
+  document.body.classList.add('busy');
+  bRun.classList.add('spinning');
+  bRun.disabled = true;
+  app.run = { kind: 'qemu' };
+  phoneCompiling();
+  fire('Enter');
+  fire(' ');
+  assert.equal(runs, 2, 'compiling ignores Enter and Space');
+  assert.equal(stops, 0);
+  document.body.classList.remove('busy');
+  document.body.classList.add('running');
+  bRun.classList.remove('spinning');
+  phoneStop();
+  fire('Enter');
+  fire(' ');
+  assert.equal(stops, 2);
+  assert.equal(runs, 2);
+  document.body.classList.remove('running');
+  app.run = null;
+  phoneRun();
 });
 
 test('a queued compile says it is waiting, then the button returns to Run', async () => {
@@ -245,4 +374,33 @@ test('the busy Run button is grey, keeps its spinner, and theme.css is cache-bus
   assert.match(css, /#bRun\.spinning \.runspin\{display:block;animation:runspin/);
   const v = html.match(/theme\.css\?v=(\d+)/);
   assert.ok(v && Number(v[1]) > 55);
+  const mobile = fs.readFileSync(path.join(__dirname, '../css/mobile.css'), 'utf8');
+  for (const state of [':hover', ':active', ':focus-visible', ':disabled', '[aria-disabled="true"]']) {
+    assert.match(mobile, new RegExp('#mIgnite\\.compiling' + state.replace('[', '\\[')));
+  }
+  const phone = mobile.match(/body\.m #mIgnite\.compiling,body\.m #mIgnite\.compiling:disabled,body\.m #mIgnite\.compiling\[aria-disabled="true"\]\{([^}]*)\}/);
+  assert.ok(phone, 'phone compiling rule');
+  assert.match(phone[1], /background:#1b1f24!important/);
+  assert.match(phone[1], /color:#e8eaed/);
+  assert.match(phone[1], /box-shadow:none/);
+  assert.match(phone[1], /width:76px;height:76px/);
+  assert.doesNotMatch(phone[1], /opacity:\.72|#22d3ee|#06b6d4|#67e8f9/);
+  assert.match(mobile, /#mIgnite\.compiling::after\{[^}]*position:absolute;[^}]*animation:runspin/);
+  assert.match(mobile, /#mIgnite\.compiling \.m-ig-bg\{[^}]*stroke-dasharray:none/);
+  assert.match(mobile, /html\[data-theme=light\] body\.m #mIgnite\.compiling[^\{]*\{[^}]*background:#eceef1!important;[^}]*color:#2c333c/);
+  const rel = (hex) => {
+    const n = parseInt(hex.slice(1), 16);
+    const ch = (c) => { const x = c / 255; return x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4); };
+    return 0.2126 * ch(n >> 16) + 0.7152 * ch((n >> 8) & 255) + 0.0722 * ch(n & 255);
+  };
+  const ratio = (a, b) => { const x = rel(a), y = rel(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+  assert.ok(ratio('#e8eaed', '#1b1f24') >= 4.5, 'dark compiling');
+  assert.ok(ratio('#ffffff', '#2a3038') >= 4.5, 'dark hover');
+  assert.ok(ratio('#e8eaed', '#12161b') >= 4.5, 'dark active');
+  assert.ok(ratio('#2c333c', '#eceef1') >= 4.5, 'light compiling');
+  assert.ok(ratio('#15181c', '#e2e5e9') >= 4.5, 'light hover');
+  assert.ok(ratio('#15181c', '#d5d9df') >= 4.5, 'light active');
+  assert.ok(ratio('#0891b2', '#f7f8fa') >= 3 && ratio('#0891b2', '#08090b') >= 3, 'focus ring against both canvases');
+  const mv = html.match(/mobile\.css\?v=(\d+)/);
+  assert.ok(mv && Number(mv[1]) > 59);
 });

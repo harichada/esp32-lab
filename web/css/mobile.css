@@ -35,6 +35,13 @@ body.m .canvas-tools{left:max(12px,env(safe-area-inset-left))}body.m .zoom-tools
 body.m .canvas-tools,body.m .zoom-tools{gap:8px}
 body.m .canvas-tools .iconbtn,body.m .zoom-tools .iconbtn{width:44px;height:44px;min-width:44px;min-height:44px;border-radius:10px}body.m .canvas-tools .ic,body.m .zoom-tools .ic{width:20px;height:20px}
 body.m #zoomPct{min-width:44px;min-height:44px;font-size:12px;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;box-sizing:border-box;padding:0 4px}
+/* Phone-only fit control beside the %. The zoom cluster stays dark in both themes, so these colours are fixed. Each state keeps the 44px box. */
+#bFitPill{display:none}
+body.m #bFitPill{display:inline-flex!important;align-items:center;justify-content:center;flex:0 0 44px;width:44px;min-width:44px;height:44px;min-height:44px;padding:0;box-sizing:border-box;background:transparent;border-color:transparent;color:#f4f6f8;transform:none}
+body.m #bFitPill:hover{background:#2a3038;border-color:#9aa3af;color:#ffffff;transform:none}
+body.m #bFitPill:active{background:#12161b;border-color:#9aa3af;color:#ffffff;transform:none}
+body.m #bFitPill:focus-visible{background:#2a3038;border-color:#9aa3af;color:#ffffff;outline:2px solid #67e8f9;outline-offset:2px;transform:none}
+body.m #bFitPill:disabled,body.m #bFitPill[aria-disabled="true"]{background:transparent;border-color:transparent;color:#c5c9d0;opacity:1;cursor:default;transform:none}
 body.m .hint{left:50%;transform:translateX(-50%);bottom:calc(176px + env(safe-area-inset-bottom));max-width:calc(100% - 32px)!important;font-size:12.5px;padding:7px 14px;background:var(--glass);border-color:var(--hair);transition:opacity .3s}
 body.m.m-has-sel .hint,body.m.m-wiring .hint{opacity:0}
 body.m .projbanner{top:10px;left:12px;right:12px;font-size:13px}body.m .projbanner .pb-ex,body.m .projbanner .pb-my{height:36px;border-radius:11px;background:var(--glass);border-color:var(--hair)}
@@ -215,6 +222,18 @@ body.m #mIgnite.m-only{display:flex!important}
 #mIgnite.arming{transform:scale(.94);transition:transform .15s}
 #mIgnite.live{border-color:var(--err);color:#ffd9d9;background:radial-gradient(circle at 50% 35%,rgba(248,113,113,.35),rgba(12,3,3,.95) 72%);box-shadow:0 0 34px rgba(248,113,113,.45);animation:mLive 1.6s ease-in-out infinite}
 @keyframes mLive{50%{box-shadow:0 0 14px rgba(248,113,113,.25)}}
+body.m #mIgnite:focus-visible{outline:2px solid #0891b2;outline-offset:2px}
+body.m #mIgnite.compiling,body.m #mIgnite.compiling:disabled,body.m #mIgnite.compiling[aria-disabled="true"]{width:76px;height:76px;min-width:76px;min-height:76px;flex:none;background:#1b1f24!important;border-color:#9aa3af;color:#e8eaed;box-shadow:none;animation:none;opacity:1;cursor:default;transform:none}
+body.m #mIgnite.compiling:hover{background:#2a3038!important;border-color:#c5c9d0;color:#ffffff;transform:none}
+body.m #mIgnite.compiling:active{background:#12161b!important;border-color:#9aa3af;color:#e8eaed;transform:none}
+body.m #mIgnite.compiling:focus-visible{background:#1b1f24!important;color:#e8eaed;outline:2px solid #0891b2;outline-offset:2px;transform:none}
+html[data-theme=light] body.m #mIgnite.compiling,html[data-theme=light] body.m #mIgnite.compiling:disabled,html[data-theme=light] body.m #mIgnite.compiling[aria-disabled="true"],html[data-theme=light] body.m #mIgnite.compiling:focus-visible{background:#eceef1!important;border-color:#3d4550;color:#2c333c}
+html[data-theme=light] body.m #mIgnite.compiling:hover{background:#e2e5e9!important;border-color:#3d4550;color:#15181c}
+html[data-theme=light] body.m #mIgnite.compiling:active{background:#d5d9df!important;border-color:#3d4550;color:#15181c}
+body.m #mIgnite.compiling .m-ig-i,body.m #mIgnite.compiling .m-ig-t{visibility:hidden}
+body.m #mIgnite.compiling .m-ig-bg{animation:none;stroke:currentColor;stroke-dasharray:none;filter:none}
+body.m #mIgnite.compiling .m-ig-p{animation:none;opacity:0;filter:none}
+body.m #mIgnite.compiling::after{content:"";position:absolute;left:50%;top:50%;width:18px;height:18px;margin:-9px 0 0 -9px;border-radius:50%;border:2px solid currentColor;border-right-color:transparent;box-sizing:border-box;animation:runspin .7s linear infinite}
 body.busy #mIgnite .m-ig-bg{stroke:var(--warn);stroke-dasharray:8 6;animation:mSpin 1.2s linear infinite;transform-origin:center}
 #mCount{position:fixed;inset:0;z-index:85;pointer-events:none;place-items:center;font:700 min(60px,12vw) var(--mono);letter-spacing:.06em;color:#e6fdff;text-shadow:0 0 30px var(--acc),0 0 60px rgba(34,211,238,.5)}
 body.m #mCount.on{display:grid!important;animation:mCnt .23s ease-out infinite}
@@ -281,13 +300,13 @@ body.m #mScope .ich button,body.m #mScope .ich-r select{height:28px}
 body.m .telstrip{left:6px;right:6px;bottom:auto;top:calc(var(--mTop) + 28px);max-width:none;padding:3px 4px;overflow-x:auto}
 body.m .tel-i canvas{width:84px;height:22px}body.m .tel-h{display:none}body.m .tel-l{min-width:60px}
 /* narrow phones: a horizontal zoom pill overlapped the 2D/Sch/3D toggle.
-   Stack − / % / + on the right, under the Parts chip and clear of the ignition button.
-   The % is the fit control, so the separate fit icon is not repeated here. */
+   Stack − / % / fit / + on the right, under the Parts chip and clear of the ignition button.
+   #bFit stays hidden here; #bFitPill is the visible fit control next to the %. */
 @media (max-width:430px){
   body.m .zoom-tools{top:88px;bottom:auto;right:max(8px,env(safe-area-inset-right));left:auto;flex-direction:column;gap:6px;padding:4px;z-index:14}
-  body.m .zoom-tools #bZoomOut,body.m .zoom-tools #bZoomIn,body.m .zoom-tools #zoomPct{display:inline-flex!important;width:44px;min-width:44px;height:44px;min-height:44px;padding:0;align-items:center;justify-content:center;box-sizing:border-box}
+  body.m .zoom-tools #bZoomOut,body.m .zoom-tools #bZoomIn,body.m .zoom-tools #zoomPct,body.m .zoom-tools #bFitPill{display:inline-flex!important;width:44px;min-width:44px;height:44px;min-height:44px;padding:0;align-items:center;justify-content:center;box-sizing:border-box}
   body.m .zoom-tools #bFit{display:none!important}
-  body.m.view3d .zoom-tools #zoomPct{display:inline-flex!important}
+  body.m.view3d .zoom-tools #zoomPct,body.m.view3d .zoom-tools #bFitPill{display:inline-flex!important}
 }
 
 /* header view chip on phones: fixed, dark, above everything. Names the current view. */
