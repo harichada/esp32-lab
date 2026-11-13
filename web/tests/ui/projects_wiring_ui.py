@@ -101,7 +101,7 @@ async def main():
         check('delete removes it', await pg.evaluate('app.store.list().length') == 3)
         imp = await pg.evaluate("(()=>{const o=JSON.parse(app.store.exportJson(app.proj.id));o.name='Imported X';return app.store.importJson(JSON.stringify(o)).id})()")
         check('export → import round-trips a project', await pg.evaluate(f"app.store.get('{imp}').wires.length") == nw + 1)
-        await pg.check('#cbSrv'); await pg.wait_for_timeout(200); await pg.evaluate('app.store.save(app.proj)'); await pg.wait_for_timeout(800)
+        await pg.check('#cbSrv'); await pg.wait_for_timeout(200); await pg.evaluate('app.store.flushBackup(app.proj, {reason:"save"})'); await pg.wait_for_timeout(800)
         saved = await pg.evaluate("""async () => {
           const id = app.proj.id, secret = app.store.secretFor(id);
           const list = await fetch('api/projects').then(r => r.json());

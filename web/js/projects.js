@@ -1,9 +1,21 @@
 /* User projects ("My Projects"): examples stay pristine; editing one makes a copy that is saved here.
- * Storage: localStorage (always) + optional server copy (/api/projects). The server picks the id
+ * Storage: localStorage (always) + optional online backup (/api/projects). The server picks the id
  * and returns an edit secret once. The secret stays in localStorage and in an #edit= fragment,
- * never in a query string. */
+ * never in a query string. A view-only project is forked locally on the first edit. The backup
+ * request is at most once every 10s per project, plus one fetch with keepalive when the page hides. */
 (function (root) {
   const KEY = 'esp32lab.projects.v1', CUR = 'esp32lab.current.v1', SRV = 'esp32lab.serverSync', SEC = 'esp32lab.editSecrets.v1';
+  const NOPUT = 'esp32lab.noPut.v1', HINT = 'esp32lab.editLinkHint.v1';
+  const BACKUP_MS = 10000;
+  const LOCKOUT = "This browser can't edit this project. Open your edit link, or make your own copy.";
+  const COPY_FAIL = "Couldn't make your copy. Please try again.";
+  const HINT_MSG = 'To edit this on another device, copy your edit link and keep it somewhere safe.';
+  function shouldSendBackup(last, now, reason) {
+    if (reason === 'hide' || reason === 'pagehide' || reason === 'retry') return true;
+    if (reason !== 'save' && reason !== 'timer') return false;
+    if (last == null) return true;
+    return now - last >= BACKUP_MS;
+  }
   const Check = root.ProjCheck || (typeof require !== 'undefined' ? require('./projcheck.js') : null);
   const clone = (o) => JSON.parse(JSON.stringify(o));
   const newId = () => 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -15,7 +27,37 @@
     return message;
   }
   class ProjectStore {
-    constructor(ls, fetchFn) { this.ls = ls || root.clStorage.local; this.fetch = fetchFn || (root.fetch && root.fetch.bind(root)); this._pushing = new Map(); }
+    constructor(ls, fetchFn) {
+      this.ls = ls || root.clStorage.local;
+      this.fetch = fetchFn || (root.fetch && root.fetch.bind(root));
+      this._pushing = new Map();
+      this._lastBackup = new Map();
+      this._clean = new Map();
+      this._dirty = new Set();
+      this._timers = new Map();
+      this._inflight = new Map();
+      this._retried = new Set();
+      this._hideSent = new Set();
+      this.backupMs = BACKUP_MS;
+      this.backupNote = '';
+      this.now = () => Date.now();
+      this.later = (fn, ms) => setTimeout(fn, ms);
+      this.jitter = () => Math.random();
+    }
+    _snap(p) {
+      const c = clone(p || {});
+      delete c.editSecret; delete c.editSecretHash; delete c.secret; delete c.readOnly;
+      return JSON.stringify(c);
+    }
+    _blocked() { try { return JSON.parse(this.ls.getItem(NOPUT) || '{}') || {}; } catch (e) { return {}; } }
+    blockPut(id) { if (!id) return; const all = this._blocked(); all[id] = 1; this.ls.setItem(NOPUT, JSON.stringify(all)); }
+    isPutBlocked(id) { return !!(id && this._blocked()[id]); }
+    _setNote(msg) { this.backupNote = msg || ''; if (this.onBackupNote) this.onBackupNote(this.backupNote); }
+    _noteSaved(id) {
+      if (!id || this.ls.getItem(HINT)) return;
+      this.ls.setItem(HINT, '1');
+      if (this.onEditLinkHint) this.onEditLinkHint(HINT_MSG);
+    }
     _all() { try { return JSON.parse(this.ls.getItem(KEY) || '{}') || {}; } catch (e) { return {}; } }
     _put(all) { this.ls.setItem(KEY, JSON.stringify(all)); }
     _secrets() { try { return JSON.parse(this.ls.getItem(SEC) || '{}') || {}; } catch (e) { return {}; } }
@@ -77,18 +119,93 @@
       const all = this._all(); const p = clone(proj); delete p.readOnly; delete p.editSecret; delete p.editSecretHash; delete p.secret;
       all[p.id] = { id: p.id, name: p.name || 'Untitled', updated: Date.now(), from: p.copiedFrom || '', proj: p, viewOnly: false }; this._put(all);
       this.ls.setItem(CUR, p.id);
+      const snap = this._snap(p);
+      if (opts && opts.dirty === false) this._clean.set(p.id, snap);
+      if (this._clean.get(p.id) === snap) this._dirty.delete(p.id);
+      else this._dirty.add(p.id);
       const remote = !opts || opts.remote !== false;
-      if (remote && this.fetch && (this.serverSync || this.secretFor(p.id))) this._queuePush(p);
+      if (remote && this.serverSync) this.scheduleBackup(p);
       return p.id;
     }
-    _queuePush(p) {
-      const key = p.id;
-      if (this._pushing.has(key)) return this._pushing.get(key);
-      const job = this.pushServer(p).catch((err) => {
-        if (err && (err.code === 'view_only' || err.code === 'rate_limit' || err.code === 'invalid') && this.onPushError) this.onPushError(err, p);
-      }).finally(() => { if (this._pushing.get(key) === job) this._pushing.delete(key); });
-      this._pushing.set(key, job);
+    _clearTimer(id) {
+      if (!this._timers.has(id)) return;
+      const handle = this._timers.get(id);
+      this._timers.delete(id);
+      if (handle != null) clearTimeout(handle);
+    }
+    scheduleBackup(proj) {
+      if (!this.serverSync || !proj || !proj.id || this._timers.has(proj.id)) return;
+      const id = proj.id;
+      const last = this._lastBackup.has(id) ? this._lastBackup.get(id) : null;
+      const wait = last == null ? this.backupMs : Math.max(0, this.backupMs - (this.now() - last));
+      const handle = this.later(() => {
+        this._timers.delete(id);
+        return this.flushBackup(this.get(id) || proj, { reason: 'timer' });
+      }, wait);
+      this._timers.set(id, handle);
+    }
+    flushBackup(proj, opts) {
+      opts = opts || {};
+      if (!proj || !proj.id || !this.serverSync || !this.fetch) return Promise.resolve(false);
+      const reason = opts.reason || 'save';
+      const hide = reason === 'hide' || reason === 'pagehide';
+      if (hide && !this._dirty.has(proj.id)) return Promise.resolve(false);
+      if (hide && this._hideSent.has(proj.id)) {
+        const lastHide = this._lastBackup.has(proj.id) ? this._lastBackup.get(proj.id) : null;
+        if (lastHide != null && this.now() - lastHide < this.backupMs) return Promise.resolve(false);
+      }
+      const last = this._lastBackup.has(proj.id) ? this._lastBackup.get(proj.id) : null;
+      if (!shouldSendBackup(last, this.now(), reason)) {
+        this.scheduleBackup(proj);
+        return Promise.resolve(false);
+      }
+      if (this._inflight.has(proj.id)) return this._inflight.get(proj.id);
+      const id = proj.id;
+      const job = this._sendBackup(proj, opts).finally(() => { if (this._inflight.get(id) === job) this._inflight.delete(id); });
+      this._inflight.set(id, job);
       return job;
+    }
+    async _sendBackup(proj, opts) {
+      const reason = opts.reason || 'save';
+      const hide = reason === 'hide' || reason === 'pagehide';
+      this._clearTimer(proj.id);
+      this._lastBackup.set(proj.id, this.now());
+      if (hide) this._hideSent.add(proj.id);
+      else this._hideSent.delete(proj.id);
+      try {
+        const savedId = await this.pushServer(proj, opts);
+        const saved = this.get(savedId) || this.get(this.current()) || proj;
+        const cleanId = (saved && saved.id) || savedId || proj.id;
+        this._clean.set(cleanId, this._snap(saved));
+        this._dirty.delete(proj.id);
+        this._dirty.delete(cleanId);
+        this._retried.delete(proj.id);
+        this._retried.delete(cleanId);
+        if (this.backupNote) this._setNote('');
+        return true;
+      } catch (err) {
+        this._dirty.add(proj.id);
+        const cur = this.current();
+        if (cur) this._dirty.add(cur);
+        if (err && err.code === 'rate_limit') {
+          this._setNote('Backup pending');
+          const retryId = cur || proj.id;
+          if (!this._retried.has(retryId)) {
+            this._retried.add(retryId);
+            const extra = typeof this.jitter === 'function' ? this.jitter() : 0;
+            const wait = ((err.retryAfter || 1) + extra) * 1000;
+            this.later(() => {
+              this._lastBackup.delete(retryId);
+              this._lastBackup.delete(proj.id);
+              const again = (retryId && this.get(retryId)) || proj;
+              return this.flushBackup(again, { reason: 'retry', keepalive: !!opts.keepalive });
+            }, wait);
+          }
+          return false;
+        }
+        if (err && (err.code === 'view_only' || err.code === 'invalid') && this.onPushError) this.onPushError(err, proj);
+        return false;
+      }
     }
     // copy any project (example or user project) into a new user project
     copy(proj, name, opts) {
@@ -98,7 +215,11 @@
       p.name = n; this.save(p, opts); return p;
     }
     duplicate(id) { const p = this.get(id); return p ? this.copy(p) : null; }
-    rename(id, name) { const all = this._all(); if (!all[id] || !name) return false; all[id].name = all[id].proj.name = String(name).slice(0, 80); all[id].updated = Date.now(); this._put(all); if (this.serverSync || this.secretFor(id)) this._queuePush(all[id].proj); return true; }
+    forkLocal(proj) {
+      if (proj && proj.id) this.blockPut(proj.id);
+      return this.copy(proj, null, { remote: false });
+    }
+    rename(id, name) { const all = this._all(); if (!all[id] || !name) return false; all[id].name = all[id].proj.name = String(name).slice(0, 80); all[id].updated = Date.now(); this._put(all); this._dirty.add(id); if (this.serverSync) this.scheduleBackup(all[id].proj); return true; }
     remove(id) {
       const all = this._all(); delete all[id]; this._put(all); if (this.ls.getItem(CUR) === id) this.ls.removeItem(CUR);
       const secret = this.secretFor(id);
@@ -121,25 +242,45 @@
     }
     get serverSync() { return this.ls.getItem(SRV) === '1'; }
     set serverSync(v) { this.ls.setItem(SRV, v ? '1' : '0'); }
-    async _read(r, fallback) {
+    _retryAfter(r) {
+      try {
+        const raw = r.headers && r.headers.get && r.headers.get('retry-after');
+        const n = Number(raw);
+        if (Number.isFinite(n) && n > 0) return n;
+      } catch (e) { /* keep the one-second default */ }
+      return 1;
+    }
+    async _read(r, fallback, id) {
       let body = {};
       try { body = await r.json(); } catch (e) { body = {}; }
-      if (r.status === 429) throw fail(plain(body, 'Too many project saves. Try again shortly.'), 'rate_limit');
-      if (r.status === 403) throw fail(plain(body, 'This copy is view-only. Make a copy to edit it.'), 'view_only');
+      if (r.status === 429) {
+        const err = fail('Backup pending', 'rate_limit');
+        err.retryAfter = this._retryAfter(r);
+        throw err;
+      }
+      if (r.status === 403) {
+        if (id) this.blockPut(id);
+        throw fail(LOCKOUT, 'view_only');
+      }
       if (r.status === 400) throw fail(plain(body, fallback || 'This project was rejected.'), 'invalid');
       if (!r.ok) throw fail(fallback || ('Server returned ' + r.status), 'server');
       return body;
     }
-    async createServer(proj) {
+    _request(url, method, headers, body, opts) {
+      const init = { method, cache: 'no-store', headers, body };
+      if (opts && opts.keepalive) init.keepalive = true;
+      return this.fetch(url, init);
+    }
+    async createServer(proj, opts) {
       const msg = this._check(proj);
       if (msg) throw fail(msg, 'invalid');
       if (!this.fetch) throw fail('The server is not available.', 'server');
       const localId = proj.id;
       const body = clone(proj);
       delete body.id; delete body.example; delete body.readOnly; delete body.editSecret; delete body.editSecretHash; delete body.secret;
-      const r = await this.fetch('api/projects', { method: 'POST', cache: 'no-store', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-      const j = await this._read(r, 'Could not make a copy.');
-      if (!j.id || !j.secret) throw fail('The server did not return an edit secret.', 'invalid');
+      const r = await this._request('api/projects', 'POST', { 'content-type': 'application/json' }, JSON.stringify(body), opts);
+      const j = await this._read(r, 'Could not make a copy.', localId);
+      if (!j.id || !j.secret) throw fail(COPY_FAIL, 'invalid');
       body.id = j.id; body.name = body.name || proj.name || 'Untitled';
       if (localId && localId !== j.id) this.retarget(localId, j.id, body);
       else {
@@ -148,12 +289,27 @@
         this._put(all); this.ls.setItem(CUR, j.id);
       }
       this.rememberSecret(j.id, j.secret);
+      this._noteSaved(j.id);
+      this._lastBackup.set(j.id, this.now());
       proj.id = j.id;
       return body;
     }
-    async pushServer(p) {
-      if (!this.fetch) return false;
+    async pushServer(p, opts) {
+      if (!this.fetch || !p) return false;
+      opts = opts || {};
+      if (this.isViewOnly(p.id)) {
+        const copy = this.forkLocal(p);
+        if (this.onServerId) this.onServerId(p.id, copy.id);
+        const created = await this.createServer(copy, opts);
+        return created && created.id;
+      }
       let secret = this.secretFor(p.id);
+      if (this.isPutBlocked(p.id)) {
+        const old = p.id;
+        const created = await this.createServer(p, opts);
+        if (created && created.id !== old && this.onServerId) this.onServerId(old, created.id);
+        return created && created.id;
+      }
       if (!secret) {
         let exists = false;
         try {
@@ -162,18 +318,18 @@
         } catch (e) { exists = false; }
         if (!exists) {
           const old = p.id;
-          const created = await this.createServer(p);
-          if (created.id !== old && this.onServerId) this.onServerId(old, created.id);
-          return true;
+          const created = await this.createServer(p, opts);
+          if (created && created.id !== old && this.onServerId) this.onServerId(old, created.id);
+          return created && created.id;
         }
       }
       const headers = { 'content-type': 'application/json' };
       secret = this.secretFor(p.id);
       if (secret) headers['X-Edit-Secret'] = secret;
       const body = clone(p); delete body.editSecret; delete body.editSecretHash; delete body.secret;
-      const r = await this.fetch('api/projects/' + encodeURIComponent(p.id), { method: 'PUT', cache: 'no-store', headers, body: JSON.stringify(body) });
-      const j = await this._read(r);
-      if (j.secret) this.rememberSecret(j.id || p.id, j.secret);
+      const r = await this._request('api/projects/' + encodeURIComponent(p.id), 'PUT', headers, JSON.stringify(body), opts);
+      const j = await this._read(r, '', p.id);
+      if (j.secret) { this.rememberSecret(j.id || p.id, j.secret); this._noteSaved(j.id || p.id); }
       if (j.id && j.id !== p.id) {
         const old = p.id;
         this.retarget(old, j.id, p);
@@ -182,7 +338,8 @@
       }
       const all = this._all();
       if (all[p.id]) { all[p.id].viewOnly = false; this._put(all); }
-      return true;
+      this._noteSaved(p.id);
+      return p.id;
     }
     // Only projects whose edit secret this browser holds. The public list is not used.
     async listServer() {
@@ -210,7 +367,7 @@
       return p;
     }
   }
-  const api = { ProjectStore, newId };
+  const api = { ProjectStore, newId, shouldSendBackup, BACKUP_MS };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.Projects = api;
 })(typeof window !== 'undefined' ? window : globalThis);

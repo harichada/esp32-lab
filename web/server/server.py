@@ -11,7 +11,9 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       SIM_ORPHAN_MAX_AGE_S and the matching *_MAX_AGE_S knobs.
       Staging (off unless set): SIM_STAGING, SIM_ACCESS_TOKEN, SIM_STAGING_UPSTREAM, SIM_BASE_PATH.
       Project copies: SIM_PROJECT_DIR, SIM_PROJECTS_LEGACY_OPEN (default 1),
-      SIM_PROJECT_SAVES_PER_MIN (default 20). See server/projectstore.py.
+      SIM_PROJECT_SAVES_PER_MIN (default 10, per project, after the secret checks),
+      SIM_IP_SAVES_PER_MIN (default 120, per TCP peer), SIM_IP_CREATES_PER_MIN
+      (default 10, per TCP peer). See server/projectstore.py.
 """
 import asyncio, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, argparse
 import diskkeep

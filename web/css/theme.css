@@ -144,6 +144,9 @@ body.c-palette [data-reopen=palette],body.c-side [data-reopen=side],body.c-dock 
 .projbanner button{height:30px;min-height:30px}
 .share-warn,.pb-view{display:inline-flex;align-items:center;min-height:30px;padding:0 10px;background:var(--l1);color:var(--txt);border:1px solid var(--line2);border-radius:8px;font-size:12px;line-height:1.35}
 .pb-view{border-color:rgba(251,191,36,.45)}
+.backup-state{display:inline-flex;align-items:center;min-height:30px;min-width:9em;color:var(--txt2);font-size:12px}
+.live-status{position:absolute;left:12px;top:52px;z-index:5;max-width:min(420px,calc(100% - 24px));background:var(--l1);color:var(--txt);border:1px solid var(--line2);border-radius:8px;padding:6px 10px;font-size:12px;line-height:1.35}
+.live-status:empty{display:none}
 .tip{position:absolute;background:color-mix(in srgb,var(--l0) 94%,transparent);backdrop-filter:blur(8px);border:1px solid var(--line2);border-radius:8px;padding:7px 10px;font-size:12px;pointer-events:none;max-width:360px;z-index:8;box-shadow:var(--sh2)}.tip b{color:var(--acc);font-weight:600}
 .warnbox{position:absolute;top:52px;left:12px;background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.35);color:#fde68a;border-radius:8px;padding:7px 11px;font-size:12px;max-width:60%;z-index:4}
 /* tabs / dock */

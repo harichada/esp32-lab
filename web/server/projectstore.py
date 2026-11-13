@@ -10,6 +10,12 @@ rejected in the query string and redacted in every log line.
 SIM_PROJECTS_LEGACY_OPEN=1 (the default) keeps the old unauthenticated PUT
 only for a project that already exists and has no stored secret. That claim
 sets a secret and returns it once. At 0, those projects are read-only.
+
+Saves are limited after the secret check: SIM_PROJECT_SAVES_PER_MIN (default
+10) per project id, and SIM_IP_SAVES_PER_MIN (default 120) per TCP peer
+(request.client.host, never X-Forwarded-For). POST /api/projects is limited
+by SIM_IP_CREATES_PER_MIN (default 10) per TCP peer. Each limit returns 429
+with Retry-After. A failed secret does not spend the per-project budget.
 """
 import hashlib
 import json
@@ -26,7 +32,7 @@ from fastapi.responses import JSONResponse
 
 VIEW_ONLY = {
     'error': 'view_only',
-    'message': 'This copy is view-only. Make a copy to edit it.',
+    'message': 'You can view this project but not change it. Tap Make a copy to get your own version.',
 }
 FILE_RE = re.compile(r'^[\w.-]+\.(h|hpp|c|cpp|ino)$')
 PART_RE = re.compile(r'^[A-Za-z0-9_-]{1,32}$')
@@ -39,7 +45,9 @@ _JSON_SECRET = re.compile(r'(?i)("(?:editSecret|secret)"\s*:\s*")([^"]*)(")')
 FILE_MSG = 'That file name is not allowed. Use letters, digits, dot, underscore or hyphen, and an extension of h, hpp, c, cpp or ino.'
 PART_MSG = 'That part id is not allowed. Use 1 to 32 letters, digits, underscores or hyphens.'
 PROJ_MAX = 500
-_SAVES = {}
+_PROJECT_SAVES = {}
+_IP_SAVES = {}
+_IP_CREATES = {}
 _DIR = None
 _MAX = None
 LOG = logging.getLogger('esp32lab.projects')
@@ -109,8 +117,18 @@ def mount(app, dir_of, max_of):
         return _delete(pid, request)
 
 
+def _default_now():
+    return time.monotonic()
+
+
+# Tests replace this with an injected clock. Production uses a monotonic clock.
+NOW = _default_now
+
+
 def reset_limits():
-    _SAVES.clear()
+    _PROJECT_SAVES.clear()
+    _IP_SAVES.clear()
+    _IP_CREATES.clear()
 
 
 def _proj_dir() -> Path:
@@ -157,34 +175,58 @@ def _legacy_open() -> bool:
     return os.environ.get('SIM_PROJECTS_LEGACY_OPEN', '1') != '0'
 
 
-def _limit() -> int:
+def _cap(name: str, default: int) -> int:
     try:
-        return int(os.environ.get('SIM_PROJECT_SAVES_PER_MIN', '20'))
+        return int(os.environ.get(name, str(default)))
     except ValueError:
-        return 20
+        return default
 
 
 def _client_ip(request: Request) -> str:
+    # The TCP peer only. X-Forwarded-For and every other header are ignored
+    # until a signed client cookie exists.
     if request.client and request.client.host:
         return request.client.host
     return 'unknown'
 
 
-def _rate_limit(ip: str):
-    cap = _limit()
+def _prune(bucket, key):
+    now_s = NOW()
+    stamps = [stamp for stamp in bucket.get(key, []) if now_s - stamp < 60]
+    bucket[key] = stamps
+    return stamps
+
+
+def _retry_after(stamps) -> int:
+    if not stamps:
+        return 60
+    return max(1, math.ceil(60 - (NOW() - stamps[0])))
+
+
+def _limited_bucket(bucket, key, cap: int):
+    """Return Retry-After seconds when the bucket is full. Does not record a hit."""
     if cap < 0:
-        cap = 20
-    now = time.monotonic()
-    bucket = _SAVES.setdefault(ip, [])
-    bucket[:] = [stamp for stamp in bucket if now - stamp < 60]
-    if len(bucket) >= cap:
-        retry = max(1, math.ceil(60 - (now - bucket[0])))
-        line = f'project save rate limit hit ip={ip} retry_after={retry}'
-        LOG.info('%s', line)
-        print(line, flush=True)
-        return retry
-    bucket.append(now)
+        cap = 0
+    stamps = _prune(bucket, key)
+    if len(stamps) >= cap:
+        return _retry_after(stamps)
     return None
+
+
+def _commit(bucket, key):
+    _prune(bucket, key)
+    bucket.setdefault(key, []).append(NOW())
+
+
+def _reject_limit(request: Request, kind: str, retry: int, detail: str):
+    line = f'project {kind} rate limit hit {detail} retry_after={retry}'
+    LOG.info('%s', line)
+    print(line, flush=True)
+    return _json(
+        {'error': 'rate_limit', 'message': 'Too many project saves from this address. Try again shortly.'},
+        429,
+        {'Retry-After': str(retry)},
+    )
 
 
 def _hash_secret(secret: str) -> str:
@@ -400,20 +442,39 @@ async def _read_request(request: Request):
     if message:
         code = 'invalid' if message not in ('The body is not a project.',) else 'not a project'
         return None, _json({'error': code, 'message': message}, 400)
-    retry = _rate_limit(_client_ip(request))
-    if retry is not None:
-        return None, _json(
-            {'error': 'rate_limit', 'message': 'Too many project saves from this address. Try again shortly.'},
-            429,
-            {'Retry-After': str(retry)},
-        )
     return data, None
+
+
+def _allow_create(request: Request):
+    ip = _client_ip(request)
+    retry = _limited_bucket(_IP_CREATES, ip, _cap('SIM_IP_CREATES_PER_MIN', 10))
+    if retry is not None:
+        return _reject_limit(request, 'create', retry, f'ip={ip}')
+    _commit(_IP_CREATES, ip)
+    return None
+
+
+def _allow_save(request: Request, pid: str):
+    """Count a save only after the edit secret has been accepted."""
+    ip = _client_ip(request)
+    ip_retry = _limited_bucket(_IP_SAVES, ip, _cap('SIM_IP_SAVES_PER_MIN', 120))
+    if ip_retry is not None:
+        return _reject_limit(request, 'ip-save', ip_retry, f'ip={ip}')
+    proj_retry = _limited_bucket(_PROJECT_SAVES, pid, _cap('SIM_PROJECT_SAVES_PER_MIN', 10))
+    if proj_retry is not None:
+        return _reject_limit(request, 'project-save', proj_retry, f'ip={ip} project={pid}')
+    _commit(_IP_SAVES, ip)
+    _commit(_PROJECT_SAVES, pid)
+    return None
 
 
 async def _create(request: Request):
     data, rejected = await _read_request(request)
     if rejected:
         return rejected
+    limited = _allow_create(request)
+    if limited:
+        return limited
     if _too_many(''):
         return _json({'error': 'project limit', 'message': 'The server cannot store another project.'}, 507)
     pid = _new_id()
@@ -444,6 +505,9 @@ async def _update(pid: str, request: Request):
         if not _legacy_open():
             _audit(request, 403, 'legacy-closed')
             return _json(VIEW_ONLY, 403)
+        limited = _allow_save(request, i)
+        if limited:
+            return limited
         secret = secrets.token_urlsafe(32)
         _write_project(i, data)
         _write_hash(i, secret)
@@ -451,8 +515,12 @@ async def _update(pid: str, request: Request):
         # Grandfathered projects have no hash yet. This old PUT is the one time their secret is returned.
         return _json({'id': i, 'secret': secret})
     if not _secret_matches(stored, presented):
+        # A wrong secret does not spend the owner's per-project budget.
         _audit(request, 403)
         return _json(VIEW_ONLY, 403)
+    limited = _allow_save(request, i)
+    if limited:
+        return limited
     _write_project(i, data)
     _audit(request, 200)
     return _json({'id': i})

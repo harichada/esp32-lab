@@ -10,9 +10,11 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   };
   store.onPushError = (err) => {
     if (!err) return;
-    if (err.code === 'view_only') showViewOnly();
-    else if (err.code === 'rate_limit' || err.code === 'invalid') toast(err.message, true);
+    if (err.code === 'view_only') announce("This browser can't edit this project. Open your edit link, or make your own copy.");
+    else if (err.code === 'invalid') toast(err.message, true);
   };
+  store.onBackupNote = (msg) => { const el = document.getElementById('backupState'); if (el) el.textContent = msg || ''; };
+  store.onEditLinkHint = (msg) => announce(msg);
   // ---------------- project ----------------
   function normalize(p) {
     p.parts = p.parts || []; p.wires = p.wires || []; p.files = p.files || {}; p.mode = p.mode || 'qemu'; p.defines = p.defines || []; p.code = p.code ?? '';
@@ -56,21 +58,28 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   function makeCopy(auto) {
     syncDefines(); syncCode(); const was = app.proj.name;
     const c = store.copy(app.proj); Object.assign(app.proj, { id: c.id, name: c.name, copiedFrom: c.copiedFrom }); delete app.proj.example;
-    app.readOnly = false; app.viewOnly = false; store.save(app.proj); setUrl({ p: app.proj.id }); renderBanner();
+    app.readOnly = false; app.viewOnly = false; store.save(app.proj, { remote: false }); setUrl({ p: app.proj.id }); renderBanner();
     toast(auto ? `Examples are read-only — your change is in a copy: “${app.proj.name}” (My Projects)` : `Copied “${was}” to My Projects as “${app.proj.name}”`);
+    if (store.serverSync) store.scheduleBackup(app.proj);
     return app.proj;
   }
-  function beforeEdit() { if (app.viewOnly) { showViewOnly(); return false; } if (app.readOnly) makeCopy(true); }
-  let saveT = 0, viewToastAt = 0;
-  function showViewOnly() {
-    app.viewOnly = true; renderBanner();
-    const now = Date.now();
-    if (now - viewToastAt > 2500) { viewToastAt = now; toast('This copy is view-only. Make a copy to edit it.', true); }
+  function adoptViewOnly() {
+    if (!app.viewOnly || !app.proj) return;
+    syncCode(); syncDefines();
+    const c = store.forkLocal(app.proj);
+    Object.assign(app.proj, { id: c.id, name: c.name, copiedFrom: c.copiedFrom });
+    delete app.proj.example;
+    app.viewOnly = false; app.readOnly = false;
+    setUrl({ p: app.proj.id }); renderBanner();
+    announce('Your copy is ready to edit.');
+    if (store.serverSync) store.scheduleBackup(app.proj);
   }
+  function beforeEdit() { if (app.viewOnly) { adoptViewOnly(); return; } if (app.readOnly) makeCopy(true); }
+  let saveT = 0;
   function autosave() {
     if (app.readOnly || app.viewOnly || !app.proj) return;
     clearTimeout(saveT);
-    saveT = setTimeout(() => { syncCode(); try { store.save(app.proj); renderBanner(true); } catch (e) { toast(e.message, true); } }, 600);
+    saveT = setTimeout(() => { syncCode(); try { store.save(app.proj, { remote: false }); renderBanner(true); } catch (e) { toast(e.message, true); } if (store.serverSync) store.scheduleBackup(app.proj); }, 600);
   }
   function syncDefines() { if (app.proj) app.proj.defines = $('#inDefines').value.split(',').map((x) => x.trim()).filter(Boolean); }
   function openProject(id) {
@@ -78,7 +87,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const viewOnly = store.isViewOnly(id);
     if (viewOnly) setProject(p, { viewOnly: true }); else setProject(p);
     setUrl({ p: id });
-    if (!viewOnly) { try { store.save(app.proj); } catch (e) { toast(e.message, true); } }
+    if (!viewOnly) { try { store.save(app.proj, { remote: false, dirty: false }); } catch (e) { toast(e.message, true); } }
     return true;
   }
   function setProjectTitle(name) {
@@ -101,31 +110,20 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
   function copyEditLink() {
     const secret = store.secretFor(app.proj.id);
-    if (!secret) { toast('Save a server copy before copying an edit link.', true); return; }
-    copyText(store.editUrl(location.href, app.proj.id, secret), 'Edit link copied. Anyone with this link can change the project.');
+    if (!secret) { toast('Turn on Back up online to get an edit link.', true); return; }
+    copyText(store.editUrl(location.href, app.proj.id, secret), 'Edit link copied.');
   }
   function copyShareLink() {
     if (!app.proj || !app.proj.id) return;
     copyText(store.shareUrl(location.href, app.proj.id), 'Share link copied. It is view-only.');
   }
-  async function forkView() {
-    const btn = $('#bCopy'); if (btn) btn.disabled = true;
-    try {
-      syncCode(); syncDefines();
-      const local = store.copy(app.proj, null, { remote: false });
-      const saved = await store.createServer(local);
-      app.viewOnly = false; app.readOnly = false;
-      setProject(saved); setUrl({ p: saved.id }); renderBanner(true);
-      toast('Copied into a project you can edit. Anyone with the edit link can change it.');
-    } catch (e) {
-      toast((e && e.message) || 'Could not make a copy', true);
-      if (btn) btn.disabled = false;
-    }
-  }
+  function forkView() { adoptViewOnly(); }
   function linkButtons() {
+    const H = window.SafeHtml;
     const secret = !!(app.proj && store.secretFor(app.proj.id));
-    const dis = secret ? '' : ' disabled';
-    return `<button type="button" id="bEditLink" class="pb-act"${dis} aria-describedby="editLinkWarn">Copy edit link</button><button type="button" id="bShareLink" class="pb-act"${dis} aria-describedby="editLinkWarn">Copy share link</button><span id="editLinkWarn" class="share-warn">Anyone with the edit link can change this project. A share link is view-only.</span>`;
+    const editDis = secret ? '' : ' disabled';
+    const note = H ? H.esc(store.backupNote || '') : '';
+    return `<button type="button" id="bEditLink" class="pb-act"${editDis} aria-describedby="editLinkWarn">Copy edit link</button><span id="editLinkWarn" class="share-warn">Anyone with the edit link can change it.</span><button type="button" id="bShareLink" class="pb-act">Copy share link</button><span id="backupState" class="backup-state" role="status" aria-live="polite">${note}</span>`;
   }
   function wireShareButtons() {
     const edit = $('#bEditLink'); if (edit) edit.onclick = copyEditLink;
@@ -134,7 +132,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   function renderBanner(saved) {
     const b = $('#projBanner'); if (!b || !app.proj) return;
     const H = window.SafeHtml;
-    if (app.viewOnly) b.innerHTML = `<span class="pb-view" role="status">This copy is view-only. Make a copy to edit it.</span><button type="button" id="bCopy" class="primary">Make a copy</button><button type="button" id="bShareLink">Copy share link</button>`;
+    if (app.viewOnly) b.innerHTML = `<span class="pb-view">You can view this project but not change it. Tap Make a copy to get your own version.</span><button type="button" id="bCopy" class="primary">Make a copy</button><button type="button" id="bShareLink">Copy share link</button><span id="backupState" class="backup-state" role="status" aria-live="polite">${H.esc(store.backupNote || '')}</span>`;
     else if (app.readOnly) b.innerHTML = `<span class="pb-ex">📘 Example: <b>${H.esc(app.proj.name || '')}</b> — read-only</span><button type="button" id="bCopy" class="primary">Make a copy</button><span class="muted">editing anything makes a copy automatically</span>`;
     else b.innerHTML = `<span class="pb-my">✎ My project: <b id="pbName" title="Click to rename">${H.esc(app.proj.name || 'Untitled')}</b></span>${linkButtons()}<span class="muted">${saved ? 'saved ' + new Date().toLocaleTimeString() : 'auto-saved'}</span>`;
     setProjectTitle(app.proj.name);
@@ -146,20 +144,20 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
   function save() {
     syncCode(); syncDefines();
-    if (app.viewOnly) { showViewOnly(); return; }
+    if (app.viewOnly) adoptViewOnly();
     if (app.readOnly) { makeCopy(false); return; }
-    try { store.save(app.proj); } catch (e) { toast(e.message, true); return; }
-    renderBanner(true); toast('Saved “' + app.proj.name + '” to My Projects' + (store.serverSync ? ' (+ server copy)' : ''));
+    try { store.save(app.proj, { remote: false }); } catch (e) { toast(e.message, true); return; }
+    if (store.serverSync) store.flushBackup(app.proj, { reason: 'save' });
+    renderBanner(true); toast('Saved “' + app.proj.name + '”');
   }
   function projectsDialog() {
     let d = $('#projDlg'); if (!d) { d = document.createElement('div'); d.id = 'projDlg'; d.className = 'modal'; document.body.appendChild(d); }
     const L = store.list();
     d.innerHTML = `<div class="modal-box"><div class="row"><h3 style="flex:1;margin:0">My Projects</h3><button type="button" data-a="close" aria-label="Close">✕</button></div>
       <div class="row"><button type="button" data-a="new">＋ New blank</button><label class="btn">⤒ Import JSON / diagram.json<input type="file" id="projImp" accept=".json,application/json" hidden></label>
-      <label title="Also keep a copy of each project on the simulator server"><input type="checkbox" id="cbSrv" ${store.serverSync ? 'checked' : ''}> server copy</label><button type="button" data-a="srv">From server…</button></div>
-      <p id="editLinkWarn" class="share-warn">Anyone with the edit link can change this project. A share link is view-only.</p>
+      <label title="Back up this project online"><input type="checkbox" id="cbSrv" ${store.serverSync ? 'checked' : ''}> Back up online</label><button type="button" data-a="srv">From server…</button></div>
       <table class="projs">${L.map((e) => `<tr data-id="${P.esc(e.id)}" class="${app.proj && app.proj.id === e.id ? 'cur' : ''}"><td class="pn">${P.esc(e.name)}<br><small class="muted">${new Date(e.updated).toLocaleString()}${e.from ? ' · from ' + P.esc(e.from) : ''}</small></td>
-        <td><button type="button" data-a="open">Open</button><button type="button" data-a="ren">Rename</button><button type="button" data-a="dup">Duplicate</button><button type="button" data-a="exp">Export</button><button type="button" data-a="editlink" aria-describedby="editLinkWarn"${store.secretFor(e.id) ? '' : ' disabled'}>Copy edit link</button><button type="button" data-a="share" aria-describedby="editLinkWarn">Copy share link</button><button type="button" data-a="del">Delete</button></td></tr>`).join('') || '<tr><td class="muted">No projects yet. Open an example and press “Make a copy” (or just start editing it).</td></tr>'}</table><div id="srvList"></div></div>`;
+        <td><button type="button" data-a="open">Open</button><button type="button" data-a="ren">Rename</button><button type="button" data-a="dup">Duplicate</button><button type="button" data-a="exp">Export</button><button type="button" data-a="editlink" aria-describedby="editWarn-${P.esc(e.id)}"${store.secretFor(e.id) ? '' : ' disabled'}>Copy edit link</button><span id="editWarn-${P.esc(e.id)}" class="share-warn">Anyone with the edit link can change it.</span><button type="button" data-a="share">Copy share link</button><button type="button" data-a="del">Delete</button></td></tr>`).join('') || '<tr><td class="muted">No projects yet. Open an example and press “Make a copy” (or just start editing it).</td></tr>'}</table><div id="srvList"></div></div>`;
     d.hidden = false;
     d.onclick = async (e) => {
       if (e.target === d) { d.hidden = true; return; }
@@ -170,13 +168,13 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       else if (a === 'ren') { const n = prompt('Rename project', store.list().find((x) => x.id === id).name); if (n) { store.rename(id, n); if (app.proj.id === id) { app.proj.name = n; renderBanner(true); } projectsDialog(); } }
       else if (a === 'dup') { store.duplicate(id); projectsDialog(); }
       else if (a === 'exp') { const t = store.exportJson(id); const bl = new Blob([t], { type: 'application/json' }); const l = document.createElement('a'); l.href = URL.createObjectURL(bl); l.download = (JSON.parse(t).name || 'project').replace(/[^\w.-]+/g, '_') + '.json'; l.click(); }
-      else if (a === 'editlink') { const secret = store.secretFor(id); if (secret) copyText(store.editUrl(location.href, id, secret), 'Edit link copied. Anyone with this link can change the project.'); }
+      else if (a === 'editlink') { const secret = store.secretFor(id); if (secret) copyText(store.editUrl(location.href, id, secret), 'Edit link copied.'); else toast('Turn on Back up online to get an edit link.', true); }
       else if (a === 'share') copyText(store.shareUrl(location.href, id), 'Share link copied. It is view-only.');
       else if (a === 'del') { if (confirm('Delete this project? (Export it first if you want a backup)')) { store.remove(id); if (app.proj.id === id) loadExample('blink'); projectsDialog(); } }
-      else if (a === 'srv') { try { const S = await store.listServer(); $('#srvList').innerHTML = '<h4>Server copies you can edit</h4>' + (S.map((x) => `<div class="row"><span style="flex:1">${P.esc(x.name)}</span><button type="button" data-a="pull" data-sid="${P.esc(x.id)}">Open</button></div>`).join('') || '<p class="muted">No server copies you can edit yet.</p>'); } catch (er) { toast('Server list failed', true); } }
+      else if (a === 'srv') { try { const S = await store.listServer(); $('#srvList').innerHTML = '<h4>Online backups you can edit</h4>' + (S.map((x) => `<div class="row"><span style="flex:1">${P.esc(x.name)}</span><button type="button" data-a="pull" data-sid="${P.esc(x.id)}">Open</button></div>`).join('') || '<p class="muted">No online backups you can edit yet.</p>'); } catch (er) { toast('Server list failed', true); } }
       else if (a === 'pull') { try { await store.pullServer(b.dataset.sid); openProject(b.dataset.sid); d.hidden = true; } catch (er) { toast(er.message, true); } }
     };
-    $('#cbSrv').onchange = (e) => { store.serverSync = e.target.checked; if (e.target.checked && app.proj && !app.readOnly && !app.viewOnly) { try { store.save(app.proj); } catch (err) { toast(err.message, true); } } };
+    $('#cbSrv').onchange = (e) => { store.serverSync = e.target.checked; if (e.target.checked && app.proj && !app.readOnly) { if (app.viewOnly) adoptViewOnly(); try { store.save(app.proj, { remote: false }); } catch (err) { toast(err.message, true); return; } store.flushBackup(app.proj, { reason: 'save' }); } };
     $('#projImp').onchange = (e) => { const f = e.target.files[0]; if (!f) return; f.text().then((t) => { try { const o = JSON.parse(t); const p = store.importJson(o.connections && o.parts && !o.wires ? importWokwi(o) : o); openProject(p.id); d.hidden = true; toast('Imported ' + f.name); } catch (er) { toast('Could not import: ' + er.message, true); } }); };
   }
   // "+ New blank" chooser: Basic circuit (bare breadboard, no ESP32) vs ESP32 (DevKit V1, empty sketch, real firmware).
@@ -1030,7 +1028,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     el.querySelectorAll('[data-k]').forEach((inp) => {
       const k = inp.dataset.k, ev = inp.type === 'range' ? 'input' : 'change';
       inp.addEventListener(ev, () => {
-        if (app.viewOnly) { showViewOnly(); return; }
+        if (app.viewOnly) adoptViewOnly();
         let v = inp.type === 'checkbox' ? inp.checked : inp.value;
         if (inp.type === 'range') v = inp.dataset.log ? Math.pow(10, +v) : +v; else if (inp.dataset.t === 'num') v = +v;
         if (typeof v === 'number') {
@@ -1124,6 +1122,23 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
   // ---------------- misc UI ----------------
   function toast(msg, err) { const t = document.createElement('div'); t.className = 'toast' + (err ? ' err' : ''); t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 2600); }
+  function announce(msg) {
+    let el = document.getElementById('liveStatus');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'liveStatus';
+      el.setAttribute('role', 'status');
+      el.setAttribute('aria-live', 'polite');
+      el.className = 'live-status';
+      document.body.appendChild(el);
+    }
+    el.textContent = msg || '';
+  }
+  function flushLeaving(reason) {
+    if (!app.proj || app.readOnly || app.viewOnly) return;
+    try { syncCode(); syncDefines(); store.save(app.proj, { remote: false }); } catch (e) { return; }
+    if (store.serverSync) store.flushBackup(app.proj, { keepalive: true, reason: reason });
+  }
   function buildPalette() {
     const cats = {}; for (const [k, d] of Object.entries(P.T)) (cats[d.cat || 'Misc'] = cats[d.cat || 'Misc'] || []).push([k, d]);
     const thumb = (k, d) => { try { const p = { id: 'T', type: k, x: 0, y: 0, rot: 0, props: JSON.parse(JSON.stringify(d.props || {})) }; const sz = d.size(p); const pins = d.pins(p);
@@ -1550,6 +1565,8 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     })();
     fetch('api/health').then((r) => r.json()).then((h) => { app.health = h; $('#connDot').className = 'conn ' + (h.ok ? 'ok' : 'bad'); $('#connDot').title = h.ok ? 'Backend connected: arduino-cli + QEMU ready' : 'Backend missing QEMU/arduino-cli'; if (!h.ok) toast('Backend found but QEMU/arduino-cli missing — JS sketch mode only', true); }).catch(() => { $('#connDot').className = 'conn bad'; toast('No backend: real-firmware mode needs server/server.py (JS sketch mode still works)', true); });
     requestAnimationFrame(tick); if (window.UI) window.UI.init(app);
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushLeaving('hide'); });
+    window.addEventListener('pagehide', () => flushLeaving('pagehide'));
     if (new URLSearchParams(location.search).get('resume') !== '0') setTimeout(() => app.resumeSavedRun(), 300);
     if (new URLSearchParams(location.search).get('tab')) document.querySelector(`[data-tab=${new URLSearchParams(location.search).get('tab')}]`).click();
   }
