@@ -7,9 +7,10 @@ on /api/projects/<id> require the X-Edit-Secret header. The secret is stored
 as a sha256 hex digest and compared with secrets.compare_digest. It is
 rejected in the query string and redacted in every log line.
 
-SIM_PROJECTS_LEGACY_OPEN=1 (the default) keeps the old unauthenticated PUT
-only for a project that already exists and has no stored secret. That claim
-sets a secret and returns it once. At 0, those projects are read-only.
+SIM_PROJECTS_LEGACY_OPEN defaults to 0. Only an explicit 1 keeps the old
+unauthenticated PUT for a project that already exists and has no stored
+secret. That claim sets a secret and returns it once. Unset, 0, and any
+other value leave those projects read-only. An unknown value is logged once.
 
 Saves are limited after the secret check: SIM_PROJECT_SAVES_PER_MIN (default
 10) per project id, and SIM_IP_SAVES_PER_MIN (default 120) per TCP peer
@@ -173,8 +174,23 @@ def _note_referer(request: Request):
         print('project referer contained an edit secret and was not recorded', flush=True)
 
 
+_LEGACY_WARNED = set()
+
+
 def _legacy_open() -> bool:
-    return os.environ.get('SIM_PROJECTS_LEGACY_OPEN', '1') != '0'
+    """True only for an explicit 1. Unset and 0 stay closed. Anything else is 0, warned once."""
+    raw = os.environ.get('SIM_PROJECTS_LEGACY_OPEN')
+    if raw is None:
+        return False
+    value = raw.strip()
+    if value == '1':
+        return True
+    if value == '0':
+        return False
+    if value not in _LEGACY_WARNED:
+        _LEGACY_WARNED.add(value)
+        LOG.warning('SIM_PROJECTS_LEGACY_OPEN=%r is not 0 or 1; treating it as 0', raw)
+    return False
 
 
 def _cap(name: str, default: int) -> int:

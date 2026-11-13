@@ -10,11 +10,11 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       SIM_COMPILE_QUEUE, SIM_COMPILE_QUEUE_MAX, SIM_COMPILE_QUEUE_TIMEOUT_S,
       SIM_ORPHAN_MAX_AGE_S and the matching *_MAX_AGE_S knobs.
       Staging (off unless set): SIM_STAGING, SIM_ACCESS_TOKEN, SIM_STAGING_UPSTREAM, SIM_BASE_PATH.
-      Project copies: SIM_PROJECT_DIR, SIM_PROJECTS_LEGACY_OPEN (default 1).
-      1 lets the next save claim a project that has no owner secret. 0 makes
-      those projects read-only. When `python3 -m server.projects_audit
-      --count-legacy <dir>` prints 0, shipping with SIM_PROJECTS_LEGACY_OPEN=0
-      is safe: nothing on that volume still needs a claim.
+      Project copies: SIM_PROJECT_DIR, SIM_PROJECTS_LEGACY_OPEN (default 0).
+      Only an explicit 1 lets the next save claim a project that has no owner
+      secret. Unset, 0, and any other value make those projects read-only.
+      An unknown value is logged once. When `python3 -m server.projects_audit
+      --count-legacy <dir>` prints 0, nothing on that volume still needs a claim.
       SIM_PROJECT_SAVES_PER_MIN (default 10, per project, after the secret checks),
       SIM_IP_SAVES_PER_MIN (default 120, per TCP peer), SIM_IP_CREATES_PER_MIN
       (default 10, per TCP peer). See server/projectstore.py.
@@ -1368,7 +1368,7 @@ async def _qemu_session(ws, bid, img, tmp, hold):
         except Exception: pass
 
 # ---------------- optional server-side project copies (My Projects "server copy") ----------------
-# Ids and edit secrets are issued here. SIM_PROJECTS_LEGACY_OPEN=0 makes an old copy read-only.
+# Ids and edit secrets are issued here. SIM_PROJECTS_LEGACY_OPEN defaults to 0, so an old copy stays read-only unless the flag is explicitly 1.
 PROJ_DIR = Path(os.environ.get('SIM_PROJECT_DIR', HOME / '.esp32lab/projects'))
 projectstore.mount(app, lambda: PROJ_DIR, lambda: MAX_BODY)
 

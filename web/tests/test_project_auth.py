@@ -143,6 +143,42 @@ class ProjectAuthTests(unittest.TestCase):
         self.assertNotIn('queriedsecret', buf.getvalue())
         self.assertNotIn('queriedsecret', made.text)
 
+    def test_legacy_flag_defaults_closed_for_unset_zero_and_invalid(self):
+        pid = 'legacyclosed'
+        (srv.PROJ_DIR / f'{pid}.json').write_text(json.dumps(PROJ))
+        projectstore._LEGACY_WARNED.clear()
+
+        os.environ.pop('SIM_PROJECTS_LEGACY_OPEN', None)
+        with self.assertNoLogs('esp32lab.projects', level='WARNING'):
+            self.assertFalse(projectstore._legacy_open())
+            unset = self.client.put('/api/projects/' + pid, json=dict(PROJ, name='unset'))
+        self.assertEqual(unset.status_code, 403, unset.text)
+        self.assertEqual(unset.json(), VIEW)
+        self.assertFalse((srv.PROJ_DIR / f'{pid}.secret').exists())
+
+        os.environ['SIM_PROJECTS_LEGACY_OPEN'] = '0'
+        with self.assertNoLogs('esp32lab.projects', level='WARNING'):
+            self.assertFalse(projectstore._legacy_open())
+            closed = self.client.put('/api/projects/' + pid, json=dict(PROJ, name='zero'))
+        self.assertEqual(closed.status_code, 403, closed.text)
+        self.assertFalse((srv.PROJ_DIR / f'{pid}.secret').exists())
+
+        os.environ['SIM_PROJECTS_LEGACY_OPEN'] = '1'
+        with self.assertNoLogs('esp32lab.projects', level='WARNING'):
+            self.assertTrue(projectstore._legacy_open())
+
+        os.environ['SIM_PROJECTS_LEGACY_OPEN'] = 'yes'
+        with self.assertLogs('esp32lab.projects', level='WARNING') as caught:
+            self.assertFalse(projectstore._legacy_open())
+            invalid = self.client.put('/api/projects/' + pid, json=dict(PROJ, name='invalid'))
+            again = self.client.put('/api/projects/' + pid, json=dict(PROJ, name='invalid-again'))
+        self.assertEqual(len(caught.records), 1)
+        self.assertIn('yes', caught.records[0].getMessage())
+        self.assertEqual(invalid.status_code, 403, invalid.text)
+        self.assertEqual(again.status_code, 403, again.text)
+        self.assertEqual(invalid.json(), VIEW)
+        self.assertFalse((srv.PROJ_DIR / f'{pid}.secret').exists())
+
     def test_legacy_project_is_claimable_only_while_flag_is_open(self):
         pid = 'legacyproj'
         (srv.PROJ_DIR / f'{pid}.json').write_text(json.dumps(PROJ))
