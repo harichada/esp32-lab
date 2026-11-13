@@ -1,6 +1,6 @@
-// While a compile is in flight the Run button is disabled, labelled Compiling…,
-// and carries the busy (.spinning) class. It returns to Run once that compile
-// resolves, including a 429, a compiler error, and a websocket that never opens.
+// While a compile is in flight the Run button is disabled, labelled Building… or
+// Queued, and carries the busy (.spinning) class. The same phase drives the
+// status line. It returns to idle on a 429, a compiler error, or a dropped socket.
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -61,6 +61,8 @@ byId('buildLog', 'pre');
 byId('buildDet', 'details');
 byId('stDot', 'i');
 byId('stText', 'span');
+byId('compileStrip', 'p');
+byId('mCompileToast', 'p');
 byId('stage', 'div');
 const buildTab = el('button');
 buildTab.clicked = 0;
@@ -120,7 +122,8 @@ global.WebSocket = class {
   send() {}
   close() { this.readyState = 3; }
 };
-global.matchMedia = () => ({ matches: false, media: '', addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} });
+let narrowPhone = false;
+global.matchMedia = (q) => ({ matches: narrowPhone && String(q).includes('640'), media: String(q || ''), addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} });
 
 require('./tools/load-parts');
 require(path.join(__dirname, '../js/storage.js'));
@@ -163,13 +166,23 @@ function okResponse(body) {
 }
 function busy() {
   assert.equal(bRun.disabled, true);
-  assert.equal(label.textContent, 'Compiling…');
+  assert.equal(label.textContent, 'Building…');
   assert.equal(bRun.classList.contains('spinning'), true);
+  assert.equal(app.compilePhase, 'building');
+  assert.equal(ids.compileStrip.textContent, app.BUILDING_TEXT);
+  assert.equal(ids.compileStrip.hidden, false);
+  assert.equal(ids.stText.textContent, app.BUILDING_TEXT);
+  assert.equal(ids.mCompileToast.hidden, true);
+  assert.notEqual(ids.compileStrip.textContent, '');
+  assert.doesNotMatch(ids.compileStrip.textContent, /^Waiting…?$/);
 }
 function idle() {
   assert.equal(label.textContent, 'Run');
   assert.equal(bRun.disabled, false);
   assert.equal(bRun.classList.contains('spinning'), false);
+  assert.equal(app.compilePhase, 'idle');
+  assert.equal(ids.compileStrip.textContent, '');
+  assert.equal(ids.compileStrip.hidden, true);
 }
 function phoneCompiling() {
   global.Mobile.syncIgnite();
@@ -177,11 +190,11 @@ function phoneCompiling() {
   assert.equal(mIgnite.tabIndex, 0);
   assert.equal(mIgnite.classList.contains('compiling'), true);
   assert.equal(mIgnite.classList.contains('live'), false);
-  assert.equal(mIgnite.getAttribute('aria-label'), 'Compiling…');
-  assert.equal(mIgnite.getAttribute('title'), 'Compiling…');
+  assert.equal(mIgnite.getAttribute('aria-label'), 'Building…');
+  assert.equal(mIgnite.getAttribute('title'), 'Building…');
   assert.equal(mIgnite.getAttribute('aria-busy'), 'true');
   assert.equal(mIgnite.getAttribute('aria-disabled'), 'true');
-  assert.equal(mIgnite.title, 'Compiling…');
+  assert.equal(mIgnite.title, 'Building…');
 }
 function phoneRun() {
   global.Mobile.syncIgnite();
@@ -218,13 +231,20 @@ test('Run stays busy for the whole compile, then restores', async () => {
   phoneCompiling();
   pending.resolve(okResponse());
   await flight;
-  idle();
-  // The desktop label returns to Run when the HTTP compile finishes. The phone
-  // button stays on Compiling… until the run socket actually opens.
+  busy();
   phoneCompiling();
   assert.equal(typeof global.WebSocket.last.onopen, 'function');
   global.WebSocket.last.onopen();
+  assert.equal(app.compilePhase, 'running');
+  assert.equal(label.textContent, 'Run');
+  assert.equal(bRun.disabled, false);
+  assert.equal(bRun.classList.contains('spinning'), false);
+  assert.equal(ids.compileStrip.textContent, '');
   phoneStop();
+  global.WebSocket.last.onclose();
+  idle();
+  phoneRun();
+  assert.equal(ids.stText.textContent, 'connection lost');
 
   const limited = gate();
   compileReply = limited.promise;
@@ -289,6 +309,7 @@ test('the phone Run button is a tab stop, and Enter and Space follow idle, compi
   bRun.classList.remove('spinning');
   bRun.disabled = false;
   app.run = null;
+  app.compilePhase = 'idle';
   phoneRun();
   const fire = (key) => handlers.keydown.forEach((fn) => fn({ key: key, preventDefault() {}, repeat: false }));
   fire('Tab');
@@ -301,6 +322,7 @@ test('the phone Run button is a tab stop, and Enter and Space follow idle, compi
   bRun.classList.add('spinning');
   bRun.disabled = true;
   app.run = { kind: 'qemu' };
+  app.compilePhase = 'building';
   phoneCompiling();
   fire('Enter');
   fire(' ');
@@ -309,6 +331,7 @@ test('the phone Run button is a tab stop, and Enter and Space follow idle, compi
   document.body.classList.remove('busy');
   document.body.classList.add('running');
   bRun.classList.remove('spinning');
+  app.compilePhase = 'running';
   phoneStop();
   fire('Enter');
   fire(' ');
@@ -316,33 +339,52 @@ test('the phone Run button is a tab stop, and Enter and Space follow idle, compi
   assert.equal(runs, 2);
   document.body.classList.remove('running');
   app.run = null;
+  app.compilePhase = 'idle';
   phoneRun();
 });
 
-test('a queued compile says it is waiting, then the button returns to Run', async () => {
+test('a queued compile shows the server message and position, then returns to idle', async () => {
   progressBody = { active: false, wait: { reason: 'build', position: 2, message: 'Waiting for another build to finish… (position 2)' } };
   const pending = gate();
   compileReply = pending.promise;
   app.serialText = '';
+  const started = Date.now();
   const flight = app.startRun();
   busy();
+  assert.ok(Date.now() - started < 1000, 'building text is up within 1s of Run');
   await delay(20);
-  assert.equal(label.textContent, 'Waiting…');
+  assert.equal(app.compilePhase, 'queued');
+  assert.equal(label.textContent, 'Queued');
+  assert.notEqual(label.textContent, 'Waiting…');
   assert.equal(bRun.disabled, true);
   assert.equal(bRun.classList.contains('spinning'), true);
-  assert.equal(ids.stText.textContent, 'Waiting for another build to finish… (position 2)');
-  assert.match(ids.buildLog.textContent, /Waiting for another build to finish… \(position 2\)/);
-  assert.match(app.serialText, /\[Waiting for another build to finish… \(position 2\)\]/);
+  assert.equal(ids.compileStrip.textContent, 'Another build is ahead of yours. You are number 2.');
+  assert.equal(ids.stText.textContent, ids.compileStrip.textContent);
+  assert.equal(ids.compileStrip.hidden, false);
+  assert.match(ids.buildLog.textContent, /You are number 2/);
+  assert.match(app.serialText, /\[Another build is ahead of yours\. You are number 2\.\]/);
   const id = lastCompile.init.headers['X-Client-Id'];
   assert.match(id, /^[A-Za-z0-9_-]{1,64}$/);
   progressBody = { active: false, wait: { reason: 'warm-up', position: 1, message: 'Preparing network stack (first run after restart), about 40 s…' } };
   await delay(450);
-  assert.equal(label.textContent, 'Waiting…');
-  assert.equal(ids.stText.textContent, 'Preparing network stack (first run after restart), about 40 s…');
+  assert.equal(label.textContent, 'Queued');
+  assert.equal(ids.compileStrip.textContent, 'Preparing network stack (first run after restart), about 40 s…');
+  assert.equal(ids.stText.textContent, ids.compileStrip.textContent);
   assert.match(app.serialText, /Preparing network stack \(first run after restart\), about 40 s…/);
+  narrowPhone = true;
+  progressBody = { active: false, wait: { reason: 'build', position: 1, message: 'Waiting for another build to finish…' } };
+  await delay(450);
+  assert.equal(ids.mCompileToast.textContent, 'Another build is ahead of yours. Yours starts next.');
+  assert.equal(ids.compileStrip.textContent, ids.mCompileToast.textContent);
+  assert.equal(ids.stText.textContent, ids.mCompileToast.textContent);
+  assert.equal(ids.mCompileToast.hidden, false);
+  assert.equal(ids.compileStrip.hidden, true);
+  assert.equal(ids.mCompileToast.getAttribute('aria-hidden'), 'false');
+  narrowPhone = false;
   pending.resolve(okResponse());
   await flight;
-  idle();
+  global.WebSocket.last.onopen();
+  assert.equal(app.compilePhase, 'running');
   progressBody = { active: false };
 
   const full = gate();
@@ -363,17 +405,45 @@ test('a queued compile says it is waiting, then the button returns to Run', asyn
   assert.equal(lastCompile.init.headers['X-Client-Id'], id);
 });
 
+test('compile status copy covers queue fallbacks and never a bare Waiting', () => {
+  const q = app.queuedCopy;
+  assert.equal(q({ message: 'Waiting for another build to finish…', position: 1 }), 'Another build is ahead of yours. Yours starts next.');
+  assert.equal(q({ position: 1 }), 'Another build is ahead of yours. Yours starts next.');
+  assert.equal(q({ message: 'Waiting for another build to finish… (position 3)', position: 3 }), 'Another build is ahead of yours. You are number 3.');
+  assert.equal(q({ position: 4 }), 'Another build is ahead of yours. You are number 4.');
+  assert.equal(q({}), 'Waiting for another build to finish…');
+  assert.equal(q(null), 'Waiting for another build to finish…');
+  assert.equal(q({ message: 'Waiting…' }), 'Waiting for another build to finish…');
+  assert.equal(q({ message: '', position: null }), 'Waiting for another build to finish…');
+  assert.equal(q({ message: 'Preparing network stack (first run after restart), about 40 s…', position: 1 }), 'Preparing network stack (first run after restart), about 40 s…');
+  assert.equal(q({ message: 'Toolchain is unpacking', position: 2 }), 'Toolchain is unpacking. Position 2.');
+  for (const text of [q({}), q({ message: 'Waiting…' }), q({ position: 2 }), q({ message: 'Waiting for another build to finish… (position 2)', position: 2 })]) {
+    assert.notEqual(text, '');
+    assert.notEqual(text, 'Waiting…');
+  }
+});
+
 test('the busy Run button is grey, keeps its spinner, and theme.css is cache-busted', () => {
   const css = fs.readFileSync(path.join(__dirname, '../css/theme.css'), 'utf8');
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
-  const block = css.match(/#bRun\.spinning,#bRun\.spinning:hover\{([^}]*)\}/);
+  const block = css.match(/#bRun\.spinning,#bRun\.spinning:disabled\{([^}]*)\}/);
   assert.ok(block, 'spinning rule');
-  assert.match(block[1], /background:var\(--l3\)/);
+  assert.match(block[1], /background:#1b1f24/);
+  assert.match(block[1], /color:#e8eaed/);
+  assert.match(block[1], /opacity:1/);
   assert.match(block[1], /box-shadow:none/);
-  assert.doesNotMatch(block[1], /#22d3ee|#06b6d4|#67e8f9/);
+  assert.doesNotMatch(block[1], /#22d3ee|#06b6d4|#67e8f9|var\(--mut\)/);
+  assert.match(css, /html\[data-theme=light\] #bRun\.spinning[^\{]*\{[^}]*background:#eceef1;[^}]*color:#2c333c/);
   assert.match(css, /#bRun\.spinning \.runspin\{display:block;animation:runspin/);
+  assert.match(html, /id="compileStrip"[^>]*role="status"[^>]*aria-live="polite"/);
+  assert.match(html, /id="mCompileToast"[^>]*role="status"[^>]*aria-live="polite"/);
+  assert.match(css, /#compileStrip\{[^}]*position:fixed;[^}]*top:48px;[^}]*left:0;[^}]*right:0;/);
+  assert.match(css, /#compileStrip\{[^}]*background:#1b1f24;[^}]*color:#e8eaed;/);
+  assert.match(css, /#compileStrip\{[^}]*white-space:normal;[^}]*overflow:visible;[^}]*text-overflow:clip/);
+  assert.match(css, /html\[data-theme=light\] #compileStrip\{[^}]*background:#eceef1;[^}]*color:#2c333c/);
+  assert.doesNotMatch(css, /#compileStrip\{[^}]*text-overflow:ellipsis/);
   const v = html.match(/theme\.css\?v=(\d+)/);
-  assert.ok(v && Number(v[1]) > 55);
+  assert.ok(v && Number(v[1]) > 56);
   const mobile = fs.readFileSync(path.join(__dirname, '../css/mobile.css'), 'utf8');
   for (const state of [':hover', ':active', ':focus-visible', ':disabled', '[aria-disabled="true"]']) {
     assert.match(mobile, new RegExp('#mIgnite\\.compiling' + state.replace('[', '\\[')));
@@ -401,6 +471,14 @@ test('the busy Run button is grey, keeps its spinner, and theme.css is cache-bus
   assert.ok(ratio('#15181c', '#e2e5e9') >= 4.5, 'light hover');
   assert.ok(ratio('#15181c', '#d5d9df') >= 4.5, 'light active');
   assert.ok(ratio('#0891b2', '#f7f8fa') >= 3 && ratio('#0891b2', '#08090b') >= 3, 'focus ring against both canvases');
+  assert.ok(ratio('#e8eaed', '#1b1f24') >= 4.5, 'status text on the dark chip');
+  assert.ok(ratio('#2c333c', '#eceef1') >= 4.5, 'status text on the light chip');
+  assert.match(mobile, /@media \(max-width:640px\)\{[^}]*body\.m \.m-compile-toast\{[^}]*position:fixed;[^}]*background:#1b1f24;[^}]*color:#e8eaed;[^}]*white-space:normal;[^}]*overflow:visible;[^}]*text-overflow:clip/);
+  assert.match(mobile, /#compileStrip\{display:none!important\}/);
+  assert.match(mobile, /html\[data-theme=light\] body\.m \.m-compile-toast\{[^}]*background:#eceef1;[^}]*color:#2c333c/);
   const mv = html.match(/mobile\.css\?v=(\d+)/);
-  assert.ok(mv && Number(mv[1]) > 59);
+  assert.ok(mv && Number(mv[1]) > 60);
+  const av = html.match(/app\.js\?v=(\d+)/);
+  assert.ok(av && Number(av[1]) > 67);
+  assert.ok(v && Number(v[1]) > 56);
 });

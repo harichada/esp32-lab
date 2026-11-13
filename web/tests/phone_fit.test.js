@@ -343,3 +343,36 @@ test('fit rejects an empty project, a non-finite viewport, and non-finite part d
   assert.equal(ids.zoomPct.textContent, '15%');
   stageSize.w = 390; stageSize.h = 844;
 });
+
+test('data-fit-pill=off hides the phone fit button and leaves the percent-tap fit', () => {
+  const css = fs.readFileSync(path.join(WEB, 'css/mobile.css'), 'utf8');
+  const src = fs.readFileSync(path.join(WEB, 'js/mobile.js'), 'utf8');
+  assert.match(src, /const PHONE_FIT_BUTTON = true/);
+  assert.match(css, /html\[data-fit-pill=off\] body\.m \.zoom-tools #bFitPill\{display:none!important\}/);
+  const handlers = {};
+  const b = makeEl('button');
+  b.tabIndex = 0;
+  b.addEventListener = (type, fn) => { (handlers[type] = handlers[type] || []).push(fn); };
+  ids.bFitPill = b;
+  document.documentElement = {
+    getAttribute(k) { return (this.attrs && this.attrs[k]) || null; },
+    setAttribute(k, v) { this.attrs = this.attrs || {}; this.attrs[k] = String(v); },
+  };
+  document.documentElement.setAttribute('data-fit-pill', 'off');
+  global.Mobile.bindFitPill();
+  assert.equal(global.Mobile.applyFitPillFlag(), false);
+  assert.equal(b.hidden, true);
+  assert.equal(b.getAttribute('aria-hidden'), 'true');
+  assert.equal(b.tabIndex, -1);
+  const ed = editor();
+  ed.setProject(Examples.EX.blank());
+  global.app = { editor: ed };
+  const before = ed.view.s;
+  (handlers.keydown || []).forEach((fn) => fn({ key: 'Enter', preventDefault() {}, repeat: false }));
+  (handlers.click || []).forEach((fn) => fn({ preventDefault() {} }));
+  assert.equal(ed.view.s, before);
+  ed.fit();
+  assert.equal(ed._autoFit, true);
+  assert.notEqual(ed.view.s, before);
+  document.documentElement.setAttribute('data-fit-pill', 'on');
+});

@@ -14,9 +14,13 @@
     '<symbol id="m-sliders" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol>' +
     '</svg>';
   let built = false, app, ed, sheet = null;
+  // Set false to hide the phone fit icon. html[data-fit-pill=off] does the same. The % tap still fits.
+  const PHONE_FIT_BUTTON = true;
 
   function setSheet(name) {
     sheet = name || null; document.body.dataset.msheet = sheet || '';
+    const menu = $('#mMenu');
+    if (menu) menu.setAttribute('aria-expanded', sheet === 'more' ? 'true' : 'false');
     $$('.m-tab').forEach((b) => b.classList.toggle('on', b.dataset.m === (sheet === 'dock' ? 'more' : sheet || 'circuit')));
     const si = $('#scopeInst'), ms = $('#mScope');
     if (si && ms) { if (sheet === 'scope') { if (si.parentNode !== ms) ms.appendChild(si); } else if (si.parentNode === ms) $('#tab-scope').appendChild(si); }
@@ -73,7 +77,7 @@
     document.body.insertAdjacentHTML('afterbegin', ICONS);
     // top bar: overflow + compact stop
     const top = $('header#top');
-    top.insertAdjacentHTML('beforeend', `<button id="mMenu" class="iconbtn m-only" aria-label="More">${ic('m-more')}</button>`);
+    top.insertAdjacentHTML('beforeend', `<button id="mMenu" class="iconbtn m-only" type="button" aria-label="More options" aria-haspopup="dialog" aria-expanded="false" aria-controls="mMore">${ic('m-more')}</button>`);
     $('#mMenu').onclick = () => setSheet(sheet === 'more' ? null : 'more');
     // orbital command dial (bottom centre) + ignition (bottom right) + telemetry ticker
     const modes = [['circuit', 'Circuit', 'm-circuit'], ['code', 'Code', 'm-code'], ['parts', 'Parts', 'm-parts'], ['serial', 'Serial', 'm-serial'], ['insp', 'Inspect', 'm-sliders'], ['scope', 'Scope', 'm-scope'], ['more', 'More', 'm-more']];
@@ -127,7 +131,7 @@
     // More sheet
     const more = document.createElement('section'); more.id = 'mMore'; more.className = 'panel m-sheet m-only';
     more.innerHTML = `<div class="m-more-b">
-      <div class="m-grp"><div class="m-lbl">Examples</div><div class="m-selwrap" id="mExWrap"></div></div>
+      <div class="m-grp"><label class="m-lbl" for="mSelExample">Examples</label><div class="m-selwrap" id="mExWrap"></div></div>
       <div class="m-grp"><div class="m-lbl">Project</div><div class="m-grid">
         <button data-a="projects">${ic('i-folder')}<span>My projects</span></button><button data-a="save">${ic('i-save')}<span>Save</span></button>
         <button data-a="download">${ic('i-download')}<span>Download</span></button><button data-a="import">${ic('i-upload')}<span>Import</span></button></div></div>
@@ -380,15 +384,43 @@
     if (a.schematic && a.schematic.active) { a.schematic.fit(); return; }
     ed.fit();
   }
+  function fitPillOn() {
+    if (PHONE_FIT_BUTTON === false) return false;
+    const root = document.documentElement;
+    if (root && root.getAttribute && root.getAttribute('data-fit-pill') === 'off') return false;
+    return true;
+  }
+  function applyFitPillFlag() {
+    const on = fitPillOn();
+    const root = document.documentElement;
+    if (!on && PHONE_FIT_BUTTON === false && root && root.setAttribute && (!root.getAttribute || root.getAttribute('data-fit-pill') !== 'off')) root.setAttribute('data-fit-pill', 'off');
+    const b = document.getElementById && document.getElementById('bFitPill');
+    if (!b) return on;
+    b.hidden = !on;
+    if (!on) {
+      b.setAttribute('aria-hidden', 'true');
+      b.tabIndex = -1;
+    } else {
+      if (typeof b.removeAttribute === 'function') b.removeAttribute('aria-hidden');
+      else b.setAttribute('aria-hidden', 'false');
+      if (!(b.tabIndex >= 0)) b.tabIndex = 0;
+    }
+    return on;
+  }
   function bindFitPill() {
+    applyFitPillFlag();
     const b = document.getElementById && document.getElementById('bFitPill');
     if (!b || b._fitBound) return;
     b._fitBound = true;
-    b.addEventListener('click', (e) => { if (e && e.preventDefault) e.preventDefault(); fitFromPill(); });
+    const go = (e) => {
+      if (!fitPillOn()) return;
+      if (e && e.preventDefault) e.preventDefault();
+      fitFromPill();
+    };
+    b.addEventListener('click', go);
     b.addEventListener('keydown', (e) => {
       if (!e || e.repeat || (e.key !== 'Enter' && e.key !== ' ')) return;
-      if (e.preventDefault) e.preventDefault();
-      fitFromPill();
+      go(e);
     });
   }
   function ignitePress(e) {
@@ -420,8 +452,9 @@
     const runBtn = document.querySelector('#bRun');
     const spinning = !!(runBtn && runBtn.classList && runBtn.classList.contains('spinning'));
     const hasRun = !!(window.app && window.app.run);
-    const compiling = !live && (spinning || (hasRun && busy));
-    const on = !compiling && (live || hasRun);
+    const phase = (window.app && window.app.compilePhase) || 'idle';
+    const compiling = phase === 'queued' || phase === 'building' || (phase !== 'running' && !live && (spinning || (hasRun && busy)));
+    const on = !compiling && (phase === 'running' || live || hasRun);
     b.classList.toggle('compiling', compiling);
     b.classList.toggle('live', on);
     // Stay in the tab order so the compiling name can be read. Activation is ignored.
@@ -429,7 +462,7 @@
     if (!(b.tabIndex >= 0)) b.tabIndex = 0;
     b.setAttribute('aria-busy', compiling ? 'true' : 'false');
     b.setAttribute('aria-disabled', compiling ? 'true' : 'false');
-    const label = compiling ? 'Compiling…' : on ? 'Stop' : 'Run';
+    const label = compiling ? (phase === 'queued' ? 'Queued' : 'Building…') : on ? 'Stop' : 'Run';
     b.setAttribute('aria-label', label);
     b.setAttribute('title', label);
     b.title = label;
@@ -507,5 +540,5 @@
   }
   window.addEventListener('DOMContentLoaded', () => { bindFitPill(); apply(); if (MQ.addEventListener) MQ.addEventListener('change', apply); else MQ.addListener(apply); if (document.body.classList.contains('m')) setTimeout(() => fitIfReady(window.app && window.app.editor, true), 200); });
   bindFitPill();
-  window.Mobile = { setSheet, openDock, fitIfReady, fitFromPill, bindFitPill, ignitePress, bindIgnite, syncIgnite, sheetHead, syncPhoneChrome };
+  window.Mobile = { setSheet, openDock, fitIfReady, fitFromPill, bindFitPill, applyFitPillFlag, ignitePress, bindIgnite, syncIgnite, sheetHead, syncPhoneChrome };
 })();

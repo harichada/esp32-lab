@@ -122,7 +122,7 @@ body.m #insp input[type=checkbox]{width:24px;height:24px}body.m #insp .row butto
 body.m table.pins{font-size:13px}body.m table.pins td{padding:8px}body.m .sw{width:32px;height:32px}
 /* more sheet */
 .m-more-b{overflow:auto;padding:4px 16px calc(18px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:18px}
-.m-lbl{font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--mut);margin:0 2px 8px}
+.m-lbl{display:block;font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--mut);margin:0 2px 8px}
 .m-selwrap select{width:100%;height:50px;border-radius:12px}
 .m-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
 .m-grid button{height:76px;flex-direction:column;justify-content:center;gap:7px;border-radius:14px;font-size:12px;white-space:normal;text-align:center;line-height:1.2;background:var(--l2);border-color:var(--hair)}.m-grid .ic{width:22px;height:22px;color:var(--acc)}
@@ -234,6 +234,17 @@ body.m #mIgnite.compiling .m-ig-i,body.m #mIgnite.compiling .m-ig-t{visibility:h
 body.m #mIgnite.compiling .m-ig-bg{animation:none;stroke:currentColor;stroke-dasharray:none;filter:none}
 body.m #mIgnite.compiling .m-ig-p{animation:none;opacity:0;filter:none}
 body.m #mIgnite.compiling::after{content:"";position:absolute;left:50%;top:50%;width:18px;height:18px;margin:-9px 0 0 -9px;border-radius:50%;border:2px solid currentColor;border-right-color:transparent;box-sizing:border-box;animation:runspin .7s linear infinite}
+/* Narrow phones use the toast. Wider phone shells (tablet width) use the strip under the bar. */
+.m-compile-toast{display:none}
+@media (max-width:640px){
+  body.m .m-compile-toast{position:fixed;right:max(16px,env(safe-area-inset-right));bottom:calc(102px + env(safe-area-inset-bottom));z-index:60;display:block;width:min(280px,calc(100vw - 24px));margin:0;padding:8px 10px;border-radius:12px;background:#1b1f24;color:#e8eaed;border:1px solid #9aa3af;font-size:13px;line-height:1.4;font-weight:500;text-align:left;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;height:auto;pointer-events:none;box-shadow:0 8px 24px rgba(0,0,0,.35)}
+  body.m .m-compile-toast[hidden]{display:none!important}
+  #compileStrip{display:none!important}
+}
+@media (min-width:641px){
+  body.m #compileStrip{top:var(--mTop)}
+}
+html[data-theme=light] body.m .m-compile-toast{background:#eceef1;color:#2c333c;border-color:#3d4550}
 body.busy #mIgnite .m-ig-bg{stroke:var(--warn);stroke-dasharray:8 6;animation:mSpin 1.2s linear infinite;transform-origin:center}
 #mCount{position:fixed;inset:0;z-index:85;pointer-events:none;place-items:center;font:700 min(60px,12vw) var(--mono);letter-spacing:.06em;color:#e6fdff;text-shadow:0 0 30px var(--acc),0 0 60px rgba(34,211,238,.5)}
 body.m #mCount.on{display:grid!important;animation:mCnt .23s ease-out infinite}
@@ -308,6 +319,10 @@ body.m .tel-i canvas{width:84px;height:22px}body.m .tel-h{display:none}body.m .t
   body.m .zoom-tools #bFit{display:none!important}
   body.m.view3d .zoom-tools #zoomPct,body.m.view3d .zoom-tools #bFitPill{display:inline-flex!important}
 }
+/* data-fit-pill=off, or PHONE_FIT_BUTTON = false, hides the icon. The % tap still fits. */
+html[data-fit-pill=off] #bFitPill,
+html[data-fit-pill=off] body.m #bFitPill,
+html[data-fit-pill=off] body.m .zoom-tools #bFitPill{display:none!important}
 
 /* header view chip on phones: fixed, dark, above everything. Names the current view. */
 body.m #bForce2d{position:fixed;top:calc(env(safe-area-inset-top) + 12px);right:64px;height:32px;min-height:32px;min-width:44px;max-width:46vw;z-index:2147483647;margin:0;border-radius:16px;overflow:hidden;text-overflow:ellipsis}

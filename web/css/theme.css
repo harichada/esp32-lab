@@ -52,9 +52,19 @@ header#top{height:48px;display:flex;align-items:center;gap:var(--s3);padding:0 v
 .chip-tag{font-size:10.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;padding:2px 7px;border-radius:20px;border:1px solid var(--line2);color:var(--txt2);white-space:nowrap}.chip-tag.ex{color:var(--warn);border-color:rgba(251,191,36,.35);background:rgba(251,191,36,.08)}.chip-tag.mine{color:var(--ok);border-color:rgba(52,211,153,.35);background:rgba(52,211,153,.08)}
 .runctl{display:flex;align-items:center;gap:2px;padding:2px;border-radius:8px;background:var(--l2);border:1px solid var(--line)}.runctl .run{height:26px;padding:0 12px}.runctl .run .ic{width:12px;height:12px}
 #bRun:disabled{cursor:progress;opacity:.72}#bRun:disabled:hover{transform:none}
-#bRun.spinning,#bRun.spinning:hover{background:var(--l3);border-color:var(--line2);color:var(--mut);box-shadow:none}
+#bRun.spinning,#bRun.spinning:disabled{background:#1b1f24;border-color:#9aa3af;color:#e8eaed;box-shadow:none;opacity:1}
+#bRun.spinning:hover{background:#2a3038;border-color:#c5c9d0;color:#ffffff;opacity:1}
+#bRun.spinning:active{background:#12161b;border-color:#9aa3af;color:#e8eaed;opacity:1;transform:none}
+#bRun.spinning:focus-visible{background:#1b1f24;color:#e8eaed;opacity:1;outline:2px solid #0891b2;outline-offset:2px}
+html[data-theme=light] #bRun.spinning,html[data-theme=light] #bRun.spinning:disabled,html[data-theme=light] #bRun.spinning:focus-visible{background:#eceef1;border-color:#3d4550;color:#2c333c;opacity:1}
+html[data-theme=light] #bRun.spinning:hover{background:#e2e5e9;border-color:#3d4550;color:#15181c}
+html[data-theme=light] #bRun.spinning:active{background:#d5d9df;border-color:#3d4550;color:#15181c;transform:none}
 #bRun .runspin{display:none;width:12px;height:12px;border-radius:50%;border:2px solid currentColor;border-right-color:transparent;box-sizing:border-box;flex:none}
 #bRun.spinning .ic{display:none}#bRun.spinning .runspin{display:block;animation:runspin .7s linear infinite}
+/* Full-width compile line under the top bar. Fixed, so showing it does not move the bar or the canvas. */
+#compileStrip{position:fixed;top:48px;left:0;right:0;z-index:12;margin:0;padding:8px 16px;box-sizing:border-box;background:#1b1f24;color:#e8eaed;border-bottom:1px solid #9aa3af;font-size:13.5px;line-height:1.45;font-weight:500;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;pointer-events:none}
+#compileStrip[hidden]{display:none!important}
+html[data-theme=light] #compileStrip{background:#eceef1;color:#2c333c;border-bottom-color:#3d4550}
 @keyframes runspin{to{transform:rotate(360deg)}}
 body.running .runctl .run{background:var(--l3);color:var(--ok);border-color:rgba(52,211,153,.4);box-shadow:none}body.running #bStop{color:var(--err)}
 .status{display:flex;align-items:center;gap:8px;height:28px;padding:0 10px;border-radius:var(--r2);background:var(--l2);border:1px solid var(--line);color:var(--txt2);font-size:12px;white-space:nowrap;position:relative;overflow:hidden;min-width:150px}

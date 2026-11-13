@@ -256,10 +256,11 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   };
   function stopRun() {
     const r = app.run; app.run = null; if (!r) return; try { clStorage.session.removeItem('esp32run'); } catch (e) { /* */ }
-    clearTimeout(r.retryT); clearInterval(r.hbT); document.body.classList.remove('reconnecting');
+    clearTimeout(r.retryT); clearInterval(r.hbT); clearInterval(r.poll); r.poll = null; document.body.classList.remove('reconnecting');
     if (r.ws) { try { r.ws.send(JSON.stringify({ t: 'stop', why: 'stop button' })); r.ws.close(); } catch (e) { /* closed */ } }
     if (r.sketch) r.sketch.stop();
     const e = espPart(); if (e) app.sim.espRuntime(e).reset(); app.sim.dirty = true; setStatus('idle', 'stopped');
+    setCompilePhase('idle');
   }
   // A firmware-cache hit must not keep the stage lines a previous build (or this
   // request's progress poll) wrote into the log. One summary line replaces them.
@@ -272,19 +273,78 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     return rest.length ? rest.join('\n') + '\n' : '';
   }
   let compileBusy = false;
+  const BUILDING_TEXT = 'Building your code… the first build takes longer.';
+  const QUEUE_FALLBACK = 'Waiting for another build to finish…';
+  // One phase for the Run button and the status line: idle, queued, building, running.
+  // A 429, a compile error, and a dropped socket return to idle.
+  function queuedCopy(wait) {
+    const msg = wait && typeof wait.message === 'string' ? wait.message.trim() : '';
+    const bare = !msg || msg === 'Waiting…' || msg === 'Waiting';
+    const stock = /^Waiting for another build to finish…/.test(msg);
+    let pos = null;
+    if (wait && wait.position != null && wait.position !== '') {
+      const n = Number(wait.position);
+      if (Number.isFinite(n) && n >= 1 && n < 1e6) pos = Math.floor(n);
+    }
+    if (!bare && !stock) {
+      if (pos != null && pos > 1 && !new RegExp('(?:^|\\D)' + pos + '(?:\\D|$)').test(msg)) {
+        const sep = /[.!?…]$/.test(msg) ? ' ' : '. ';
+        return msg + sep + 'Position ' + pos + '.';
+      }
+      return msg;
+    }
+    if (pos != null && pos > 1) return 'Another build is ahead of yours. You are number ' + pos + '.';
+    if (pos === 1) return 'Another build is ahead of yours. Yours starts next.';
+    if (!bare && stock) return msg;
+    return QUEUE_FALLBACK;
+  }
   function setRunLabel(text) {
     const label = $('#bRun') && $('#bRun').querySelector('span');
     if (label) label.textContent = text;
   }
-  function setRunBusy(on) {
-    compileBusy = !!on;
+  let paintedStatus = '';
+  function setCompilePhase(phase, detail) {
+    const next = phase === 'queued' || phase === 'building' || phase === 'running' ? phase : 'idle';
+    app.compilePhase = next;
+    compileBusy = next === 'queued' || next === 'building';
+    const sentence = next === 'queued' ? (detail || QUEUE_FALLBACK) : next === 'building' ? BUILDING_TEXT : '';
+    const buttonLabel = next === 'queued' ? 'Queued' : next === 'building' ? 'Building…' : 'Run';
     const b = $('#bRun');
-    if (!b) return;
-    b.disabled = !!on;
-    b.classList.toggle('spinning', !!on);
-    b.setAttribute('aria-busy', on ? 'true' : 'false');
-    setRunLabel(on ? 'Compiling…' : 'Run');
+    if (b) {
+      b.disabled = compileBusy;
+      b.classList.toggle('spinning', compileBusy);
+      b.setAttribute('aria-busy', compileBusy ? 'true' : 'false');
+      const title = compileBusy ? sentence : 'Compile & run (Ctrl+Enter)';
+      b.title = title;
+      b.setAttribute('title', title);
+      setRunLabel(buttonLabel);
+    }
+    const narrow = !!(window.matchMedia && window.matchMedia('(max-width: 640px)').matches);
+    const showToast = !!(sentence && narrow);
+    const showStrip = !!(sentence && !narrow);
+    const strip = document.getElementById && document.getElementById('compileStrip');
+    if (strip) {
+      strip.textContent = sentence;
+      strip.hidden = !showStrip;
+      strip.setAttribute('aria-hidden', showStrip ? 'false' : 'true');
+    }
+    const toast = document.getElementById && document.getElementById('mCompileToast');
+    if (toast) {
+      toast.textContent = sentence;
+      toast.hidden = !showToast;
+      toast.setAttribute('aria-hidden', showToast ? 'false' : 'true');
+    }
+    const pill = document.getElementById && document.getElementById('stText');
+    if (pill) {
+      if (sentence) { pill.textContent = sentence; paintedStatus = sentence; }
+      else if (paintedStatus && pill.textContent === paintedStatus) { pill.textContent = ''; paintedStatus = ''; }
+    }
+    if (window.Mobile && typeof window.Mobile.syncIgnite === 'function') window.Mobile.syncIgnite();
   }
+  function setRunBusy(on) { setCompilePhase(on ? 'building' : 'idle'); }
+  app.queuedCopy = queuedCopy;
+  app.setCompilePhase = setCompilePhase;
+  app.BUILDING_TEXT = BUILDING_TEXT;
   function tabClientId() {
     try {
       let id = clStorage.session.getItem('esp32client');
@@ -318,30 +378,32 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     }
     const run = app.run = { kind: 'qemu', t0: performance.now() };
     app.netlog.add({ k: 'info', msg: `—— run: ${app.proj.name || 'sketch'} ——` });
-    setRunBusy(true);
-    setStatus('busy', 'compiling…'); $('#buildLog').textContent = '';
+    setCompilePhase('building');
+    setStatus('busy', BUILDING_TEXT); $('#buildLog').textContent = '';
     let res;
     const clientHeaders = { 'X-Client-Id': tabClientId() };
     let shownWait = '';
+    let holdBuilding = false;
     try {
-      const bl = $('#buildLog'); bl.textContent = 'compiling…\n';
+      const bl = $('#buildLog'); bl.textContent = BUILDING_TEXT + '\n';
       const poll = async () => {
         try {
           const q = await (await fetch('api/compile/progress', { headers: clientHeaders })).json();
           if (app.run !== run || !run.poll || run.settled) return;
-          if (q.wait && q.wait.message) {
-            setRunLabel('Waiting…');
-            setStatus('busy', q.wait.message);
-            if (shownWait !== q.wait.message) {
-              shownWait = q.wait.message;
-              bl.textContent = q.wait.message + '\n';
-              serialAppend('\n[' + q.wait.message + ']\n');
+          const waiting = q.wait && (q.wait.message || q.wait.position != null || q.wait.reason);
+          if (waiting) {
+            const copy = queuedCopy(q.wait);
+            setCompilePhase('queued', copy);
+            setStatus('busy', copy);
+            if (shownWait !== copy) {
+              shownWait = copy;
+              bl.textContent = copy + '\n';
+              serialAppend('\n[' + copy + ']\n');
             }
-          } else if (q.unpacking) setStatus('busy', `unpacking toolchain… ${Math.round((q.unpackProgress || 0) * 100)}%`);
-          else if (q.active) {
-            setRunLabel('Compiling…');
-            const stage = q.stage || 'compiling…';
-            bl.textContent = q.log || (stage + '\n'); bl.scrollTop = bl.scrollHeight; setStatus('busy', `${stage} ${Math.round(q.elapsed)}s`);
+          } else if (q.unpacking || q.active) {
+            setCompilePhase('building');
+            setStatus('busy', BUILDING_TEXT);
+            if (q.active) { const stage = q.stage || 'compiling…'; bl.textContent = q.log || (stage + '\n'); bl.scrollTop = bl.scrollHeight; }
           }
         } catch (e) {}
       };
@@ -357,6 +419,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
         const msg = (reason === 'full' || reason === 'timeout') && body.log
           ? body.log
           : `Please wait ${wait} second${wait === 1 ? '' : 's'} before compiling again`;
+        setCompilePhase('idle');
         setStatus('warn', msg); toast(msg);
         $('#buildLog').textContent = msg + '\n';
         serialAppend('\n[' + msg + ']\n');
@@ -365,11 +428,12 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       }
       res = await r.json();
       run.settled = true;
-    } catch (e) { clearInterval(run.poll); run.poll = null; setStatus('err', 'backend unreachable'); serialAppend('\n[backend] cannot reach /api/compile — start server/server.py (see README) or switch to JS sketch mode.\n'); app.run = null; return; }
-    finally { setRunBusy(false); }
+      holdBuilding = !!(res && res.ok && app.run === run);
+    } catch (e) { clearInterval(run.poll); run.poll = null; setCompilePhase('idle'); setStatus('err', 'backend unreachable'); serialAppend('\n[backend] cannot reach /api/compile — start server/server.py (see README) or switch to JS sketch mode.\n'); app.run = null; return; }
+    finally { if (!holdBuilding || app.run !== run) setCompilePhase('idle'); }
     if (app.run !== run) return;
     $('#buildLog').textContent = res.cached ? cachedCompileLog(res.log) : (res.log || ''); if (app.codeview) app.codeview.setLog(res.ok ? '' : (res.log || ''));
-    if (!res.ok) { setStatus('err', 'compile error'); $('#buildDet').open = true; document.querySelector('[data-tab=build]').click(); if (app.codeview) app.codeview.setLog(res.log || ''); serialAppend('\n[compile failed — see build log in Code tab]\n'); app.run = null; return; }
+    if (!res.ok) { setCompilePhase('idle'); setStatus('err', 'compile error'); $('#buildDet').open = true; document.querySelector('[data-tab=build]').click(); if (app.codeview) app.codeview.setLog(res.log || ''); serialAppend('\n[compile failed — see build log in Code tab]\n'); app.run = null; return; }
     serialAppend(`\n[compiled ${res.cached ? '(cached)' : ''}${res.netShim ? ' + QemuNet shim' : ''}; starting QEMU]\n`);
     run.bid = res.id; run.lastN = 0; run.tries = 0; connectRun(run);
   }
@@ -381,10 +445,10 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const q = resume ? `?sid=${run.sid}&since=${run.lastN}` : '';
     let ws;
     try { ws = run.ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + location.pathname.replace(/[^/]*$/, '') + 'api/run/' + run.bid + q); }
-    catch (e) { setRunBusy(false); setStatus('err', 'connection lost'); app.run = null; return; }
+    catch (e) { setCompilePhase('idle'); setStatus('err', 'connection lost'); app.run = null; return; }
     ws.onopen = () => {
       ws.send(JSON.stringify({ t: 'sync', on: true })); ws.send(JSON.stringify({ t: 'i2cfast', on: new URLSearchParams(location.search).get('i2cfast') !== '0' })); if (!app.netlog.enabled) ws.send(JSON.stringify({ t: 'netlog', on: false })); if (new URLSearchParams(location.search).get('gcache') === '0') ws.send(JSON.stringify({ t: 'gcache', on: false }));
-      app.spiMask = -1; spiCfg(); setStatus('run', 'running (QEMU)'); document.body.classList.remove('reconnecting'); run.tq = run.tq || performance.now();
+      app.spiMask = -1; spiCfg(); setCompilePhase('running'); setStatus('run', 'running (QEMU)'); document.body.classList.remove('reconnecting'); run.tq = run.tq || performance.now();
       if (resume) { ws.send(JSON.stringify({ t: 'inv' })); app.lastBits = null; replyInputs(true); app.netlog.add({ k: 'info', msg: `websocket resumed (attempt ${run.tries})` }); toast('Reconnected — simulation kept running'); }
       run.tries = 0; run.openedAt = Date.now();
     };
@@ -405,8 +469,8 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const lost = () => {
       if (app.run !== run || run.ws !== ws) return;
       run.ws = null; ws.onclose = ws.onmessage = null; try { ws.close(); } catch (e) { /* already closed */ }
-      // A dropped socket is no longer a compile. The Run control must not stay on Compiling….
-      setRunBusy(false);
+      // A dropped socket is no longer a compile. The Run control must not stay on Building….
+      setCompilePhase('idle');
       if (run.ended || !run.sid) { setStatus(run.ended ? 'idle' : 'err', run.ended ? 'QEMU exited' : 'connection lost'); document.body.classList.remove('reconnecting'); app.run = null; return; }
       if (!run.lostAt || run.tries === 0) run.lostAt = Date.now();
       if (run.grace && Date.now() - run.lostAt > run.grace + 600000) { setStatus('err', 'connection lost'); document.body.classList.remove('reconnecting'); serialAppend('\n[connection lost — run expired on the server]\n'); app.run = null; return; }
