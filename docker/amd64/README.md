@@ -16,8 +16,11 @@ arduino-cli core update-index && arduino-cli core install esp32:esp32@3.3.12
 2. Load/build image, then:
 ```
 docker run -d --name esp32lab -p 80:8765 -p 8765:8765 --restart unless-stopped \
+  --security-opt seccomp=/home/opc/seccomp-bwrap.json \
+  --security-opt no-new-privileges \
   -v esp32lab-data:/home/sim/.esp32lab -v esp32lab-cache:/home/sim/.cache/arduino esp32-lab:local
 ```
+Before `build-image.sh` copies `~/qemu-gpio` into the context, and again after `esp32lab` is running, run the spawn-environment `--version` check and the `ldd` check in the root README. `ldd` must not print `not found`. Set `SIM_QEMU_LIB_DIRS` when a QEMU library such as `libslirp.so.0` is outside the prefix. Accepted directories are appended after QEMU's own lib dirs. QEMU runs inside bubblewrap; `/health` is false when `sandbox_ok` or `qemu_ok` is false.
 3. Oracle images ship restrictive iptables; open ports (and persist):
 ```
 sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 80 -j ACCEPT

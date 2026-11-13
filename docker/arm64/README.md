@@ -26,5 +26,9 @@ make -j && make install
 cp -r ../../web ctx/app && rm -rf ctx/app/dl
 docker build -t esp32-lab ctx
 docker run -d --name esp32lab -p 80:8765 -p 8765:8765 --restart unless-stopped \
+  --security-opt seccomp=/home/opc/seccomp-bwrap.json \
+  --security-opt no-new-privileges \
   -v esp32lab-data:/home/sim/.esp32lab -v esp32lab-cache:/home/sim/.cache/arduino esp32-lab
 ```
+
+Before copying `qemu-gpio` into `ctx/home/qemu-gpio`, and again after the container is up, run `qemu-system-xtensa --version` with the server's spawn environment and confirm `ldd` prints no `not found` lines. Set `SIM_QEMU_LIB_DIRS` when `libslirp.so.0` (or another QEMU library) lives outside the prefix; accepted directories are appended after QEMU's own lib dirs. The same commands are in the root README deploy section. `/health` is false when `sandbox_ok` or `qemu_ok` is false. QEMU runs inside bubblewrap.

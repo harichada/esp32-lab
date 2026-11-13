@@ -1,0 +1,5 @@
+Fresh sandboxed compile (real bwrap, real esp-x32 toolchain, same path as /api/compile), then a fresh Blink whose returned id is opened on /api/run and must toggle GPIO2. Skips only when bwrap, the toolchain, or the patched QEMU is missing; SIM_REQUIRE_TOOLCHAIN_TEST=1 makes a missing piece a failure:
+
+    cd web && SIM_REQUIRE_TOOLCHAIN_TEST=1 python3 -m unittest tests.sandbox_toolchain_test -v
+
+The Blink watch is `SIM_TOOLCHAIN_RUN_DEADLINE` seconds (default 15, never above 120). GPIO2 must still toggle at least twice. When it does not, the failure text includes the last 20 UART lines and the gpio and fsel payloads the run saw.

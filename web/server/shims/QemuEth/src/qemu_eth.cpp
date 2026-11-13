@@ -3,8 +3,13 @@
 #include "esp_eth.h"
 #include "esp_event.h"
 #include "esp_eth_mac_openeth.h"
+#include "lwip/ip4_addr.h"
 #include "lwip/netdb.h"
+#include "lwip/netif.h"
 #include "lwip/sockets.h"
+#include "lwip/tcpip.h"
+#include <errno.h>
+#include <fcntl.h>
 #include <string.h>
 extern "C" esp_eth_mac_t *esp_eth_mac_new_openeth(const eth_mac_config_t *config);
 QemuEthWiFiClass WiFi;
@@ -12,7 +17,22 @@ static esp_netif_t *s_netif; static volatile bool s_up; static bool s_started;
 static void on_ip(void *, esp_event_base_t, int32_t, void *data) {
   ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
   s_up = true;
-  Serial.printf("[qemu-eth] lwIP up on open_eth: " IPSTR " (gw " IPSTR ", DHCP)\n", IP2STR(&e->ip_info.ip), IP2STR(&e->ip_info.gw));
+  // slirp restrict=on omits the DHCP router option, so the guest's gateway
+  // stays 0.0.0.0 and an off-subnet datagram (the Eco plug at 10.13.37.2)
+  // never reaches the hub. Point the route at slirp's 10.0.2.2. restrict=on
+  // still drops TCP to that address and to the public internet; the frame
+  // tap is what receives the datagram.
+  esp_ip4_addr_t shown = e->ip_info.gw;
+  if (netif_default && ip4_addr_isany(netif_ip4_gw(netif_default))) {
+    ip4_addr_t slirp;
+    IP4_ADDR(&slirp, 10, 0, 2, 2);
+    LOCK_TCPIP_CORE();
+    netif_set_gw(netif_default, &slirp);
+    UNLOCK_TCPIP_CORE();
+    shown.addr = slirp.addr;
+  }
+  Serial.printf("[qemu-eth] lwIP up on open_eth: " IPSTR " (gw " IPSTR ", DHCP)\n",
+                IP2STR(&e->ip_info.ip), IP2STR(&shown));
 }
 wl_status_t QemuEthWiFiClass::begin(const char *ssid, const char *) {
   if (s_started) return status();
@@ -53,6 +73,35 @@ extern "C" int __wrap_lwip_getaddrinfo(const char *n, const char *s, const struc
 // 10/8 except slirp's 10.0.2/24) on the ports the virtual devices serve (80, 8060, 8080) are redirected to the simulator's
 // virtual devices at 10.0.2.100. Build with -DSIM_NO_LAN_REMAP to disable (then such connects go out via slirp).
 extern "C" int __real_lwip_connect(int s, const struct sockaddr *name, socklen_t namelen);
+// Slirp restrict=on drops a SYN and does not send RST, so lwIP's SYN retransmits
+// (3 s, then 6, 12, …) hold the sketch well past 6 s. Wait at most 3 s, then
+// return an error. A virtual device that accepts still returns immediately.
+static const int kConnectFailFastSec = 3;
+static int connect_failfast(int s, const struct sockaddr *name, socklen_t namelen) {
+  int flags = lwip_fcntl(s, F_GETFL, 0);
+  if (flags < 0) flags = 0;
+  lwip_fcntl(s, F_SETFL, flags | O_NONBLOCK);
+  int rc = __real_lwip_connect(s, name, namelen);
+  if (rc == 0 || errno != EINPROGRESS) {
+    lwip_fcntl(s, F_SETFL, flags);
+    return rc;
+  }
+  fd_set wset;
+  FD_ZERO(&wset);
+  FD_SET(s, &wset);
+  struct timeval tv;
+  tv.tv_sec = kConnectFailFastSec;
+  tv.tv_usec = 0;
+  int sel = lwip_select(s + 1, nullptr, &wset, nullptr, &tv);
+  int err = ETIMEDOUT;
+  if (sel > 0) {
+    socklen_t len = sizeof err;
+    if (lwip_getsockopt(s, SOL_SOCKET, SO_ERROR, &err, &len) < 0) err = errno;
+  }
+  lwip_fcntl(s, F_SETFL, flags);
+  if (err) { errno = err; return -1; }
+  return 0;
+}
 extern "C" int __wrap_lwip_connect(int s, const struct sockaddr *name, socklen_t namelen) {
 #ifndef SIM_NO_LAN_REMAP
   if (name && name->sa_family == AF_INET && namelen >= sizeof(struct sockaddr_in)) {
@@ -63,9 +112,9 @@ extern "C" int __wrap_lwip_connect(int s, const struct sockaddr *name, socklen_t
       char o[16]; inet_ntoa_r(a.sin_addr, o, sizeof o);
       Serial.printf("[qemu-eth] connect %s:%u -> virtual device 10.0.2.100:%u (LAN remap)\n", o, port, port);
       a.sin_addr.s_addr = htonl(0x0A000264);
-      return __real_lwip_connect(s, (struct sockaddr *)&a, sizeof a);
+      return connect_failfast(s, (struct sockaddr *)&a, sizeof a);
     }
   }
 #endif
-  return __real_lwip_connect(s, name, namelen);
+  return connect_failfast(s, name, namelen);
 }

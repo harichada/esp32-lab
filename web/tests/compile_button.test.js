@@ -58,6 +58,7 @@ bRun.appendChild(spin);
 byId('code', 'textarea');
 byId('inDefines', 'input');
 byId('buildLog', 'pre');
+byId('netNotice', 'p');
 byId('buildDet', 'details');
 byId('stDot', 'i');
 byId('stText', 'span');
@@ -109,9 +110,13 @@ let compileReply = null;
 let wsShouldThrow = false;
 let progressBody = { active: false };
 let lastCompile = null;
+let lastProgress = null;
 global.fetch = (url, init) => {
   const u = String(url);
-  if (u.includes('progress')) return Promise.resolve({ status: 200, json: async () => progressBody });
+  if (u.includes('progress')) {
+    lastProgress = { url: u, init: init || {} };
+    return Promise.resolve({ status: 200, json: async () => progressBody });
+  }
   if (u.includes('api/compile')) { lastCompile = { url: u, init: init || {} }; return compileReply; }
   return Promise.resolve({ status: 200, ok: true, json: async () => ({}) });
 };
@@ -371,6 +376,9 @@ test('a queued compile shows the server message and position, then returns to id
   assert.match(app.serialText, /\[Another build is ahead of yours\. You are number 2\.\]/);
   const id = lastCompile.init.headers['X-Client-Id'];
   assert.match(id, /^[A-Za-z0-9_-]{1,64}$/);
+  assert.equal(lastCompile.init.headers['X-Compile-Id'], undefined);
+  assert.equal(lastProgress.init.headers['X-Compile-Id'], undefined);
+  assert.equal(lastProgress.init.headers['X-Client-Id'], id);
   progressBody = { active: false, wait: { reason: 'warm-up', position: 1, message: 'Preparing network stack (first run after restart), about 40 s…' } };
   await delay(450);
   assert.equal(label.textContent, 'Queued');
@@ -429,6 +437,56 @@ test('compile status copy covers queue fallbacks and never a bare Waiting', () =
     assert.notEqual(text, '');
     assert.notEqual(text, 'Waiting…');
   }
+});
+
+
+test('a network sketch shows the safety line once, through textContent', async () => {
+  const notice = 'Your sketch uses the network. It can reach the simulated devices in Circuit Lab, but not the internet, which is blocked for safety. Requests to real websites will fail even if your code is fine.';
+  const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
+  assert.match(html, /id="netNotice" role="status"/);
+  assert.match(html, /min-height:1\.6em/);
+  assert.match(html, /color:var\(--txt\)/);
+  ids.netNotice.textContent = '';
+  const pending = gate();
+  compileReply = pending.promise;
+  const flight = app.startRun();
+  await delay(20);
+  assert.equal(lastProgress.init.headers['X-Compile-Id'], undefined);
+  const serverId = 'serverCompileIdValue22';
+  pending.resolve(okResponse({ compile_id: serverId, net_blocked_notice: true }));
+  await flight;
+  assert.equal(ids.netNotice.textContent, notice);
+  assert.equal(ids.netNotice.innerHTML, undefined);
+  assert.equal(lastProgress.init.headers['X-Compile-Id'], serverId);
+  assert.match(lastProgress.url, /id=serverCompileIdValue22/);
+  const again = gate();
+  compileReply = again.promise;
+  const second = app.startRun();
+  again.resolve(okResponse({ compile_id: serverId, net_blocked_notice: true }));
+  await second;
+  assert.equal(ids.netNotice.textContent, notice);
+  const quiet = gate();
+  compileReply = quiet.promise;
+  const third = app.startRun();
+  quiet.resolve(okResponse({ compile_id: 'anotherServerCompileId22', net_blocked_notice: false }));
+  await third;
+  assert.equal(ids.netNotice.textContent, '');
+});
+
+test('a build-server failure is shown as that sentence, not an include hint', async () => {
+  const msg = "The build server had a problem. Your code wasn't the cause. Please try again in a minute.";
+  const pending = gate();
+  compileReply = pending.promise;
+  const flight = app.startRun();
+  pending.resolve(okResponse({
+    ok: false,
+    reason: 'infra',
+    log: "We couldn't check this sketch's #include lines, so it wasn't built. Check them for typos, then press Run again.",
+  }));
+  await flight;
+  assert.equal(ids.buildLog.textContent, msg);
+  assert.equal(ids.buildLog.innerHTML, undefined);
+  assert.doesNotMatch(ids.buildLog.textContent, /#include lines/);
 });
 
 test('the busy Run button is grey, keeps its spinner, and theme.css is cache-busted', () => {
@@ -507,7 +565,7 @@ test('the busy Run button is grey, keeps its spinner, and theme.css is cache-bus
   const mv = html.match(/mobile\.css\?v=(\d+)/);
   assert.equal(mv && mv[1], '68');
   const av = html.match(/app\.js\?v=(\d+)/);
-  assert.equal(av && av[1], '77');
+  assert.equal(av && av[1], '79');
   const mj = html.match(/mobile\.js\?v=(\d+)/);
   assert.equal(mj && mj[1], '69');
   const ev = html.match(/editor\.js\?v=(\d+)/);

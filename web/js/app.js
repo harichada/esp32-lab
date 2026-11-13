@@ -508,6 +508,17 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       return id;
     } catch (e) { return ''; }
   }
+  const NET_NOTICE = 'Your sketch uses the network. It can reach the simulated devices in Circuit Lab, but not the internet, which is blocked for safety. Requests to real websites will fail even if your code is fine.';
+  function showNetNotice(on) {
+    const el = $('#netNotice');
+    if (!el) return;
+    el.textContent = on ? NET_NOTICE : '';
+  }
+  function progressHeaders(compileId) {
+    const headers = { 'X-Client-Id': tabClientId() };
+    if (compileId) headers['X-Compile-Id'] = compileId;
+    return headers;
+  }
   function retryAfterSeconds(r) {
     const h = r && r.headers && r.headers.get && r.headers.get('Retry-After');
     const n = parseInt(h, 10);
@@ -528,19 +539,20 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       try { await sk.start(); } catch (e) { return; }
       return;
     }
-    const run = app.run = { kind: 'qemu', t0: performance.now() };
+    const run = app.run = { kind: 'qemu', t0: performance.now(), compileId: '' };
     app.netlog.add({ k: 'info', msg: `—— run: ${app.proj.name || 'sketch'} ——` });
     setCompilePhase('building');
     setStatus('busy', BUILDING_TEXT); $('#buildLog').textContent = '';
+    showNetNotice(false);
     let res;
-    const clientHeaders = { 'X-Client-Id': tabClientId() };
     let shownWait = '';
     let holdBuilding = false;
     try {
       const bl = $('#buildLog'); bl.textContent = BUILDING_TEXT + '\n';
       const poll = async () => {
         try {
-          const q = await (await fetch('api/compile/progress', { headers: clientHeaders })).json();
+          const id = run.compileId;
+          const q = await (await fetch('api/compile/progress' + (id ? ('?id=' + encodeURIComponent(id)) : ''), { headers: progressHeaders(id) })).json();
           if (app.run !== run || !run.poll || run.settled) return;
           const waiting = q.wait && (q.wait.message || q.wait.position != null || q.wait.reason);
           if (waiting) {
@@ -561,7 +573,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       };
       run.poll = setInterval(poll, 400);
       poll();
-      const r = await fetchRetry('api/compile', { method: 'POST', headers: { 'content-type': 'application/json', ...clientHeaders }, body: JSON.stringify({ sketch: app.proj.code, files: app.proj.files, defines: app.proj.defines }) });
+      const r = await fetchRetry('api/compile', { method: 'POST', headers: { 'content-type': 'application/json', ...progressHeaders('') }, body: JSON.stringify({ sketch: app.proj.code, files: app.proj.files, defines: app.proj.defines }) });
       clearInterval(run.poll); run.poll = null;
       if (r.status === 429) {
         let body = {};
@@ -579,15 +591,28 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
         return;
       }
       res = await r.json();
+      run.compileId = res && res.compile_id ? String(res.compile_id) : '';
       run.settled = true;
       holdBuilding = !!(res && res.ok && app.run === run);
+      if (run.compileId) {
+        try { await fetch('api/compile/progress?id=' + encodeURIComponent(run.compileId), { headers: progressHeaders(run.compileId) }); } catch (e) { /* the POST body is the log */ }
+      }
     } catch (e) { clearInterval(run.poll); run.poll = null; setCompilePhase('idle'); setStatus('err', 'backend unreachable'); serialAppend('\n[backend] cannot reach /api/compile — start server/server.py (see README) or switch to JS sketch mode.\n'); app.run = null; return; }
     finally { if (!holdBuilding || app.run !== run) setCompilePhase('idle'); }
     if (app.run !== run) return;
-    $('#buildLog').textContent = res.cached ? cachedCompileLog(res.log) : (res.log || ''); if (app.codeview) app.codeview.setLog(res.ok ? '' : (res.log || ''));
-    if (!res.ok) { setCompilePhase('idle'); setStatus('err', 'compile error'); $('#buildDet').open = true; document.querySelector('[data-tab=build]').click(); if (app.codeview) app.codeview.setLog(res.log || ''); serialAppend('\n[compile failed — see build log in Code tab]\n'); app.run = null; return; }
+    const failure = compileFailureLog(res);
+    $('#buildLog').textContent = res.ok ? (res.cached ? cachedCompileLog(res.log) : (res.log || '')) : failure; if (app.codeview) app.codeview.setLog(res.ok ? '' : failure);
+    if (!res.ok) { setCompilePhase('idle'); setStatus('err', 'compile error'); $('#buildDet').open = true; document.querySelector('[data-tab=build]').click(); if (app.codeview) app.codeview.setLog(failure); serialAppend('\n[compile failed — see build log in Code tab]\n'); app.run = null; return; }
+    showNetNotice(!!res.net_blocked_notice);
     serialAppend(`\n[compiled ${res.cached ? '(cached)' : ''}${res.netShim ? ' + QemuNet shim' : ''}; starting QEMU]\n`);
     run.bid = res.id; run.lastN = 0; run.tries = 0; connectRun(run);
+  }
+  function compileFailureLog(res) {
+    // reason=infra is the build server. The learner sentence is fixed; the include-lines hint is only for their sketch.
+    if (res && res.reason === 'infra') {
+      return "The build server had a problem. Your code wasn't the cause. Please try again in a minute.";
+    }
+    return (res && res.log) || '';
   }
   app.startRun = startRun;
   // Resumable run websocket: the server keeps QEMU alive for a grace period when the socket drops (ngrok heartbeat
@@ -665,7 +690,12 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       case 'netlog': app.netlog.add(m); break;
       case 'invack': onInvAck(); break;
       case 'status': serialAppend(`[qemu] ${m.msg}\n`); break;
-      case 'error': app.netlog.add({ k: 'info', msg: 'error: ' + m.msg, ok: false }); serialAppend(`[error] ${m.msg}\n`); setStatus('err', 'error'); break;
+      case 'error': {
+        const shown = (m.reason === 'unknown' || m.msg === 'unknown build id')
+          ? 'This build has expired. Press Run to build it again.'
+          : (m.msg || 'error');
+        app.netlog.add({ k: 'info', msg: 'error: ' + shown, ok: false }); serialAppend(`[error] ${shown}\n`); setStatus('err', shown); break;
+      }
       case 'exit': serialAppend(`[qemu exited ${m.code}]\n`); break;
     }
   }
