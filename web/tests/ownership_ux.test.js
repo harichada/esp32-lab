@@ -303,8 +303,10 @@ test('the edit warning never shows while the edit button is disabled', () => {
   assert.doesNotMatch(view, /share-warn/);
   assert.match(owned, /share-warn/);
   assert.doesNotMatch(owned, /aria-disabled/);
-  assert.match(appSrc, /setAttribute\('aria-label', name\)/);
-  assert.match(appSrc, /pt\.title = name/);
+  assert.match(appSrc, /function setProjectTitle\(name\)/);
+  assert.match(appSrc, /setAttribute\('title', text\)/);
+  assert.match(appSrc, /setAttribute\('aria-label', text\)/);
+  assert.match(appSrc, /setProjectTitle\(name\)/);
 });
 
 test('a successful backup-and-copy yields a link that returns 200', async () => {
@@ -607,6 +609,6 @@ test('a missing project and an invalid id show the same recipient notice', () =>
   const start = appSrc.slice(appSrc.indexOf('if (pid)'), appSrc.indexOf("if (q && Examples.EX[q])"));
   assert.equal(start.split('rejectProjectLink()').length - 1, 3);
   assert.match(appSrc, /class="backup-row"/);
-  assert.match(fs.readFileSync(path.join(__dirname, '../css/mobile.css'), 'utf8'), /min-width:12ch/);
+  assert.match(fs.readFileSync(path.join(__dirname, '../css/theme.css'), 'utf8'), /\.proj-title\{[^}]*min-width:12ch/);
   assert.match(fs.readFileSync(path.join(__dirname, '../css/mobile.css'), 'utf8'), /text-overflow:ellipsis/);
 });
