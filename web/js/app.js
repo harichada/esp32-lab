@@ -1180,21 +1180,27 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (menu) menu.classList.remove('open');
     if (more) more.setAttribute('aria-expanded', 'false');
   }
-  let headerFitW = -1;
+  let headerFitKey = '';
   function syncHeaderFit() {
     placeProj();
     const top = document.getElementById && document.getElementById('top');
     const crumb = document.querySelector && document.querySelector('#top .crumb');
     const phone = !!(document.body && document.body.classList.contains('m'));
-    if (!top || !crumb || phone || typeof top.clientWidth !== 'number') { if (crumb && crumb.classList) crumb.classList.remove('crumb-hide'); syncDocTitle(); return; }
+    if (!top || !crumb || typeof top.clientWidth !== 'number') { if (crumb && crumb.classList) crumb.classList.remove('crumb-hide'); syncDocTitle(); return; }
     // Re-read clientWidth on every resize, including while the 11em status box is locked
-    // during a build. The class toggles only when that width changes, so the observer
-    // does not loop, and a busy pill cannot keep the previous window's overflow.
+    // during a build. The class toggles only when the width or the title changes, so the
+    // observer does not loop, and a busy pill cannot keep the previous window's overflow.
+    // A title that does not fit is hidden. An ellipsis would fail the header-fit check.
+    const title = document.getElementById && document.getElementById('projTitle');
+    const titleText = title ? title.textContent : '';
     const width = top.clientWidth;
-    if (width !== headerFitW) {
-      headerFitW = width;
+    const key = width + (phone ? 'p' : 'd') + titleText;
+    if (key !== headerFitKey) {
+      headerFitKey = key;
       crumb.classList.remove('crumb-hide');
-      if (top.scrollWidth > width + 1) crumb.classList.add('crumb-hide');
+      const titleClipped = !!(title && title.scrollWidth > title.clientWidth + 0.5);
+      const headerClipped = !phone && top.scrollWidth > width + 0.5;
+      if (titleClipped || headerClipped) crumb.classList.add('crumb-hide');
     }
     syncDocTitle();
   }
@@ -1254,6 +1260,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     syncExampleTip();
     syncHeaderFit();
   }
+  app.syncHeaderFit = syncHeaderFit;
   function init() {
     watchStripChrome();
     wireHeaderChrome();
