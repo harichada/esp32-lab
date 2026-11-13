@@ -148,7 +148,8 @@ body.c-palette [data-reopen=palette],body.c-side [data-reopen=side],body.c-dock 
 .share-warn{display:block;margin:0;padding:0;background:none;border:0;border-radius:0;min-height:0;box-shadow:none;font-size:12px;font-weight:400;line-height:1.35;color:#fbbf24}
 [data-theme=light] .share-warn{color:#92400e}
 .pb-own{font-size:12px;line-height:1.35;color:var(--txt)}
-.backup-state{display:inline-flex;align-items:center;box-sizing:border-box;height:30px;min-height:30px;width:36em;max-width:100%;overflow:hidden;color:var(--txt2);font-size:12px;line-height:30px;white-space:nowrap}
+.backup-state{display:block;box-sizing:border-box;height:auto;min-height:0;max-width:100%;overflow:hidden;color:var(--txt2);font-size:12px;line-height:1.35;white-space:nowrap}
+.projbanner .backup-state:empty{position:absolute;width:0;height:0;min-height:0;margin:0;padding:0;overflow:hidden;border:0}
 .live-status{position:absolute;left:12px;top:52px;z-index:5;max-width:min(420px,calc(100% - 24px));background:var(--l1);color:var(--txt);border:1px solid var(--line2);border-radius:8px;padding:6px 10px;font-size:12px;line-height:1.35}
 .live-status:empty{display:none}
 .tip{position:absolute;background:color-mix(in srgb,var(--l0) 94%,transparent);backdrop-filter:blur(8px);border:1px solid var(--line2);border-radius:8px;padding:7px 10px;font-size:12px;pointer-events:none;max-width:360px;z-index:8;box-shadow:var(--sh2)}.tip b{color:var(--acc);font-weight:600}

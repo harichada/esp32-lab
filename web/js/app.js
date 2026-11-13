@@ -123,7 +123,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const secret = !!(app.proj && store.secretFor(app.proj.id));
     const editDis = secret ? '' : ' disabled';
     const note = H ? H.esc(store.backupNote || '') : '';
-    return `<span class="edit-link"><button type="button" id="bEditLink" class="pb-act"${editDis} aria-describedby="editLinkWarn">Copy link (others can edit)</button><span id="editLinkWarn" class="share-warn">Anyone with the edit link can change it.</span></span><button type="button" id="bShareLink" class="pb-act">Copy link (view only)</button><span id="backupState" class="backup-state" role="status" aria-live="polite">${note}</span>`;
+    return `<button type="button" id="bShareLink" class="pb-act">Copy link (view only)</button><span class="edit-link"><button type="button" id="bEditLink" class="pb-act"${editDis} aria-describedby="editLinkWarn">Copy link (others can edit)</button><span id="editLinkWarn" class="share-warn">Anyone with the edit link can change it.</span></span><span id="backupState" class="backup-state" role="status" aria-live="polite">${note}</span>`;
   }
   function wireShareButtons() {
     const edit = $('#bEditLink'); if (edit) edit.onclick = copyEditLink;
@@ -141,7 +141,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const bc = $('#bCopy'); if (bc) bc.onclick = () => { if (app.viewOnly) forkView(); else makeCopy(false); };
     wireShareButtons();
     const pn = $('#pbName'); if (pn) pn.onclick = () => { const n = prompt('Rename project', app.proj.name); if (n) { app.proj.name = n; store.rename(app.proj.id, n); renderBanner(true); } };
-    requestAnimationFrame(seatPhoneChrome);
+    seatPhoneChrome();
   }
   function save() {
     syncCode(); syncDefines();
@@ -154,11 +154,14 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   function projectsDialog() {
     let d = $('#projDlg'); if (!d) { d = document.createElement('div'); d.id = 'projDlg'; d.className = 'modal'; document.body.appendChild(d); }
     const L = store.list();
+    const rows = L.map((e) => {
+      const nm = P.esc(e.name || '');
+      return `<tr data-id="${P.esc(e.id)}" class="${app.proj && app.proj.id === e.id ? 'cur' : ''}"><td class="pn"><span class="pn-name" title="${nm}" aria-label="${nm}">${nm}</span><br><small class="muted">${new Date(e.updated).toLocaleString()}${e.from ? ' · from ' + P.esc(e.from) : ''}</small></td><td><button type="button" data-a="open">Open</button><button type="button" data-a="ren">Rename</button><button type="button" data-a="dup">Duplicate</button><button type="button" data-a="exp">Export</button><span class="edit-link"><button type="button" data-a="editlink" aria-describedby="editWarn-${P.esc(e.id)}"${store.secretFor(e.id) ? '' : ' disabled'}>Copy link (others can edit)</button><span id="editWarn-${P.esc(e.id)}" class="share-warn">Anyone with the edit link can change it.</span></span><button type="button" data-a="share">Copy link (view only)</button><button type="button" data-a="del">Delete</button></td></tr>`;
+    }).join('') || '<tr><td class="muted">No projects yet. Open an example and press “Make a copy” (or just start editing it).</td></tr>';
     d.innerHTML = `<div class="modal-box"><div class="row"><h3 style="flex:1;margin:0">My Projects</h3><button type="button" data-a="close" aria-label="Close">✕</button></div>
       <div class="row"><button type="button" data-a="new">＋ New blank</button><label class="btn">⤒ Import JSON / diagram.json<input type="file" id="projImp" accept=".json,application/json" hidden></label>
       <label title="Back up this project online"><input type="checkbox" id="cbSrv" ${store.serverSync ? 'checked' : ''}> Back up online</label><button type="button" data-a="srv">Open an online backup…</button></div>
-      <table class="projs">${L.map((e) => `<tr data-id="${P.esc(e.id)}" class="${app.proj && app.proj.id === e.id ? 'cur' : ''}"><td class="pn">${P.esc(e.name)}<br><small class="muted">${new Date(e.updated).toLocaleString()}${e.from ? ' · from ' + P.esc(e.from) : ''}</small></td>
-        <td><button type="button" data-a="open">Open</button><button type="button" data-a="ren">Rename</button><button type="button" data-a="dup">Duplicate</button><button type="button" data-a="exp">Export</button><span class="edit-link"><button type="button" data-a="editlink" aria-describedby="editWarn-${P.esc(e.id)}"${store.secretFor(e.id) ? '' : ' disabled'}>Copy link (others can edit)</button><span id="editWarn-${P.esc(e.id)}" class="share-warn">Anyone with the edit link can change it.</span></span><button type="button" data-a="share">Copy link (view only)</button><button type="button" data-a="del">Delete</button></td></tr>`).join('') || '<tr><td class="muted">No projects yet. Open an example and press “Make a copy” (or just start editing it).</td></tr>'}</table><div id="srvList"></div></div>`;
+      <table class="projs">${rows}</table><div id="srvList"></div></div>`;
     d.hidden = false;
     d.onclick = async (e) => {
       if (e.target === d) { d.hidden = true; return; }

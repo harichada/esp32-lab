@@ -43,6 +43,11 @@ test('the copy and lockout sentences are the ones learners see', () => {
   assert.match(view[1], /Copy link \(view only\)/);
   assert.match(appSrc, /id="bShareLink" class="pb-act">Copy link \(view only\)/);
   assert.match(appSrc, /Copy link \(others can edit\)/);
+  const links = appSrc.match(/function linkButtons\(\) \{[\s\S]*?return `([^`]+)`/);
+  assert.ok(links, 'owned link buttons');
+  assert.ok(links[1].indexOf('id="bShareLink"') < links[1].indexOf('id="bEditLink"'));
+  assert.ok(links[1].indexOf('id="bEditLink"') < links[1].indexOf('editLinkWarn'));
+  assert.match(appSrc, /class="pn-name" title="\$\{nm\}" aria-label="\$\{nm\}"/);
   assert.match(appSrc, /aria-describedby="editLinkWarn"/);
   assert.match(appSrc, /This is your copy\./);
   assert.match(appSrc, /Examples can't be changed, so we made you a copy: \$\{app\.proj\.name\}\. It's in My Projects\./);

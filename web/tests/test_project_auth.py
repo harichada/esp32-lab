@@ -337,6 +337,86 @@ class ProjectAuthTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn('OK', proc.stdout)
 
+    def test_v64_loader_round_trips_circuit_and_code(self):
+        """v64 reads the JSON #28 writes and ignores the owner-secret sidecar."""
+        if shutil.which('git') is None:
+            self.skipTest('git is unavailable, so the v64 loader from 21340d3 cannot be loaded')
+        circuit = {
+            'name': 'Round trip',
+            'parts': [
+                {'id': 'ESP1', 'type': 'esp32', 'x': 10, 'y': 20},
+                {'id': 'R1', 'type': 'resistor', 'x': 40, 'y': 20, 'props': {'r': 220}},
+            ],
+            'wires': [{'id': 'W1', 'a': 'ESP1.D13', 'b': 'R1.1', 'color': 'red'}],
+            'code': 'void setup(){pinMode(13, OUTPUT);}\nvoid loop(){digitalWrite(13, HIGH);}',
+        }
+        made = self.client.post('/api/projects', json=circuit)
+        self.assertEqual(made.status_code, 201, made.text)
+        pid = made.json()['id']
+        path = srv.PROJ_DIR / f'{pid}.json'
+        side = srv.PROJ_DIR / f'{pid}.secret'
+        digest = side.read_text().strip()
+        self.assertEqual(len(digest), 64)
+        stored = json.loads(path.read_text())
+        stored['ownerHash'] = 'extra-field-v64-must-ignore'
+        path.write_text(json.dumps(stored))
+        before = path.read_bytes()
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            for name in ('server.py', 'diskkeep.py'):
+                shown = subprocess.run(
+                    ['git', 'show', '21340d3:web/server/' + name],
+                    cwd=str(ROOT), capture_output=True,
+                )
+                if shown.returncode != 0:
+                    self.skipTest('git show 21340d3:web/server/%s failed, so the v64 loader cannot be loaded' % name)
+                (folder / name).write_bytes(shown.stdout)
+            script = textwrap.dedent('''
+                import json, os
+                os.environ['SIM_TOKEN'] = ''
+                os.environ['SIM_PREWARM'] = '0'
+                os.environ['SIM_NETSTACK_WARM'] = '0'
+                os.environ['SIM_PROJECT_DIR'] = os.environ['PROJ']
+                import server
+                from fastapi.testclient import TestClient
+                client = TestClient(server.app)
+                client.__enter__()
+                try:
+                    got = client.get('/api/projects/' + os.environ['PID'])
+                    assert got.status_code == 200, got.text
+                    data = got.json()
+                    want = json.loads(os.environ['WANT'])
+                    assert data.get('parts') == want['parts'], data.get('parts')
+                    assert data.get('wires') == want['wires'], data.get('wires')
+                    assert data.get('code') == want['code'], data.get('code')
+                    assert os.environ['DIGEST'] not in got.text
+                    assert 'secret' not in data
+                finally:
+                    client.__exit__(None, None, None)
+                print('OK')
+            ''')
+            env = os.environ.copy()
+            env['PROJ'] = str(srv.PROJ_DIR)
+            env['PID'] = pid
+            env['DIGEST'] = digest
+            env['WANT'] = json.dumps({
+                'parts': circuit['parts'],
+                'wires': circuit['wires'],
+                'code': circuit['code'],
+            })
+            env['PYTHONPATH'] = str(folder)
+            env['SIM_TOKEN'] = ''
+            env['SIM_PREWARM'] = '0'
+            env['SIM_NETSTACK_WARM'] = '0'
+            proc = subprocess.run(
+                [sys.executable, '-c', script],
+                cwd=str(folder), env=env, capture_output=True, text=True,
+            )
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn('OK', proc.stdout)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(side.read_text().strip(), digest)
+
     def test_server_rejects_bad_names_ids_and_non_finite_values(self):
         bad_id = self.client.post('/api/projects', json={'name': 'x', 'parts': [{'id': '<img src=x onerror=alert(1)>', 'type': 'led'}], 'wires': []})
         self.assertEqual(bad_id.status_code, 400, bad_id.text)
@@ -381,6 +461,36 @@ class ProjectAuthTests(unittest.TestCase):
         kept = self.client.get('/api/projects/' + pid)
         self.assertEqual(kept.status_code, 200, kept.text)
         self.assertEqual(kept.json().get('name'), 'Blink')
+
+    def test_wrong_secret_on_one_address_leaves_another_address_budget(self):
+        os.environ['SIM_IP_SAVES_PER_MIN'] = '2'
+        os.environ['SIM_PROJECT_SAVES_PER_MIN'] = '10'
+        if projectstore:
+            projectstore.reset_limits()
+        pid, secret = self._seed()
+        self.assertTrue(secret)
+        transport = self.client._transport
+        original = transport.client
+        buf = io.StringIO()
+        try:
+            transport.client = ('198.51.100.10', 50000)
+            with redirect_stdout(buf), redirect_stderr(buf):
+                first = self.client.put('/api/projects/' + pid, json=dict(PROJ, name='nope'), headers={'X-Edit-Secret': 'wrong'})
+                second = self.client.put('/api/projects/' + pid, json=dict(PROJ, name='nope'), headers={'X-Edit-Secret': 'wrong'})
+                blocked = self.client.put('/api/projects/' + pid, json=dict(PROJ, name='nope'), headers={'X-Edit-Secret': 'wrong'})
+                transport.client = ('203.0.113.20', 50000)
+                good = self.client.put('/api/projects/' + pid, json=dict(PROJ, name='from-b'), headers={'X-Edit-Secret': secret})
+        finally:
+            transport.client = original
+        self.assertEqual(first.status_code, 403, first.text)
+        self.assertEqual(second.status_code, 403, second.text)
+        self.assertEqual(blocked.status_code, 429, blocked.text)
+        self.assertIn('reason=bad_secret_rate', buf.getvalue())
+        self.assertNotIn(secret, buf.getvalue())
+        self.assertEqual(good.status_code, 200, good.text)
+        kept = self.client.get('/api/projects/' + pid)
+        self.assertEqual(kept.status_code, 200, kept.text)
+        self.assertEqual(kept.json().get('name'), 'from-b')
 
     def test_rotating_forwarded_for_on_uvicorn_still_429s(self):
         """TestClient never installs uvicorn's proxy-header middleware.
