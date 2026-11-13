@@ -9,11 +9,13 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       SIM_NETSTACK_CACHE_DIR, SIM_NETSTACK_CACHE_MAX_MB, SIM_NETSTACK_WARM,
       SIM_COMPILE_QUEUE, SIM_COMPILE_QUEUE_MAX, SIM_COMPILE_QUEUE_TIMEOUT_S,
       SIM_ORPHAN_MAX_AGE_S and the matching *_MAX_AGE_S knobs.
+      Staging (off unless set): SIM_STAGING, SIM_ACCESS_TOKEN, SIM_STAGING_UPSTREAM, SIM_BASE_PATH.
 """
 import asyncio, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, argparse
 import diskkeep
+import staging
 from pathlib import Path
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
 import secrets
 from fastapi.responses import PlainTextResponse
 from fastapi.responses import JSONResponse, FileResponse
@@ -58,6 +60,7 @@ RESUME_GRACE = float(os.environ.get('SIM_RESUME_GRACE', '1800'))  # 0 = keep for
 STOP_ON_1001 = os.environ.get('SIM_STOP_ON_1001', '0') == '1'   # old behaviour: a 1001 'going away' close ends the run
 import builtins as _b, datetime as _dt
 def print(*a, **k): _b.print(_dt.datetime.now().strftime('%F %T'), *a, **{**k, 'flush': True})  # keep QEMU alive this long after the browser websocket drops
+staging.set_logger(print)
 RING_BYTES = 48 * 1024 * 1024
 MAX_RUNS = min(MAX_RUNS, int(os.environ.get('SIM_MAX_RUNS_HARD', '6')))
 CLOSED_GRACE = float(os.environ.get('SIM_CLOSED_GRACE', '90'))  # tab closed/reloaded (pagehide): keep QEMU this long for a reload to re-attach
@@ -75,6 +78,12 @@ GPIO_CACHE = os.environ.get('SIM_GPIO_CACHE', '1') != '0'
 I2C_FAST = os.environ.get('SIM_I2C_FAST', '1') != '0'
 def _authed(q, cookies):
     return not TOKEN or secrets.compare_digest(q.get('t', ''), TOKEN) or secrets.compare_digest(cookies.get('simtok', ''), TOKEN)
+def _maybe_simtok(request, resp):
+    if TOKEN and request.query_params.get('t') == TOKEN:
+        resp.set_cookie('simtok', TOKEN, httponly=True, samesite='lax', secure=True, max_age=86400 * 7)
+    return resp
+staging.configure(max_body=MAX_BODY, sim_authed=_authed)
+staging.apply_env()
 @app.middleware('http')
 async def gate(request: Request, call_next):
     if request.url.path.startswith('/server'):
@@ -83,6 +92,14 @@ async def gate(request: Request, call_next):
         return PlainTextResponse('unauthorized', 401)
     if request.method == 'POST' and int(request.headers.get('content-length') or 0) > MAX_BODY:
         return PlainTextResponse('request too large', 413)
+    blocked = staging.access_gate(request)
+    if blocked is not None:
+        if blocked.status_code in (301, 302, 303, 307, 308):
+            _maybe_simtok(request, blocked)
+        return blocked
+    proxied = await staging.maybe_proxy(request)
+    if proxied is not None:
+        return proxied
     resp = await call_next(request)
     pth = request.url.path
     if pth == '/' or pth.endswith('.html'):
@@ -92,8 +109,9 @@ async def gate(request: Request, call_next):
             resp.headers['Cache-Control'] = 'no-cache, must-revalidate'   # 3D hotfixes must reach phones immediately
         else:
             resp.headers['Cache-Control'] = 'public, max-age=31536000, immutable' if request.query_params.get('v') else 'no-cache'
-    if TOKEN and request.query_params.get('t') == TOKEN:
-        resp.set_cookie('simtok', TOKEN, httponly=True, samesite='lax', secure=True, max_age=86400 * 7)
+    _maybe_simtok(request, resp)
+    if staging.staging_on():
+        resp = await staging.decorate(request, resp)
     return resp
 def _index_headers():
     names = set(); roots = [HOME / '.arduino15/packages', HOME / 'Arduino/libraries', SHIMS]
@@ -128,8 +146,11 @@ def sanitize(log):
 @app.get('/api/health')
 def health():
     ok_q = Path(QEMU).exists(); ok_c = Path(CLI).exists() if CLI else False
-    return {'ok': ok_q and ok_c, 'qemu': QEMU if ok_q else None, 'arduino_cli': CLI if ok_c else None, 'fqbn': FQBN, 'runs': len(runs),
+    body = {'ok': ok_q and ok_c, 'qemu': QEMU if ok_q else None, 'arduino_cli': CLI if ok_c else None, 'fqbn': FQBN, 'runs': len(runs),
             'notes': 'Real Xtensa emulation (Espressif QEMU, patched esp32.gpio/iomux/rtcio). Wi-Fi radio not emulated: network sketches use the QemuNet shim (WiFi/HTTPClient/WiFiUdp -> mock devices).'}
+    if staging.staging_on():
+        body['staging'] = True
+    return body
 
 def merged_image(outdir: Path) -> Path:
     m = list(outdir.glob('*.ino.merged.bin'))
@@ -1368,12 +1389,21 @@ def proj_del(pid: str):
     if i and (PROJ_DIR / f'{i}.json').exists(): (PROJ_DIR / f'{i}.json').unlink()
     return {'ok': True}
 
+@app.get('/robots.txt')
+def robots_txt():
+    if staging.staging_on():
+        return PlainTextResponse(staging.ROBOTS, media_type='text/plain')
+    found = SITE / 'robots.txt'
+    if found.is_file():
+        return FileResponse(found)
+    raise HTTPException(status_code=404)
 @app.get('/')
 def index(): return FileResponse(SITE / 'index.html')
 app.mount('/', StaticFiles(directory=str(SITE)), name='site')
+app.add_middleware(staging.StagingMiddleware)
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(); ap.add_argument('--port', type=int, default=8765); ap.add_argument('--host', default='127.0.0.1')
     a = ap.parse_args()
     print(f'QEMU={QEMU}\nROMDIR={ROMDIR}\nCLI={CLI}\nFQBN={FQBN}')
-    uvicorn.run(app, host=a.host, port=a.port, log_level='warning')
+    uvicorn.run(app, host=a.host, port=a.port, log_level='warning', proxy_headers=False, forwarded_allow_ips='')

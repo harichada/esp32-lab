@@ -5,7 +5,7 @@
   const clone = (o) => JSON.parse(JSON.stringify(o));
   const newId = () => 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   class ProjectStore {
-    constructor(ls, fetchFn) { this.ls = ls || root.localStorage; this.fetch = fetchFn || (root.fetch && root.fetch.bind(root)); }
+    constructor(ls, fetchFn) { this.ls = ls || root.clStorage.local; this.fetch = fetchFn || (root.fetch && root.fetch.bind(root)); }
     _all() { try { return JSON.parse(this.ls.getItem(KEY) || '{}') || {}; } catch (e) { return {}; } }
     _put(all) { this.ls.setItem(KEY, JSON.stringify(all)); }
     list() { return Object.values(this._all()).map((e) => ({ id: e.id, name: e.name, updated: e.updated, from: e.from || '' })).sort((a, b) => b.updated - a.updated); }

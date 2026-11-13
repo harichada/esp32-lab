@@ -154,8 +154,8 @@
     ex.onchange = () => { const v = ex.value; ex.value = ''; if (!v) return; const s = $('#selExample'); s.value = v; s.dispatchEvent(new Event('change')); setSheet(null); };
     $('#mWire').append($('#selWireColor').cloneNode(true)); const wc = $('#mWire select'); wc.id = 'mWireColor'; wc.value = $('#selWireColor').value; wc.onchange = () => { const s = $('#selWireColor'); s.value = wc.value; s.dispatchEvent(new Event('change')); };
     for (const id of ['cbOrtho', 'cbFlow']) { const src = $('#' + id), l = document.createElement('label'); l.className = 'm-sw'; l.innerHTML = `<input type="checkbox"><span>${id === 'cbOrtho' ? 'Right-angle wires' : 'Animate current flow'}</span>`; const c = l.firstChild; c.checked = src.checked; c.onchange = () => { if (src.checked !== c.checked) src.click(); }; $('#mWire').append(l); }
-    $('#mHap').checked = localStorage.getItem('esp32lab.haptics') !== '0'; $('#mHap').onchange = (e) => localStorage.setItem('esp32lab.haptics', e.target.checked ? '1' : '0');
-    $('#mSnd').checked = localStorage.getItem('esp32lab.sound') === '1'; $('#mSnd').onchange = (e) => { localStorage.setItem('esp32lab.sound', e.target.checked ? '1' : '0'); sound(660); };
+    $('#mHap').checked = clStorage.local.getItem('esp32lab.haptics') !== '0'; $('#mHap').onchange = (e) => clStorage.local.setItem('esp32lab.haptics', e.target.checked ? '1' : '0');
+    $('#mSnd').checked = clStorage.local.getItem('esp32lab.sound') === '1'; $('#mSnd').onchange = (e) => { clStorage.local.setItem('esp32lab.sound', e.target.checked ? '1' : '0'); sound(660); };
     new MutationObserver(() => { $('#mConn').className = $('#connDot').className; $('#mConn').title = $('#connDot').title; }).observe($('#connDot'), { attributes: true });
     $('#mConn').className = $('#connDot').className;
     // selection actions floating over the canvas
@@ -205,9 +205,9 @@
   }
 
   const RM = window.matchMedia('(prefers-reduced-motion: reduce)');
-  function haptic(p) { try { if (navigator.vibrate && localStorage.getItem('esp32lab.haptics') !== '0') navigator.vibrate(p); } catch (e) { /* */ } }
+  function haptic(p) { try { if (navigator.vibrate && clStorage.local.getItem('esp32lab.haptics') !== '0') navigator.vibrate(p); } catch (e) { /* */ } }
   let actx = null;
-  function sound(f) { if (localStorage.getItem('esp32lab.sound') !== '1') return; try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); const o = actx.createOscillator(), g = actx.createGain(); o.type = 'sine'; o.frequency.value = f; g.gain.setValueAtTime(0.05, actx.currentTime); g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime + 0.12); o.connect(g).connect(actx.destination); o.start(); o.stop(actx.currentTime + 0.13); } catch (e) { /* */ } }
+  function sound(f) { if (clStorage.local.getItem('esp32lab.sound') !== '1') return; try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); const o = actx.createOscillator(), g = actx.createGain(); o.type = 'sine'; o.frequency.value = f; g.gain.setValueAtTime(0.05, actx.currentTime); g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime + 0.12); o.connect(g).connect(actx.destination); o.start(); o.stop(actx.currentTime + 0.13); } catch (e) { /* */ } }
   function ignition() {
     // The round control used to say HOLD: a 650 ms press, then a T−3 countdown, before it
     // clicked the real Run button (which is hidden on a phone). A tap did nothing useful.

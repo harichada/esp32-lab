@@ -292,3 +292,18 @@ body.m .tel-i canvas{width:84px;height:22px}body.m .tel-h{display:none}body.m .t
 
 /* header view chip on phones: fixed, dark, above everything. Names the current view. */
 body.m #bForce2d{position:fixed;top:calc(env(safe-area-inset-top) + 12px);right:64px;height:32px;min-height:32px;min-width:44px;max-width:46vw;z-index:2147483647;margin:0;border-radius:16px;overflow:hidden;text-overflow:ellipsis}
+/* Staging banner sits above the fixed header and the ticker. The header's backdrop-filter is the containing block for #bForce2d, so moving the header moves that chip with it. The narrow-phone zoom stack is positioned on the viewport, so it gets the same offset. */
+html[data-cl-env=staging] body.m{--stage-offset:calc(var(--stage-h) + env(safe-area-inset-top))}
+html[data-cl-env=staging] body.m #stageBanner{position:fixed;top:0;left:0;right:0;z-index:80;height:var(--stage-offset);padding-top:env(safe-area-inset-top)}
+html[data-cl-env=staging] body.m header#top{top:var(--stage-offset);height:54px;padding-top:0}
+html[data-cl-env=staging] body.m #mTicker,html[data-cl-env=staging] body.m #main{top:calc(54px + var(--stage-offset))}
+html[data-cl-env=staging] body.m .m-sheet{max-height:calc(100% - 54px - var(--stage-offset) - var(--mBot) - 12px)}
+html[data-cl-env=staging] body.m .modal{padding-top:calc(54px + var(--stage-offset) + 8px)}
+@media (max-height:520px){
+  html[data-cl-env=staging] body.m header#top{height:44px}
+  html[data-cl-env=staging] body.m #mTicker,html[data-cl-env=staging] body.m #main{top:calc(44px + var(--stage-offset))}
+  html[data-cl-env=staging] body.m .m-sheet{max-height:calc(100% - 44px - var(--stage-offset) - var(--mBot) - 12px)}
+}
+@media (max-width:430px){
+  html[data-cl-env=staging] body.m .zoom-tools{top:calc(88px + var(--stage-offset))}
+}
