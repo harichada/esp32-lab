@@ -6,7 +6,7 @@ uses the ``websockets`` package already installed with uvicorn. No new dependenc
 
 SIM_STAGING           default 0. 1 adds noindex, robots.txt, and the page flag.
 SIM_ACCESS_TOKEN      default empty (off). Cookie cl_stage, constant-time compare.
-SIM_STAGING_UPSTREAM  default empty (off). Only http://127.0.0.1:<port>.
+SIM_STAGING_UPSTREAM  default empty (off). http://127.0.0.1:<port> or http://esp32lab-staging:8765.
 SIM_BASE_PATH         cookie and redirect prefix. Defaults to /staging when SIM_STAGING=1.
 """
 import asyncio, hashlib, hmac, html, os, re, time
@@ -81,12 +81,18 @@ _WS_SKIP = _HOP | _FORWARDED_IP | {
     'sec-websocket-key', 'sec-websocket-version', 'sec-websocket-extensions',
     'sec-websocket-protocol', 'sec-websocket-accept',
 }
-_UPSTREAM_RE = re.compile(r'^http://127\.0\.0\.1:([1-9][0-9]{0,4})$')
+_LOOPBACK_RE = re.compile(r'^http://127\.0\.0\.1:([1-9][0-9]{0,4})$')
+# Host exactly esp32lab-staging, port 8765. Path may be empty or a single slash.
+_NAME_RE = re.compile(r'^http://esp32lab-staging:8765/?$')
+UPSTREAM_ERROR = (
+    'staging_proxy error: SIM_STAGING_UPSTREAM must be http://127.0.0.1:<port> '
+    'or http://esp32lab-staging:8765; pass-through off'
+)
 _BASE_RE = re.compile(r'^/[A-Za-z0-9][A-Za-z0-9._/-]{0,80}$')
 
 STAGING = False
 ACCESS = ''
-UPSTREAM_PORT = None
+UPSTREAM = None  # ('host', port) or None. Off never proxies.
 BASE_PATH = ''
 COOKIE_PATH = '/'
 _sim_authed = None
@@ -116,20 +122,28 @@ def access_on():
 
 
 def upstream_port():
-    return UPSTREAM_PORT
+    return None if UPSTREAM is None else UPSTREAM[1]
 
 
 def parse_upstream(value):
-    """Return the port, or None. Empty is off. Anything else is rejected and stays off."""
+    """Return (host, port), or None. Empty is off. Anything else is rejected and stays off.
+
+    Allowed: http://127.0.0.1:<port> for local and dev, or http://esp32lab-staging:8765
+    (a trailing slash is the only extra path). No userinfo, query, fragment, other
+    hostname, or IP literal besides that loopback form.
+    """
     raw = '' if value is None else str(value).strip()
     if raw == '':
         return None
-    m = _UPSTREAM_RE.fullmatch(raw)
-    port = int(m.group(1)) if m else 0
-    if not m or not (1 <= port <= 65535):
-        _log('staging_proxy error: SIM_STAGING_UPSTREAM must be http://127.0.0.1:<port>; pass-through off')
-        return None
-    return port
+    loop = _LOOPBACK_RE.fullmatch(raw)
+    if loop:
+        port = int(loop.group(1))
+        if 1 <= port <= 65535:
+            return ('127.0.0.1', port)
+    if _NAME_RE.fullmatch(raw):
+        return ('esp32lab-staging', 8765)
+    _log(UPSTREAM_ERROR)
+    return None
 
 
 def _base_path(raw, staging):
@@ -150,11 +164,11 @@ def _base_path(raw, staging):
 
 def apply_env(env=None):
     """Read the flags. Called at process start and by tests."""
-    global STAGING, ACCESS, UPSTREAM_PORT, BASE_PATH, COOKIE_PATH
+    global STAGING, ACCESS, UPSTREAM, BASE_PATH, COOKIE_PATH
     env = os.environ if env is None else env
     STAGING = env.get('SIM_STAGING', '0') == '1'
     ACCESS = env.get('SIM_ACCESS_TOKEN', '') or ''
-    UPSTREAM_PORT = parse_upstream(env.get('SIM_STAGING_UPSTREAM', ''))
+    UPSTREAM = parse_upstream(env.get('SIM_STAGING_UPSTREAM', ''))
     BASE_PATH = _base_path(env.get('SIM_BASE_PATH', ''), STAGING)
     COOKIE_PATH = (BASE_PATH + '/') if BASE_PATH else '/'
 
@@ -424,7 +438,7 @@ async def maybe_proxy(request):
     kind = _staging_kind(path)
     if not kind:
         return None
-    if UPSTREAM_PORT is None:
+    if UPSTREAM is None:
         return _not_found()
     if kind == 'slash':
         from starlette.responses import RedirectResponse
@@ -447,6 +461,10 @@ async def maybe_proxy(request):
     except asyncio.TimeoutError:
         _log('staging_proxy status=504 ms=%d' % _ms(t0))
         return _down(504)
+    except OSError:
+        # DNS failure and a refused or reset connection. The name is not retried.
+        _log('staging_proxy status=502 ms=%d reason=upstream_unreachable' % _ms(t0))
+        return _down(502)
     except Exception:
         _log('staging_proxy status=502 ms=%d' % _ms(t0))
         return _down(502)
@@ -455,6 +473,7 @@ async def maybe_proxy(request):
 
 
 async def _forward(method, path, query, raw_headers, body, client_host=''):
+    # The upstream status is returned as received. A 3xx is not followed.
     target = path or '/'
     if query:
         target += '?' + query
@@ -467,15 +486,16 @@ async def _forward(method, path, query, raw_headers, body, client_host=''):
     # One value, from the connection. Inbound X-Forwarded-For was already dropped.
     if client_host:
         kept.append(('X-Forwarded-For', client_host))
+    host, port = UPSTREAM
     head = [('%s %s HTTP/1.1' % (method, target)).encode('latin1')]
-    head.append(('Host: 127.0.0.1:%d' % UPSTREAM_PORT).encode('ascii'))
+    head.append(('Host: %s:%d' % (host, port)).encode('ascii'))
     for name, value in kept:
         head.append(('%s: %s' % (name, value)).encode('latin1'))
     if body:
         head.append(('Content-Length: %d' % len(body)).encode('ascii'))
     head.append(b'Connection: close')
     blob = b'\r\n'.join(head) + b'\r\n\r\n' + (body or b'')
-    reader, writer = await asyncio.open_connection('127.0.0.1', UPSTREAM_PORT)
+    reader, writer = await asyncio.open_connection(host, port)
     try:
         writer.write(blob)
         await writer.drain()
@@ -690,7 +710,7 @@ class StagingMiddleware:
 
 
 async def _proxy_ws(scope, receive, send):
-    if UPSTREAM_PORT is None:
+    if UPSTREAM is None:
         await _ws_http(send, 404, b'not found', b'text/plain; charset=utf-8')
         return
     if not _sim_ok(scope):
@@ -709,7 +729,8 @@ async def _proxy_ws(scope, receive, send):
         return
     qs = scope.get('query_string') or b''
     path = strip_prefix(scope.get('path') or '/')
-    url = 'ws://127.0.0.1:%d%s' % (UPSTREAM_PORT, path)
+    host, port = UPSTREAM
+    url = 'ws://%s:%d%s' % (host, port, path)
     if qs:
         url += '?' + qs.decode('latin1')
     headers = []
@@ -741,8 +762,9 @@ async def _proxy_ws(scope, receive, send):
         _log('staging_proxy status=504 ms=%d' % _ms(t0))
         await _ws_http(send, 504, DOWN_HTML.encode('utf-8'))
         return
-    except Exception:
-        _log('staging_proxy status=502 ms=%d' % _ms(t0))
+    except Exception as exc:
+        reason = ' reason=upstream_unreachable' if isinstance(exc, OSError) else ''
+        _log('staging_proxy status=502 ms=%d%s' % (_ms(t0), reason))
         await _ws_http(send, 502, DOWN_HTML.encode('utf-8'))
         return
     _log('staging_proxy status=101 ms=%d' % _ms(t0))

@@ -56,6 +56,14 @@ def _http_app(record):
                     break
                 body += chunk
             record.append({'method': method, 'target': target, 'headers': headers, 'names': names, 'body': body})
+            if target.split('?', 1)[0] == '/bounce':
+                payload = b'stay-put'
+                writer.write(
+                    b'HTTP/1.1 302 Found\r\nLocation: http://evil.example/stolen\r\n'
+                    b'Content-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n' % len(payload)
+                    + payload)
+                await writer.drain()
+                return
             if target.startswith('/hang'):
                 await asyncio.sleep(30)
                 return
@@ -308,17 +316,69 @@ class StagingTests(unittest.TestCase):
             'http://127.0.0.1:0', 'http://127.0.0.1:08766',
         ]
         for value in rejected:
-            self.assertIsNone(staging.parse_upstream(value), value)
-            self.assertTrue(any('SIM_STAGING_UPSTREAM must be http://127.0.0.1:<port>' in line for line in self.logs))
             self.logs.clear()
+            self.assertIsNone(staging.parse_upstream(value), value)
+            self.assertEqual(self.logs, [staging.UPSTREAM_ERROR])
+        self.logs.clear()
         self.assertIsNone(staging.parse_upstream(''))
         self.assertIsNone(staging.parse_upstream(None))
-        self.assertEqual(staging.parse_upstream('http://127.0.0.1:8766'), 8766)
-        self.assertFalse(any('SIM_STAGING_UPSTREAM must be' in line for line in self.logs))
+        self.assertEqual(self.logs, [])
+        self.assertEqual(staging.parse_upstream('http://127.0.0.1:8766'), ('127.0.0.1', 8766))
+        self.assertEqual(self.logs, [])
         self._env(upstream='http://localhost:9')
         code, _, _ = self.fetch('/staging/api/health')
         self.assertEqual(code, 404)
         self.assertIsNone(staging.upstream_port())
+
+    def test_container_name_upstream_and_unreachable(self):
+        self.logs.clear()
+        self.assertEqual(staging.parse_upstream('http://esp32lab-staging:8765'), ('esp32lab-staging', 8765))
+        self.assertEqual(staging.parse_upstream('http://esp32lab-staging:8765/'), ('esp32lab-staging', 8765))
+        self.assertEqual(self.logs, [])
+        refused = [
+            'esp32lab-staging:8766',
+            'http://esp32lab-staging:8766',
+            'esp32lab-staging.evil',
+            'http://esp32lab-staging.evil',
+            'http://esp32lab-staging.evil:8765',
+            'esp32lab-staging@evil',
+            'http://esp32lab-staging@evil',
+            'http://user@esp32lab-staging:8765',
+            'http://evil',
+            'https://esp32lab-staging:8765',
+            'http://10.0.0.8:8765',
+            'http://172.17.0.2:8765',
+            'http://esp32lab-staging:8765/extra',
+            'http://esp32lab-staging:8765?x=1',
+            'http://esp32lab-staging:8765#frag',
+        ]
+        for value in refused:
+            self.logs.clear()
+            self.assertIsNone(staging.parse_upstream(value), value)
+            self.assertEqual(self.logs, [staging.UPSTREAM_ERROR], value)
+            self._env(upstream=value)
+            code, _, _ = self.fetch('/staging/api/health')
+            self.assertEqual(code, 404, value)
+            self.assertEqual(self.http_log, [], value)
+            self.assertIsNone(staging.upstream_port())
+        self.logs.clear()
+        self._env(upstream='http://esp32lab-staging:8765')
+        self.assertEqual(staging.upstream_port(), 8765)
+        code, headers, body = self.fetch('/staging/api/health')
+        self.assertEqual(code, 502)
+        self._assert_down(body)
+        self._assert_guard_page(headers, body, '/staging/api/health', 'esp32lab-staging', 'esp32lab-staging:8765')
+        self.assertEqual(self.http_log, [])
+        self.assertTrue(any(line.endswith('reason=upstream_unreachable') for line in self.logs))
+
+    def test_upstream_redirect_is_not_followed(self):
+        self._env(upstream='http://127.0.0.1:%d' % self.http_port)
+        code, headers, body = self.fetch('/staging/bounce')
+        self.assertEqual(code, 302)
+        self.assertEqual(headers['Location'], 'http://evil.example/stolen')
+        self.assertEqual(body, b'stay-put')
+        self.assertEqual(len(self.http_log), 1)
+        self.assertEqual(self.http_log[0]['target'], '/bounce')
 
     def test_prefix_stripped_and_forwarded_headers(self):
         self._env(upstream='http://127.0.0.1:%d' % self.http_port)
@@ -361,7 +421,7 @@ class StagingTests(unittest.TestCase):
         self.assertEqual(code, 502)
         self._assert_down(body)
         self.assertNotIn(b'Traceback', body)
-        self.assertTrue(any(line.startswith('staging_proxy status=502 ms=') for line in self.logs))
+        self.assertTrue(any(line.startswith('staging_proxy status=502 ms=') and line.endswith('reason=upstream_unreachable') for line in self.logs))
         self.logs.clear()
         self._env(upstream='http://127.0.0.1:%d' % self.http_port)
         staging.PROXY_TIMEOUT = 0.4
@@ -476,15 +536,24 @@ class StagingTests(unittest.TestCase):
         start = readme.index('docker run -d --name esp32lab-staging')
         block = readme[start:readme.index('esp32-lab', start)]
         self.assertIn('--cpus 0.5', block)
-        self.assertIn('-p 127.0.0.1:8766:8765', block)
+        self.assertIn('--network circuitlab-staging', block)
+        self.assertNotIn('--network host', block)
+        self.assertNotIn('-p ', block)
+        self.assertIn('--log-opt max-size=10m', block)
+        self.assertIn('--log-opt max-file=5', block)
         self.assertIn('-e SIM_ACCESS_TOKEN', block)
         self.assertNotIn('SIM_ACCESS_TOKEN=', block)
         self.assertIn('SIM_COMPILE_QUEUE_MAX=0', block)
         self.assertIn('SIM_MAX_RUNS=1', block)
         self.assertIn('esp32lab-staging:/data/staging-projects', block)
-        self.assertNotIn('--network', block)
+        self.assertIn('docker network create --internal circuitlab-staging', readme)
+        self.assertIn('SIM_STAGING_UPSTREAM=http://esp32lab-staging:8765', readme)
+        self.assertIn('docker network connect circuitlab-staging esp32lab', readme)
+        self.assertIn('/home/opc/esp32lab-inspect-pre-v65.json', readme)
+        self.assertIn('docker rm -f esp32lab-staging', readme)
+        self.assertIn('docker network rm circuitlab-staging', readme)
+        self.assertIn('65ffe4981b43', readme)
         self.assertIn('backup-v64', readme)
-        self.assertIn('unset `SIM_STAGING_UPSTREAM`', readme)
 
     def test_dot_segments_never_reach_live_or_upstream(self):
         self._env(upstream='http://127.0.0.1:%d' % self.http_port)
