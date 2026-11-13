@@ -180,14 +180,64 @@ class StagingTests(unittest.TestCase):
         conn.close()
         return status, data
 
+    def ask(self, method, path, header_pairs, body=None, timeout=5):
+        conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=timeout)
+        conn.putrequest(method, path)
+        for name, value in header_pairs:
+            conn.putheader(name, value)
+        if body is not None:
+            conn.putheader('Content-Type', 'application/json')
+            conn.putheader('Content-Length', str(len(body)))
+        conn.endheaders(body)
+        resp = conn.getresponse()
+        data = b'' if method == 'HEAD' else resp.read()
+        status = resp.status
+        headers = {k.lower(): v for k, v in resp.getheaders()}
+        conn.close()
+        return status, headers, data
+
+    def chunked(self, path, payload, extra_headers=(), timeout=10):
+        """POST a chunked body. Content-Length is sent only when a test asks for the lie."""
+        conn = http.client.HTTPConnection('127.0.0.1', self.port, timeout=timeout)
+        conn.putrequest('POST', path)
+        conn.putheader('Transfer-Encoding', 'chunked')
+        for name, value in extra_headers:
+            conn.putheader(name, value)
+        conn.endheaders()
+        view = payload
+        step = 8192
+        i = 0
+        try:
+            while i < len(view):
+                part = view[i:i + step]
+                conn.send(b'%x\r\n' % len(part) + part + b'\r\n')
+                i += step
+            conn.send(b'0\r\n\r\n')
+        except (ConnectionResetError, BrokenPipeError):
+            pass
+        resp = conn.getresponse()
+        data = resp.read()
+        status = resp.status
+        conn.close()
+        return status, data
+
     def _assert_static(self, body, *parts):
         text = body.decode()
         low = text.lower()
         self.assertIn('<html lang="en">', text)
         self.assertRegex(text, r'<title>[^<]+</title>')
         self.assertNotIn('<script', low)
-        self.assertNotIn('<link', low)
+        self.assertIn('<link rel="icon" href="data:,">', text)
+        self.assertEqual(low.count('<link'), 1)
+        self.assertNotIn('stylesheet', low)
+        self.assertNotIn('@import', low)
+        self.assertNotIn('@font-face', low)
         self.assertNotIn(' src=', low)
+        self.assertNotIn('<img', low)
+        self.assertIn("font-family:system-ui,-apple-system,'segoe ui',sans-serif", low)
+        self.assertIn('background:#08090b', low)
+        self.assertIn('text-align:center', low)
+        self.assertIn('a:focus', low)
         self.assertIn('href="/"', text)
         for part in parts:
             self.assertIn(part, text)
@@ -437,7 +487,10 @@ class StagingTests(unittest.TestCase):
         self._env(upstream='http://127.0.0.1:%d' % self.http_port)
         _, _, live = self.fetch('/api/health')
         self.assertIn(b'"ok"', live)
-        for path in ('/staging/../', '/staging/%2e%2e/', '/staging%2f..', '/staging/..%2fapi/projects', '/staging/../api/health'):
+        for path in (
+            '/staging/../', '/staging/%2e%2e/', '/staging%2f..', '/staging/..%2fapi/projects',
+            '/staging/../api/health', '/staging/./api', '/staging/%2e/',
+        ):
             before = len(self.http_log)
             status, body = self.raw(path)
             self.assertEqual(status, 404, path)
@@ -669,6 +722,207 @@ class StagingTests(unittest.TestCase):
                 os.environ['SIM_COMPILE_QUEUE'] = saved_env
         self.assertNotIn('error', result)
         self.assertEqual(result['pair'][0], 200)
+
+    def _assert_upstream_untouched(self, before, path):
+        status, body = self.raw(path)
+        self.assertEqual(status, 404, path)
+        self.assertEqual(body, b'not found')
+        self.assertEqual(len(self.http_log), before, path)
+        joined = '\n'.join(self.logs)
+        self.assertIn('reason=bad_path', joined)
+        self.assertNotIn(path, joined)
+
+    def test_backslash_paths_do_not_reach_upstream(self):
+        self._env(upstream='http://127.0.0.1:%d' % self.http_port)
+        for path in (
+            '/staging/%5c../',
+            '/staging/..%5c',
+            '/staging/%5c%2e%2e%2f',
+            '/staging/%5c../api/health',
+            '/staging/api/%00health',
+            '/staging/api/%0ahealth',
+            '/staging/api/%7fhealth',
+        ):
+            self.logs.clear()
+            self._assert_upstream_untouched(len(self.http_log), path)
+        status, body = self.exchange('GET', '/staging/api/h%65alth', [])
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b'upstream-ok')
+        self.assertEqual(self.http_log[-1]['target'].split('?', 1)[0], '/api/health')
+
+    def test_mixed_case_backslash_encodings_are_404(self):
+        self._env(upstream='http://127.0.0.1:%d' % self.http_port)
+        for path in (
+            '/staging/%5C../',
+            '/staging/..%5C',
+            '/staging/%5C%2E%2E%2F',
+            '/staging/%5C../api/health',
+            '/staging/%5c%2E%2e%2f',
+        ):
+            self.logs.clear()
+            self._assert_upstream_untouched(len(self.http_log), path)
+
+    def test_double_encoded_dot_and_backslash_are_404(self):
+        self._env(upstream='http://127.0.0.1:%d' % self.http_port)
+        for path in (
+            '/staging/%255c../',
+            '/staging/%255C../',
+            '/staging/%252e%252e/',
+            '/staging/%252E%252E/',
+            '/staging/%252e%252e/api/health',
+            '/staging/%25255c../',
+        ):
+            self.logs.clear()
+            self._assert_upstream_untouched(len(self.http_log), path)
+        self.assertTrue(staging.climbs_out('/staging/%252e%252e/', b'/staging/%252e%252e/'))
+        self.assertTrue(staging.climbs_out('/staging/%5c../', b'/staging/%25255c../'))
+        self.assertFalse(staging.climbs_out('/staging/api/health', b'/staging/api/health'))
+        self.assertEqual(staging._DECODE_CAP, 2)
+
+    def test_head_and_options_require_auth_and_forward_the_method(self):
+        self._env(staging='1', token=TOKEN, upstream='http://127.0.0.1:%d' % self.http_port)
+        for method in ('HEAD', 'OPTIONS'):
+            status, headers, body = self.ask(method, '/staging/api/health', [
+                ('X-Trace', 'zz-header-head'),
+            ])
+            self.assertEqual(status, 401, method)
+            self.assertEqual(headers.get('cache-control'), 'no-store')
+            self.assertEqual(headers.get('content-security-policy'), "default-src 'none'; style-src 'unsafe-inline'")
+            self.assertIn('text/html', headers.get('content-type', ''))
+            if method != 'HEAD':
+                self._assert_private(body)
+                self.assertNotIn(b'/staging/api/health', body)
+                self.assertNotIn(b'zz-header-head', body)
+            self.assertEqual(self.http_log, [], method)
+        cookie = 'cl_stage=' + staging.cookie_value(TOKEN)
+        for method in ('HEAD', 'OPTIONS'):
+            status, body = self.exchange(method, '/staging/api/health', [('Cookie', cookie)])
+            self.assertEqual(status, 200, method)
+            self.assertEqual(self.http_log[-1]['method'], method)
+            self.assertEqual(self.http_log[-1]['target'].split('?', 1)[0], '/api/health')
+
+    def test_chunked_body_over_limit_is_never_forwarded(self):
+        self._env(upstream='http://127.0.0.1:%d' % self.http_port)
+        small_status, small_body = self.chunked('/staging/api/compile', b'hello-chunk')
+        self.assertEqual(small_status, 200)
+        self.assertEqual(small_body, b'upstream-ok')
+        self.assertEqual(self.http_log[-1]['method'], 'POST')
+        self.assertEqual(self.http_log[-1]['body'], b'hello-chunk')
+        self.http_log.clear()
+        too_big = b'x' * (server.MAX_BODY + 1)
+        status, body = self.chunked('/staging/api/compile', too_big, extra_headers=(('X-Trace', 'zz-chunk'),))
+        self.assertEqual(status, 413, body)
+        self.assertIn(b'request too large', body)
+        self.assertNotIn(b'zz-chunk', body)
+        self.assertEqual(self.http_log, [])
+
+        class _Fake:
+            headers = {'content-length': '1'}
+
+            async def stream(self):
+                yield b'y' * (server.MAX_BODY + 1)
+
+        async def limited():
+            return await staging._read_limited(_Fake())
+
+        payload, err = asyncio.run(limited())
+        self.assertIsNone(payload)
+        self.assertEqual(err.status_code, 413)
+
+    def test_staging_websocket_refuses_before_upstream_connect(self):
+        self._env(staging='1', token=TOKEN, upstream='http://127.0.0.1:%d' % self.ws_port)
+        before = len(self.ws_log)
+        opened = []
+        real = websockets.connect
+
+        def guard(url, *args, **kwargs):
+            opened.append(str(url))
+            if ':%d' % self.ws_port in str(url):
+                raise AssertionError('upstream websocket opened')
+            return real(url, *args, **kwargs)
+
+        websockets.connect = guard
+        try:
+            async def denied():
+                try:
+                    async with websockets.connect(
+                        'ws://127.0.0.1:%d/staging/api/run/abc' % self.port,
+                        open_timeout=3, proxy=None,
+                        additional_headers={'X-Trace': 'zz-ws-header'},
+                    ) as ws:
+                        await ws.recv()
+                    return 101, b''
+                except InvalidStatus as exc:
+                    body = getattr(exc.response, 'body', b'') or b''
+                    return exc.response.status_code, body
+            status, body = asyncio.run(denied())
+        finally:
+            websockets.connect = real
+        self.assertEqual(status, 401)
+        self.assertEqual(len(self.ws_log), before)
+        self.assertFalse(any(':%d' % self.ws_port in item for item in opened))
+        if body:
+            self.assertNotIn(b'/staging/api/run/abc', body)
+            self.assertNotIn(b'zz-ws-header', body)
+            self.assertNotIn(('%d' % self.ws_port).encode(), body)
+
+    def test_error_pages_hide_the_request_and_set_guard_headers(self):
+        marker = 'zz-secret-path-9f3'
+        header = 'zz-header-9f3'
+        upstream = '127.0.0.1:%d' % self.http_port
+        self._env(staging='1', token=TOKEN, upstream='http://127.0.0.1:%d' % self.http_port)
+        status, headers, body = self.fetch(
+            '/staging/%s?t=nope' % marker, headers={'X-Trace': header},
+        )
+        self.assertEqual(status, 401)
+        self._assert_guard_page(headers, body, '/staging/%s' % marker, header, upstream)
+        self._assert_private(body)
+
+        self._env(upstream='http://127.0.0.1:%d' % self.dead_port)
+        down_host = '127.0.0.1:%d' % self.dead_port
+        status, headers, body = self.fetch(
+            '/staging/%s' % marker, headers={'X-Trace': header},
+        )
+        self.assertEqual(status, 502)
+        self._assert_guard_page(headers, body, '/staging/%s' % marker, header, down_host)
+        self._assert_down(body)
+
+        self._env(upstream='http://127.0.0.1:%d' % self.http_port)
+        staging.PROXY_TIMEOUT = 0.4
+        status, headers, body = self.fetch('/staging/hang', headers={'X-Trace': header}, timeout=5)
+        self.assertEqual(status, 504)
+        self._assert_guard_page(headers, body, '/staging/hang', header, upstream)
+        self._assert_down(body)
+        self.assertGreaterEqual(_contrast('e6e8eb', '08090b'), 4.5)
+        self.assertGreaterEqual(_contrast('fff4d4', '4a2f00'), 4.5)
+        self.assertGreaterEqual(_contrast('4a2f00', 'fff4d4'), 4.5)
+        self.assertGreaterEqual(_contrast('fff4d4', '241500'), 4.5)
+
+    def _assert_guard_page(self, headers, body, path, header, upstream):
+        self.assertEqual(headers['Cache-Control'], 'no-store')
+        self.assertEqual(headers['Content-Security-Policy'], "default-src 'none'; style-src 'unsafe-inline'")
+        self.assertNotIn(path.encode(), body)
+        self.assertNotIn(header.encode(), body)
+        self.assertNotIn(upstream.encode(), body)
+        self.assertNotIn(b'http://', body)
+        self.assertNotIn(b'https://', body)
+
+
+def _contrast(fg, bg):
+    def lin(hex_color):
+        n = int(hex_color, 16)
+        parts = [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]
+
+        def f(u):
+            return u / 12.92 if u <= 0.04045 else ((u + 0.055) / 1.055) ** 2.4
+
+        r, g, b = [f(u) for u in parts]
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+    lighter, darker = lin(fg), lin(bg)
+    if darker > lighter:
+        lighter, darker = darker, lighter
+    return (lighter + 0.05) / (darker + 0.05)
 
 
 if __name__ == '__main__':

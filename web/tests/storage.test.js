@@ -145,7 +145,7 @@ test('staging banner is in the first HTML, reserved, and not a dialog', () => {
   assert.doesNotMatch(html, /id="stageBanner"[^>]*tabindex/);
   assert.doesNotMatch(html, /id="stageBanner"[^>]*aria-modal/);
   assert.doesNotMatch(html, /id="stageBanner"[\s\S]{0,400}tabindex="-1"/);
-  assert.match(html, /theme\.css\?v=60/);
+  assert.match(html, /theme\.css\?v=61/);
   assert.match(html, /mobile\.css\?v=63/);
   assert.match(html, /app\.js\?v=71/);
   assert.match(html, /mobile\.js\?v=66/);
@@ -157,6 +157,7 @@ test('staging banner is in the first HTML, reserved, and not a dialog', () => {
   assert.match(css, /max-height:var\(--stage-h\)/);
   assert.match(css, /background:#4a2f00;color:#fff4d4/);
   assert.match(css, /#stageBanner a\{[^}]*text-decoration:underline/);
+  assert.match(css, /#stageBanner a\{[^}]*white-space:nowrap/);
   assert.match(css, /#stageBanner a:hover,html\[data-cl-env=staging\] #stageBanner a:hover:focus-visible\{color:#4a2f00;background:#fff4d4\}/);
   assert.match(css, /#stageBanner a:focus-visible\{outline:2px solid #fff4d4/);
   assert.match(css, /#stageBanner a:active:hover:focus-visible\{color:#fff4d4;background:#241500\}/);

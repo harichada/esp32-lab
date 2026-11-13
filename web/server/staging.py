@@ -27,13 +27,31 @@ def _main_link(label):
     return '<a href="/">%s</a>' % _esc(label)
 
 
+# One template for the 401 and the 502/504 pages. Inline CSS, system fonts, no
+# network requests. The copy is fixed; nothing from the request is inserted.
+_PAGE_CSS = (
+    "html,body{margin:0;min-height:100%;background:#08090b;color:#e6e8eb;"
+    "font-family:system-ui,-apple-system,'Segoe UI',sans-serif;}"
+    "body{display:flex;align-items:center;justify-content:center;text-align:center;padding:32px 20px;}"
+    "main{max-width:34rem;}"
+    "p{margin:0 0 14px;line-height:1.5;}"
+    "a{color:#fff4d4;background:#4a2f00;text-decoration:underline;text-underline-offset:3px;border-radius:2px;}"
+    "a:focus,a:focus-visible{outline:2px solid #fff4d4;outline-offset:3px;}"
+    "a:hover{color:#4a2f00;background:#fff4d4;}"
+    "a:active{color:#fff4d4;background:#241500;}"
+)
+PAGE_CSP = "default-src 'none'; style-src 'unsafe-inline'"
+
+
 def _static_page(title, paragraphs):
-    """Self-contained page: no scripts, no stylesheets, lang=en, escaped text."""
-    body = ''.join('<p>%s</p>' % p for p in paragraphs)
+    """Self-contained page: inline CSS only, lang=en, escaped fixed copy."""
+    body = '<main>' + ''.join('<p>%s</p>' % p for p in paragraphs) + '</main>'
     return (
         '<!doctype html>\n'
-        '<html lang="en"><head><meta charset="utf-8"><title>%s</title></head>\n'
-        '<body>%s</body></html>\n' % (_esc(title), body)
+        '<html lang="en"><head><meta charset="utf-8">'
+        '<link rel="icon" href="data:,">'
+        '<title>' + _esc(title) + '</title><style>' + _PAGE_CSS + '</style></head>\n'
+        '<body>' + body + '</body></html>\n'
     )
 
 
@@ -178,11 +196,21 @@ def _redirect_target(request):
     return path + '?' + urlencode(pairs)
 
 
+def _html(html, status):
+    """401 / 502 / 504. Fixed markup, no-store, and a CSP that blocks every extra request."""
+    from starlette.responses import HTMLResponse
+    resp = HTMLResponse(html, status_code=status, headers={
+        'Cache-Control': 'no-store',
+        'Content-Security-Policy': PAGE_CSP,
+    })
+    return seal(resp)
+
+
 def access_gate(request):
     """None if the request may proceed. Otherwise a 401 or a redirect that drops ?t=."""
     if not ACCESS:
         return None
-    from starlette.responses import HTMLResponse, RedirectResponse
+    from starlette.responses import RedirectResponse
     presented = request.query_params.get('t') if 't' in request.query_params else None
     cookie = request.cookies.get('cl_stage', '')
     if presented is not None and token_eq(presented, ACCESS):
@@ -199,12 +227,11 @@ def access_gate(request):
         _log('stage_auth=ok')
         return None
     _log('stage_auth=denied')
-    return seal(HTMLResponse(PRIVATE_HTML, status_code=401))
+    return _html(PRIVATE_HTML, 401)
 
 
 def _down(status):
-    from starlette.responses import HTMLResponse
-    return seal(HTMLResponse(DOWN_HTML, status_code=status))
+    return _html(DOWN_HTML, status)
 
 
 def _too_large():
@@ -254,6 +281,44 @@ def _drop_hop(items):
     return out
 
 
+_DECODE_CAP = 2
+_HEX = '0123456789abcdefABCDEF'
+
+
+def _decode_capped(text):
+    """Percent-decode at most twice. A third layer is not applied."""
+    current = text
+    for _ in range(_DECODE_CAP):
+        nxt = unquote(current)
+        if nxt == current:
+            break
+        current = nxt
+    return current
+
+
+def _disallowed_char(ch):
+    code = ord(ch)
+    return ch == '\\' or code < 32 or code == 127
+
+
+def _has_disallowed(text):
+    return any(_disallowed_char(ch) for ch in text)
+
+
+def _remaining_bad_escape(text):
+    """True when a leftover %HH would decode to a backslash, NUL, or other control."""
+    i = 0
+    limit = len(text)
+    while True:
+        i = text.find('%', i)
+        if i < 0 or i + 2 >= limit:
+            return False
+        pair = text[i + 1:i + 3]
+        if pair[0] in _HEX and pair[1] in _HEX and _disallowed_char(chr(int(pair, 16))):
+            return True
+        i += 1
+
+
 def _dot_segment(path):
     for part in str(path).split('/'):
         if part in ('.', '..'):
@@ -261,21 +326,47 @@ def _dot_segment(path):
     return False
 
 
+def _staging_scope(text):
+    if text == '/staging' or text.startswith('/staging/') or text.startswith('/staging\\'):
+        return True
+    return text.lower().startswith('/staging%5c')
+
+
 def climbs_out(path, raw=b''):
-    """A /staging path whose dot-segments would leave the prefix. Those stay 404."""
-    texts = [path or '']
-    if isinstance(raw, bytes):
-        try:
-            raw = raw.decode('latin1')
-        except Exception:
-            raw = ''
-    if raw:
-        texts.append(raw)
-        texts.append(unquote(raw))
-    return any(_dot_segment(text) for text in texts)
+    """A /staging path that must be 404. Never rewrites the path into a safe one.
+
+    The raw path is percent-decoded at most twice. A backslash, NUL, other control
+    character, or a '.' or '..' segment is rejected. So is a leftover escape that
+    would decode to one of those characters.
+    """
+    texts = []
+    for item in (path, raw):
+        if isinstance(item, bytes):
+            item = item.decode('latin1')
+        elif item is None:
+            continue
+        else:
+            item = str(item)
+        if item:
+            texts.append(item)
+    if not texts:
+        return False
+    decoded = [_decode_capped(text) for text in texts]
+    if not any(_staging_scope(text) or _staging_scope(done) for text, done in zip(texts, decoded)):
+        return False
+    for done in decoded:
+        if _has_disallowed(done) or _dot_segment(done) or _remaining_bad_escape(done):
+            return True
+    return False
 
 
 async def _read_limited(request):
+    """Count the bytes that arrive. Content-Length is not a budget we trust.
+
+    A header that claims the body is small does not allow a larger stream through.
+    A header that claims the body is already over the limit is rejected before the
+    upstream connection. Chunked bodies are counted the same way.
+    """
     cl = request.headers.get('content-length')
     if cl is not None:
         try:
@@ -304,11 +395,14 @@ async def maybe_proxy(request):
 
     Returns None when the path is not a staging path.
     """
-    kind = _staging_kind(request.url.path)
+    path = request.url.path
+    raw = request.scope.get('raw_path') or b''
+    if climbs_out(path, raw):
+        _log('staging_proxy status=404 reason=bad_path')
+        return _not_found()
+    kind = _staging_kind(path)
     if not kind:
         return None
-    if climbs_out(request.url.path, request.scope.get('raw_path') or b''):
-        return _not_found()
     if UPSTREAM_PORT is None:
         return _not_found()
     if kind == 'slash':
@@ -538,6 +632,7 @@ async def _ws_http(send, status, body, content_type=b'text/html; charset=utf-8')
         [b'content-type', content_type],
         [b'content-length', str(len(body)).encode('ascii')],
         [b'cache-control', b'no-store'],
+        [b'content-security-policy', PAGE_CSP.encode('ascii')],
     ]
     if STAGING:
         headers.append([b'x-robots-tag', b'noindex, nofollow'])
@@ -558,6 +653,7 @@ class StagingMiddleware:
         path = scope.get('path') or ''
         if path == '/staging' or path.startswith('/staging/'):
             if climbs_out(path, scope.get('raw_path') or b''):
+                _log('staging_proxy status=404 reason=bad_path')
                 await _ws_http(send, 404, b'not found', b'text/plain; charset=utf-8')
                 return
             await _proxy_ws(scope, receive, send)
