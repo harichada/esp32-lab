@@ -48,10 +48,9 @@ input[type=range]{appearance:none;height:16px;background:transparent;border:0;pa
 /* top command bar */
 header#top{height:48px;display:flex;align-items:center;gap:var(--s3);padding:0 var(--s3);background:var(--l0);border-bottom:1px solid var(--line);position:relative;z-index:10;container:topbar / inline-size}
 header#top>*{flex-shrink:0}
-header#top>.crumb{flex:1 1 auto;min-width:calc(8ch + 16px)}
+header#top>.crumb{flex:1 1 auto;min-width:calc(12ch + 20px);max-width:none}
 .brand{display:flex;align-items:center;gap:8px;font-weight:650;letter-spacing:-.01em;font-size:13.5px}.logo{width:24px;height:24px;border-radius:7px;display:grid;place-items:center;background:linear-gradient(135deg,#22d3ee,#0e7490);color:#031014;box-shadow:0 0 18px rgba(34,211,238,.35)}.logo svg{width:14px;height:14px}
-.crumb{display:flex;align-items:center;gap:8px;min-width:calc(8ch + 16px);max-width:340px;flex:1 1 auto}.crumb-sep{color:var(--line2);font-size:18px;flex:none}.proj-title{font-weight:550;white-space:nowrap;overflow:visible;text-overflow:clip;cursor:default;min-width:8ch;flex:1 1 auto}
-#top .crumb.crumb-hide{display:none!important}
+.crumb{display:flex;align-items:center;gap:8px;min-width:calc(12ch + 20px);max-width:none;flex:1 1 auto}.crumb-sep{color:var(--line2);font-size:18px;flex:none}.proj-title{font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:default;min-width:12ch;flex:1 1 auto}
 .chip-tag{font-size:10.5px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;padding:2px 7px;border-radius:20px;border:1px solid var(--line2);color:var(--txt2);white-space:nowrap}.chip-tag.ex{color:var(--warn);border-color:rgba(251,191,36,.35);background:rgba(251,191,36,.08)}.chip-tag.mine{color:var(--ok);border-color:rgba(52,211,153,.35);background:rgba(52,211,153,.08)}
 .runctl{display:flex;align-items:center;gap:2px;padding:2px;border-radius:8px;background:var(--l2);border:1px solid var(--line)}.runctl .run{height:26px;padding:0 12px}.runctl .run .ic{width:12px;height:12px}
 #bRun:disabled{cursor:progress;opacity:.72}#bRun:disabled:hover{transform:none}
@@ -78,6 +77,9 @@ html.strip-on body:not(.m) #palList,html.strip-on body:not(.m) .insp-body{paddin
 body.running .runctl .run{background:var(--l3);color:var(--ok);border-color:rgba(52,211,153,.4);box-shadow:none}body.running #bStop{color:var(--err)}
 .status{display:flex;align-items:center;gap:8px;height:28px;padding:0 10px;border-radius:var(--r2);background:var(--l2);border:1px solid var(--line);color:var(--txt2);font-size:12px;white-space:nowrap;position:relative;overflow:hidden;flex:0 0 auto;min-width:11em;max-width:11em}
 .status #stText{overflow:visible;text-overflow:clip;min-width:8ch}
+.status.st-short,.status.st-icon{min-width:0;max-width:none}
+.status.st-icon{gap:0;padding:0 8px}
+.status.st-icon #stText{position:absolute;width:0;height:0;min-width:0;margin:0;padding:0;overflow:hidden;clip:rect(0,0,0,0)}
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 .status #stTime{color:var(--mut);font-size:11.5px}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--mut);flex:none;transition:background var(--t)}.dot.run{background:var(--ok);box-shadow:0 0 0 3px rgba(52,211,153,.15),0 0 10px var(--ok);animation:pulse 1.6s infinite}.dot.busy{background:var(--warn);box-shadow:0 0 0 3px rgba(251,191,36,.15)}.dot.err{background:var(--err);box-shadow:0 0 0 3px rgba(248,113,113,.15)}
@@ -88,6 +90,9 @@ body.running .runctl .run{background:var(--l3);color:var(--ok);border-color:rgba
 .tb-fold,.tb-proj,#tbMore{display:contents}
 #bMore,#bExamples{display:none}
 .ex-slot{position:relative;display:inline-flex;align-items:center;flex:none}
+.ex-list{position:absolute;top:calc(100% + 6px);left:0;z-index:40;min-width:220px;max-width:min(320px,calc(100vw - 16px));max-height:280px;overflow:auto;display:flex;flex-direction:column;align-items:stretch;gap:2px;padding:6px;background:var(--l2);border:1px solid var(--line2);border-radius:10px;box-shadow:var(--sh3)}
+.ex-list[hidden]{display:none!important}
+.ex-list button{width:100%;justify-content:flex-start;text-align:left;height:auto;min-height:28px;white-space:nowrap}
 .ex-tip{display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:40;max-width:260px;padding:6px 8px;background:var(--l2);color:var(--txt);border:1px solid var(--line2);border-radius:8px;box-shadow:var(--sh2);font-size:12px;line-height:1.35;white-space:normal}
 #bExamples:hover+#exTip,#bExamples:focus-visible+#exTip,#bExamples.tip-hold+#exTip{display:block}
 #bExamples:hover{background:var(--l4);border-color:#3a414a}
@@ -210,7 +215,7 @@ canvas{width:100%;background:var(--l0);border:1px solid var(--line);border-radiu
 /* responsive + touch */
 @media (max-width:1440px){:root{--palW:208px;--sideW:272px}.cmdk span{display:none}.cmdk{min-width:0}.cmdk kbd{display:none}#bProjects span{display:none}}
 @media (max-width:1300px){.conn span,.crumb .chip-tag{display:none}.tb #selExample{max-width:140px}}
-@media (max-width:900px){#main{grid-template-columns:1fr!important;grid-template-rows:auto 1fr auto}#palette{max-height:140px}#side,#sideResizer{display:none}.crumb{display:none}}
+@media (max-width:900px){#main{grid-template-columns:1fr!important;grid-template-rows:auto 1fr auto}#palette{max-height:140px}#side,#sideResizer{display:none}}
 /* Queries use the header's content box, so a classic scrollbar (about 15px) is already
    subtracted. 1255px folds search, shortcuts and theme into More. 1156px folds Projects,
    Save, Download and Import. 925px (about 949px of header, under a 950px window) turns

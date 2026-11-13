@@ -323,7 +323,6 @@ html[data-fit-pill=off] body.m .zoom-tools #bFitPill{display:none!important}
 
 /* header view chip on phones: fixed, dark, above everything. Names the current view. */
 body.m #bForce2d{position:fixed;top:calc(env(safe-area-inset-top) + 12px);right:64px;height:32px;min-height:32px;min-width:44px;max-width:46vw;z-index:2147483647;margin:0;border-radius:16px;overflow:visible;text-overflow:clip}
-body.m header#top .crumb.crumb-hide{display:none!important}
 /* Staging banner sits above the fixed header and the ticker. The narrow-phone zoom stack is positioned on the viewport, so it gets the same offset. */
 html[data-cl-env=staging] body.m{--stage-offset:calc(var(--stage-h) + env(safe-area-inset-top))}
 html[data-cl-env=staging] body.m #stageBanner{position:fixed;top:0;left:0;right:0;z-index:80;height:var(--stage-offset);padding-top:env(safe-area-inset-top)}

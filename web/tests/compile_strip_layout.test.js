@@ -328,6 +328,7 @@ test('the queue line clears the ticker, keeps Make a copy clickable, and stays f
           menuOpen: menu.classList.contains('open'),
           exText: (document.getElementById('bExamples').innerText || '').trim(),
           exLabel: document.getElementById('bExamples').getAttribute('aria-label'),
+          statusLabel: document.getElementById('status').getAttribute('aria-label') || document.getElementById('stText').getAttribute('aria-label') || '',
           exLabW: labCs && labCs.position !== 'absolute' && labCs.visibility !== 'hidden' ? labR.width : 0,
           stageH: document.getElementById('stageWrap').getBoundingClientRect().height,
           headerSw: top.scrollWidth,
@@ -357,7 +358,9 @@ test('the queue line clears the ticker, keeps Make a copy clickable, and stays f
       return { idle, building, one, menu, vw: innerWidth, vh: innerHeight };
     })`;
     const checkBlock = (mode, w, state, block, vw, vh) => {
-      assert.equal(block.face, state === 'building' ? 'Building…' : 'Idle', mode + ' ' + w + ' ' + state + ' face ' + block.face);
+      const word = state === 'building' ? 'Building…' : 'Idle';
+      const mid = state === 'building' ? 'Build' : 'Idle';
+      assert.ok(block.face === word || block.face === mid || block.statusLabel === word, mode + ' ' + w + ' ' + state + ' face ' + block.face);
       if (state === 'building') {
         assert.equal(block.live, 'Building your code… the first build takes longer.');
         assert.equal(block.titleAttr, 'Building your code… the first build takes longer.');
@@ -432,7 +435,7 @@ test('the queue line clears the ticker, keeps Make a copy clickable, and stays f
         await send('Emulation.setDeviceMetricsOverride', { width: w, height: 780, deviceScaleFactor: 1, mobile: false }, sessionId);
         const edges = await evalJs(readHeader + '("building")');
         mid[w] = { face: edges.one.face, ids: edges.one.vis.map((b) => b.id), gutter: edges.one.gutter, header: edges.one.headerCw + '/' + edges.one.headerSw };
-        assert.equal(edges.one.face, 'Building…', mode + ' resize ' + w + ' left the build');
+        assert.ok(edges.one.face === 'Building…' || edges.one.face === 'Build' || edges.one.statusLabel === 'Building…', mode + ' resize ' + w + ' left the build');
         checkBlock(mode, w, 'building', edges.one, edges.vw, edges.vh);
       }
       clip[mode].resizeWhileBuilding = mid;

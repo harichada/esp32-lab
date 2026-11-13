@@ -33,8 +33,9 @@
   <span id="stLive" class="sr-only" role="status" aria-live="polite">Idle</span>
   <div class="tb">
     <div class="ex-slot" id="exSlot">
-      <button type="button" id="bExamples" class="ex-btn" aria-label="Examples" aria-haspopup="listbox" aria-expanded="false" aria-controls="selExample" aria-describedby="exTip"><svg class="ic" aria-hidden="true"><use href="#i-examples"/></svg><span class="ex-lab">Examples</span></button>
+      <button type="button" id="bExamples" class="ex-btn" aria-label="Examples" title="Examples" aria-haspopup="listbox" aria-expanded="false" aria-controls="exList" aria-describedby="exTip"><svg class="ic" aria-hidden="true"><use href="#i-examples"/></svg><span class="ex-lab">Examples</span></button>
       <span id="exTip" class="ex-tip" role="tooltip">Examples</span>
+      <div id="exList" class="ex-list" role="listbox" aria-label="Examples" hidden></div>
       <select id="selExample" title="Examples (open read-only; edits go to a copy)"></select>
     </div>
     <div class="tb-fold" id="tbFold">

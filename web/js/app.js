@@ -232,15 +232,49 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (t === 'error') return { short: 'Run error', full: 'error' };
     return { short: t, full: t };
   }
-  function paintStatus(short, full) {
-    const face = short || 'Idle';
-    const sentence = full || face;
+  let statusWord = 'Idle';
+  function statusShort(word) {
+    if (word === 'Building…' || word === 'Building...') return 'Build';
+    if (word === 'Queued') return 'Wait';
+    if (word === 'Running') return 'Run';
+    if (word === 'Idle') return 'Idle';
+    if (word === 'Run error') return 'Error';
+    const one = String(word || '').split(/\s+/)[0] || 'Status';
+    return one.length > 8 ? one.slice(0, 8) : one;
+  }
+  function applyStatusTier(tier) {
+    const st = document.getElementById && document.getElementById('status');
     const pill = document.getElementById && document.getElementById('stText');
-    if (pill) pill.textContent = face;
+    if (!st || !pill) return;
+    const word = statusWord || 'Idle';
+    pill.textContent = tier === 1 ? statusShort(word) : word;
+    if (!st.classList || !st.setAttribute || !st.removeAttribute) return;
+    st.classList.toggle('st-short', tier === 1);
+    st.classList.toggle('st-icon', tier === 2);
+    pill.textContent = tier === 1 ? statusShort(word) : word;
+    if (tier === 2) {
+      st.setAttribute('role', 'img');
+      st.setAttribute('aria-label', word);
+      if (pill.removeAttribute) pill.removeAttribute('aria-label');
+    } else if (tier === 1 && pill.textContent !== word) {
+      st.removeAttribute('role');
+      st.removeAttribute('aria-label');
+      if (pill.setAttribute) pill.setAttribute('aria-label', word);
+    } else {
+      st.removeAttribute('role');
+      st.removeAttribute('aria-label');
+      if (pill.removeAttribute) pill.removeAttribute('aria-label');
+    }
+  }
+  function paintStatus(short, full) {
+    statusWord = short || 'Idle';
+    const sentence = full || statusWord;
     const st = document.getElementById && document.getElementById('status');
     if (st && st.setAttribute) st.setAttribute('title', sentence);
     const live = document.getElementById && document.getElementById('stLive');
     if (live) live.textContent = sentence;
+    applyStatusTier(0);
+    if (typeof syncHeaderFit === 'function') syncHeaderFit();
   }
   function setStatus(kind, text) {
     const face = statusFace(kind, text);
@@ -341,11 +375,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (next === 'queued') lastQueueDetail = detail || '';
     const short = next === 'queued' ? 'Queued' : next === 'building' ? 'Building…' : next === 'running' ? 'Running' : '';
     if (short) paintStatus(short, sentence || short);
-    else {
-      const pill = document.getElementById && document.getElementById('stText');
-      const cur = pill ? pill.textContent : '';
-      if (!cur || cur === 'Queued' || cur === 'Building…' || cur === 'Running') paintStatus('Idle', 'Idle');
-    }
+    else if (!statusWord || statusWord === 'Queued' || statusWord === 'Building…' || statusWord === 'Running') paintStatus('Idle', 'Idle');
     const buttonLabel = next === 'queued' ? 'Queued' : next === 'building' ? 'Building…' : 'Run';
     const b = $('#bRun');
     if (b) {
@@ -1131,7 +1161,10 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const sel = document.getElementById && document.getElementById('selExample');
     if (sel && sel.setAttribute) sel.setAttribute('title', text === 'Examples' ? 'Examples (open read-only; edits go to a copy)' : text);
     const btn = document.getElementById && document.getElementById('bExamples');
-    if (btn && btn.setAttribute) btn.setAttribute('aria-label', 'Examples');
+    if (btn && btn.setAttribute) {
+      btn.setAttribute('aria-label', 'Examples');
+      btn.setAttribute('title', text);
+    }
   }
   function syncDocTitle() {
     const name = (app.proj && app.proj.name) || '';
@@ -1181,27 +1214,59 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (more) more.setAttribute('aria-expanded', 'false');
   }
   let headerFitKey = '';
+  function syncProjTitle() {
+    const el = document.getElementById && document.getElementById('projTitle');
+    if (!el) return;
+    const name = (app.proj && app.proj.name) || el.textContent || '';
+    if (name && el.textContent !== name) el.textContent = name;
+    el.setAttribute('title', name);
+    el.setAttribute('aria-label', name);
+  }
+  function titleNeedsRoom() {
+    const title = document.getElementById && document.getElementById('projTitle');
+    const phone = !!(document.body && document.body.classList.contains('m'));
+    if (!title || phone) return false;
+    const cs = getComputedStyle(title);
+    if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+    return title.scrollWidth > title.clientWidth + 0.5;
+  }
+  function headerOverflows() {
+    const top = document.getElementById && document.getElementById('top');
+    if (!top || top.clientWidth < 1) return false;
+    return top.scrollWidth > top.clientWidth + 0.5;
+  }
   function syncHeaderFit() {
     placeProj();
+    syncProjTitle();
     const top = document.getElementById && document.getElementById('top');
     const crumb = document.querySelector && document.querySelector('#top .crumb');
+    if (crumb && crumb.classList) crumb.classList.remove('crumb-hide');
     const phone = !!(document.body && document.body.classList.contains('m'));
-    if (!top || !crumb || typeof top.clientWidth !== 'number') { if (crumb && crumb.classList) crumb.classList.remove('crumb-hide'); syncDocTitle(); return; }
-    // Re-read clientWidth on every resize, including while the 11em status box is locked
-    // during a build. The class toggles only when the width or the title changes, so the
-    // observer does not loop, and a busy pill cannot keep the previous window's overflow.
-    // A title that does not fit is hidden. An ellipsis would fail the header-fit check.
+    if (!top || typeof top.clientWidth !== 'number' || top.clientWidth < 1) {
+      headerFitKey = '';
+      applyStatusTier(0);
+      syncDocTitle();
+      return;
+    }
+    // The name stays on screen. When it would ellipsize, or the bar overflows, shorten
+    // the status word first, then drop it to the dot. The title may still ellipsize,
+    // but it keeps a 12ch minimum and is never hidden.
     const title = document.getElementById && document.getElementById('projTitle');
     const titleText = title ? title.textContent : '';
-    const width = top.clientWidth;
-    const key = width + (phone ? 'p' : 'd') + titleText;
+    const runLabel = document.querySelector && document.querySelector('#bRun span');
+    const runText = runLabel ? runLabel.textContent : '';
+    const key = top.clientWidth + (phone ? 'p' : 'd') + titleText + '|' + statusWord + '|' + runText;
+    const st = document.getElementById('status');
+    let tier = st && st.classList && st.classList.contains('st-icon') ? 2 : st && st.classList && st.classList.contains('st-short') ? 1 : 0;
+    // A new width or label starts from the full word. The same key still steps up
+    // when a later layout (fonts, the Examples button) makes the bar overflow.
     if (key !== headerFitKey) {
-      headerFitKey = key;
-      crumb.classList.remove('crumb-hide');
-      const titleClipped = !!(title && title.scrollWidth > title.clientWidth + 0.5);
-      const headerClipped = !phone && top.scrollWidth > width + 0.5;
-      if (titleClipped || headerClipped) crumb.classList.add('crumb-hide');
+      tier = 0;
+      applyStatusTier(0);
     }
+    if ((headerOverflows() || titleNeedsRoom()) && tier < 1) { applyStatusTier(1); tier = 1; }
+    if ((headerOverflows() || titleNeedsRoom()) && tier < 2) { applyStatusTier(2); tier = 2; }
+    headerFitKey = key;
     syncDocTitle();
   }
   function wireHeaderChrome() {
@@ -1226,15 +1291,51 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     }
     const ex = document.getElementById('bExamples');
     const sel = document.getElementById('selExample');
-    if (ex && sel && !ex.__wired) {
+    const exList = document.getElementById('exList');
+    function closeExamples() {
+      if (exList) { exList.hidden = true; exList.replaceChildren(); }
+      if (ex) ex.setAttribute('aria-expanded', 'false');
+    }
+    function openExamples() {
+      if (!ex || !sel || !exList) return;
+      exList.replaceChildren();
+      for (const opt of sel.options) {
+        if (!opt.value) continue;
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.setAttribute('role', 'option');
+        item.textContent = opt.textContent;
+        item.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          sel.value = opt.value;
+          sel.dispatchEvent(new Event('change'));
+          closeExamples();
+        });
+        exList.appendChild(item);
+      }
+      exList.hidden = false;
+      ex.setAttribute('aria-expanded', 'true');
+      exList.style.left = '0';
+      exList.style.right = 'auto';
+      const edge = exList.getBoundingClientRect().right;
+      if (edge > document.documentElement.clientWidth - 4) {
+        exList.style.left = 'auto';
+        exList.style.right = '0';
+      }
+    }
+    if (ex && sel && exList && !ex.__wired) {
       ex.__wired = true;
-      ex.addEventListener('click', () => {
-        ex.setAttribute('aria-expanded', 'true');
-        const shut = () => ex.setAttribute('aria-expanded', 'false');
-        if (typeof sel.showPicker === 'function') { try { sel.showPicker(); setTimeout(shut, 0); return; } catch (e) {} }
-        sel.focus();
-        shut();
+      ex.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (ex.getAttribute('aria-expanded') === 'true') closeExamples();
+        else openExamples();
       });
+      document.addEventListener('click', (ev) => {
+        if (ex.getAttribute('aria-expanded') !== 'true') return;
+        if (ev.target && ev.target.closest && ev.target.closest('#exSlot')) return;
+        closeExamples();
+      });
+      document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closeExamples(); });
       ex.addEventListener('contextmenu', (e) => e.preventDefault());
       let hold = 0;
       const arm = () => { clearTimeout(hold); hold = setTimeout(() => ex.classList.add('tip-hold'), 450); };

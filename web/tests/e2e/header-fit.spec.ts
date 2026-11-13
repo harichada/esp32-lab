@@ -21,9 +21,16 @@
 // pastClient uses documentElement.clientWidth, not innerWidth.
 //
 // The pill shows a short word that has to read in full: Idle, Building…, Queued.
-// The building sentence and the longest queued sentence are the phase detail.
+// When the bar runs out of room the word shortens (Build, Wait, Run) and then
+// becomes the status dot, whose accessible name is still that word. The
+// building sentence and the longest queued sentence are the phase detail.
 // They must match #stLive and the status title. The queued sentence is the
 // longest one the page can show for a queued compile.
+//
+// The project title is never hidden. It may ellipsize, stays at least 12ch
+// wide (or the full name, when that is shorter), and its aria-label and title
+// are the full name. Its own ellipsis is not a clip. An ancestor that cuts it
+// off still fails the case.
 import { chromium, test, expect, type Page } from '@playwright/test';
 import fs from 'fs';
 import path from 'path';
@@ -59,6 +66,12 @@ function pill(state: State) {
   if (state === 'building') return 'Building…';
   if (state === 'queued') return 'Queued';
   return 'Idle';
+}
+function shortStatus(word: string) {
+  if (word === 'Building…') return 'Build';
+  if (word === 'Queued') return 'Wait';
+  if (word === 'Running') return 'Run';
+  return word;
 }
 function sentence(state: State) {
   if (state === 'building') return BUILDING;
@@ -127,7 +140,8 @@ async function install(page: Page) {
         }
         const overflowHidden = cs.overflowX === 'hidden' || cs.overflow === 'hidden';
         const ellipsis = cs.textOverflow === 'ellipsis' && overflowHidden;
-        const truncated = el.scrollWidth > el.clientWidth + 0.5 || ellipsis;
+        // The project title is allowed to ellipsize. Every other control is not.
+        const truncated = el.id === 'projTitle' ? false : (el.scrollWidth > el.clientWidth + 0.5 || ellipsis);
         if (pastClient || clippedByAncestor || truncated) {
           bad.push({
             name: el.id || el.getAttribute('aria-label') || el.className || el.tagName,
@@ -211,7 +225,11 @@ async function applyState(page: Page, state: State, title: string) {
     else app.setCompilePhase(state);
     if (app.syncHeaderFit) app.syncHeaderFit();
   }, { state, sentence: sentence(state), title });
-  await expect(page.locator('#stText')).toHaveText(pill(state));
+  const word = pill(state);
+  await expect.poll(async () => {
+    const shown = await page.locator('#stText').textContent();
+    return shown === word || shown === shortStatus(word);
+  }).toBe(true);
   await expect(page.locator('#stLive')).toHaveText(sentence(state));
   await expect(page.locator('#status')).toHaveAttribute('title', sentence(state));
 }
@@ -223,14 +241,58 @@ type Report = {
   live: string;
   title: string;
   bad: Array<Record<string, unknown>>;
+  titleFit: { hidden: boolean; wide: boolean; named: boolean; width: number; need: number; aria: string; titleAttr: string };
+  pillLabel: string;
+  statusLabel: string;
 };
 
-async function check(page: Page, id: string, state: State, failures: string[]) {
-  const report = await page.evaluate(() => (window as unknown as { measureHeader: () => Report }).measureHeader());
+async function check(page: Page, id: string, state: State, name: string, failures: string[]) {
+  const report = await page.evaluate((name) => {
+    const base = (window as unknown as { measureHeader: () => Report }).measureHeader();
+    const el = document.getElementById('projTitle');
+    const st = document.getElementById('status');
+    const pillEl = document.getElementById('stText');
+    const fit = { hidden: true, wide: false, named: false, width: 0, need: 0, aria: '', titleAttr: '' };
+    if (el) {
+      const cs = getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      fit.hidden = cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0 || rect.width < 1 || rect.height < 1;
+      fit.aria = el.getAttribute('aria-label') || '';
+      fit.titleAttr = el.getAttribute('title') || '';
+      fit.named = fit.aria === name && fit.titleAttr === name;
+      const probe = document.createElement('span');
+      probe.style.cssText = 'position:absolute;left:-9999px;top:0;visibility:hidden;white-space:nowrap';
+      probe.style.font = cs.font;
+      probe.style.letterSpacing = 'normal';
+      probe.style.textTransform = 'none';
+      probe.textContent = '000000000000';
+      document.body.appendChild(probe);
+      const ch12 = probe.getBoundingClientRect().width;
+      probe.style.letterSpacing = cs.letterSpacing;
+      probe.style.textTransform = cs.textTransform;
+      probe.textContent = name;
+      const full = probe.getBoundingClientRect().width;
+      probe.remove();
+      fit.need = Math.min(ch12, full);
+      fit.width = rect.width;
+      fit.wide = rect.width + 1 >= fit.need;
+    }
+    return Object.assign(base, {
+      titleFit: fit,
+      pillLabel: pillEl ? pillEl.getAttribute('aria-label') || '' : '',
+      statusLabel: st ? st.getAttribute('aria-label') || '' : '',
+    });
+  }, name);
   const reasons: string[] = [];
-  if (report.stText !== pill(state)) reasons.push('stText ' + JSON.stringify(report.stText) + ' != ' + JSON.stringify(pill(state)));
+  const word = pill(state);
+  const mid = shortStatus(word);
+  if (report.stText !== word && report.stText !== mid) reasons.push('stText ' + JSON.stringify(report.stText) + ' != ' + JSON.stringify(word));
+  if (report.stText !== word && report.pillLabel !== word && report.statusLabel !== word) reasons.push('status name ' + JSON.stringify(report.pillLabel) + ' ' + JSON.stringify(report.statusLabel));
   if (report.live !== sentence(state)) reasons.push('live ' + JSON.stringify(report.live));
   if (report.title !== sentence(state)) reasons.push('title ' + JSON.stringify(report.title));
+  if (report.titleFit.hidden) reasons.push('project title hidden');
+  if (!report.titleFit.wide) reasons.push('project title width ' + report.titleFit.width + ' needs ' + report.titleFit.need);
+  if (!report.titleFit.named) reasons.push('project title aria ' + JSON.stringify(report.titleFit.aria) + ' title ' + JSON.stringify(report.titleFit.titleAttr));
   for (const item of report.bad) {
     const flags = [
       item.pastClient ? 'pastClient' : '',
@@ -243,6 +305,64 @@ async function check(page: Page, id: string, state: State, failures: string[]) {
   fs.mkdirSync(shots, { recursive: true });
   await page.screenshot({ path: path.join(shots, id + '.png') });
   failures.push(id + ' client ' + report.client + ' inner ' + report.inner + '\n  ' + reasons.join('\n  '));
+  return false;
+}
+
+async function checkExamples(page: Page, id: string, failures: string[]) {
+  const reasons: string[] = [];
+  const btn = page.getByRole('button', { name: /Examples/ });
+  try {
+    await page.keyboard.press('Escape');
+    await expect(btn).toBeVisible();
+    await expect(btn).toBeEnabled();
+    await expect(btn).toHaveAccessibleName(/Examples/);
+    const box = await btn.evaluate((el) => {
+      const rect = el.getBoundingClientRect();
+      const client = document.documentElement.clientWidth;
+      const past = rect.left < -0.5 || rect.right > client + 0.5 || rect.top < -0.5 || rect.bottom > window.innerHeight + 0.5;
+      let clipped = false;
+      let clipOf = '';
+      for (let a = el.parentElement; a; a = a.parentElement) {
+        const acs = getComputedStyle(a);
+        const ox = acs.overflowX;
+        const oy = acs.overflowY;
+        const clips = (v: string) => v === 'hidden' || v === 'auto' || v === 'scroll' || v === 'clip';
+        if (clips(ox) || clips(oy)) {
+          const ar = a.getBoundingClientRect();
+          const edgeR = ar.left + a.clientWidth + (parseFloat(acs.borderRightWidth) || 0);
+          const edgeB = ar.top + a.clientHeight + (parseFloat(acs.borderBottomWidth) || 0);
+          if (rect.right > edgeR + 0.5 || rect.left < ar.left - 0.5 || rect.bottom > edgeB + 0.5 || rect.top < ar.top - 0.5) {
+            clipped = true;
+            clipOf = a.id || a.tagName;
+            break;
+          }
+        }
+      }
+      return { past, clipped, clipOf, label: el.getAttribute('aria-label') || '', title: el.getAttribute('title') || '' };
+    });
+    if (box.past) reasons.push('Examples past the viewport');
+    if (box.clipped) reasons.push('Examples clipped by ' + box.clipOf);
+    if (!/Examples/.test(box.label)) reasons.push('Examples aria-label ' + JSON.stringify(box.label));
+    if (!box.title) reasons.push('Examples has no title');
+    const list = page.getByRole('listbox', { name: 'Examples' });
+    await btn.click();
+    await expect(list).toBeVisible();
+    await expect(list.getByRole('option').first()).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(list).toBeHidden();
+    await btn.focus();
+    await page.keyboard.press('Enter');
+    await expect(list).toBeVisible();
+    await expect(list.getByRole('option').first()).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(list).toBeHidden();
+  } catch (err) {
+    reasons.push(err instanceof Error ? err.message.split('\n')[0] : String(err));
+  }
+  if (!reasons.length) return true;
+  fs.mkdirSync(shots, { recursive: true });
+  await page.screenshot({ path: path.join(shots, id + '.png') });
+  failures.push(id + '\n  ' + reasons.join('\n  '));
   return false;
 }
 
@@ -281,15 +401,24 @@ test('header controls stay inside the client width', async () => {
             for (const state of STATES) {
               const id = [scale.id, bar.id, width + 'x' + height, state, 'title-default'].join('-');
               await applyState(page, state, DEFAULT_TITLE);
-              if (await check(page, id, state, failures)) passed += 1;
+              if (await check(page, id, state, DEFAULT_TITLE, failures)) passed += 1;
             }
             const idleId = [scale.id, bar.id, width + 'x' + height, 'idle', 'title-long'].join('-');
             await applyState(page, 'idle', LONG_TITLE);
-            if (await check(page, idleId, 'idle', failures)) passed += 1;
+            if (await check(page, idleId, 'idle', LONG_TITLE, failures)) passed += 1;
             if (width === 940 || width === 1280) {
               const buildId = [scale.id, bar.id, width + 'x' + height, 'building', 'title-long'].join('-');
               await applyState(page, 'building', LONG_TITLE);
-              if (await check(page, buildId, 'building', failures)) passed += 1;
+              if (await check(page, buildId, 'building', LONG_TITLE, failures)) passed += 1;
+            }
+            if (scale.zoom === 1 && (width === 821 || width === 940)) {
+              for (const exState of ['idle', 'building'] as const) {
+                const exId = [scale.id, bar.id, width + 'x' + height, exState, 'examples-long'].join('-');
+                await applyState(page, exState, LONG_TITLE);
+                const fitOk = await check(page, exId, exState, LONG_TITLE, failures);
+                const openOk = await checkExamples(page, exId, failures);
+                if (fitOk && openOk) passed += 1;
+              }
             }
           }
           const resizeId = [scale.id, bar.id, 'h' + height, 'resize-building'].join('-');
@@ -298,7 +427,7 @@ test('header controls stay inside the client width', async () => {
             await viewport(page, width, height, scale.zoom);
             await applyState(page, 'building', DEFAULT_TITLE);
             const step = resizeId + '-' + width;
-            if (!(await check(page, step, 'building', failures))) resizeOk = false;
+            if (!(await check(page, step, 'building', DEFAULT_TITLE, failures))) resizeOk = false;
           }
           if (resizeOk) passed += 1;
         }
