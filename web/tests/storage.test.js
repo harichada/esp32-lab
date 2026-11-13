@@ -145,12 +145,12 @@ test('staging banner is in the first HTML, reserved, and not a dialog', () => {
   assert.doesNotMatch(html, /id="stageBanner"[^>]*tabindex/);
   assert.doesNotMatch(html, /id="stageBanner"[^>]*aria-modal/);
   assert.doesNotMatch(html, /id="stageBanner"[\s\S]{0,400}tabindex="-1"/);
-  assert.match(html, /theme\.css\?v=61/);
-  assert.match(html, /mobile\.css\?v=63/);
-  assert.match(html, /app\.js\?v=71/);
-  assert.match(html, /mobile\.js\?v=66/);
+  assert.match(html, /theme\.css\?v=64/);
+  assert.match(html, /mobile\.css\?v=68/);
+  assert.match(html, /app\.js\?v=77/);
+  assert.match(html, /mobile\.js\?v=69/);
   assert.match(html, /projects\.js\?v=42/);
-  assert.match(html, /ui\.js\?v=62/);
+  assert.match(html, /ui\.js\?v=63/);
   assert.match(html, /netlog\.js\?v=41/);
   assert.match(css, /#stageBanner\{display:none\}/);
   assert.match(css, /html\[data-cl-env=staging\]\{--stage-h:56px\}/);

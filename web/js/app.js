@@ -57,11 +57,22 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   function autosave() { if (app.readOnly || !app.proj) return; clearTimeout(saveT); saveT = setTimeout(() => { syncCode(); store.save(app.proj); renderBanner(true); }, 600); }
   function syncDefines() { if (app.proj) app.proj.defines = $('#inDefines').value.split(',').map((x) => x.trim()).filter(Boolean); }
   function openProject(id) { const p = store.get(id); if (!p) { toast('Project not found', true); return false; } setProject(p); setUrl({ p: id }); store.save(app.proj); return true; }
+  function setProjectTitle(name) {
+    const el = document.getElementById && document.getElementById('projTitle');
+    if (!el) return;
+    const text = name ? String(name) : 'Untitled';
+    el.textContent = text;
+    if (el.setAttribute) {
+      el.setAttribute('title', text);
+      el.setAttribute('aria-label', text);
+    }
+  }
   function renderBanner(saved) {
     const b = $('#projBanner'); if (!b || !app.proj) return;
     if (app.readOnly) b.innerHTML = `<span class="pb-ex">📘 Example: <b>${P.esc(app.proj.name || '')}</b> — read-only</span><button id="bCopy" class="primary">Make a copy</button><span class="muted">editing anything makes a copy automatically</span>`;
     else b.innerHTML = `<span class="pb-my">✎ My project: <b id="pbName" title="Click to rename">${P.esc(app.proj.name || 'Untitled')}</b></span><span class="muted">${saved ? 'saved ' + new Date().toLocaleTimeString() : 'auto-saved'}</span>`;
-    const pt = $('#projTitle'); if (pt) { pt.textContent = app.proj.name || 'Untitled'; const k = $('#projKind'); k.textContent = app.readOnly ? 'Example · read-only' : 'My project'; k.className = 'chip-tag ' + (app.readOnly ? 'ex' : 'mine'); }
+    setProjectTitle(app.proj.name);
+    const k = $('#projKind'); if (k) { k.textContent = app.readOnly ? 'Example · read-only' : 'My project'; k.className = 'chip-tag ' + (app.readOnly ? 'ex' : 'mine'); }
     syncExampleTip(); syncDocTitle();
     const bc = $('#bCopy'); if (bc) bc.onclick = () => makeCopy(false);
     const pn = $('#pbName'); if (pn) pn.onclick = () => { const n = prompt('Rename project', app.proj.name); if (n) { app.proj.name = n; store.rename(app.proj.id, n); renderBanner(true); } };
@@ -1226,12 +1237,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
   let headerFitKey = '';
   function syncProjTitle() {
-    const el = document.getElementById && document.getElementById('projTitle');
-    if (!el) return;
-    const name = (app.proj && app.proj.name) || el.textContent || '';
-    if (name && el.textContent !== name) el.textContent = name;
-    el.setAttribute('title', name);
-    el.setAttribute('aria-label', name);
+    setProjectTitle((app.proj && app.proj.name) || '');
   }
   function titleNeedsRoom() {
     const title = document.getElementById && document.getElementById('projTitle');
@@ -1375,6 +1381,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
   app.syncHeaderFit = syncHeaderFit;
   app.syncExampleTip = syncExampleTip;
+  app.setProjectTitle = setProjectTitle;
   function init() {
     watchStripChrome();
     wireHeaderChrome();

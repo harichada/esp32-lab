@@ -226,10 +226,9 @@ async function viewport(page: Page, width: number, height: number, zoom: number)
 
 async function applyState(page: Page, state: State, title: string) {
   await page.evaluate(({ state, sentence, title }) => {
-    const app = (window as unknown as { app: { proj?: { name: string }; setCompilePhase: (p: string, d?: string) => void; syncHeaderFit?: () => void } }).app;
-    const titleEl = document.getElementById('projTitle');
-    if (titleEl) titleEl.textContent = title;
+    const app = (window as unknown as { app: { proj?: { name: string }; setCompilePhase: (p: string, d?: string) => void; syncHeaderFit?: () => void; setProjectTitle?: (name: string) => void } }).app;
     if (app.proj) app.proj.name = title;
+    if (app.setProjectTitle) app.setProjectTitle(title);
     if (state === 'queued') app.setCompilePhase('queued', sentence);
     else app.setCompilePhase(state);
     if (app.syncHeaderFit) app.syncHeaderFit();
@@ -525,4 +524,60 @@ test('header controls stay inside the client width', async () => {
   fs.writeFileSync(path.join(shots, 'header-fit-summary.json'), JSON.stringify(summary, null, 2));
   console.log('HEADER_FIT passed ' + passed + ' failed ' + failures.length);
   expect(failures, failures.join('\n\n')).toEqual([]);
+});
+
+async function expectHeaderName(page: Page, name: string) {
+  const title = page.locator('#projTitle');
+  await expect(title).toHaveText(name);
+  await expect(title).toHaveAttribute('title', name);
+  await expect(title).toHaveAttribute('aria-label', name);
+}
+
+async function copyProject(page: Page) {
+  const copyBtn = page.locator('#bCopy');
+  if (await copyBtn.isVisible()) {
+    await copyBtn.click();
+    return;
+  }
+  await page.locator('#mMenu').click();
+  await page.locator('#mMore [data-a=save]').click();
+}
+
+async function renameProject(page: Page, name: string) {
+  page.once('dialog', (dialog) => dialog.accept(name));
+  const nameBtn = page.locator('#pbName');
+  if (await nameBtn.isVisible()) {
+    await nameBtn.click();
+    return;
+  }
+  const projects = page.locator('#mMore [data-a=projects]');
+  if (!(await projects.isVisible())) await page.locator('#mMenu').click();
+  await projects.click();
+  await page.locator('#projDlg tr.cur [data-a=ren]').click();
+}
+
+test('header name stays together after copy and rename', async () => {
+  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  const context = await browser.newContext({ viewport: { width: 1280, height: 780 } });
+  const page = await context.newPage();
+  try {
+    await install(page);
+    await ready(page);
+    for (const width of [390, 1280]) {
+      await page.goto('/?ex=blink');
+      await viewport(page, width, 780, 1);
+      await expect(page.locator('#projTitle')).toHaveText(DEFAULT_TITLE);
+      await expect.poll(() => page.evaluate(() => !!(window as unknown as { app?: { makeCopy?: unknown } }).app?.makeCopy)).toBe(true);
+      await copyProject(page);
+      const copied = await page.evaluate(() => (window as unknown as { app: { proj: { name: string } } }).app.proj.name);
+      expect(copied).not.toBe(DEFAULT_TITLE);
+      await expectHeaderName(page, copied);
+      const renamed = 'Blink renamed';
+      await renameProject(page, renamed);
+      await expectHeaderName(page, renamed);
+    }
+  } finally {
+    await context.close();
+    await browser.close();
+  }
 });
