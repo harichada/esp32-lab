@@ -58,7 +58,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   function makeCopy(auto) {
     syncDefines(); syncCode(); const was = app.proj.name;
     const c = store.copy(app.proj); Object.assign(app.proj, { id: c.id, name: c.name, copiedFrom: c.copiedFrom }); delete app.proj.example;
-    app.readOnly = false; app.viewOnly = false; store.save(app.proj, { remote: false }); setUrl({ p: app.proj.id }); renderBanner();
+    app.readOnly = false; app.viewOnly = false; app.linkFallback = false; store.save(app.proj, { remote: false }); setUrl({ p: app.proj.id }); renderBanner();
     toast(auto ? `Examples can't be changed, so we made you a copy: ${app.proj.name}. It's in My Projects.` : `Copied “${was}” to My Projects as “${app.proj.name}”`);
     if (store.serverSync) store.scheduleBackup(app.proj);
     return app.proj;
@@ -83,6 +83,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
   function syncDefines() { if (app.proj) app.proj.defines = $('#inDefines').value.split(',').map((x) => x.trim()).filter(Boolean); }
   function openProject(id) {
+    app.linkFallback = false;
     const p = store.get(id); if (!p) { toast('Project not found', true); return false; }
     const viewOnly = store.isViewOnly(id);
     if (viewOnly) setProject(p, { viewOnly: true }); else setProject(p);
@@ -108,26 +109,75 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       ta.remove();
     }
   }
-  function copyEditLink() {
-    const secret = store.secretFor(app.proj.id);
+  function copyEditLink(id) {
+    const pid = id || (app.proj && app.proj.id);
+    if (!pid || !store.canShare(pid)) return;
+    const secret = store.secretFor(pid);
     if (!secret) { toast('Turn on Back up online to get an edit link.', true); return; }
-    copyText(store.editUrl(location.href, app.proj.id, secret), 'Edit link copied.');
+    copyText(store.editUrl(location.href, pid, secret), 'Edit link copied.');
   }
-  function copyShareLink() {
-    if (!app.proj || !app.proj.id) return;
-    copyText(store.shareUrl(location.href, app.proj.id), 'Share link copied. It is view-only.');
+  function copyShareLink(id) {
+    const pid = id || (app.proj && app.proj.id);
+    if (!pid || !store.canShare(pid)) return;
+    copyText(store.shareUrl(location.href, pid), 'Share link copied. It is view-only.');
+  }
+  let shareLock = null;
+  function markShareBusy(on) {
+    document.querySelectorAll('#bBackupCopy,[data-a="backupcopy"]').forEach((b) => {
+      b.disabled = !!on;
+      if (on) { b.setAttribute('aria-busy', 'true'); b.textContent = 'Backing up…'; }
+      else b.removeAttribute('aria-busy');
+    });
+  }
+  function backupAndCopy(id) {
+    if (shareLock) return shareLock;
+    const before = id || (app.proj && app.proj.id);
+    const proj = (app.proj && app.proj.id === before) ? app.proj : (store.get(before) || app.proj);
+    if (!proj) return Promise.resolve();
+    markShareBusy(true);
+    shareLock = (async () => {
+      try {
+        const url = await store.backupAndShare(proj, location.href);
+        const cb = document.getElementById('cbSrv');
+        if (cb) cb.checked = true;
+        if (app.proj && (app.proj.id === before || app.proj.id === proj.id)) {
+          app.proj.id = proj.id;
+          if (!app.readOnly && !app.viewOnly) setUrl({ p: proj.id });
+        }
+        await copyText(url, Projects.SHARE_OK);
+      } catch (err) {
+        toast(Projects.shareFailMessage(err), true);
+      } finally {
+        shareLock = null;
+        markShareBusy(false);
+        renderBanner();
+        const dlg = document.getElementById('projDlg');
+        if (dlg && !dlg.hidden) projectsDialog();
+      }
+    })();
+    return shareLock;
   }
   function forkView() { adoptViewOnly(); }
   function linkButtons() {
     const H = window.SafeHtml;
-    const secret = !!(app.proj && store.secretFor(app.proj.id));
-    const editDis = secret ? '' : ' disabled';
+    const id = app.proj && app.proj.id;
     const note = H ? H.esc(store.backupNote || '') : '';
-    return `<button type="button" id="bShareLink" class="pb-act">Copy link (view only)</button><span class="edit-link"><button type="button" id="bEditLink" class="pb-act"${editDis} aria-describedby="editLinkWarn">Copy link (others can edit)</button><span id="editLinkWarn" class="share-warn">Anyone with the edit link can change it.</span></span><span id="backupState" class="backup-state" role="status" aria-live="polite">${note}</span>`;
+    const controls = Projects.shareControls({
+      backedUp: !!(id && store.canShare(id)),
+      canEdit: !!(id && store.secretFor(id)),
+      busy: !!shareLock,
+      reasonId: 'shareWait',
+      warnId: 'editLinkWarn',
+      shareAttrs: 'id="bShareLink" class="pb-act"',
+      editAttrs: 'id="bEditLink" class="pb-act"',
+      goAttrs: 'id="bBackupCopy" class="primary"',
+    });
+    return controls + `<span id="backupState" class="backup-state" role="status" aria-live="polite">${note}</span>`;
   }
   function wireShareButtons() {
-    const edit = $('#bEditLink'); if (edit) edit.onclick = copyEditLink;
-    const share = $('#bShareLink'); if (share) share.onclick = copyShareLink;
+    const edit = $('#bEditLink'); if (edit && !edit.disabled) edit.onclick = () => copyEditLink();
+    const share = $('#bShareLink'); if (share && !share.disabled) share.onclick = () => copyShareLink();
+    const go = $('#bBackupCopy'); if (go) go.onclick = () => backupAndCopy(app.proj && app.proj.id);
   }
   function renderBanner(saved) {
     const b = $('#projBanner'); if (!b || !app.proj) return;
@@ -135,7 +185,8 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (app.viewOnly) b.innerHTML = `<span class="pb-view">You can view this project but not change it. Make a copy, or just start editing, to get your own version.</span><button type="button" id="bCopy" class="primary">Make a copy</button><button type="button" id="bShareLink" class="pb-act">Copy link (view only)</button><span id="backupState" class="backup-state" role="status" aria-live="polite">${H.esc(store.backupNote || '')}</span>`;
     else if (app.readOnly) b.innerHTML = `<span class="pb-ex">📘 Example: <b>${H.esc(app.proj.name || '')}</b> — read-only</span><button type="button" id="bCopy" class="primary">Make a copy</button><span class="muted">editing anything makes a copy automatically</span>`;
     else b.innerHTML = `<span class="pb-my">✎ My project: <b id="pbName" title="Click to rename">${H.esc(app.proj.name || 'Untitled')}</b></span><span class="link-actions"><span class="pb-own">This is your copy.</span>${linkButtons()}</span><span class="muted">${saved ? 'saved ' + new Date().toLocaleTimeString() : 'auto-saved'}</span>`;
-    setProjectTitle(app.proj.name);
+    const name = (app.linkFallback && app.readOnly ? 'Example: ' : '') + (app.proj.name || 'Untitled');
+    setProjectTitle(name);
     const k = $('#projKind'); if (k) { k.textContent = app.viewOnly ? 'View-only' : app.readOnly ? 'Example · read-only' : 'My project'; k.className = 'chip-tag ' + (app.viewOnly || app.readOnly ? 'ex' : 'mine'); }
     syncExampleTip(); syncDocTitle();
     const bc = $('#bCopy'); if (bc) bc.onclick = () => { if (app.viewOnly) forkView(); else makeCopy(false); };
@@ -156,11 +207,22 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const L = store.list();
     const rows = L.map((e) => {
       const nm = P.esc(e.name || '');
-      return `<tr data-id="${P.esc(e.id)}" class="${app.proj && app.proj.id === e.id ? 'cur' : ''}"><td class="pn"><span class="pn-name" title="${nm}" aria-label="${nm}">${nm}</span><br><small class="muted">${new Date(e.updated).toLocaleString()}${e.from ? ' · from ' + P.esc(e.from) : ''}</small></td><td><button type="button" data-a="open">Open</button><button type="button" data-a="ren">Rename</button><button type="button" data-a="dup">Duplicate</button><button type="button" data-a="exp">Export</button><button type="button" data-a="share">Copy link (view only)</button><span class="edit-link"><button type="button" data-a="editlink" aria-describedby="editWarn-${P.esc(e.id)}">Copy link (others can edit)</button><span id="editWarn-${P.esc(e.id)}" class="share-warn">Anyone with the edit link can change it.</span></span><button type="button" data-a="del">Delete</button></td></tr>`;
+      const controls = Projects.shareControls({
+        backedUp: store.canShare(e.id),
+        canEdit: !!store.secretFor(e.id),
+        busy: !!shareLock,
+        reasonId: 'shareWait-' + e.id,
+        warnId: 'editWarn-' + e.id,
+        shareAttrs: 'data-a="share" class="pb-act"',
+        editAttrs: 'data-a="editlink" class="pb-act"',
+        goAttrs: 'data-a="backupcopy" class="primary"',
+      });
+      return `<tr data-id="${P.esc(e.id)}" class="${app.proj && app.proj.id === e.id ? 'cur' : ''}"><td class="pn"><span class="pn-name" title="${nm}" aria-label="${nm}">${nm}</span><br><small class="muted">${new Date(e.updated).toLocaleString()}${e.from ? ' · from ' + P.esc(e.from) : ''}</small></td><td><button type="button" data-a="open">Open</button><button type="button" data-a="ren">Rename</button><button type="button" data-a="dup">Duplicate</button><button type="button" data-a="exp">Export</button>${controls}<button type="button" data-a="del">Delete</button></td></tr>`;
     }).join('') || '<tr><td class="muted">No projects yet. Open an example and press “Make a copy” (or just start editing it).</td></tr>';
     d.innerHTML = `<div class="modal-box"><div class="row"><h3 style="flex:1;margin:0">My Projects</h3><button type="button" data-a="close" aria-label="Close">✕</button></div>
-      <div class="row"><button type="button" data-a="new">＋ New blank</button><label class="btn">⤒ Import JSON / diagram.json<input type="file" id="projImp" accept=".json,application/json" hidden></label>
-      <label title="Back up this project online"><input type="checkbox" id="cbSrv" ${store.serverSync ? 'checked' : ''}> Back up online</label><button type="button" data-a="srv">Open an online backup…</button></div>
+      <div class="row proj-tools"><button type="button" data-a="new">＋ New blank</button><label class="btn">⤒ Import JSON / diagram.json<input type="file" id="projImp" accept=".json,application/json" hidden></label>
+      <button type="button" data-a="srv">Open an online backup…</button></div>
+      <label class="backup-row"><input type="checkbox" id="cbSrv" ${store.serverSync ? 'checked' : ''}> Back up online</label>
       <table class="projs">${rows}</table><div id="srvList"></div></div>`;
     d.hidden = false;
     d.onclick = async (e) => {
@@ -172,8 +234,9 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       else if (a === 'ren') { const n = prompt('Rename project', store.list().find((x) => x.id === id).name); if (n) { store.rename(id, n); if (app.proj.id === id) { app.proj.name = n; renderBanner(true); } projectsDialog(); } }
       else if (a === 'dup') { store.duplicate(id); projectsDialog(); }
       else if (a === 'exp') { const t = store.exportJson(id); const bl = new Blob([t], { type: 'application/json' }); const l = document.createElement('a'); l.href = URL.createObjectURL(bl); l.download = (JSON.parse(t).name || 'project').replace(/[^\w.-]+/g, '_') + '.json'; l.click(); }
-      else if (a === 'editlink') { const secret = store.secretFor(id); if (secret) copyText(store.editUrl(location.href, id, secret), 'Edit link copied.'); else toast('Turn on Back up online to get an edit link.', true); }
-      else if (a === 'share') copyText(store.shareUrl(location.href, id), 'Share link copied. It is view-only.');
+      else if (a === 'editlink') copyEditLink(id);
+      else if (a === 'share') copyShareLink(id);
+      else if (a === 'backupcopy') { await backupAndCopy(id); }
       else if (a === 'del') { if (confirm('Delete this project? (Export it first if you want a backup)')) { store.remove(id); if (app.proj.id === id) loadExample('blink'); projectsDialog(); } }
       else if (a === 'srv') { try { const S = await store.listServer(); $('#srvList').innerHTML = '<h4>Online backups you can edit</h4>' + (S.map((x) => `<div class="row"><span style="flex:1">${P.esc(x.name)}</span><button type="button" data-a="pull" data-sid="${P.esc(x.id)}">Open</button></div>`).join('') || '<p class="muted">No online backups you can edit yet.</p>'); } catch (er) { toast('Server list failed', true); } }
       else if (a === 'pull') { try { await store.pullServer(b.dataset.sid); openProject(b.dataset.sid); d.hidden = true; } catch (er) { toast(er.message, true); } }
@@ -1127,6 +1190,27 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   // ---------------- misc UI ----------------
   function toast(msg, err) { const t = document.createElement('div'); t.className = 'toast' + (err ? ' err' : ''); t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 2600); }
   let liveTimer = 0;
+  function showBadLink() {
+    let n = document.getElementById('badLink');
+    if (n) return;
+    n = document.createElement('div');
+    n.id = 'badLink';
+    n.className = 'bad-link';
+    n.setAttribute('role', 'alert');
+    const p = document.createElement('p');
+    p.textContent = Projects.BAD_LINK;
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = 'Dismiss';
+    b.onclick = () => n.remove();
+    n.append(p, b);
+    document.body.appendChild(n);
+  }
+  async function rejectProjectLink() {
+    showBadLink();
+    app.linkFallback = true;
+    await loadExample('blink');
+  }
   function announce(msg) {
     let el = document.getElementById('liveStatus');
     if (!el) {
@@ -1577,8 +1661,11 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (saved && !store.list().length) { try { const o = JSON.parse(saved); if (!o.example) { o.name = o.name || 'My saved project'; store.importJson(o); } } catch (e) { /* ignore */ } clStorage.local.removeItem(STORE); }
     (async () => {
       if (pid) {
-        if (!store.get(pid)) { try { await store.pullServer(pid); } catch (e) { /* this browser has no local copy and the server has none either */ } }
+        app.linkFallback = false;
+        if (!/^[A-Za-z0-9_-]{1,40}$/.test(pid)) { await rejectProjectLink(); return; }
+        if (!store.get(pid)) { try { await store.pullServer(pid); } catch (e) { await rejectProjectLink(); return; } }
         if (store.get(pid)) { openProject(pid); return; }
+        await rejectProjectLink(); return;
       }
       if (q && Examples.EX[q]) loadExample(q);
       else if (store.current() && store.get(store.current())) openProject(store.current());

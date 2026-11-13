@@ -148,6 +148,11 @@ body.c-palette [data-reopen=palette],body.c-side [data-reopen=side],body.c-dock 
 .projs .edit-link > button{background:var(--l3);color:var(--txt);border-color:var(--line2);opacity:1}
 .projs .edit-link > button:hover{background:var(--l4);color:var(--txt)}
 .share-warn{display:block;margin:0;padding:0;background:none;border:0;border-radius:0;min-height:0;box-shadow:none;font-size:12px;font-weight:400;line-height:1.35;color:#fbbf24}
+.share-reason{display:block;margin:0;padding:0;font-size:12px;font-weight:400;line-height:1.35;color:var(--txt)}
+.bad-link{position:fixed;z-index:40;left:12px;right:12px;top:64px;display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:12px;background:#1b1f24;color:#e8eaed;border:1px solid #9aa3af;box-shadow:0 10px 30px rgba(0,0,0,.45)}
+.bad-link p{margin:0;flex:1;line-height:1.4}
+.bad-link button{min-height:44px}
+.backup-row{display:flex;align-items:center;gap:10px;width:100%;min-height:44px;margin:8px 0 4px;white-space:nowrap;box-sizing:border-box}
 [data-theme=light] .share-warn{color:#92400e}
 .pb-own{font-size:12px;line-height:1.35;color:var(--txt)}
 .backup-state{display:block;box-sizing:border-box;height:auto;min-height:0;max-width:100%;overflow:hidden;color:var(--txt2);font-size:12px;line-height:1.35;white-space:nowrap}

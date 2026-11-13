@@ -153,6 +153,9 @@ body.m .projs td button{height:44px;min-height:44px;margin:0;max-width:100%;box-
 body.m .projs .edit-link{display:flex;flex-direction:column;align-items:flex-start;gap:4px;max-width:100%}
 body.m .projs .edit-link > button:not(:disabled){background:var(--l3);color:var(--txt);border-color:var(--line2);opacity:1}
 body.m .projs .share-warn{max-width:100%;white-space:normal}
+body.m .projs .share-reason{flex:1 0 100%;margin:0;color:#e6e8eb}
+body.m .backup-row{width:100%;min-height:44px;white-space:nowrap}
+body.m .backup-row input{width:24px;height:24px;flex:none}
 body.m .toast{bottom:calc(var(--dock) + 110px);font-size:14px;border-radius:14px;max-width:calc(100vw - 24px)}
 body.m .ctxmenu button{height:48px;font-size:15px}body.m .ctx-colors span{width:28px;height:28px}
 body.m .cmdk-in input{font-size:16px}
@@ -360,8 +363,8 @@ body.m .projbanner .backup-state:empty{position:absolute;width:0;height:0;min-he
 body.m .projbanner .backup-state:not(:empty){position:static;display:block;width:100%;height:auto;min-height:0;line-height:1.35}
 @media (max-width:600px){
   body.m .projbanner .link-actions{flex-direction:column;align-items:stretch;gap:8px;width:100%}
-  body.m .projbanner .link-actions>.pb-own,body.m .projbanner .link-actions>#bShareLink,body.m .projbanner .link-actions>.edit-link{width:100%;align-self:stretch}
-  body.m .projbanner .link-actions #bShareLink,body.m .projbanner .link-actions #bEditLink{width:100%;min-height:44px;height:44px;box-sizing:border-box;justify-content:center}
+  body.m .projbanner .link-actions>.pb-own,body.m .projbanner .link-actions>#bShareLink,body.m .projbanner .link-actions>.edit-link,body.m .projbanner .link-actions>#bBackupCopy,body.m .projbanner .link-actions>.share-reason{width:100%;align-self:stretch}
+  body.m .projbanner .link-actions #bShareLink,body.m .projbanner .link-actions #bEditLink,body.m .projbanner .link-actions #bBackupCopy{width:100%;min-height:44px;height:44px;box-sizing:border-box;justify-content:center}
   body.m .projbanner .link-actions .edit-link{gap:4px}
   body.m .projbanner .link-actions .pb-own{display:block}
 }

@@ -8,9 +8,47 @@
   const NOPUT = 'esp32lab.noPut.v1', HINT = 'esp32lab.editLinkHint.v1';
   const BACKUP_MS = 10000;
   const LOCKOUT = "This browser can't edit this project. Open your edit link, or make your own copy.";
-  const BACKUP_WAIT = 'Saved on this device. Online backup will try again shortly.';
+  const BACKUP_WAIT = 'Lots of people on your network are saving right now. Wait a few seconds and try again; your changes are still here.';
+  const SHARE_BUSY = 'Too many people on your network are backing up right now. Try again in a few seconds.';
   const COPY_FAIL = "Couldn't make your copy. Please try again.";
   const HINT_MSG = 'To edit this on another device, copy your edit link and keep it somewhere safe.';
+  const SHARE_WAIT = 'Turn on Back up online to share this project.';
+  const SHARE_OK = 'Backed up online and copied view-only link.';
+  const SHARE_FAIL = "Couldn't back up this project, so there's no link to share yet. Try again in a minute.";
+  const BAD_LINK = "This project link doesn't work. Ask the person who sent it to share it again.";
+  function escAttr(value) {
+    return String(value || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+  function shareFailMessage(err) {
+    if (err && err.code === 'rate_limit') return SHARE_BUSY;
+    return SHARE_FAIL;
+  }
+  // Copy stays disabled until the server can serve this id. The amber warning is only present once edit works.
+  function shareControls(opts) {
+    opts = opts || {};
+    const reasonId = escAttr(opts.reasonId || 'shareWait');
+    const warnId = escAttr(opts.warnId || 'editLinkWarn');
+    const shareAttrs = opts.shareAttrs || '';
+    const editAttrs = opts.editAttrs || '';
+    const goAttrs = opts.goAttrs || '';
+    const locked = ` disabled aria-disabled="true" aria-describedby="${reasonId}"`;
+    if (!opts.backedUp) {
+      const busy = opts.busy ? ' disabled aria-busy="true"' : '';
+      const goLabel = opts.busy ? 'Backing up…' : 'Back up online and copy link';
+      return `<p id="${reasonId}" class="share-reason">${SHARE_WAIT}</p>`
+        + `<button type="button" ${shareAttrs}${locked}>Copy link (view only)</button>`
+        + `<button type="button" ${editAttrs}${locked}>Copy link (others can edit)</button>`
+        + `<button type="button" ${goAttrs}${busy}>${goLabel}</button>`;
+    }
+    if (!opts.canEdit) {
+      return `<button type="button" ${shareAttrs}>Copy link (view only)</button>`
+        + `<span class="edit-link"><button type="button" ${editAttrs}${locked}>Copy link (others can edit)</button>`
+        + `<p id="${reasonId}" class="share-reason">${LOCKOUT}</p></span>`;
+    }
+    return `<button type="button" ${shareAttrs}>Copy link (view only)</button>`
+      + `<span class="edit-link"><button type="button" ${editAttrs} aria-describedby="${warnId}">Copy link (others can edit)</button>`
+      + `<span id="${warnId}" class="share-warn">Anyone with the edit link can change it.</span></span>`;
+  }
   function shouldSendBackup(last, now, reason) {
     if (reason === 'hide' || reason === 'pagehide' || reason === 'retry') return true;
     if (reason !== 'save' && reason !== 'timer') return false;
@@ -40,6 +78,7 @@
       this._retried = new Set();
       this._localOnly = new Set();
       this._hideSent = new Set();
+      this._shareFlight = null;
       this.backupMs = BACKUP_MS;
       this.backupNote = '';
       this.now = () => Date.now();
@@ -73,6 +112,30 @@
     }
     forgetSecret(id) { const all = this._secrets(); if (!all[id]) return; delete all[id]; this.ls.setItem(SEC, JSON.stringify(all)); }
     isViewOnly(id) { return !this.secretFor(id) && !!(this._all()[id] && this._all()[id].viewOnly); }
+    // True only when a GET of this id can succeed: we hold the secret, or this browser loaded it from the server.
+    canShare(id) {
+      if (!id || this._localOnly.has(id)) return false;
+      if (this.secretFor(id)) return true;
+      const entry = this._all()[id];
+      return !!(entry && entry.viewOnly);
+    }
+    // One explicit upload. A second call while the first is in flight joins it, so one tap pair creates one project.
+    backupAndShare(proj, href) {
+      if (this._shareFlight) return this._shareFlight;
+      const job = this._backupAndShare(proj, href).finally(() => {
+        if (this._shareFlight === job) this._shareFlight = null;
+      });
+      this._shareFlight = job;
+      return job;
+    }
+    async _backupAndShare(proj, href) {
+      if (!proj) throw fail(SHARE_FAIL, 'server');
+      const id = await this.pushServer(proj, { reason: 'share' });
+      if (!id || !this.secretFor(id)) throw fail(SHARE_FAIL, 'server');
+      this.serverSync = true;
+      const base = href || (root.location && root.location.href) || 'http://localhost/';
+      return this.shareUrl(base, id);
+    }
     // #edit=<secret> is stored for ?p=<id>, then removed from the address bar. The fragment is not a request.
     consumeEditFragment(loc, history) {
       const hash = (loc && loc.hash) || '';
@@ -377,7 +440,10 @@
       return p;
     }
   }
-  const api = { ProjectStore, newId, shouldSendBackup, BACKUP_MS };
+  const api = {
+    ProjectStore, newId, shouldSendBackup, BACKUP_MS, shareControls, shareFailMessage,
+    SHARE_WAIT, SHARE_OK, SHARE_FAIL, SHARE_BUSY, BACKUP_WAIT, BAD_LINK, LOCKOUT,
+  };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.Projects = api;
 })(typeof window !== 'undefined' ? window : globalThis);

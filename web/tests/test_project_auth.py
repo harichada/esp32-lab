@@ -2,6 +2,7 @@
 import hashlib
 import io
 import json
+import logging
 import os
 import shutil
 import socket
@@ -53,6 +54,7 @@ class ProjectAuthTests(unittest.TestCase):
         os.environ['SIM_PROJECT_SAVES_PER_MIN'] = '60'
         os.environ['SIM_IP_SAVES_PER_MIN'] = '600'
         os.environ['SIM_IP_CREATES_PER_MIN'] = '60'
+        os.environ['SIM_BAD_SECRET_PER_MIN'] = '30'
         if projectstore:
             projectstore.NOW = projectstore._default_now
             projectstore.reset_limits()
@@ -209,6 +211,30 @@ class ProjectAuthTests(unittest.TestCase):
         self.assertEqual(listed.status_code, 200, listed.text)
         self.assertEqual(listed.json(), [])
         self.assertEqual(self.client.get('/api/projects/' + pid).status_code, 200)
+
+    def test_missing_and_malformed_ids_match_byte_for_byte(self):
+        missing_id = 'missingproject0001'
+        bad_id = 'not-valid!'
+        pairs = (
+            ('GET', '/api/projects/' + missing_id, '/api/projects/' + bad_id),
+        )
+        missing = self.client.get('/api/projects/' + missing_id)
+        bad = self.client.get('/api/projects/' + bad_id)
+        self.assertEqual(missing.status_code, 404, missing.content)
+        self.assertEqual(bad.status_code, missing.status_code)
+        self.assertEqual(bad.content, missing.content)
+        self.assertEqual(bad.headers.get('content-type'), missing.headers.get('content-type'))
+        self.assertIn(b'No project with that id.', missing.content)
+        body = dict(PROJ, name='probe')
+        for method in ('put', 'delete'):
+            call = getattr(self.client, method)
+            kwargs = {'json': body} if method == 'put' else {}
+            left = call('/api/projects/' + missing_id, **kwargs)
+            right = call('/api/projects/' + bad_id, **kwargs)
+            self.assertEqual(left.status_code, right.status_code)
+            self.assertEqual(left.content, right.content)
+            self.assertEqual(left.status_code, 404, left.content)
+        self.assertEqual(pairs[0][0], 'GET')
 
     def test_eleventh_create_is_429(self):
         os.environ['SIM_IP_CREATES_PER_MIN'] = '10'
@@ -470,8 +496,9 @@ class ProjectAuthTests(unittest.TestCase):
         self.assertEqual(bad_range.status_code, 400, bad_range.text)
         self.assertIn('between 0 and 1', bad_range.json().get('message', ''))
 
-    def test_wrong_secret_counts_toward_ip_save_limit(self):
-        os.environ['SIM_IP_SAVES_PER_MIN'] = '2'
+    def test_wrong_secret_budget_does_not_block_a_valid_save(self):
+        os.environ['SIM_BAD_SECRET_PER_MIN'] = '2'
+        os.environ['SIM_IP_SAVES_PER_MIN'] = '600'
         os.environ['SIM_PROJECT_SAVES_PER_MIN'] = '10'
         if projectstore:
             projectstore.reset_limits()
@@ -489,21 +516,23 @@ class ProjectAuthTests(unittest.TestCase):
         self.assertEqual(blocked.status_code, 429, blocked.text)
         self.assertEqual(blocked.json().get('error'), 'rate_limit')
         self.assertTrue(blocked.headers.get('retry-after'))
-        self.assertEqual(good.status_code, 429, good.text)
+        self.assertEqual(good.status_code, 200, good.text)
         text = buf.getvalue()
         self.assertIn('reason=bad_secret_rate', text)
         self.assertNotIn(secret, text)
         self.assertNotIn('wrong', text)
         kept = self.client.get('/api/projects/' + pid)
         self.assertEqual(kept.status_code, 200, kept.text)
-        self.assertEqual(kept.json().get('name'), 'Blink')
+        self.assertEqual(kept.json().get('name'), 'kept')
 
-    def test_wrong_secret_on_one_address_leaves_another_address_budget(self):
-        os.environ['SIM_IP_SAVES_PER_MIN'] = '2'
+    def test_wrong_secret_budget_is_one_ip_and_one_project(self):
+        os.environ['SIM_BAD_SECRET_PER_MIN'] = '2'
+        os.environ['SIM_IP_SAVES_PER_MIN'] = '600'
         os.environ['SIM_PROJECT_SAVES_PER_MIN'] = '10'
         if projectstore:
             projectstore.reset_limits()
         pid, secret = self._seed()
+        other, _other_secret = self._seed()
         self.assertTrue(secret)
         transport = self.client._transport
         original = transport.client
@@ -514,19 +543,87 @@ class ProjectAuthTests(unittest.TestCase):
                 first = self.client.put('/api/projects/' + pid, json=dict(PROJ, name='nope'), headers={'X-Edit-Secret': 'wrong'})
                 second = self.client.put('/api/projects/' + pid, json=dict(PROJ, name='nope'), headers={'X-Edit-Secret': 'wrong'})
                 blocked = self.client.put('/api/projects/' + pid, json=dict(PROJ, name='nope'), headers={'X-Edit-Secret': 'wrong'})
-                transport.client = ('203.0.113.20', 50000)
-                good = self.client.put('/api/projects/' + pid, json=dict(PROJ, name='from-b'), headers={'X-Edit-Secret': secret})
+                same_ip_other = self.client.put('/api/projects/' + other, json=dict(PROJ, name='nope'), headers={'X-Edit-Secret': 'wrong'})
+                same_ip_good = self.client.put('/api/projects/' + pid, json=dict(PROJ, name='from-a'), headers={'X-Edit-Secret': secret})
+            transport.client = ('203.0.113.20', 50000)
+            other_ip_wrong = self.client.put('/api/projects/' + pid, json=dict(PROJ, name='nope'), headers={'X-Edit-Secret': 'wrong'})
+            good = self.client.put('/api/projects/' + pid, json=dict(PROJ, name='from-b'), headers={'X-Edit-Secret': secret})
         finally:
             transport.client = original
         self.assertEqual(first.status_code, 403, first.text)
         self.assertEqual(second.status_code, 403, second.text)
         self.assertEqual(blocked.status_code, 429, blocked.text)
+        self.assertEqual(same_ip_other.status_code, 403, same_ip_other.text)
+        self.assertEqual(same_ip_good.status_code, 200, same_ip_good.text)
+        self.assertEqual(other_ip_wrong.status_code, 403, other_ip_wrong.text)
         self.assertIn('reason=bad_secret_rate', buf.getvalue())
         self.assertNotIn(secret, buf.getvalue())
         self.assertEqual(good.status_code, 200, good.text)
         kept = self.client.get('/api/projects/' + pid)
         self.assertEqual(kept.status_code, 200, kept.text)
         self.assertEqual(kept.json().get('name'), 'from-b')
+
+    def test_class_size_caps_default_and_follow_the_env(self):
+        self.assertTrue(projectstore)
+        self.assertEqual(projectstore.IP_CREATES_PER_MIN, 60)
+        self.assertEqual(projectstore.IP_SAVES_PER_MIN, 600)
+        os.environ.pop('SIM_IP_CREATES_PER_MIN', None)
+        os.environ.pop('SIM_IP_SAVES_PER_MIN', None)
+        self.assertEqual(projectstore._cap('SIM_IP_CREATES_PER_MIN', projectstore.IP_CREATES_PER_MIN), 60)
+        self.assertEqual(projectstore._cap('SIM_IP_SAVES_PER_MIN', projectstore.IP_SAVES_PER_MIN), 600)
+        os.environ['SIM_IP_CREATES_PER_MIN'] = '3'
+        projectstore.reset_limits()
+        codes = [self.client.post('/api/projects', json=dict(PROJ, name='cap%d' % i)).status_code for i in range(4)]
+        self.assertEqual(codes, [201, 201, 201, 429])
+
+    def test_docker_gateway_peer_warns_once_a_minute(self):
+        self.assertTrue(projectstore)
+        clock = {'t': 5000.0}
+        saved = (
+            projectstore._GATEWAY_CLOCK,
+            projectstore._GATEWAY_WARNED_AT,
+            projectstore._GATEWAY_LOOKED,
+            projectstore._DETECTED_GATEWAY,
+        )
+        records = []
+
+        class _Grab(logging.Handler):
+            def emit(self, record):
+                records.append(record.getMessage())
+
+        handler = _Grab()
+        projectstore.LOG.addHandler(handler)
+        try:
+            projectstore._GATEWAY_CLOCK = lambda: clock['t']
+            projectstore._GATEWAY_WARNED_AT = None
+            projectstore._GATEWAY_LOOKED = True
+            projectstore._DETECTED_GATEWAY = '10.9.8.7'
+
+            class _Peer:
+                def __init__(self, host):
+                    self.client = type('C', (), {'host': host})()
+
+            self.assertEqual(projectstore._client_ip(_Peer('198.51.100.8')), '198.51.100.8')
+            self.assertEqual(records, [])
+            self.assertEqual(projectstore._client_ip(_Peer('172.17.0.1')), '172.17.0.1')
+            self.assertEqual(projectstore._client_ip(_Peer('172.17.0.1')), '172.17.0.1')
+            clock['t'] += 30
+            self.assertEqual(projectstore._client_ip(_Peer('10.9.8.7')), '10.9.8.7')
+            self.assertEqual(len(records), 1)
+            self.assertIn('172.17.0.1', records[0])
+            self.assertNotIn('secret', records[0])
+            clock['t'] += 60
+            projectstore._client_ip(_Peer('10.9.8.7'))
+            self.assertEqual(len(records), 2)
+            self.assertIn('10.9.8.7', records[1])
+        finally:
+            projectstore.LOG.removeHandler(handler)
+            (
+                projectstore._GATEWAY_CLOCK,
+                projectstore._GATEWAY_WARNED_AT,
+                projectstore._GATEWAY_LOOKED,
+                projectstore._DETECTED_GATEWAY,
+            ) = saved
 
     def test_rotating_forwarded_for_on_uvicorn_still_429s(self):
         """TestClient never installs uvicorn's proxy-header middleware.

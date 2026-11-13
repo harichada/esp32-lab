@@ -16,8 +16,9 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       An unknown value is logged once. When `python3 -m server.projects_audit
       --count-legacy <dir>` prints 0, nothing on that volume still needs a claim.
       SIM_PROJECT_SAVES_PER_MIN (default 10, per project, after the secret checks),
-      SIM_IP_SAVES_PER_MIN (default 120, per TCP peer), SIM_IP_CREATES_PER_MIN
-      (default 10, per TCP peer). See server/projectstore.py.
+      SIM_IP_SAVES_PER_MIN (default 600, per TCP peer), SIM_IP_CREATES_PER_MIN
+      (default 60, per TCP peer), SIM_BAD_SECRET_PER_MIN (default 10, per
+      IP and project, wrong secrets only). See server/projectstore.py.
       This process starts uvicorn with proxy headers off, so X-Forwarded-For
       is not the client address.
 """

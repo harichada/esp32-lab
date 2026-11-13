@@ -13,12 +13,14 @@ secret. That claim sets a secret and returns it once. Unset, 0, and any
 other value leave those projects read-only. An unknown value is logged once.
 
 Saves are limited after the secret check: SIM_PROJECT_SAVES_PER_MIN (default
-10) per project id, and SIM_IP_SAVES_PER_MIN (default 120) per TCP peer
+10) per project id, and SIM_IP_SAVES_PER_MIN (default 600) per TCP peer
 (request.client.host, never X-Forwarded-For). POST /api/projects is limited
-by SIM_IP_CREATES_PER_MIN (default 10) per TCP peer. Each limit returns 429
-with Retry-After. A failed secret does not spend the per-project budget.
-It does spend the per-IP save budget. When that budget is exhausted the
-response is 429 and the log line includes reason=bad_secret_rate.
+by SIM_IP_CREATES_PER_MIN (default 60) per TCP peer. Each limit returns 429
+with Retry-After. A failed secret does not spend the per-project budget or
+the per-IP save budget. It spends SIM_BAD_SECRET_PER_MIN (default 10) for
+that (IP, project) pair only. When that budget is exhausted the response is
+429 and the log line includes reason=bad_secret_rate. A valid save is never
+blocked by it.
 """
 import hashlib
 import json
@@ -48,9 +50,13 @@ _JSON_SECRET = re.compile(r'(?i)("(?:editSecret|secret)"\s*:\s*")([^"]*)(")')
 FILE_MSG = 'That file name is not allowed. Use letters, digits, dot, underscore or hyphen, and an extension of h, hpp, c, cpp or ino.'
 PART_MSG = 'That part id is not allowed. Use 1 to 32 letters, digits, underscores or hyphens.'
 PROJ_MAX = 500
+IP_CREATES_PER_MIN = 60
+IP_SAVES_PER_MIN = 600
+BAD_SECRET_PER_MIN = 10
 _PROJECT_SAVES = {}
 _IP_SAVES = {}
 _IP_CREATES = {}
+_BAD_SECRETS = {}
 _DIR = None
 _MAX = None
 LOG = logging.getLogger('esp32lab.projects')
@@ -104,11 +110,11 @@ def mount(app, dir_of, max_of):
         i = _pid(pid)
         path = _json_path(i) if i else None
         if not path or not path.exists():
-            return _json({'error': 'not found', 'message': 'No project with that id.'}, 404)
+            return _unknown_project()
         try:
             data = json.loads(path.read_text())
         except Exception:
-            return _json({'error': 'not found', 'message': 'No project with that id.'}, 404)
+            return _unknown_project()
         return _json(_public(data))
 
     @app.put('/api/projects/{pid}')
@@ -132,6 +138,7 @@ def reset_limits():
     _PROJECT_SAVES.clear()
     _IP_SAVES.clear()
     _IP_CREATES.clear()
+    _BAD_SECRETS.clear()
 
 
 def _proj_dir() -> Path:
@@ -144,6 +151,11 @@ def _max_body() -> int:
 
 def _pid(value):
     return value if PID_RE.fullmatch(value or '') else None
+
+
+def _unknown_project():
+    # Missing and malformed ids share this response so a caller cannot tell which ids exist.
+    return _json({'error': 'not found', 'message': 'No project with that id.'}, 404)
 
 
 def _json(body, status=200, headers=None):
@@ -200,12 +212,62 @@ def _cap(name: str, default: int) -> int:
         return default
 
 
+_GATEWAY_CLOCK = time.monotonic
+_GATEWAY_WARNED_AT = None
+_GATEWAY_LOOKED = False
+_DETECTED_GATEWAY = None
+
+
+def _container_gateway():
+    """The default route's gateway, read once from /proc/net/route. None if it is not there."""
+    global _DETECTED_GATEWAY, _GATEWAY_LOOKED
+    if _GATEWAY_LOOKED:
+        return _DETECTED_GATEWAY
+    _GATEWAY_LOOKED = True
+    _DETECTED_GATEWAY = None
+    try:
+        lines = Path('/proc/net/route').read_text().splitlines()
+    except OSError:
+        return None
+    for line in lines[1:]:
+        parts = line.split()
+        if len(parts) < 3 or parts[1] != '00000000':
+            continue
+        raw = parts[2]
+        if len(raw) != 8 or raw == '00000000':
+            continue
+        try:
+            value = int(raw, 16)
+        except ValueError:
+            continue
+        octets = [(value >> shift) & 0xFF for shift in (0, 8, 16, 24)]
+        _DETECTED_GATEWAY = '.'.join(str(n) for n in octets)
+        return _DETECTED_GATEWAY
+    return None
+
+
+def _note_docker_gateway(ip: str):
+    """One warning a minute when the peer is the bridge gateway, not a student."""
+    global _GATEWAY_WARNED_AT
+    gateway = _container_gateway()
+    if ip != '172.17.0.1' and ip != gateway:
+        return
+    now = _GATEWAY_CLOCK()
+    if _GATEWAY_WARNED_AT is not None and now - _GATEWAY_WARNED_AT < 60:
+        return
+    _GATEWAY_WARNED_AT = now
+    LOG.warning(
+        'project peer %s is the Docker gateway; per-IP limits are not per student until the real client address reaches the container',
+        ip,
+    )
+
+
 def _client_ip(request: Request) -> str:
     # The TCP peer only. X-Forwarded-For and every other header are ignored
     # until a signed client cookie exists.
-    if request.client and request.client.host:
-        return request.client.host
-    return 'unknown'
+    ip = request.client.host if request.client and request.client.host else 'unknown'
+    _note_docker_gateway(ip)
+    return ip
 
 
 def _prune(bucket, key):
@@ -465,27 +527,28 @@ async def _read_request(request: Request):
 
 def _allow_create(request: Request):
     ip = _client_ip(request)
-    retry = _limited_bucket(_IP_CREATES, ip, _cap('SIM_IP_CREATES_PER_MIN', 10))
+    retry = _limited_bucket(_IP_CREATES, ip, _cap('SIM_IP_CREATES_PER_MIN', IP_CREATES_PER_MIN))
     if retry is not None:
         return _reject_limit(request, 'create', retry, f'ip={ip}')
     _commit(_IP_CREATES, ip)
     return None
 
 
-def _charge_bad_secret(request: Request):
-    """A wrong edit secret spends the shared per-IP save budget, not the project budget."""
+def _charge_bad_secret(request: Request, pid: str):
+    """A wrong edit secret spends only the (IP, project) budget, never a valid save."""
     ip = _client_ip(request)
-    retry = _limited_bucket(_IP_SAVES, ip, _cap('SIM_IP_SAVES_PER_MIN', 120))
+    key = (ip, pid)
+    retry = _limited_bucket(_BAD_SECRETS, key, _cap('SIM_BAD_SECRET_PER_MIN', BAD_SECRET_PER_MIN))
     if retry is not None:
-        return _reject_limit(request, 'ip-save', retry, f'ip={ip} reason=bad_secret_rate')
-    _commit(_IP_SAVES, ip)
+        return _reject_limit(request, 'bad-secret', retry, f'ip={ip} project={pid} reason=bad_secret_rate')
+    _commit(_BAD_SECRETS, key)
     return None
 
 
 def _allow_save(request: Request, pid: str):
     """Count a save only after the edit secret has been accepted."""
     ip = _client_ip(request)
-    ip_retry = _limited_bucket(_IP_SAVES, ip, _cap('SIM_IP_SAVES_PER_MIN', 120))
+    ip_retry = _limited_bucket(_IP_SAVES, ip, _cap('SIM_IP_SAVES_PER_MIN', IP_SAVES_PER_MIN))
     if ip_retry is not None:
         return _reject_limit(request, 'ip-save', ip_retry, f'ip={ip}')
     proj_retry = _limited_bucket(_PROJECT_SAVES, pid, _cap('SIM_PROJECT_SAVES_PER_MIN', 10))
@@ -517,14 +580,14 @@ async def _create(request: Request):
 async def _update(pid: str, request: Request):
     i = _pid(pid)
     if not i:
-        return _json({'error': 'bad id', 'message': 'That project id is not valid.'}, 400)
+        return _unknown_project()
     data, rejected = await _read_request(request)
     if rejected:
         return rejected
     path = _json_path(i)
     if not path.exists():
         _audit(request, 404)
-        return _json({'error': 'not found', 'message': 'No project with that id.'}, 404)
+        return _unknown_project()
     if _too_many(i):
         return _json({'error': 'project limit', 'message': 'The server cannot store another project.'}, 507)
     stored = _read_hash(i)
@@ -543,8 +606,8 @@ async def _update(pid: str, request: Request):
         # Grandfathered projects have no hash yet. This old PUT is the one time their secret is returned.
         return _json({'id': i, 'secret': secret})
     if not _secret_matches(stored, presented):
-        # Counted on the per-IP save budget only. The owner's project budget stays put.
-        limited = _charge_bad_secret(request)
+        # This pair's wrong-secret budget only. The owner's save, and every other pair, stay open.
+        limited = _charge_bad_secret(request, i)
         if limited:
             return limited
         _audit(request, 403)
@@ -563,11 +626,11 @@ def _delete(pid: str, request: Request):
         return rejected
     i = _pid(pid)
     if not i:
-        return _json({'error': 'bad id', 'message': 'That project id is not valid.'}, 400)
+        return _unknown_project()
     path = _json_path(i)
     if not path.exists():
         _audit(request, 404)
-        return _json({'error': 'not found', 'message': 'No project with that id.'}, 404)
+        return _unknown_project()
     stored = _read_hash(i)
     presented = request.headers.get('x-edit-secret') or ''
     # A project with no secret is not deleted until a save has claimed it.
