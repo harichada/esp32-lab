@@ -257,7 +257,7 @@
       } catch (e) { /* focus is a convenience */ }
       try { if (typeof svg.hasAttribute !== 'function' || !svg.hasAttribute('tabindex')) svg.setAttribute('tabindex', '-1'); } catch (e) { /* */ }
       try { if (svg.style) svg.style.outline = 'none'; svg.focus({ preventScroll: true }); }
-      catch (e) { try { svg.focus(); } catch (e2) { /* shortcut still works when focus is already on the page */ } }
+      catch (e) { /* focus must not scroll the page; the shortcut still works when focus is already here */ }
     }
     setWireColor(c) { this.wireColor = c; if (this.sel && this.sel.wire) { const w = this.proj.wires.find((q) => q.id === this.sel.wire); if (w) { this.push(); w.color = c; this.renderWires(); } } }
     pinIndex() {   // world positions of every pin (non-breadboard first so they win ties with the hole underneath)

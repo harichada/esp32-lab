@@ -275,117 +275,170 @@ test('the queue line clears the ticker, keeps Make a copy clickable, and stays f
     assert.ok(Math.abs(widths.statusBusy - widths.statusIdle) < 0.5, 'status width idle ' + widths.statusIdle + ' busy ' + widths.statusBusy);
     assert.equal(widths.main, widths.mainAfter);
     const headerWidths = [821, 850, 900, 940, 1000, 1100, 1280];
-    const clip = {};
-    for (const w of headerWidths) {
-      await send('Emulation.setDeviceMetricsOverride', { width: w, height: 780, deviceScaleFactor: 1, mobile: false }, sessionId);
-      const edges = await evalJs(`(async () => {
-        for (let i = 0; i < 30; i++) {
-          if (!document.body.classList.contains('m')) break;
-          await new Promise((r) => setTimeout(r, 40));
+    const readHeader = `(async (state) => {
+      for (let i = 0; i < 30; i++) {
+        if (!document.body.classList.contains('m')) break;
+        await new Promise((r) => setTimeout(r, 40));
+      }
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const read = (which) => {
+        app.setCompilePhase(which === 'building' ? 'building' : 'idle');
+        const top = document.getElementById('top');
+        const nodes = [...document.querySelectorAll('header#top button, header#top select, header#top #status, header#top label.btn, header#top .conn')];
+        const vis = [];
+        for (const el of nodes) {
+          const s = getComputedStyle(el);
+          const r = el.getBoundingClientRect();
+          if (s.display === 'none' || s.visibility === 'hidden' || Number(s.opacity) === 0) continue;
+          if (r.width < 2 || r.height < 2) continue;
+          vis.push({
+            id: el.id || el.getAttribute('aria-label') || el.className,
+            left: r.left, right: r.right, top: r.top, bottom: r.bottom,
+            sw: el.scrollWidth, cw: el.clientWidth,
+            text: (el.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 40),
+          });
         }
-        const read = (state) => {
-          app.setCompilePhase(state === 'building' ? 'building' : 'idle');
-          const nodes = [...document.querySelectorAll('header#top button, header#top select, header#top #status, header#top label.btn, header#top .conn')];
-          const vis = [];
-          for (const el of nodes) {
-            const s = getComputedStyle(el);
-            const r = el.getBoundingClientRect();
-            if (s.display === 'none' || s.visibility === 'hidden' || Number(s.opacity) === 0) continue;
-            if (r.width < 2 || r.height < 2) continue;
-            vis.push({
-              id: el.id || el.getAttribute('aria-label') || el.className,
-              left: r.left, right: r.right, top: r.top, bottom: r.bottom,
-              sw: el.scrollWidth, cw: el.clientWidth,
-              text: (el.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 32),
-            });
-          }
-          const st = document.getElementById('stText');
-          const title = document.getElementById('projTitle');
-          const crumb = title && title.closest('.crumb');
-          const crumbOn = !!(crumb && getComputedStyle(crumb).display !== 'none' && title.getClientRects().length);
-          let crumbOk = !crumbOn;
-          if (crumbOn) {
-            const probe = document.createElement('span');
-            probe.textContent = '00000000';
-            probe.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;font:' + getComputedStyle(title).font;
-            document.body.appendChild(probe);
-            crumbOk = title.clientWidth + 1 >= probe.getBoundingClientRect().width;
-            probe.remove();
-          }
-          const menu = document.getElementById('tbMore');
-          const more = document.getElementById('bMore');
-          return {
-            vis,
-            face: st.textContent,
-            live: document.getElementById('stLive').textContent,
-            titleAttr: document.getElementById('status').getAttribute('title'),
-            crumbOn,
-            crumbOk,
-            doc: document.title,
-            moreOn: !!(more && getComputedStyle(more).display !== 'none'),
-            menuOpen: menu.classList.contains('open'),
-            exText: (document.getElementById('bExamples').innerText || '').trim(),
-            exLabel: document.getElementById('bExamples').getAttribute('aria-label'),
-            stageH: document.getElementById('stageWrap').getBoundingClientRect().height,
-          };
+        const st = document.getElementById('stText');
+        const title = document.getElementById('projTitle');
+        const crumb = title && title.closest('.crumb');
+        const crumbOn = !!(crumb && getComputedStyle(crumb).display !== 'none' && title.getClientRects().length);
+        let crumbOk = !crumbOn;
+        if (crumbOn) {
+          const probe = document.createElement('span');
+          probe.textContent = '00000000';
+          probe.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;font:' + getComputedStyle(title).font;
+          document.body.appendChild(probe);
+          crumbOk = title.clientWidth + 1 >= probe.getBoundingClientRect().width;
+          probe.remove();
+        }
+        const menu = document.getElementById('tbMore');
+        const more = document.getElementById('bMore');
+        const lab = document.querySelector('#bExamples .ex-lab');
+        const labCs = lab ? getComputedStyle(lab) : null;
+        const labR = lab ? lab.getBoundingClientRect() : { width: 0 };
+        return {
+          vis,
+          face: st.textContent,
+          live: document.getElementById('stLive').textContent,
+          titleAttr: document.getElementById('status').getAttribute('title'),
+          crumbOn,
+          crumbOk,
+          doc: document.title,
+          moreOn: !!(more && getComputedStyle(more).display !== 'none'),
+          menuOpen: menu.classList.contains('open'),
+          exText: (document.getElementById('bExamples').innerText || '').trim(),
+          exLabel: document.getElementById('bExamples').getAttribute('aria-label'),
+          exLabW: labCs && labCs.position !== 'absolute' && labCs.visibility !== 'hidden' ? labR.width : 0,
+          stageH: document.getElementById('stageWrap').getBoundingClientRect().height,
+          headerSw: top.scrollWidth,
+          headerCw: top.clientWidth,
+          gutter: innerWidth - document.documentElement.clientWidth,
         };
-        const idle = read('idle');
-        const building = read('building');
-        let menu = null;
-        if (idle.moreOn) {
-          document.getElementById('bMore').click();
-          const panel = document.getElementById('tbMore');
-          const items = [...panel.querySelectorAll('button, label')].filter((el) => getComputedStyle(el).display !== 'none').map((el) => ({
-            id: el.id,
-            text: (el.innerText || '').replace(/\\s+/g, ' ').trim(),
-            label: el.getAttribute('aria-label') || '',
-            right: el.getBoundingClientRect().right,
-            sw: el.scrollWidth,
-            cw: el.clientWidth,
-          }));
-          menu = { items, right: panel.getBoundingClientRect().right };
-          document.getElementById('bMore').click();
+      };
+      const one = state ? read(state) : null;
+      const idle = state ? null : read('idle');
+      const building = state ? null : read('building');
+      const shown = idle || one;
+      let menu = null;
+      if (shown.moreOn && !state) {
+        document.getElementById('bMore').click();
+        const panel = document.getElementById('tbMore');
+        const items = [...panel.querySelectorAll('button, label')].filter((el) => getComputedStyle(el).display !== 'none').map((el) => ({
+          id: el.id,
+          text: (el.innerText || '').replace(/\\s+/g, ' ').trim(),
+          label: el.getAttribute('aria-label') || '',
+          right: el.getBoundingClientRect().right,
+          sw: el.scrollWidth,
+          cw: el.clientWidth,
+        }));
+        menu = { items, right: panel.getBoundingClientRect().right };
+        document.getElementById('bMore').click();
+      }
+      return { idle, building, one, menu, vw: innerWidth, vh: innerHeight };
+    })`;
+    const checkBlock = (mode, w, state, block, vw, vh) => {
+      assert.equal(block.face, state === 'building' ? 'Building…' : 'Idle', mode + ' ' + w + ' ' + state + ' face ' + block.face);
+      if (state === 'building') {
+        assert.equal(block.live, 'Building your code… the first build takes longer.');
+        assert.equal(block.titleAttr, 'Building your code… the first build takes longer.');
+      }
+      assert.ok(block.headerSw <= block.headerCw + 1, mode + ' ' + w + ' header sw ' + block.headerSw + ' cw ' + block.headerCw);
+      for (const b of block.vis) {
+        assert.ok(b.left >= -1 && b.right <= vw + 1 && b.top >= -1 && b.bottom <= vh + 1, mode + ' ' + w + ' ' + state + ' ' + b.id + ' box ' + JSON.stringify(b));
+        assert.ok(b.sw <= b.cw + 1, mode + ' ' + w + ' ' + state + ' ' + b.id + ' clipped sw ' + b.sw + ' cw ' + b.cw + ' text ' + b.text);
+      }
+      assert.ok(block.vis.some((b) => b.id === 'bRun'), mode + ' ' + w + ' ' + state + ' keeps Run');
+      assert.ok(block.vis.some((b) => b.id === 'status'), mode + ' ' + w + ' ' + state + ' keeps status');
+      assert.ok(!block.vis.some((b) => b.id === 'bTheme' || b.id === 'bKeys' || b.id === 'bCmdk') || w >= 1280, mode + ' ' + w + ' still shows a tool that should be in More');
+      if (w < 950) {
+        assert.ok(block.vis.some((b) => b.id === 'bExamples'), mode + ' ' + w + ' ' + state + ' keeps Examples');
+        assert.equal(block.exLabel, 'Examples');
+        assert.match(block.exText, /Examples/);
+        assert.ok(block.exLabW >= 40, mode + ' ' + w + ' Examples label width ' + block.exLabW);
+        assert.ok(!/^[A-Za-z]▾?$/.test(block.exText), mode + ' ' + w + ' examples is not a single letter');
+      } else {
+        assert.ok(block.vis.some((b) => b.id === 'selExample'), mode + ' ' + w + ' ' + state + ' keeps the examples menu');
+      }
+      if (block.headerCw <= 1255 + 24) assert.ok(block.moreOn, mode + ' ' + w + ' shows More');
+      if (block.crumbOn) assert.equal(block.crumbOk, true, mode + ' ' + w + ' title shows at least 8 characters');
+      else assert.match(block.doc, /Blink/);
+    };
+    const clip = {};
+    for (const mode of ['overlay', 'classic']) {
+      if (mode === 'classic') {
+        await evalJs(`(() => {
+          const s = document.createElement('style');
+          s.id = 'classic-scrollbar';
+          s.textContent = 'html{overflow-y:scroll}::-webkit-scrollbar{width:15px}';
+          document.documentElement.appendChild(s);
+          return true;
+        })()`);
+      }
+      clip[mode] = {};
+      for (const w of headerWidths) {
+        await send('Emulation.setDeviceMetricsOverride', { width: w, height: 780, deviceScaleFactor: 1, mobile: false }, sessionId);
+        const edges = await evalJs(readHeader + '()');
+        if (mode === 'classic') assert.ok(edges.idle.gutter >= 14, mode + ' ' + w + ' gutter ' + edges.idle.gutter);
+        clip[mode][w] = {
+          gutter: edges.idle.gutter,
+          header: edges.idle.headerCw + '/' + edges.idle.headerSw,
+          idle: edges.idle.vis.map((b) => b.id + ':' + b.text),
+          building: edges.building.face,
+          exLab: edges.idle.exLabW,
+          menu: edges.menu && edges.menu.items.map((i) => i.id + ':' + i.text),
+        };
+        for (const state of ['idle', 'building']) {
+          checkBlock(mode, w, state, edges[state], edges.vw, edges.vh);
         }
-        return { idle, building, menu, vw: innerWidth, vh: innerHeight };
+        if (edges.menu) {
+          for (const item of edges.menu.items) {
+            assert.ok(item.right <= edges.vw + 1, mode + ' ' + w + ' menu ' + item.id);
+            assert.ok(item.sw <= item.cw + 1, mode + ' ' + w + ' menu clip ' + item.id);
+          }
+          const ids = edges.menu.items.map((i) => i.id);
+          assert.ok(ids.indexOf('bCmdk') >= 0 && ids.indexOf('bKeys') >= 0 && ids.indexOf('bTheme') >= 0, mode + ' ' + w + ' menu has the overflow buttons');
+          const search = edges.menu.items.find((i) => i.id === 'bCmdk');
+          assert.match(search.text, /Search commands/);
+        }
+      }
+      await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 780, deviceScaleFactor: 1, mobile: false }, sessionId);
+      await evalJs(`(async () => {
+        for (let i = 0; i < 20; i++) { if (!document.body.classList.contains('m')) break; await new Promise((r) => setTimeout(r, 30)); }
+        app.setCompilePhase('building');
+        return true;
       })()`);
-      clip[w] = { idle: edges.idle.vis.map((b) => b.id + ':' + b.text), building: edges.building.face, menu: edges.menu && edges.menu.items.map((i) => i.id + ':' + i.text), stageH: edges.idle.stageH };
-      for (const state of ['idle', 'building']) {
-        const block = edges[state];
-        assert.equal(block.face, state === 'building' ? 'Building…' : 'Idle', w + ' ' + state + ' face ' + block.face);
-        if (state === 'building') {
-          assert.equal(block.live, 'Building your code… the first build takes longer.');
-          assert.equal(block.titleAttr, 'Building your code… the first build takes longer.');
-        }
-        for (const b of block.vis) {
-          assert.ok(b.left >= -1 && b.right <= edges.vw + 1 && b.top >= -1 && b.bottom <= edges.vh + 1, w + ' ' + state + ' ' + b.id + ' box ' + JSON.stringify(b));
-          assert.ok(b.sw <= b.cw + 1, w + ' ' + state + ' ' + b.id + ' clipped sw ' + b.sw + ' cw ' + b.cw + ' text ' + b.text);
-        }
-        assert.ok(block.vis.some((b) => b.id === 'bRun'), w + ' ' + state + ' keeps Run');
-        assert.ok(block.vis.some((b) => b.id === 'status'), w + ' ' + state + ' keeps status');
-        if (w < 950) assert.ok(block.vis.some((b) => b.id === 'bExamples'), w + ' ' + state + ' keeps Examples');
-        else assert.ok(block.vis.some((b) => b.id === 'selExample'), w + ' ' + state + ' keeps the examples menu');
-        if (w <= 1279) assert.ok(block.moreOn, w + ' shows More');
-        if (w <= 879) {
-          assert.equal(block.exLabel, 'Examples');
-          assert.ok(!/^[A-Za-z]$/.test(block.exText), w + ' examples is not a single letter');
-        } else if (w < 950) {
-          assert.match(block.exText, /Examples/);
-        }
-        if (block.crumbOn) assert.equal(block.crumbOk, true, w + ' title shows at least 8 characters');
-        else assert.match(block.doc, /Blink/);
+      const mid = {};
+      for (const w of [821, 900, 1100]) {
+        await send('Emulation.setDeviceMetricsOverride', { width: w, height: 780, deviceScaleFactor: 1, mobile: false }, sessionId);
+        const edges = await evalJs(readHeader + '("building")');
+        mid[w] = { face: edges.one.face, ids: edges.one.vis.map((b) => b.id), gutter: edges.one.gutter, header: edges.one.headerCw + '/' + edges.one.headerSw };
+        assert.equal(edges.one.face, 'Building…', mode + ' resize ' + w + ' left the build');
+        checkBlock(mode, w, 'building', edges.one, edges.vw, edges.vh);
       }
-      if (edges.menu) {
-        for (const item of edges.menu.items) {
-          assert.ok(item.right <= edges.vw + 1, w + ' menu ' + item.id);
-          assert.ok(item.sw <= item.cw + 1, w + ' menu clip ' + item.id);
-        }
-        const ids = edges.menu.items.map((i) => i.id);
-        assert.ok(ids.indexOf('bCmdk') >= 0 && ids.indexOf('bKeys') >= 0 && ids.indexOf('bTheme') >= 0, w + ' menu has the overflow buttons');
-        const search = edges.menu.items.find((i) => i.id === 'bCmdk');
-        assert.match(search.text, /Search commands/);
-      }
+      clip[mode].resizeWhileBuilding = mid;
     }
     console.log('HEADER_CLIP ' + JSON.stringify(clip));
+    await evalJs(`(() => { const s = document.getElementById('classic-scrollbar'); if (s) s.remove(); return true; })()`);
     await send('Emulation.setDeviceMetricsOverride', { width: 821, height: 780, deviceScaleFactor: 1, mobile: false }, sessionId);
     const tip = await evalJs(`(async () => {
       for (let i = 0; i < 20; i++) { if (!document.body.classList.contains('m')) break; await new Promise((r) => setTimeout(r, 30)); }
@@ -421,6 +474,33 @@ test('the queue line clears the ticker, keeps Make a copy clickable, and stays f
     assert.match(drag.on, /matrix/, 'strip shifts the canvas');
     assert.equal(drag.held, drag.on, 'translate stays until pointerup');
     assert.equal(drag.released, 'none', 'translate releases after pointerup');
+    const cancelDrag = await evalJs(`(async () => {
+      const stage = document.getElementById('stage');
+      const at = (id, type) => stage.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: id, clientX: 400, clientY: 300 }));
+      app.setCompilePhase('building');
+      const down = getComputedStyle(stage).transform;
+      at(7, 'pointerdown');
+      app.setCompilePhase('idle');
+      const held = getComputedStyle(stage).transform;
+      at(7, 'pointercancel');
+      await new Promise((r) => setTimeout(r, 40));
+      const cancelled = getComputedStyle(stage).transform;
+      app.setCompilePhase('building');
+      const again = getComputedStyle(stage).transform;
+      at(8, 'pointerdown');
+      app.setCompilePhase('idle');
+      const held2 = getComputedStyle(stage).transform;
+      at(8, 'lostpointercapture');
+      await new Promise((r) => setTimeout(r, 40));
+      const lost = getComputedStyle(stage).transform;
+      return { down, held, cancelled, again, held2, lost };
+    })()`);
+    assert.match(cancelDrag.down, /matrix/, 'pointer is down on a shifted canvas');
+    assert.equal(cancelDrag.held, cancelDrag.down, 'translate stays after the phase returns to idle');
+    assert.equal(cancelDrag.cancelled, 'none', 'pointercancel releases the translate');
+    assert.match(cancelDrag.again, /matrix/, 'a second build shifts the canvas again');
+    assert.equal(cancelDrag.held2, cancelDrag.again, 'translate stays until the pointer is lost');
+    assert.equal(cancelDrag.lost, 'none', 'lostpointercapture releases the translate');
     const reach = await evalJs(`(() => {
       app.setCompilePhase('building');
       const stripH = document.getElementById('compileStrip').getBoundingClientRect().height;

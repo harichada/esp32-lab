@@ -332,7 +332,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (label) label.textContent = text;
   }
   let lastQueueDetail = '';
-  let stripPointers = 0;
+  const stripDown = new Set();
   function setCompilePhase(phase, detail) {
     const next = phase === 'queued' || phase === 'building' || phase === 'running' ? phase : 'idle';
     app.compilePhase = next;
@@ -374,6 +374,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     }
     if (window.Mobile && typeof window.Mobile.syncIgnite === 'function') window.Mobile.syncIgnite();
     syncStripMetrics();
+    if (typeof syncHeaderFit === 'function') syncHeaderFit();
   }
   function shownChrome(el) {
     if (!el || typeof getComputedStyle !== 'function') return null;
@@ -400,8 +401,8 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       if (open) {
         root.style.setProperty('--strip-h', strip.getBoundingClientRect().height + 'px');
         if (root.classList) root.classList.add('strip-on');
-      } else if (stripPointers > 0 && root.classList && root.classList.contains('strip-on')) {
-        // A part drag uses this translate. Dropping it before pointerup jumps the part.
+      } else if (stripDown.size > 0 && root.classList && root.classList.contains('strip-on')) {
+        // A part drag uses this translate. Dropping it before the pointer ends jumps the part.
       } else {
         root.style.setProperty('--strip-h', '0px');
         if (root.classList) root.classList.remove('strip-on');
@@ -425,13 +426,15 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       mo.observe(document.body, { childList: true, subtree: true });
     }
     window.addEventListener('resize', syncStripMetrics);
-    window.addEventListener('pointerdown', () => { stripPointers++; }, true);
-    const releaseStrip = () => {
-      stripPointers = Math.max(0, stripPointers - 1);
-      if (!stripPointers) setTimeout(syncStripMetrics, 0);
+    window.addEventListener('pointerdown', (e) => { if (e && e.pointerId != null) stripDown.add(e.pointerId); }, true);
+    const releaseStrip = (e) => {
+      if (!e || e.pointerId == null || !stripDown.has(e.pointerId)) return;
+      stripDown.delete(e.pointerId);
+      if (!stripDown.size) setTimeout(syncStripMetrics, 0);
     };
     window.addEventListener('pointerup', releaseStrip, true);
     window.addEventListener('pointercancel', releaseStrip, true);
+    window.addEventListener('lostpointercapture', releaseStrip, true);
     const reapplyStrip = () => {
       const phase = app.compilePhase;
       if (phase === 'queued') setCompilePhase('queued', lastQueueDetail);
@@ -1145,13 +1148,29 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     } catch (e) {}
     if (typeof document !== 'undefined') document.title = name && (!shown || clipped) ? name + ' — ' + DOC_BASE : DOC_BASE;
   }
+  // Content box of #top. Same number the topbar container queries use, so a classic
+  // scrollbar is included and window.innerWidth is not.
+  function headerInline() {
+    const top = document.getElementById && document.getElementById('top');
+    if (!top || typeof top.clientWidth !== 'number') return null;
+    let pad = 0;
+    try {
+      if (typeof getComputedStyle === 'function') {
+        const cs = getComputedStyle(top);
+        pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+      }
+    } catch (e) {}
+    return top.clientWidth - pad;
+  }
   function placeProj() {
     const proj = document.getElementById && document.getElementById('tbProj');
     const menu = document.getElementById && document.getElementById('tbMore');
     const fold = document.getElementById && document.getElementById('tbFold');
     const more = document.getElementById && document.getElementById('bMore');
     if (!proj || !menu || !fold || !more) return;
-    const tight = !!(window.matchMedia && window.matchMedia('(max-width: 1180px)').matches) && !(document.body && document.body.classList.contains('m'));
+    const box = headerInline();
+    const phone = !!(document.body && document.body.classList.contains('m'));
+    const tight = box != null && box <= 1156 && !phone;
     if (tight) { if (proj.parentElement !== menu) menu.insertBefore(proj, menu.firstChild); }
     else if (proj.parentElement !== fold) fold.insertBefore(proj, more);
   }
@@ -1168,10 +1187,14 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const crumb = document.querySelector && document.querySelector('#top .crumb');
     const phone = !!(document.body && document.body.classList.contains('m'));
     if (!top || !crumb || phone || typeof top.clientWidth !== 'number') { if (crumb && crumb.classList) crumb.classList.remove('crumb-hide'); syncDocTitle(); return; }
-    if (top.clientWidth !== headerFitW) {
-      headerFitW = top.clientWidth;
+    // Re-read clientWidth on every resize, including while the 11em status box is locked
+    // during a build. The class toggles only when that width changes, so the observer
+    // does not loop, and a busy pill cannot keep the previous window's overflow.
+    const width = top.clientWidth;
+    if (width !== headerFitW) {
+      headerFitW = width;
       crumb.classList.remove('crumb-hide');
-      if (top.scrollWidth > top.clientWidth + 1) crumb.classList.add('crumb-hide');
+      if (top.scrollWidth > width + 1) crumb.classList.add('crumb-hide');
     }
     syncDocTitle();
   }
@@ -1222,8 +1245,6 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       if (mq.addEventListener) mq.addEventListener('change', fn);
       else if (mq.addListener) mq.addListener(fn);
     };
-    listen('(max-width: 1180px)');
-    listen('(max-width: 949px)');
     listen('(max-width: 820px), (pointer: coarse) and (max-height: 520px)');
     if (typeof ResizeObserver === 'function' && document.getElementById('top') && !document.getElementById('top').__hdrWatch) {
       const top = document.getElementById('top');

@@ -211,10 +211,10 @@ canvas{width:100%;background:var(--l0);border:1px solid var(--line);border-radiu
 @media (max-width:1440px){:root{--palW:208px;--sideW:272px}.cmdk span{display:none}.cmdk{min-width:0}.cmdk kbd{display:none}#bProjects span{display:none}}
 @media (max-width:1300px){.conn span,.crumb .chip-tag{display:none}.tb #selExample{max-width:140px}}
 @media (max-width:900px){#main{grid-template-columns:1fr!important;grid-template-rows:auto 1fr auto}#palette{max-height:140px}#side,#sideResizer{display:none}.crumb{display:none}}
-/* Header content box is the viewport minus the 24px of horizontal padding.
-   1255px ≈ a 1279px window: search, shortcuts and theme move into More. At 1280 they stay in the bar.
-   1156px ≈ 1180px: Projects, Save, Download and Import follow them.
-   925px ≈ 949px: Examples becomes a button. 855px ≈ 879px: icon only. */
+/* Queries use the header's content box, so a classic scrollbar (about 15px) is already
+   subtracted. 1255px folds search, shortcuts and theme into More. 1156px folds Projects,
+   Save, Download and Import. 925px (about 949px of header, under a 950px window) turns
+   Examples into a button that still shows the word Examples. */
 @container topbar (max-width:1255px){
   body:not(.m) .tb-fold{display:inline-flex;position:relative;align-items:center;gap:6px}
   body:not(.m) #bMore{display:inline-flex;flex:none}
@@ -231,11 +231,9 @@ canvas{width:100%;background:var(--l0);border:1px solid var(--line);border-radiu
 }
 @container topbar (max-width:925px){
   body:not(.m) #bExamples{display:inline-flex;flex:none}
+  body:not(.m) #bExamples .ex-lab{position:static;width:auto;height:auto;margin:0;overflow:visible;clip:auto}
   body:not(.m) .ex-slot #selExample{position:absolute;width:1px;height:1px;margin:0;padding:0;border:0;opacity:0;pointer-events:none;overflow:hidden;clip:rect(0,0,0,0)}
-}
-@container topbar (max-width:855px){
-  body:not(.m) #bExamples{width:28px;min-width:28px;padding:0;justify-content:center}
-  body:not(.m) #bExamples .ex-lab{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
+  body:not(.m) .brand-t{position:absolute;width:1px;height:1px;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
 }
 @media (pointer:coarse){button,.btn,select,input{height:34px}.iconbtn{width:34px}.w-hit{stroke-width:20}.pin{r:4}}
 /* hint sits above the left canvas toolbar, never under the toolbars/minimap */
