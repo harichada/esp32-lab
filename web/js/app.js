@@ -1,4 +1,18 @@
-async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o);if(r.status>=502&&r.status<=504&&i<n)throw new Error('gw');return r;}catch(e){if(i>=n)throw e;await new Promise(z=>setTimeout(z,1500*(i+1)));}}}
+async function fetchRetry(u, o, n = 4) {
+  for (let i = 0; ; i++) {
+    try {
+      const r = await fetch(u, o);
+      // 502/503 are gateway drops and are retried. 504 is a compile that ran too long
+      // and must reach the page immediately, not start another build.
+      if ((r.status === 502 || r.status === 503) && i < n) throw new Error('gw');
+      return r;
+    } catch (e) {
+      if (e && (e.name === 'AbortError' || e.name === 'TimeoutError')) throw e;
+      if (i >= n) throw e;
+      await new Promise((z) => setTimeout(z, 1500 * (i + 1)));
+    }
+  }
+}
 /* Application glue: project state, runtimes (QEMU over websocket / JS sketch), panels, devices, persistence. */
 (function () {
   const P = window.Parts, { Sim } = window.SimCore, R = window.RemoteLogic, $ = (s) => document.querySelector(s);
@@ -249,6 +263,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
   let statusWord = 'Idle';
   function statusShort(word) {
+    if (word === COMPILE_TIMEOUT_TEXT) return word;
     if (word === 'Building…' || word === 'Building...') return 'Build';
     if (word === 'Queued') return 'Wait';
     if (word === 'Running') return 'Run';
@@ -353,9 +368,10 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
   let compileBusy = false;
   const BUILDING_TEXT = 'Building your code… the first build takes longer.';
+  const COMPILE_TIMEOUT_TEXT = "Your sketch took too long to build. It's saved. Try Run again, and if it keeps happening, make the sketch smaller.";
   const QUEUE_FALLBACK = 'Waiting for another build to finish…';
   // One phase for the Run button and the status line: idle, queued, building, running.
-  // A 429, a compile error, and a dropped socket return to idle.
+  // A 429, a 504 compile timeout, a compile error, an aborted fetch, and a dropped socket return to idle.
   function queuedCopy(wait) {
     const msg = wait && typeof wait.message === 'string' ? wait.message.trim() : '';
     const bare = !msg || msg === 'Waiting…' || msg === 'Waiting';
@@ -499,9 +515,33 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
   app.syncStripMetrics = syncStripMetrics;
   function setRunBusy(on) { setCompilePhase(on ? 'building' : 'idle'); }
+  function showCompileTimeout(text) {
+    const sentence = text || COMPILE_TIMEOUT_TEXT;
+    setStatus('warn', sentence);
+    const narrow = !!(window.matchMedia && window.matchMedia('(max-width: 640px)').matches);
+    const strip = document.getElementById && document.getElementById('compileStrip');
+    const phone = document.getElementById && document.getElementById('mCompileToast');
+    if (strip) {
+      strip.textContent = narrow ? '' : sentence;
+      strip.hidden = !!narrow;
+      strip.setAttribute('aria-hidden', narrow ? 'true' : 'false');
+    }
+    if (phone) {
+      phone.textContent = narrow ? sentence : '';
+      phone.hidden = !narrow;
+      phone.setAttribute('aria-hidden', narrow ? 'false' : 'true');
+    }
+    const bl = $('#buildLog');
+    if (bl) bl.textContent = sentence + '\n';
+    serialAppend('\n[' + sentence + ']\n');
+    toast(sentence, true);
+    if (window.Mobile && typeof window.Mobile.syncIgnite === 'function') window.Mobile.syncIgnite();
+    if (typeof syncStripMetrics === 'function') syncStripMetrics();
+  }
   app.queuedCopy = queuedCopy;
   app.setCompilePhase = setCompilePhase;
   app.BUILDING_TEXT = BUILDING_TEXT;
+  app.COMPILE_TIMEOUT_TEXT = COMPILE_TIMEOUT_TEXT;
   function tabClientId() {
     try {
       let id = clStorage.session.getItem('esp32client');
@@ -538,6 +578,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     setCompilePhase('building');
     setStatus('busy', BUILDING_TEXT); $('#buildLog').textContent = '';
     let res;
+    let timeoutText = '';
     const clientHeaders = { 'X-Client-Id': tabClientId() };
     let shownWait = '';
     let holdBuilding = false;
@@ -568,7 +609,13 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       poll();
       const r = await fetchRetry('api/compile', { method: 'POST', headers: { 'content-type': 'application/json', ...clientHeaders }, body: JSON.stringify({ sketch: app.proj.code, files: app.proj.files, defines: app.proj.defines }) });
       clearInterval(run.poll); run.poll = null;
-      if (r.status === 429) {
+      if (r.status === 504) {
+        let body = {};
+        try { body = await r.json(); } catch (e) { /* a bare 504 still uses the sentence below */ }
+        const fromServer = body && typeof body.log === 'string' ? body.log.trim() : '';
+        timeoutText = (body && body.reason === 'timeout' && fromServer) ? fromServer : COMPILE_TIMEOUT_TEXT;
+        app.run = null;
+      } else if (r.status === 429) {
         let body = {};
         try { body = await r.json(); } catch (e) { /* the status line is the message */ }
         const reason = body && body.reason;
@@ -582,12 +629,23 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
         serialAppend('\n[' + msg + ']\n');
         app.run = null;
         return;
+      } else {
+        res = await r.json();
+        run.settled = true;
+        holdBuilding = !!(res && res.ok && app.run === run);
       }
-      res = await r.json();
-      run.settled = true;
-      holdBuilding = !!(res && res.ok && app.run === run);
-    } catch (e) { clearInterval(run.poll); run.poll = null; setCompilePhase('idle'); setStatus('err', OFFLINE); serialAppend('\n' + OFFLINE + '\n'); app.run = null; return; }
+    } catch (e) {
+      clearInterval(run.poll); run.poll = null;
+      const gaveUp = e && (e.name === 'AbortError' || e.name === 'TimeoutError');
+      if (gaveUp) {
+        app.run = null;
+        timeoutText = COMPILE_TIMEOUT_TEXT;
+      } else {
+        setCompilePhase('idle'); setStatus('err', OFFLINE); serialAppend('\n' + OFFLINE + '\n'); app.run = null; return;
+      }
+    }
     finally { if (!holdBuilding || app.run !== run) setCompilePhase('idle'); }
+    if (timeoutText) { showCompileTimeout(timeoutText); return; }
     if (app.run !== run) return;
     $('#buildLog').textContent = res.cached ? cachedCompileLog(res.log) : (res.log || ''); if (app.codeview) app.codeview.setLog(res.ok ? '' : (res.log || ''));
     if (!res.ok) { setCompilePhase('idle'); setStatus('err', 'compile error'); $('#buildDet').open = true; document.querySelector('[data-tab=build]').click(); if (app.codeview) app.codeview.setLog(res.log || ''); serialAppend('\n[compile failed — see build log in Code tab]\n'); app.run = null; return; }

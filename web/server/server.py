@@ -8,6 +8,7 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       SIM_IMAGE_CACHE_MAX_MB, SIM_CORE_CACHE_MAX_MB, SIM_SKETCH_CACHE_MAX_MB,
       SIM_NETSTACK_CACHE_DIR, SIM_NETSTACK_CACHE_MAX_MB, SIM_NETSTACK_WARM,
       SIM_COMPILE_QUEUE, SIM_COMPILE_QUEUE_MAX, SIM_COMPILE_QUEUE_TIMEOUT_S,
+      SIM_COMPILE_TIMEOUT, SIM_COMPILE_KILL_GRACE_S,
       SIM_ORPHAN_MAX_AGE_S and the matching *_MAX_AGE_S knobs.
       Staging (off unless set): SIM_STAGING, SIM_ACCESS_TOKEN, SIM_STAGING_UPSTREAM, SIM_BASE_PATH.
       SCHEMATIC_MATCH_LAYOUT (default 1). 0 puts <meta name="schmatch" content="0"> on the lab page
@@ -21,7 +22,7 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       TRUSTED_PROXY_IPS is a comma-separated list of exact IPs. Empty trusts
       nobody. Production uses 172.30.0.250. See https.py. proxy_headers stays off.
 """
-import asyncio, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, argparse
+import asyncio, hashlib, json, os, re, shutil, signal, subprocess, sys, tempfile, time, argparse
 from email.utils import formatdate
 import diskkeep
 import staging
@@ -66,7 +67,73 @@ _netstack_warm_task = None   # startup task building the browser's network archi
 _CLIENT_ID = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 # ---------------- public-exposure hardening ----------------
 TOKEN = os.environ.get('SIM_TOKEN', '')
-MAX_BODY = 200 * 1024; COMPILE_TIMEOUT = int(os.environ.get('SIM_COMPILE_TIMEOUT', '300'))
+MAX_BODY = 200 * 1024
+# Shown on HTTP 504 when a compile runs past SIM_COMPILE_TIMEOUT. The page prints this
+# sentence on the status line (desktop and phone) and does not retry the POST.
+COMPILE_TIMEOUT_USER_MESSAGE = (
+    "Your sketch took too long to build. It's saved. Try Run again, "
+    "and if it keeps happening, make the sketch smaller."
+)
+_compile_worker_deadline = None   # monotonic instant the running compile must be finished by
+_compile_timeout_at = None        # unix time of the last compile timeout; None if there has not been one
+
+
+def _compile_timeout_s() -> float:
+    """Seconds a running compile may take. ``SIM_COMPILE_TIMEOUT``, default 300.
+
+    Non-numeric, NaN, and non-positive values use the default so a bad env cannot
+    disable the deadline or make it immediate.
+    """
+    try:
+        n = float(str(os.environ.get('SIM_COMPILE_TIMEOUT', '300')).strip())
+    except (TypeError, ValueError):
+        return 300.0
+    if n != n or n <= 0:
+        return 300.0
+    return n
+
+
+def _compile_kill_grace_s() -> float:
+    """Seconds to wait after SIGTERM before SIGKILL. ``SIM_COMPILE_KILL_GRACE_S``, default 2.
+
+    Capped at 30 so a typo cannot hold the compile slot for a long time. Negative and
+    non-numeric values use the default.
+    """
+    try:
+        n = float(str(os.environ.get('SIM_COMPILE_KILL_GRACE_S', '2')).strip())
+    except (TypeError, ValueError):
+        return 2.0
+    if n != n or n < 0:
+        return 2.0
+    return min(n, 30.0)
+
+
+def _compile_worker_begin(timeout_s: float) -> None:
+    global _compile_worker_deadline
+    _compile_worker_deadline = time.monotonic() + max(0.0, float(timeout_s))
+
+
+def _compile_worker_clear() -> None:
+    """The compile slot has been released. Health stops calling the worker stuck."""
+    global _compile_worker_deadline
+    _compile_worker_deadline = None
+
+
+def _compile_worker_stuck() -> bool:
+    deadline = _compile_worker_deadline
+    return deadline is not None and time.monotonic() >= deadline
+
+
+def _note_compile_timeout() -> None:
+    global _compile_timeout_at
+    _compile_timeout_at = time.time()
+
+
+def _compile_timeout_response():
+    return JSONResponse(
+        {'ok': False, 'reason': 'timeout', 'log': COMPILE_TIMEOUT_USER_MESSAGE},
+        504,
+    )
 PROGRESS = {'active': False, 'log': '', 't0': 0.0, 'stage': '', 'stages': '', 'compiler': ''}
 RUN_CAP = float(os.environ.get('SIM_RUN_CAP', '0'))          # seconds; 0 = unlimited
 RESUME_GRACE = float(os.environ.get('SIM_RESUME_GRACE', '1800'))  # 0 = keep forever (until user stops / QEMU exits)
@@ -163,6 +230,16 @@ def health():
             'notes': 'Real Xtensa emulation (Espressif QEMU, patched esp32.gpio/iomux/rtcio). Wi-Fi radio not emulated: network sketches use the QemuNet shim (WiFi/HTTPClient/WiFiUdp -> mock devices).'}
     if staging.staging_on():
         body['staging'] = True
+    # ok, qemu, arduino_cli, fqbn, runs, notes, and staging stay as they are.
+    # compile_ok / degraded only describe the compile worker:
+    #   idle, or running inside its deadline → compile_ok true, degraded false
+    #   still held at or past the deadline (including the kill grace) → compile_ok false, degraded true
+    #   slot released → compile_ok true, degraded false again
+    # compile_timeout_at is the unix time of the last timeout, or null.
+    stuck = _compile_worker_stuck()
+    body['compile_ok'] = not stuck
+    body['degraded'] = stuck
+    body['compile_timeout_at'] = _compile_timeout_at
     return body
 
 def merged_image(outdir: Path) -> Path:
@@ -531,7 +608,7 @@ async def _legacy_busy(client_id: str):
             _legacy_warm.add(client_id)
         t0 = time.perf_counter()
         try:
-            await asyncio.wait_for(asyncio.shield(task), COMPILE_TIMEOUT)
+            await asyncio.wait_for(asyncio.shield(task), _compile_timeout_s())
         except asyncio.TimeoutError:
             print(diskkeep.compile_wait_log(time.perf_counter() - t0, 'warm-up'))
             return JSONResponse({'ok': False, 'log': 'network stack is still warming, retry shortly'})
@@ -583,6 +660,8 @@ async def _compile_request(req: dict, *, queue: bool = False, rebuild_netstack: 
             async with _compile_lock:
                 return await _compile_holding_lock('warm', plan, rebuild_netstack=rebuild_netstack)
         finally:
+            # The lock is already released. Health recovers only after that.
+            _compile_worker_clear()
             if _cqueue is not None:
                 await _cqueue.kick()
     if not diskkeep.compile_queue_enabled():
@@ -593,6 +672,7 @@ async def _compile_request(req: dict, *, queue: bool = False, rebuild_netstack: 
             async with _compile_lock:
                 return await _compile_holding_lock('user', plan, rebuild_netstack=rebuild_netstack)
         finally:
+            _compile_worker_clear()
             if _cqueue is not None:
                 await _cqueue.kick()
     token = await _cqueue.enter(client_id)
@@ -601,7 +681,11 @@ async def _compile_request(req: dict, *, queue: bool = False, rebuild_netstack: 
     try:
         return await _compile_holding_lock('user', plan, rebuild_netstack=rebuild_netstack)
     finally:
-        await _cqueue.leave(token)
+        # Always free the queue slot, including when the compile timed out or raised.
+        try:
+            await _cqueue.leave(token)
+        finally:
+            _compile_worker_clear()
 
 def _cached_compile(key, bdir, net, netmode):
     t0 = time.perf_counter()
@@ -781,6 +865,77 @@ def _harvest_netstack(sketch_dir: Path, defines):
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 
+def _signal_compile_group(proc, sig) -> None:
+    """Signal the compile process group. Never signal this server's own group."""
+    pid = getattr(proc, 'pid', None)
+    if not pid or pid <= 0:
+        return
+    try:
+        pgid = os.getpgid(pid)
+    except ProcessLookupError:
+        return
+    if pgid <= 0 or pgid == os.getpgrp():
+        try:
+            proc.send_signal(sig)
+        except (ProcessLookupError, OSError):
+            pass
+        return
+    try:
+        os.killpg(pgid, sig)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.send_signal(sig)
+        except (ProcessLookupError, OSError):
+            pass
+
+
+def _close_compile_transport(proc) -> None:
+    """Drop the pipes so Process.wait can finish after the children are gone."""
+    transport = getattr(proc, '_transport', None)
+    if transport is None:
+        return
+    try:
+        transport.close()
+    except Exception:
+        pass
+
+
+async def _kill_compile_group(proc, grace: float) -> None:
+    """SIGTERM the compile process group, then SIGKILL if it is still alive.
+
+    Every wait is bounded. A child that still holds stdout used to make
+    ``Process.wait`` block forever after only the parent was killed.
+    """
+    if proc is None or proc.returncode is not None:
+        return
+    grace = max(0.0, float(grace))
+    deadline = time.monotonic() + grace
+    try:
+        if proc.returncode is None:
+            _signal_compile_group(proc, signal.SIGTERM)
+            try:
+                await asyncio.wait_for(proc.wait(), max(0.0, deadline - time.monotonic()))
+                return
+            except (asyncio.TimeoutError, TimeoutError):
+                pass
+        # The parent may already be dead while a child still holds the pipes.
+        # That is what makes Process.wait hang, so the group is killed either way.
+        _signal_compile_group(proc, signal.SIGKILL)
+        _close_compile_transport(proc)
+        try:
+            await asyncio.wait_for(proc.wait(), max(0.05, deadline - time.monotonic()))
+        except (asyncio.TimeoutError, TimeoutError):
+            if proc.returncode is None:
+                print('compile timeout: process group did not exit', proc.pid)
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        _signal_compile_group(proc, signal.SIGKILL)
+        _close_compile_transport(proc)
+        raise
+    except Exception as e:
+        print('compile kill failed:', repr(e))
+        _close_compile_transport(proc)
+
+
 async def _compile_in(work, bdir, key, sketch, files, defines, net, netmode, simlibs):
     """Run arduino-cli with --output-dir inside `work`. The caller deletes `work` and the sketch build tree."""
     sk = work / 'sketch'; out = work / 'out'
@@ -834,7 +989,13 @@ async def _compile_in(work, bdir, key, sketch, files, defines, net, netmode, sim
     cmd.append(str(sk))
     t0 = PROGRESS['t0']
     cmd[2:2] = ['-v', '--no-color']
-    p = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+    timeout = _compile_timeout_s()
+    grace = _compile_kill_grace_s()
+    # A new session makes the compiler the leader of its own process group, so a
+    # timeout can signal arduino-cli and the compilers it spawned together.
+    p = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, start_new_session=True)
+    _compile_worker_begin(timeout)
     buf = []
     async def _pump():
         async for ln in p.stdout:
@@ -842,11 +1003,17 @@ async def _compile_in(work, bdir, key, sketch, files, defines, net, netmode, sim
             _note_compiler_line(t)
             _compiler_log(sanitize(''.join(buf[-200:]).replace(str(sk) + '/', '')))
         await p.wait()
+    timed_out = False
     try:
-        await asyncio.wait_for(_pump(), COMPILE_TIMEOUT)
-    except asyncio.TimeoutError:
-        p.kill(); await p.wait()
-        return JSONResponse({'ok': False, 'log': PROGRESS['stages'] + sanitize(''.join(buf[-200:])) + f'\ncompile timed out ({COMPILE_TIMEOUT}s) - the first build after a restart compiles the ESP32 core; press Run again.'})
+        await asyncio.wait_for(_pump(), timeout)
+    except (asyncio.TimeoutError, TimeoutError):
+        timed_out = True
+        _note_compile_timeout()
+    finally:
+        if p.returncode is None:
+            await _kill_compile_group(p, grace)
+    if timed_out:
+        return _compile_timeout_response()
     body = ''.join(buf[-300:]) if len(buf) > 300 else ''.join(buf).replace(str(sk) + '/', '')
     log = PROGRESS['stages'] + sanitize(body)
     if netmode == 'lwip' and use_stack:
