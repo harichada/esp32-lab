@@ -7,6 +7,9 @@
  * A supply that feeds a chip or transistor stays a flag once it has 3+ pins. A battery
  * that only feeds discrete branches is drawn as wires, so parallel strings stay visible.
  * GND is a ground symbol, not a long wire.
+ * SCHEMATIC_MATCH_LAYOUT (default on; ?schmatch=0 turns it off) lets the view seat each symbol
+ * where its part sits on the 2D board. Off, or the Tidy choice, is this column layout exactly.
+ * The breadboard body is never a symbol. Its strips are wires between the parts.
  * A ground part on a net that already has another pin is omitted; that pin draws the GND symbol.
  * Only a part whose every pin is open is parked, under a "Not connected" caption.
  * A* searches the whole board before a straight-line fallback, and a fallback is logged with the net.
@@ -211,6 +214,352 @@
   }
 
   function snap(v) { return Math.round(v / GS) * GS; }
+  function snapCeil(v) { return Math.ceil((v - 1e-9) / GS) * GS; }
+
+  // Front-end flag, same shape as ?netlog=0: default on, ?schmatch=0 forces today's tidy layout.
+  let matchFlag = true;
+  (function initMatchFlag() {
+    try {
+      const loc = root.location;
+      if (!loc || !loc.search) return;
+      const q = new URLSearchParams(loc.search).get('schmatch');
+      if (q === '0') matchFlag = false;
+      else if (q === '1') matchFlag = true;
+    } catch (e) { /* node tests have no location */ }
+  })();
+  function matchFlagOn() { return !!matchFlag; }
+
+  const LAYOUT_STORE = 'esp32lab.schLayout';
+  const MIN_LABEL_FONT = 9.5;
+  function layoutStoreKey(proj) {
+    if (proj && proj.id != null && String(proj.id) !== '') return LAYOUT_STORE + '.' + String(proj.id);
+    return LAYOUT_STORE + '.unsaved';
+  }
+  function layoutModeOf(proj, store) {
+    let v = '';
+    try {
+      const s = store || (root.clStorage && root.clStorage.local);
+      if (s && s.getItem) v = s.getItem(layoutStoreKey(proj)) || '';
+    } catch (e) { v = ''; }
+    return v === 'tidy' ? 'tidy' : 'board';
+  }
+  function editorDragging() {
+    try {
+      const ed = root.app && root.app.editor;
+      return !!(ed && ed.mode && ed.mode.k === 'drag');
+    } catch (e) { return false; }
+  }
+
+  // Where the part sits in 2D. Missing or non-finite coordinates are not a place.
+  function partAnchor(part) {
+    if (!part || SKIP.has(part.type)) return null;
+    const x = +part.x, y = +part.y;
+    if (!isFinite(x) || !isFinite(y)) return null;
+    const d = P.T[part.type];
+    if (!d || !d.pins) return { x: x, y: y };
+    let pins = [];
+    try { pins = d.pins(part) || []; } catch (e) { pins = []; }
+    if (!pins.length) return { x: x, y: y };
+    let sx = 0, sy = 0, n = 0;
+    for (const pin of pins) {
+      let w = null;
+      try { w = P.pinWorld(part, pin); } catch (e) { w = null; }
+      if (!w || !isFinite(w.x) || !isFinite(w.y)) continue;
+      sx += w.x; sy += w.y; n++;
+    }
+    if (!n) return { x: x, y: y };
+    return { x: sx / n, y: sy / n };
+  }
+
+  // Two-lead parts follow the way the part is turned on the board. Other symbols keep
+  // the tidy pin sides; only their seat moves.
+  const LEAD_KIND = new Set(['R', 'LDR', 'NTC', 'C', 'L', 'D', 'Z', 'LED', 'SW', 'F', 'LAMP', 'XTAL', 'SPK', 'MOT', 'MET', 'PT']);
+  function orientLeads(s) {
+    if (!s || !s.part || !LEAD_KIND.has(s.kind) || !s.terms || s.terms.length !== 2) return;
+    const d = P.T[s.part.type];
+    if (!d || !d.pins) return;
+    if (!isFinite(+s.part.x) || !isFinite(+s.part.y)) return;
+    let pins = [];
+    try { pins = d.pins(s.part) || []; } catch (e) { return; }
+    if (pins.length < 2) return;
+    let a, b;
+    try { a = P.pinWorld(s.part, pins[0]); b = P.pinWorld(s.part, pins[1]); } catch (e) { return; }
+    if (!a || !b || !isFinite(a.x) || !isFinite(b.x) || !isFinite(a.y) || !isFinite(b.y)) return;
+    const vertical = Math.abs(b.y - a.y) > Math.abs(b.x - a.x);
+    const byName = new Map(pins.map((p) => [p.name, p]));
+    const worldOf = (t, idx) => {
+      const pin = byName.get(t.name) || pins[idx] || pins[0];
+      try { return P.pinWorld(s.part, pin); } catch (e) { return idx ? b : a; }
+    };
+    if (vertical) {
+      s.w = 40; s.h = 70;
+      const ts = s.terms.slice().sort((u, v) => worldOf(u, s.terms.indexOf(u)).y - worldOf(v, s.terms.indexOf(v)).y || String(u.name).localeCompare(String(v.name)));
+      ts[0].dir = 't'; ts[0].lx = 20; ts[0].ly = 0;
+      ts[1].dir = 'b'; ts[1].lx = 20; ts[1].ly = s.h;
+    } else {
+      s.w = 80; s.h = 20;
+      const ts = s.terms.slice().sort((u, v) => worldOf(u, s.terms.indexOf(u)).x - worldOf(v, s.terms.indexOf(v)).x || String(u.name).localeCompare(String(v.name)));
+      ts[0].dir = 'l'; ts[0].lx = 0; ts[0].ly = 10;
+      ts[1].dir = 'r'; ts[1].lx = s.w; ts[1].ly = 10;
+    }
+    s.pad = pads(s);
+  }
+
+  function chooseScale(pts) {
+    const dists = [];
+    let maxX = 0, maxY = 0;
+    for (let i = 0; i < pts.length; i++) {
+      maxX = Math.max(maxX, pts[i].x);
+      maxY = Math.max(maxY, pts[i].y);
+      let best = Infinity;
+      for (let j = 0; j < pts.length; j++) {
+        if (i === j) continue;
+        const d = Math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y);
+        if (d > 1) best = Math.min(best, d);
+      }
+      if (best < Infinity) dists.push(best);
+    }
+    if (!dists.length) return 4;
+    dists.sort((a, b) => a - b);
+    const pitch = dists[Math.floor((dists.length - 1) / 2)];
+    let scale = 48 / pitch;
+    if (!(scale > 0) || !isFinite(scale)) scale = 2;
+    const span = Math.max(maxX, maxY, 1);
+    const cap = 720 / span;
+    if (scale > cap) scale = cap;
+    if (scale < 0.35) scale = 0.35;
+    if (scale > 3) scale = 3;
+    return scale;
+  }
+
+  function boxesOverlap(a, b) {
+    return Math.min(a.x2, b.x2) - Math.max(a.x, b.x) > 0.5 && Math.min(a.y2, b.y2) - Math.max(a.y, b.y) > 0.5;
+  }
+  function anySymbolHit(syms) {
+    const boxes = syms.map(symbolBox);
+    for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
+      if (boxesOverlap(boxes[i], boxes[j])) return true;
+    }
+    return false;
+  }
+  // Pull seats toward their centre until the padded boxes would touch.
+  // Order on the board stays; the empty space between parts does not.
+  function tightenSymbols(symbols) {
+    const syms = (symbols || []).filter((s) => s && s.w > 0 && s.h > 0 && isFinite(s.x) && isFinite(s.y));
+    if (syms.length < 2 || anySymbolHit(syms)) return;
+    let cx = 0, cy = 0;
+    for (const s of syms) { cx += s.x + s.w / 2; cy += s.y + s.h / 2; }
+    cx /= syms.length; cy /= syms.length;
+    const base = syms.map((s) => ({ s: s, x: s.x, y: s.y }));
+    const apply = (scale) => {
+      for (const b of base) {
+        const px = b.x + b.s.w / 2, py = b.y + b.s.h / 2;
+        b.s.x = snap(cx + (px - cx) * scale - b.s.w / 2);
+        b.s.y = snap(cy + (py - cy) * scale - b.s.h / 2);
+      }
+    };
+    let best = 1;
+    for (let step = 1; step <= 40; step++) {
+      const scale = 1 - step * 0.02;
+      apply(scale);
+      if (anySymbolHit(syms)) { apply(best); return; }
+      best = scale;
+    }
+  }
+
+  function symbolBox(s) {
+    const p = s.pad || { T: 18, B: 16, L: 10, R: 10 };
+    const top = Math.max(p.T || 0, 18);
+    const bot = Math.max(p.B || 0, 16);
+    // Side room is a wire lane, so a lead can leave the pin without entering the neighbour.
+    const left = Math.max(p.L || 0, 22);
+    const right = Math.max(p.R || 0, 22);
+    return {
+      id: s.id,
+      x: s.x - left,
+      y: s.y - top,
+      x2: s.x + (s.w || 0) + right,
+      y2: s.y + (s.h || 0) + bot,
+      s: s,
+    };
+  }
+
+  // Push symbol boxes apart. Later boxes only move right or down, on the grid,
+  // so the same boxes always land in the same places.
+  function separateSymbols(symbols) {
+    const syms = (symbols || []).filter((s) => s && isFinite(s.x) && isFinite(s.y) && s.w > 0 && s.h > 0);
+    const limit = syms.length * syms.length + 8;
+    let guard = 0;
+    while (guard++ < limit) {
+      const boxes = syms.map(symbolBox).sort((a, b) => a.y - b.y || a.x - b.x || String(a.id).localeCompare(String(b.id)));
+      let moved = false;
+      for (let i = 0; i < boxes.length; i++) {
+        for (let j = i + 1; j < boxes.length; j++) {
+          const a = boxes[i], b = boxes[j];
+          const ix = Math.min(a.x2, b.x2) - Math.max(a.x, b.x);
+          const iy = Math.min(a.y2, b.y2) - Math.max(a.y, b.y);
+          if (ix <= 0.5 || iy <= 0.5) continue;
+          if (ix <= iy) b.s.x += snapCeil(ix);
+          else b.s.y += snapCeil(iy);
+          b.s.x = snap(b.s.x);
+          b.s.y = snap(b.s.y);
+          const nb = symbolBox(b.s);
+          b.x = nb.x; b.y = nb.y; b.x2 = nb.x2; b.y2 = nb.y2;
+          moved = true;
+        }
+      }
+      if (!moved) break;
+    }
+    for (const s of syms) { s.x = snap(s.x); s.y = snap(s.y); }
+    return symbols;
+  }
+
+  // Seat symbols on the 2D anchors. Parts with no place keep the tidy seat and
+  // are parked beside the mapped group. Huge coordinates are scaled into range.
+  function reseatToBreadboard(symbols) {
+    const anchored = [];
+    const loose = [];
+    for (const s of symbols) {
+      const a = partAnchor(s.part);
+      if (!a) loose.push(s);
+      else anchored.push({ s: s, a: a });
+    }
+    if (!anchored.length) return;
+    for (const it of anchored) orientLeads(it.s);
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const it of anchored) {
+      minX = Math.min(minX, it.a.x); minY = Math.min(minY, it.a.y);
+      maxX = Math.max(maxX, it.a.x); maxY = Math.max(maxY, it.a.y);
+    }
+    const MAX_SPAN = 2400;
+    let spanX = maxX - minX, spanY = maxY - minY;
+    if (!isFinite(spanX) || spanX < 0) spanX = 0;
+    if (!isFinite(spanY) || spanY < 0) spanY = 0;
+    let k = 1;
+    if (spanX > MAX_SPAN) k = Math.min(k, MAX_SPAN / spanX);
+    if (spanY > MAX_SPAN) k = Math.min(k, MAX_SPAN / spanY);
+    if (!isFinite(k) || k <= 0) k = 1;
+    const pts = anchored.map((it) => ({ x: (it.a.x - minX) * k, y: (it.a.y - minY) * k }));
+    const scale = chooseScale(pts);
+    for (let i = 0; i < anchored.length; i++) {
+      const s = anchored[i].s;
+      s.x = snap(pts[i].x * scale - s.w / 2);
+      s.y = snap(pts[i].y * scale - s.h / 2);
+      if (!isFinite(s.x) || !isFinite(s.y)) { s.x = 0; s.y = 0; }
+      s.pad = pads(s);
+      s._matched = true;
+    }
+    if (loose.length) {
+      let right = 0, top = Infinity;
+      for (const s of symbols) if (s._matched) {
+        const p = s.pad || pads(s);
+        right = Math.max(right, s.x + s.w + (p.R || 0));
+        top = Math.min(top, s.y - (p.T || 0));
+      }
+      loose.sort((a, b) => (a.y - b.y) || (a.x - b.x) || String(a.id).localeCompare(String(b.id)));
+      let x = snap(right + 80), y = snap(isFinite(top) ? top : 0), rowH = 0;
+      const wrap = x + 980;
+      for (const s of loose) {
+        s.pad = s.pad || pads(s);
+        const slot = s.pad.L + s.w + s.pad.R;
+        if (x > right + 80 && x + slot > wrap) { x = snap(right + 80); y = snap(y + rowH + 28); rowH = 0; }
+        s.x = snap(x + s.pad.L);
+        s.y = snap(y + s.pad.T);
+        x += slot + 40;
+        rowH = Math.max(rowH, s.pad.T + s.h + s.pad.B);
+      }
+    }
+    separateSymbols(symbols);
+    tightenSymbols(symbols);
+    for (const s of symbols) delete s._matched;
+  }
+
+  function orthoHit(a, b) {
+    if (!!a.h === !!b.h) return null;
+    const h = a.h ? a : b, v = a.h ? b : a;
+    const hx0 = Math.min(h.x1, h.x2), hx1 = Math.max(h.x1, h.x2);
+    const vy0 = Math.min(v.y1, v.y2), vy1 = Math.max(v.y1, v.y2);
+    const x = v.x1, y = h.y1;
+    if (x < hx0 || x > hx1 || y < vy0 || y > vy1) return null;
+    const hEnd = x === hx0 || x === hx1;
+    const vEnd = y === vy0 || y === vy1;
+    return { x: x, y: y, hEnd: hEnd, vEnd: vEnd };
+  }
+
+  // A dot is a shared node of one net (three or more wire ends). A crossing of
+  // two nets is not a dot, even when the lines occupy the same point.
+  function wireJoints(segs) {
+    const dots = [];
+    const crosses = [];
+    const list = [];
+    for (const s of segs || []) {
+      if (!s) continue;
+      const x1 = +s.x1, y1 = +s.y1, x2 = +s.x2, y2 = +s.y2;
+      if (![x1, y1, x2, y2].every(isFinite)) continue;
+      if (x1 === x2 && y1 === y2) continue;
+      if (x1 !== x2 && y1 !== y2) continue;
+      list.push({ net: s.net, x1: x1, y1: y1, x2: x2, y2: y2, h: y1 === y2 });
+    }
+    const splits = list.map((s) => [{ x: s.x1, y: s.y1 }, { x: s.x2, y: s.y2 }]);
+    const samePt = (p, q) => p.x === q.x && p.y === q.y;
+    for (let i = 0; i < list.length; i++) {
+      for (let j = i + 1; j < list.length; j++) {
+        const hit = orthoHit(list[i], list[j]);
+        if (!hit) continue;
+        if (list[i].net === list[j].net) {
+          if (!splits[i].some((p) => samePt(p, hit))) splits[i].push({ x: hit.x, y: hit.y });
+          if (!splits[j].some((p) => samePt(p, hit))) splits[j].push({ x: hit.x, y: hit.y });
+        } else if ((!hit.hEnd && !hit.vEnd) || hit.hEnd !== hit.vEnd) {
+          crosses.push({ x: hit.x, y: hit.y, a: list[i].net, b: list[j].net });
+        }
+      }
+    }
+    const deg = new Map();
+    const bump = (net, x, y) => {
+      const k = String(net) + '|' + x + '|' + y;
+      deg.set(k, (deg.get(k) || 0) + 1);
+    };
+    for (let i = 0; i < list.length; i++) {
+      const pts = splits[i].slice().sort((p, q) => p.x - q.x || p.y - q.y);
+      const u = [];
+      for (const p of pts) if (!u.length || !samePt(u[u.length - 1], p)) u.push(p);
+      for (let n = 1; n < u.length; n++) {
+        bump(list[i].net, u[n - 1].x, u[n - 1].y);
+        bump(list[i].net, u[n].x, u[n].y);
+      }
+    }
+    const seen = new Set();
+    for (const [k, n] of deg) {
+      if (n < 3) continue;
+      const cut = k.indexOf('|');
+      const rest = k.slice(cut + 1);
+      const mid = rest.indexOf('|');
+      const x = +rest.slice(0, mid), y = +rest.slice(mid + 1);
+      const id = x + ',' + y + ':' + k.slice(0, cut);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const net = list.find((s) => String(s.net) === k.slice(0, cut)).net;
+      dots.push({ x: x, y: y, net: net });
+    }
+    dots.sort((a, b) => a.y - b.y || a.x - b.x || String(a.net).localeCompare(String(b.net)));
+    return { dots: dots, crosses: crosses };
+  }
+
+  // Screen size of the smallest label after the same fit the view uses.
+  function screenLabelPx(model, width, height, chrome) {
+    const b = (model && model.bounds) || { w: 1, h: 1 };
+    const pad = 14;
+    const block = chrome || 0;
+    const availW = Math.max(1, width - pad * 2);
+    const availH = Math.max(1, height - pad * 2 - block);
+    const raw = Math.min(availW / Math.max(b.w || 1, 1), availH / Math.max(b.h || 1, 1));
+    const s = Math.max(0.12, Math.min(2.4, raw));
+    let min = Infinity;
+    const texts = (model && model.texts) || [];
+    for (const t of texts) min = Math.min(min, (t.size || MIN_LABEL_FONT) * s);
+    if (!isFinite(min)) min = MIN_LABEL_FONT * s;
+    return { s: s, minPx: min, raw: raw };
+  }
   function textWidth(text, px) { return Math.max(4, Math.ceil(String(text || '').length * px * 0.62)); }
   function pinText(t, kind) { return (kind === 'DIP' && t.num ? t.num + ' ' : '') + (t.name || ''); }
   function placeEdge(list, dir, s) {
@@ -233,7 +582,8 @@
     for (const t of list) t.lx = Math.max(GS, Math.min(s.w - GS, t.lx));
   }
 
-  function layout(proj) {
+  function layout(proj, opt) {
+    const wantMatch = !!(opt && opt.match) && matchFlagOn();
     const pinNet = pinNetMap(proj);
     const seq = {};
     const symbols = [];
@@ -536,12 +886,20 @@
       }
     }
 
+    if (wantMatch) {
+      try { reseatToBreadboard(symbols); }
+      catch (err) { if (typeof console !== 'undefined' && console.error) console.error('schematic match', err); }
+    }
+
     // Absolute pins, rails, routes.
     for (const s of symbols) for (const t of s.terms) { t.x = s.x + t.lx; t.y = s.y + t.ly; }
     const rails = [];
     const obstacles = [];
+    // Match layout already kept a lane between symbols. A fat keep-out fills that lane
+    // and the router then has to cut through a body.
+    const margin = wantMatch ? 4 : KEEP;
     for (const s of symbols) {
-      obstacles.push({ x: s.x - KEEP, y: s.y - KEEP, x2: s.x + s.w + KEEP, y2: s.y + s.h + KEEP, sid: s.id });
+      obstacles.push({ x: s.x - margin, y: s.y - margin, x2: s.x + s.w + margin, y2: s.y + s.h + margin, sid: s.id });
       for (const t of s.terms) if (t.rail === 'gnd' || t.rail === 'flag') {
         const g = railGeom(t, s.kind === 'ESP' || s.kind === 'DIP' || s.kind === 'BOX' ? 'mini' : 'full');
         if (!g) continue;
@@ -1252,46 +1610,19 @@
   function junctions(polys, symbols) {
     const pins = new Set();
     for (const s of symbols) for (const t of s.terms) pins.add(t.x + ',' + t.y);
-    const byNet = new Map();
-    for (const pl of polys) {
-      if (!byNet.has(pl.net)) byNet.set(pl.net, []);
-      const pts = pl.pts;
+    const segs = [];
+    for (const pl of polys || []) {
+      const pts = pl.pts || [];
       for (let i = 1; i < pts.length; i++) {
-        let x = pts[i - 1].x, y = pts[i - 1].y, nx = pts[i].x, ny = pts[i].y;
-        const horiz = y === ny; const step = horiz ? (nx >= x ? GS : -GS) : (ny >= y ? GS : -GS);
-        const n = Math.round(Math.abs(horiz ? nx - x : ny - y) / GS);
-        for (let k = 0; k < n; k++) {
-          const ax = x, ay = y; if (horiz) x += step; else y += step;
-          byNet.get(pl.net).push([ax + ',' + ay, x + ',' + y, horiz ? 'h' : 'v']);
-        }
+        segs.push({ net: pl.net, x1: pts[i - 1].x, y1: pts[i - 1].y, x2: pts[i].x, y2: pts[i].y });
       }
     }
+    const marks = wireJoints(segs);
     const dots = [];
-    for (const [net, segs] of byNet) {
-      const deg = new Map();
-      for (const [a, b, axis] of segs) {
-        if (!deg.has(a)) deg.set(a, new Set());
-        if (!deg.has(b)) deg.set(b, new Set());
-        deg.get(a).add(axis + (a < b ? 'o' : 'i'));
-        deg.get(b).add(axis + (a < b ? 'i' : 'o'));
-      }
-      for (const [k, axes] of deg) {
-        if (pins.has(k)) continue;
-        const [xs, ys] = k.split(',');
-        const dx = +xs, dy = +ys;
-        if (symbols.some((s) => dx >= s.x && dx <= s.x + s.w && dy >= s.y && dy <= s.y + s.h)) continue;
-        // distinct directions: h and v count, plus a T is 3 incident half-edges
-        let n = 0; const seen = new Set();
-        for (const seg of segs) {
-          if (seg[0] === k || seg[1] === k) {
-            const id = seg[0] + '>' + seg[1];
-            if (seen.has(id)) continue; seen.add(id);
-            if (seg[0] === k || seg[1] === k) n++;
-          }
-        }
-        if (n >= 3) dots.push({ x: dx, y: dy, net });
-        void axes;
-      }
+    for (const d of marks.dots) {
+      if (pins.has(d.x + ',' + d.y)) continue;
+      if (symbols.some((s) => d.x >= s.x && d.x <= s.x + s.w && d.y >= s.y && d.y <= s.y + s.h)) continue;
+      dots.push({ x: d.x, y: d.y, net: d.net });
     }
     return dots;
   }
@@ -1464,7 +1795,7 @@
       it.x = placed.ax; it.y = placed.ay; it.box = placed;
     }
     for (const l of labels) if (l.labPos) { l.x = l.labPos.x; l.y = l.labPos.y; l.anchor = l.labPos.anchor; }
-    return items.filter((it) => it.box).map((it) => Object.assign(it.box, { kind: it.kind, own: it.own || null, text: it.text, pid: it.pid || null }));
+    return items.filter((it) => it.box).map((it) => Object.assign(it.box, { kind: it.kind, own: it.own || null, text: it.text, pid: it.pid || null, size: it.size || MIN_LABEL_FONT }));
   }
 
   function computeBounds(symbols, rails, polys, labels, texts) {
@@ -1780,9 +2111,23 @@
       this.proj = null;
       this.model = null;
       this._sig = '';
+      this._mode = 'board';
+      this._queued = false;
+      this._fitQueued = false;
+      this._mountLayout();
       this._bind();
     }
-    setProject(proj) { this.proj = proj; this._sig = ''; if (this.active) this.rebuild(true); }
+    _layoutSig() {
+      return signature(this.proj || { parts: [], wires: [] }) + '|' + (this._useMatch() ? 'board' : 'tidy');
+    }
+    _useMatch() { return matchFlagOn() && this._mode !== 'tidy'; }
+    setProject(proj) {
+      this.proj = proj;
+      this._mode = layoutModeOf(proj);
+      this._sig = '';
+      this._syncLayout();
+      if (this.active) this.rebuild(true);
+    }
     setActive(on) {
       this.active = !!on;
       this.svg.classList.toggle('on', this.active);
@@ -1794,23 +2139,105 @@
           hint.textContent = root.Pinch.schematicHint();
         } else if (this._hint0) hint.textContent = this._hint0;
       }
+      this._syncLayout();
       if (this.active) this.rebuild(true);
     }
-    invalidate() { this._sig = ''; if (this.active) this.rebuild(false); }
+    invalidate() { this._sig = ''; if (this.active) this._queue(false); }
     /** Re-layout only when the project actually changed (selection and glow stay put). */
     touch() {
       if (!this.active || !this.proj) return;
-      if (signature(this.proj) !== this._sig) this.rebuild(false);
+      if (this._layoutSig() !== this._sig) this._queue(false);
+    }
+    // One layout per frame. A drag in 2D keeps moving the part and must not
+    // recompute the sheet on every pointer move.
+    _queue(fit) {
+      this._fitQueued = !!this._fitQueued || !!fit;
+      if (this._queued) return;
+      this._queued = true;
+      const fire = () => {
+        this._queued = false;
+        const fitNow = !!this._fitQueued;
+        this._fitQueued = false;
+        if (!this.active) return;
+        if (editorDragging()) { this._queue(fitNow); return; }
+        this.rebuild(fitNow);
+      };
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(fire);
+      else setTimeout(fire, 16);
     }
     rebuild(fit) {
       if (!this.proj) return;
-      const sig = signature(this.proj);
+      const sig = this._layoutSig();
       if (sig === this._sig && this.model) { if (fit) { this.paint(); this.fit(); } return; }
       this._sig = sig;
-      try { this.model = layout(this.proj); }
-      catch (e) { console.error('schematic layout', e); this.model = { symbols: [], rails: [], polys: [], dots: [], labels: [], bounds: { x: 0, y: 0, w: 10, h: 10 }, fallback: true }; }
+      try { this.model = layout(this.proj, { match: this._useMatch() }); }
+      catch (e) { console.error('schematic layout', e); this.model = { symbols: [], rails: [], polys: [], dots: [], labels: [], texts: [], bounds: { x: 0, y: 0, w: 10, h: 10 }, fallback: true }; }
       this.paint();
       if (fit) this.fit();
+    }
+    setLayoutMode(mode) {
+      if (mode !== 'board' && mode !== 'tidy') return;
+      if (!matchFlagOn()) return;
+      this._mode = mode;
+      try {
+        const s = root.clStorage && root.clStorage.local;
+        if (s) s.setItem(layoutStoreKey(this.proj), mode);
+      } catch (e) { /* keep the choice in this view */ }
+      this._syncLayout();
+      this._sig = '';
+      if (this.active) this.rebuild(true);
+    }
+    _mountLayout() {
+      if (!this.host) return;
+      let bar = this.host.querySelector('#schLayout');
+      if (!bar) {
+        bar = document.createElement('div');
+        bar.id = 'schLayout';
+        bar.className = 'sch-layout';
+        bar.setAttribute('role', 'group');
+        bar.setAttribute('aria-label', 'Schematic arrangement');
+        const mk = (id, label, mode) => {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.id = id;
+          b.className = 'sch-lay';
+          b.textContent = label;
+          b.dataset.mode = mode;
+          b.setAttribute('aria-pressed', 'false');
+          b.addEventListener('click', () => this.setLayoutMode(mode));
+          return b;
+        };
+        bar.appendChild(mk('schLayBoard', 'Like breadboard', 'board'));
+        bar.appendChild(mk('schLayTidy', 'Tidy', 'tidy'));
+        bar.addEventListener('keydown', (e) => {
+          if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' && e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+          const buttons = [...bar.querySelectorAll('button:not(:disabled)')];
+          if (!buttons.length) return;
+          e.preventDefault();
+          const i = Math.max(0, buttons.indexOf(document.activeElement));
+          const step = (e.key === 'ArrowRight' || e.key === 'ArrowDown') ? 1 : -1;
+          const next = buttons[(i + step + buttons.length) % buttons.length];
+          next.focus();
+          this.setLayoutMode(next.dataset.mode);
+        });
+        this.host.appendChild(bar);
+      }
+      bar.hidden = true;
+      this._bar = bar;
+      this._syncLayout();
+    }
+    _syncLayout() {
+      const bar = this._bar;
+      if (!bar) return;
+      const show = !!this.active && matchFlagOn();
+      bar.hidden = !show;
+      bar.setAttribute('aria-hidden', show ? 'false' : 'true');
+      for (const b of bar.querySelectorAll('button')) {
+        const on = b.dataset.mode === (this._mode === 'tidy' ? 'tidy' : 'board');
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+        b.disabled = !show;
+        b.tabIndex = show ? 0 : -1;
+      }
     }
     paint() {
       if (!this.model) return;
@@ -1991,7 +2418,15 @@
     });
   }
 
-  const api = { layout, toSvg, SchematicView, signature, pinNets: pinNetMap };
+  const api = {
+    layout, toSvg, SchematicView, signature, pinNets: pinNetMap,
+    separateSymbols, wireJoints, layoutStoreKey, layoutModeOf, screenLabelPx, MIN_LABEL_FONT,
+  };
+  Object.defineProperty(api, 'SCHEMATIC_MATCH_LAYOUT', {
+    get() { return matchFlag; },
+    set(v) { matchFlag = !!v; },
+    enumerable: true,
+  });
   root.Schematic = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);
