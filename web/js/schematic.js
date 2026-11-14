@@ -8,8 +8,10 @@
  * that only feeds discrete branches is drawn as wires, so parallel strings stay visible.
  * GND is a ground symbol, not a long wire.
  * SCHEMATIC_MATCH_LAYOUT (default on) offers a Like breadboard seat. The sheet itself
- * opens on the Tidy column layout unless this project has saved board. The server env
- * of the same name, delivered as <meta name="schmatch" content="0"> or data-schmatch="0",
+ * opens on the Tidy column layout unless this project has saved board.
+ * A saved choice lives at esp32lab.schLayout.<id>. Each unsaved draft has its own
+ * esp32lab.schLayout.draft.<draftId> until the first save moves it onto that id.
+ * The server env of the same name, delivered as <meta name="schmatch" content="0"> or data-schmatch="0",
  * hides that choice for every visitor; ?schmatch= applies only when the server allows it.
  * Off, or the Tidy choice, is this column layout exactly.
  * The breadboard body is never a symbol. Its strips are wires between the parts.
@@ -260,30 +262,141 @@
   function matchFlagOn() { return !serverOff && !!matchFlag; }
 
   const LAYOUT_STORE = 'esp32lab.schLayout';
+  const DRAFT_INDEX = LAYOUT_STORE + '.draftIndex';
   const MIN_LABEL_FONT = 9.5;
+  const DRAFT_ID = /^[A-Za-z0-9_-]{1,40}$/;
+  let draftSeq = 0;
+  function newDraftId() {
+    draftSeq += 1;
+    return 'd' + Date.now().toString(36) + draftSeq.toString(36) + Math.random().toString(36).slice(2, 6);
+  }
+  function ensureDraftId(proj) {
+    if (!proj || proj.example) return '';
+    if (proj.id != null && String(proj.id) !== '') return '';
+    if (!DRAFT_ID.test(String(proj.draftId || ''))) proj.draftId = newDraftId();
+    return String(proj.draftId);
+  }
   function layoutStoreKey(proj) {
     if (proj && proj.example) return LAYOUT_STORE + '.ex.' + String(proj.example);
     if (proj && proj.id != null && String(proj.id) !== '') return LAYOUT_STORE + '.' + String(proj.id);
-    return LAYOUT_STORE + '.unsaved';
+    const draft = ensureDraftId(proj);
+    return LAYOUT_STORE + '.draft.' + (draft || 'none');
   }
-  // A saved or unsaved project keeps the choice in localStorage. A read-only
-  // example keeps it in sessionStorage for this tab only, so a new visit and
-  // every other example open on Tidy. Missing or unknown values are Tidy.
-  // Only the exact stored value "board" selects Like breadboard.
+  // A saved project keeps the choice in localStorage at esp32lab.schLayout.<id>.
+  // Each unsaved draft gets esp32lab.schLayout.draft.<draftId>; the first save
+  // moves that value onto the project id and drops the draft key. A read-only
+  // example keeps it in sessionStorage for this tab only. Missing or unknown
+  // values are Tidy. Only the exact stored value "board" selects Like breadboard.
   function layoutStoreOf(proj, store) {
     if (store) return store;
     const box = root.clStorage;
     if (!box) return null;
     return proj && proj.example ? box.session : box.local;
   }
+  function readIndex(store) {
+    let list = [];
+    try { list = JSON.parse(store.getItem(DRAFT_INDEX) || '[]'); } catch (e) { list = []; }
+    if (!Array.isArray(list)) return [];
+    return list.filter((id) => DRAFT_ID.test(String(id || '')));
+  }
+  function writeIndex(store, list) {
+    try {
+      if (!list.length) {
+        const cur = store.getItem(DRAFT_INDEX);
+        if (cur == null || cur === '[]') return;
+      }
+      store.setItem(DRAFT_INDEX, JSON.stringify(list));
+    } catch (e) { /* storage off */ }
+  }
+  function noteDraft(id, store) {
+    if (!store || !DRAFT_ID.test(String(id || ''))) return;
+    const list = readIndex(store);
+    if (list.indexOf(id) < 0) list.push(id);
+    writeIndex(store, list);
+  }
   function layoutModeOf(proj, store) {
+    let v = '';
+    try {
+      const s = layoutStoreOf(proj, store);
+      if (proj && !proj.example && !(proj.id != null && String(proj.id) !== '')) noteDraft(ensureDraftId(proj), s);
+      if (s && s.getItem) v = s.getItem(layoutStoreKey(proj)) || '';
+    } catch (e) { v = ''; }
+    return v === 'board' ? 'board' : 'tidy';
+  }
+  function storedLayout(proj, store) {
     let v = '';
     try {
       const s = layoutStoreOf(proj, store);
       if (s && s.getItem) v = s.getItem(layoutStoreKey(proj)) || '';
     } catch (e) { v = ''; }
-    return v === 'board' ? 'board' : 'tidy';
+    if (v === 'board' || v === 'tidy') return v;
+    if (proj && (proj.schLayout === 'board' || proj.schLayout === 'tidy')) return proj.schLayout;
+    return '';
   }
+  function writeLayout(proj, mode, store) {
+    if (!proj || (mode !== 'board' && mode !== 'tidy')) return;
+    try {
+      const s = layoutStoreOf(proj, store);
+      if (!s || !s.setItem) return;
+      if (!proj.example && !(proj.id != null && String(proj.id) !== '')) noteDraft(ensureDraftId(proj), s);
+      s.setItem(layoutStoreKey(proj), mode);
+    } catch (e) { /* keep the choice in this view */ }
+  }
+  // Copy an explicit board/tidy choice onto another project. A missing choice
+  // stays missing, so the destination still opens on Tidy. Does not remove the source key.
+  function carryLayout(from, to, opt) {
+    const fromStore = opt && (opt.fromStore || opt.store);
+    const toStore = opt && (opt.toStore || opt.store);
+    const mode = storedLayout(from, fromStore);
+    if (!mode) return '';
+    writeLayout(to, mode, toStore);
+    return mode;
+  }
+  function dropDraftKey(store, id) {
+    if (!store || !DRAFT_ID.test(String(id || ''))) return;
+    try {
+      if (store.removeItem) store.removeItem(LAYOUT_STORE + '.draft.' + id);
+    } catch (e) { return; }
+    writeIndex(store, readIndex(store).filter((x) => x !== id));
+  }
+  // First save: the draft key becomes esp32lab.schLayout.<id>, then the draft key goes.
+  function migrateDraftLayout(proj, store) {
+    if (!proj || !proj.draftId || proj.id == null || String(proj.id) === '') return;
+    const s = store || layoutStoreOf(proj);
+    if (!s) { delete proj.draftId; return; }
+    const id = String(proj.draftId);
+    let raw = '';
+    try { raw = s.getItem(LAYOUT_STORE + '.draft.' + id) || ''; } catch (e) { raw = ''; }
+    if ((raw === 'board' || raw === 'tidy') && s.setItem) {
+      try { s.setItem(LAYOUT_STORE + '.' + String(proj.id), raw); } catch (e) { /* keep the draft key */ return; }
+    }
+    delete proj.draftId;
+    dropDraftKey(s, id);
+  }
+  function releaseDraft(proj, store) {
+    if (!proj || !proj.draftId) return;
+    const s = store || layoutStoreOf(proj);
+    const id = String(proj.draftId);
+    delete proj.draftId;
+    if (s) dropDraftKey(s, id);
+  }
+  // Drop draft keys that are not in keep. Project keys and example keys stay.
+  // The retired shared esp32lab.schLayout.unsaved key is removed here too.
+  function sweepDrafts(store, keep) {
+    if (!store) return;
+    const keepSet = new Set((keep || []).filter((id) => DRAFT_ID.test(String(id || ''))));
+    const left = [];
+    for (const id of readIndex(store)) {
+      if (keepSet.has(id)) { left.push(id); continue; }
+      try { if (store.removeItem) store.removeItem(LAYOUT_STORE + '.draft.' + id); } catch (e) { left.push(id); }
+    }
+    writeIndex(store, left);
+    try { if (store.removeItem) store.removeItem(LAYOUT_STORE + '.unsaved'); } catch (e) { /* none */ }
+  }
+  try {
+    const live = root.clStorage && root.clStorage.local;
+    if (live && root.document) sweepDrafts(live, []);
+  } catch (e) { /* node, or storage off */ }
   function editorDragging() {
     try {
       const ed = root.app && root.app.editor;
@@ -3215,10 +3328,7 @@
       if (mode !== 'board' && mode !== 'tidy') return;
       if (!matchFlagOn()) return;
       this._mode = mode;
-      try {
-        const s = layoutStoreOf(this.proj);
-        if (s) s.setItem(layoutStoreKey(this.proj), mode);
-      } catch (e) { /* keep the choice in this view */ }
+      writeLayout(this.proj, mode);
       this._syncLayout();
       this._sig = '';
       if (this.active) this.rebuild(true);
@@ -3631,7 +3741,7 @@
 
   const api = {
     layout, toSvg, SchematicView, signature, pinNets: pinNetMap,
-    separateSymbols, wireJoints, layoutStoreKey, layoutModeOf, screenLabelPx, labelScreenPx, openScale, chooseOpen, openFrame, labelScreenTarget, shortPartLabel, settlePartLabels, READABLE_PX, MIN_LABEL_FONT,
+    separateSymbols, wireJoints, layoutStoreKey, layoutModeOf, storedLayout, writeLayout, carryLayout, migrateDraftLayout, releaseDraft, sweepDrafts, screenLabelPx, labelScreenPx, openScale, chooseOpen, openFrame, labelScreenTarget, shortPartLabel, settlePartLabels, READABLE_PX, MIN_LABEL_FONT,
     configureMatch,
   };
   Object.defineProperty(api, 'SCHEMATIC_MATCH_LAYOUT', {

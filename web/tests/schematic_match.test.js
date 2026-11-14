@@ -67,7 +67,7 @@ test('the match flag defaults on and ?schmatch=0 is the off switch', () => {
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
   const css = fs.readFileSync(path.join(__dirname, '../css/theme.css'), 'utf8');
   const mobile = fs.readFileSync(path.join(__dirname, '../css/mobile.css'), 'utf8');
-  assert.match(html, /schematic\.js\?v=66/);
+  assert.match(html, /schematic\.js\?v=71/);
   assert.match(html, /pinch\.js\?v=62/);
   assert.match(html, /theme\.css\?v=69/);
   assert.match(html, /mobile\.css\?v=73/);
@@ -370,26 +370,34 @@ test('flag off is the tidy layout, and the netlist is identical in every state',
   }
 });
 
-test('the arrangement is remembered per project, with one key for an unsaved board', () => {
+test('the arrangement is remembered per project and per unsaved draft', () => {
   const mem = new Map();
   const store = {
     getItem: (k) => (mem.has(k) ? mem.get(k) : null),
     setItem: (k, v) => mem.set(k, String(v)),
+    removeItem: (k) => mem.delete(k),
   };
   assert.equal(S.layoutStoreKey({ id: 'p1' }), 'esp32lab.schLayout.p1');
-  assert.equal(S.layoutStoreKey({}), 'esp32lab.schLayout.unsaved');
-  assert.equal(S.layoutStoreKey(null), 'esp32lab.schLayout.unsaved');
+  const draft = {};
+  const draftKey = S.layoutStoreKey(draft);
+  assert.match(draftKey, /^esp32lab\.schLayout\.draft\.d[A-Za-z0-9]+$/);
+  assert.equal(S.layoutStoreKey(draft), draftKey);
+  assert.notEqual(S.layoutStoreKey({}), draftKey);
+  assert.equal(S.layoutStoreKey(null), 'esp32lab.schLayout.draft.none');
   assert.equal(S.layoutStoreKey({ example: 'blink' }), 'esp32lab.schLayout.ex.blink');
   assert.equal(S.layoutModeOf({ id: 'p1' }, store), 'tidy');
-  assert.equal(S.layoutModeOf({}, store), 'tidy');
+  assert.equal(S.layoutModeOf(draft, store), 'tidy');
   assert.equal(S.layoutModeOf({ example: 'blink' }, store), 'tidy');
   store.setItem(S.layoutStoreKey({ id: 'p1' }), 'board');
   assert.equal(S.layoutModeOf({ id: 'p1' }, store), 'board');
   assert.equal(S.layoutModeOf({ id: 'p2' }, store), 'tidy');
   store.setItem(S.layoutStoreKey({ id: 'p1' }), 'sideways');
   assert.equal(S.layoutModeOf({ id: 'p1' }, store), 'tidy');
-  store.setItem(S.layoutStoreKey({}), 'board');
-  assert.equal(S.layoutModeOf({}, store), 'board');
+  store.setItem(draftKey, 'board');
+  assert.equal(S.layoutModeOf(draft, store), 'board');
+  const other = {};
+  assert.equal(S.layoutModeOf(other, store), 'tidy');
+  assert.notEqual(S.layoutStoreKey(other), draftKey);
   assert.equal(S.layoutModeOf({ id: 'p2' }, store), 'tidy');
   store.setItem(S.layoutStoreKey({ example: 'blink' }), 'board');
   assert.equal(S.layoutModeOf({ example: 'blink' }, store), 'board');
