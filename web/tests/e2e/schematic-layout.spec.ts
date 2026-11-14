@@ -30,6 +30,7 @@ async function openExample(page: Page, id: string, width: number) {
     return !!(app && app.proj && app.proj.example === key && app.proj.parts && app.proj.parts.length && app.schematic);
   }, id);
   await page.locator('#bViewSch').click();
+  await expect(page.locator('.toast')).not.toHaveCount(0);
   await page.waitForFunction(() => document.body.classList.contains('viewsch') && !!document.querySelector('#stageSch.on .sch-hit'));
   await expect.poll(async () => page.evaluate(() => {
     const hit = document.querySelector('#stageSch .sch-hit');
@@ -38,6 +39,7 @@ async function openExample(page: Page, id: string, width: number) {
   await page.evaluate(() => new Promise((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(() => resolve(null)));
   }));
+  await chromeClear(page, id + '@' + width + ' while the toast is up');
 }
 
 type Box = { x: number; y: number; x2: number; y2: number; id: string; text: string };
@@ -71,22 +73,69 @@ async function drawing(page: Page) {
         disabled: (el as HTMLButtonElement).disabled,
       };
     });
-    const ref = document.querySelector('#stageSch .sch-ref');
-    const vb = (document.getElementById('stageSch') as SVGSVGElement).viewBox.baseVal;
+    const svg = document.getElementById('stageSch') as SVGSVGElement;
+    const vb = svg.viewBox.baseVal;
+    const box = svg.getBoundingClientRect();
+    const zoom = vb.width > 0 ? box.width / vb.width : 0;
+    let css = 1;
+    const scale = (svg as SVGSVGElement & { currentScale?: number }).currentScale;
+    if (scale && isFinite(scale) && scale > 0) css *= scale;
+    const tr = getComputedStyle(svg).transform;
+    const matrix = tr && tr.match(/matrix\(([^)]+)\)/);
+    if (matrix) {
+      const p = matrix[1].split(',').map((n) => Number(n));
+      const sx = Math.hypot(p[0] || 0, p[1] || 0);
+      if (sx > 0 && isFinite(sx)) css *= sx;
+    }
+    const font = (model.texts || []).reduce((m, text) => Math.min(m, text.size || 9.5), Infinity);
     const b = model.bounds;
     const covers = vb.x <= b.x + 8 && vb.y <= b.y + 8 && vb.x + vb.width >= b.x + b.w - 8 && vb.y + vb.height >= b.y + b.h - 8;
+    const fitAll = document.getElementById('schFitAll');
+    const esp = (window as unknown as { app: { proj: { parts: { id: string; type: string }[] } } }).app.proj.parts.find((p) => p.type === 'esp32');
+    const espEl = esp ? svg.querySelector('.sch-sym[data-pid="' + esp.id + '"] .sch-hit') : null;
+    const er = espEl ? espEl.getBoundingClientRect() : null;
+    const tools = document.querySelector('.canvas-tools');
+    const trTools = tools ? tools.getBoundingClientRect() : null;
+    const cx = er ? (er.left + er.right) / 2 : 0;
+    const cy = er ? (er.top + er.bottom) / 2 : 0;
+    const espInView = !!er && er.width > 4 && er.height > 4 && cx >= 0 && cy >= 0 && cx <= window.innerWidth && cy <= window.innerHeight
+      && !(trTools && cx >= trTools.left && cx <= trTools.right && cy >= trTools.top && cy <= trTools.bottom);
     return {
       bodies: bodies,
       labels: labels,
       screenBodies: screenBodies,
       toggle: t ? { x: t.left, y: t.top, x2: t.right, y2: t.bottom, w: t.width, h: t.height } : null,
       buttons: buttons,
-      refPx: ref ? parseFloat(getComputedStyle(ref).fontSize) : 0,
+      screenPx: (isFinite(font) ? font : 9.5) * zoom * css,
       covers: covers,
+      fitAll: !!(fitAll && !fitAll.hidden),
+      espInView: espInView,
       hidden: !!(toggle && toggle.hidden),
       innerH: window.innerHeight,
     };
   });
+}
+
+async function chromeClear(page: Page, where: string) {
+  const boxes = await page.evaluate(() => {
+    const rect = (el: Element | null) => {
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) return null;
+      return { x: r.left, y: r.top, x2: r.right, y2: r.bottom, id: '', text: '' };
+    };
+    return {
+      toggle: rect(document.getElementById('schLayout')),
+      hint: rect(document.querySelector('#stageWrap .hint')),
+      toasts: [...document.querySelectorAll('.toast')].map((el) => rect(el)).filter((r): r is Box => !!r),
+      symbols: [...document.querySelectorAll('#stageSch .sch-hit')].map((el) => rect(el)).filter((r): r is Box => !!r),
+    };
+  });
+  expect(boxes.toggle, where + ' toggle').toBeTruthy();
+  if (!boxes.toggle) return;
+  if (boxes.hint) expect(overlaps(boxes.toggle, boxes.hint), where + ' hint ' + JSON.stringify(boxes.hint)).toBe(false);
+  for (const toast of boxes.toasts) expect(overlaps(boxes.toggle, toast), where + ' toast ' + JSON.stringify(toast)).toBe(false);
+  for (const symbol of boxes.symbols) expect(overlaps(boxes.toggle, symbol), where + ' symbol ' + JSON.stringify(symbol)).toBe(false);
 }
 
 function overlaps(a: Box, b: Box) {
@@ -95,8 +144,8 @@ function overlaps(a: Box, b: Box) {
 
 function assertClear(report: Awaited<ReturnType<typeof drawing>>, where: string) {
   expect(report.hidden, where + ' toggle').toBe(false);
-  expect(report.covers, where + ' fitted').toBe(true);
-  expect(report.refPx, where + ' font').toBeGreaterThanOrEqual(9);
+  expect(report.screenPx, where + ' screen font').toBeGreaterThanOrEqual(11);
+  if (!report.fitAll) expect(report.covers, where + ' fitted').toBe(true);
   expect(report.buttons.map((b) => b.name), where).toEqual(['Like breadboard', 'Tidy']);
   for (const b of report.buttons) {
     expect(b.w, where + ' ' + b.name).toBeGreaterThanOrEqual(44);
@@ -164,9 +213,28 @@ for (const example of EXAMPLES) {
         requestAnimationFrame(() => requestAnimationFrame(() => resolve(null)));
       }));
       assertClear(await drawing(page), example.id + '@' + width + ' moved');
+      await expect(page.locator('.toast')).toHaveCount(0);
+      await chromeClear(page, example.id + '@' + width + ' after the toast fades');
     });
   }
 }
+
+test('remote at 390 keeps labels readable and Fit all shows every part', async ({ page }) => {
+  await install(page);
+  await openExample(page, 'remote', 390);
+  const opened = await drawing(page);
+  expect(opened.fitAll).toBe(true);
+  expect(opened.screenPx).toBeGreaterThanOrEqual(11);
+  expect(opened.espInView).toBe(true);
+  const fit = page.locator('#schFitAll');
+  await expect(fit).toBeVisible();
+  const box = await fit.boundingBox();
+  expect(box && box.width).toBeGreaterThanOrEqual(44);
+  expect(box && box.height).toBeGreaterThanOrEqual(44);
+  await fit.focus();
+  await page.keyboard.press('Enter');
+  await expect.poll(async () => (await drawing(page)).covers).toBe(true);
+});
 
 test('Tidy is one key away and is remembered for this project', async ({ page }) => {
   await install(page);
