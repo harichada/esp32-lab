@@ -23,7 +23,7 @@ docker run -d --name esp32lab -p 80:8765 --restart unless-stopped \
   -v esp32lab-data:/home/sim/.esp32lab -v esp32lab-cache:/home/sim/.cache/arduino esp32-lab
 ```
 
-Do not publish container port 8765. HTTPS stays off until `HTTPS_ENABLED=1` in `web/README.md`. The documented hostname is `esp32lab.duckdns.org` (`HTTPS_HOST` is empty by default). The live host's port 443 stays closed until that rollout is approved. Rollback and the later firewall step are in `docs/https.md`. This repository does not open port 443.
+Do not publish container port 8765. Caddy (`circuitlab-caddy`) terminates TLS. The app does not publish 443. HTTPS redirect stays off until `HTTPS_ENABLED=1`. The documented hostname is `esp32lab.duckdns.org` (`HTTPS_HOST` is empty by default). The documented proxy address is `172.18.0.250`. See `docs/https.md`.
 
 A test copy is a second process on `127.0.0.1`, reached at `http://<live>/staging/` through the live server. Leave `SIM_STAGING_UPSTREAM` unset until that process is running: empty means `/staging/` is 404 and the live site is unchanged. Do not publish the test copy on port 8080. See `web/README.md` for `SIM_STAGING`, `SIM_ACCESS_TOKEN`, `SIM_BASE_PATH`, the cookie, and the two-process local start.
 Large binaries (QEMU build, arduino cores/toolchains, caches) are not committed — the sub-READMEs explain how to fetch/build them.

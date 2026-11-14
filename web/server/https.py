@@ -1,49 +1,32 @@
-"""HTTPS listener, ACME webroot, redirect, and HSTS.
+"""Redirect and HSTS behind Caddy. This process does not terminate TLS.
 
-Off unless the environment says otherwise, so a process with no flags keeps
-serving plain HTTP. Uvicorn terminates TLS itself (stdlib ``ssl``). Certbot
-stays on the host. No new runtime dependency. The hostname is configuration:
-nothing here names a default domain.
+Caddy (``circuitlab-caddy``) listens on 443, holds the Let's Encrypt
+certificate, and reverse-proxies to this process over plain HTTP. Off unless
+the environment says otherwise, so a process with no flags keeps serving
+plain HTTP and does not read forwarding headers.
 
-HTTPS_ENABLED    default 0. Only ``1`` turns the feature on. While it is off
-                 there is no TLS listener, no redirect, and no header this
-                 module would add. HTTP matches a process that never loaded it.
-HTTPS_REDIRECT   default 0. ``1`` redirects assets and API calls to
-                 https://HTTPS_HOST, and only when a certificate is listening.
-                 GET and HEAD are 301. Every other method is 308. A top-level
-                 HTML GET gets a same-page handoff instead. The move POST is
-                 capped at 2 MB. ``/.well-known/acme-challenge/`` stays on HTTP.
-HTTPS_HOST       default empty, which leaves the redirect off. The only
-                 redirect target. Never the Host header. The documented live
-                 value is ``esp32lab.duckdns.org``. Any other single hostname
-                 works when this is set to it.
-HSTS_ENABLED     default 0. Only ``1`` may send Strict-Transport-Security.
-HSTS_SECONDS     default 0. The max-age used once HSTS_ENABLED is 1.
-                 No includeSubDomains, no preload. Later rollout: 300, then
-                 86400, then 31536000. Values above 63072000 are rejected.
-ACME_WEBROOT     default empty. Certbot ``--webroot -w`` directory. Files are
-                 read from ``<dir>/.well-known/acme-challenge/<token>``.
-                 Token ``^[A-Za-z0-9_-]{20,128}$``. No directory listing. Read-only.
-TLS_CERT_FILE    default empty. PEM certificate (fullchain). Both this and
-                 TLS_KEY_FILE must be set and readable before port 8443 opens.
-TLS_KEY_FILE     default empty. PEM private key. Live mount: read-only bind,
-                 owned by root, mode 600. A bad key logs once and HTTP stays up.
-TLS_PORT         default 8443. Port inside the container. Published as 443
-                 only by a later, approved run. This process does not open it.
-ALLOWED_HOSTS    default unset (accept every Host). Comma-separated hostnames.
+HTTPS_ENABLED      default 0. Only ``1`` turns the feature on. While it is off
+                   there is no redirect and no header this module would add or
+                   remove. HTTP matches a process that never loaded it.
+HTTPS_HOST         default empty, which leaves the redirect off. The only
+                   redirect target. Never the Host header. The documented live
+                   value is ``esp32lab.duckdns.org``.
+HSTS_ENABLED       default 0. Only ``1`` may send Strict-Transport-Security,
+                   and only on a request the trusted proxy confirmed as https.
+HSTS_SECONDS       default 0. The max-age used once HSTS_ENABLED is 1.
+                   No includeSubDomains, no preload. Later rollout: 300, then
+                   86400, then 31536000. Values above 63072000 are rejected.
+TRUSTED_PROXY_IPS  default empty, which trusts nobody. Comma-separated exact
+                   IP addresses. A slash or a value that is not an IP is
+                   rejected at startup and the process trusts nobody. The
+                   documented address is ``172.18.0.250``.
+ALLOWED_HOSTS      default unset (accept every Host). Comma-separated hostnames.
 """
-import base64, json, math, os, re, secrets, socket, ssl, stat, threading, time, zlib
-from datetime import datetime, timezone
+import base64, ipaddress, json, os, re, secrets, threading, zlib
 from pathlib import Path
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
-TOKEN_RE = re.compile(r'^[A-Za-z0-9_-]{20,128}$')
-ACME_PREFIX = '/.well-known/acme-challenge/'
-ACME_MARK = 'acme-challenge'
-MAX_CHALLENGE = 65536
 HSTS_CAP = 63072000
-TLS_PORT_DEFAULT = 8443
-WARN_DAYS = 14
 MIGRATE_CAP = 2 * 1024 * 1024
 PROJECT_CAP = 1024 * 1024
 FRAGMENT_BUDGET = int(1.5 * 1024 * 1024)
@@ -65,30 +48,15 @@ _HOST_RE = re.compile(
     r'(?:\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*$'
 )
 _IPV4_RE = re.compile(r'^(?:\d{1,3}\.){3}\d{1,3}$')
-_MONTHS = {name: n for n, name in enumerate(
-    ('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'), 1)}
 
-# Flags. apply_env() fills these. The listener flag is separate: it is true
-# only after the TLS socket is accepting, so a bad cert never looks "on".
+# Flags. apply_env() fills these.
 ENABLED = False
-REDIRECT = False
 HTTPS_HOST = ''
 HSTS_ENABLED = False
 HSTS_SECONDS = 0
 ALLOWED = None  # None = accept all. A frozenset means the allow list is on.
-_reload_cb = None
-_CERT_DOWN = (
-    'HTTPS redirect stays off: no valid certificate is listening; '
-    'serving HTTP so port 80 does not redirect to a broken 443'
-)
-WEBROOT = ''
-CERT_FILE = ''
-KEY_FILE = ''
-LISTENER_ON = False
-ACTIVE_CERT = ''
+PROXY_IPS = frozenset()
 _warned = set()
-_lock = threading.Lock()
-_cache = {'mono': 0.0, 'path': '', 'payload': None}
 
 
 def _default_log(msg):
@@ -174,11 +142,10 @@ def _flag(env, name):
 
 
 def apply_env(env=None):
-    """Read the flags. Called at process start and by tests. Does not touch the listener."""
-    global ENABLED, REDIRECT, HTTPS_HOST, HSTS_ENABLED, HSTS_SECONDS, ALLOWED, WEBROOT, CERT_FILE, KEY_FILE
+    """Read the flags. Called at process start and by tests."""
+    global ENABLED, HTTPS_HOST, HSTS_ENABLED, HSTS_SECONDS, ALLOWED, PROXY_IPS
     env = os.environ if env is None else env
     ENABLED = _flag(env, 'HTTPS_ENABLED')
-    REDIRECT = _flag(env, 'HTTPS_REDIRECT')
     raw_host = str(env.get('HTTPS_HOST', '') or '').strip()
     if raw_host and not valid_https_host(raw_host):
         _log('HTTPS_HOST rejected (not a single hostname); redirect target cleared')
@@ -188,34 +155,32 @@ def apply_env(env=None):
     HSTS_ENABLED = _flag(env, 'HSTS_ENABLED')
     HSTS_SECONDS = _parse_hsts(env.get('HSTS_SECONDS', '0'))
     ALLOWED = _parse_allowed(env)
-    WEBROOT = str(env.get('ACME_WEBROOT', '') or '').strip()
-    CERT_FILE = str(env.get('TLS_CERT_FILE', '') or '').strip()
-    KEY_FILE = str(env.get('TLS_KEY_FILE', '') or '').strip()
+    PROXY_IPS = _parse_proxy_ips(env.get('TRUSTED_PROXY_IPS', ''))
     global _REDIRECT_BASE
     _REDIRECT_BASE = ''
     _warned.clear()
-    with _lock:
-        _cache['mono'] = 0.0
-        _cache['path'] = ''
-        _cache['payload'] = None
 
 
-def tls_port_from_env(env=None):
-    env = os.environ if env is None else env
-    raw = str(env.get('TLS_PORT', '') or '').strip()
-    if raw == '':
-        return TLS_PORT_DEFAULT
-    if raw.isdigit() and 0 <= int(raw) <= 65535:
-        return int(raw)
-    _log('TLS_PORT=%s is not a port; using %d' % (raw, TLS_PORT_DEFAULT))
-    return TLS_PORT_DEFAULT
-
-
-def _readable(path):
-    try:
-        return bool(path) and os.path.isfile(path) and os.access(path, os.R_OK)
-    except OSError:
-        return False
+def _parse_proxy_ips(raw):
+    """Exact IP addresses. A slash or an unparseable token trusts nobody."""
+    text = str(raw or '').strip()
+    if not text:
+        return frozenset()
+    if '/' in text:
+        _log("TRUSTED_PROXY_IPS rejected (%s contains '/'); trusting nobody" % text)
+        return frozenset()
+    found = []
+    for part in text.split(','):
+        token = part.strip()
+        if not token:
+            _log('TRUSTED_PROXY_IPS rejected (empty address); trusting nobody')
+            return frozenset()
+        try:
+            found.append(str(ipaddress.ip_address(token)))
+        except ValueError:
+            _log('TRUSTED_PROXY_IPS rejected (%s is not an IP address); trusting nobody' % token)
+            return frozenset()
+    return frozenset(found)
 
 
 def set_redirect_base(value):
@@ -249,114 +214,6 @@ def public_origin():
     if not valid_https_host(HTTPS_HOST):
         return ''
     return 'https://' + HTTPS_HOST
-
-
-def key_posture(path):
-    """How the private key is mounted.
-
-    The live container bind-mounts ``/etc/letsencrypt`` read-only. The key
-    file (``live/.../privkey.pem``, a symlink into ``archive/``) is owned by
-    root and mode 600. This reports that shape. It does not log and does not raise.
-    """
-    info = {
-        'path': path or '', 'exists': False, 'readable': False, 'regular': False,
-        'mode': '', 'uid': None, 'root_owned': False, 'ro_mount': False,
-    }
-    if not path:
-        return info
-    try:
-        st = os.stat(path)
-    except OSError:
-        return info
-    info['exists'] = True
-    info['regular'] = stat.S_ISREG(st.st_mode)
-    info['mode'] = '%03o' % (st.st_mode & 0o777)
-    info['uid'] = st.st_uid
-    info['root_owned'] = st.st_uid == 0
-    info['readable'] = os.access(path, os.R_OK)
-    info['ro_mount'] = _ro_mount(path)
-    return info
-
-
-def _ro_mount(path):
-    try:
-        real = os.path.realpath(path)
-    except OSError:
-        return False
-    best = ''
-    ro = False
-    try:
-        lines = open('/proc/self/mountinfo', encoding='utf-8', errors='replace')
-    except OSError:
-        return False
-    with lines:
-        for line in lines:
-            parts = line.split()
-            if len(parts) < 6:
-                continue
-            point = parts[4].replace('\\040', ' ')
-            if real == point or real.startswith(point.rstrip('/') + '/'):
-                if len(point) >= len(best):
-                    best = point
-                    ro = 'ro' in parts[5].split(',')
-    return ro
-
-
-def _key_warning(reason, path):
-    posture = key_posture(path)
-    _log(
-        'tls key warning reason=%s path=%s mode=%s uid=%s root_owned=%s ro_mount=%s serving=http'
-        % (reason, path or '', posture['mode'] or '-', posture['uid'] if posture['uid'] is not None else '-',
-           'true' if posture['root_owned'] else 'false', 'true' if posture['ro_mount'] else 'false')
-    )
-
-
-def tls_material():
-    """``(cert, key)`` when both files load, else None. Never raises.
-
-    Unset means HTTP only and is not an error. A missing, unreadable, mode
-    other than 600, or invalid key logs one structured warning and HTTP continues.
-    """
-    cert, key = CERT_FILE, KEY_FILE
-    if not cert and not key:
-        return None
-    if not key:
-        _key_warning('missing', key)
-        return None
-    if not os.path.exists(key):
-        _key_warning('missing', key)
-        return None
-    posture = key_posture(key)
-    if not posture['regular']:
-        _key_warning('not-a-file', key)
-        return None
-    if not posture['readable']:
-        _key_warning('unreadable', key)
-        return None
-    if posture['mode'] != '600':
-        _key_warning('mode', key)
-        return None
-    if not cert or not _readable(cert):
-        _key_warning('cert-unreadable', key)
-        return None
-    try:
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ctx.load_cert_chain(certfile=cert, keyfile=key)
-    except Exception:
-        _key_warning('invalid', key)
-        return None
-    return cert, key
-
-
-def set_listener(on, cert_path):
-    """Record whether the TLS socket is up. Health reads this, not the env vars."""
-    global LISTENER_ON, ACTIVE_CERT
-    with _lock:
-        LISTENER_ON = bool(on) and bool(cert_path)
-        ACTIVE_CERT = cert_path if LISTENER_ON else ''
-        _cache['mono'] = 0.0
-        _cache['path'] = ''
-        _cache['payload'] = None
 
 
 def redirect_status(method):
@@ -521,106 +378,6 @@ def redirect_location(scope, host):
     return loc
 
 
-def _raw_path(scope):
-    raw = scope.get('raw_path') or b''
-    if isinstance(raw, bytes):
-        return raw.decode('latin1')
-    return str(raw or '')
-
-
-def _decoded_path(scope):
-    text = _raw_path(scope).split('?', 1)[0]
-    current = text
-    for _ in range(2):
-        nxt = unquote(current)
-        if nxt == current:
-            break
-        current = nxt
-    return current
-
-
-def _hostile_path(text):
-    if text is None:
-        return False
-    if '\\' in text or '\x00' in text or '\r' in text or '\n' in text:
-        return True
-    return any(part in ('.', '..') for part in text.split('/'))
-
-
-def acme_attempt(scope):
-    """True when the request is aimed at the challenge prefix, including encoded forms."""
-    path = scope.get('path') or ''
-    raw = _raw_path(scope)
-    decoded = _decoded_path(scope)
-    blob = '\n'.join((path, raw, decoded)).lower()
-    return ACME_MARK in blob or path.startswith(ACME_PREFIX) or path.rstrip('/') == '/.well-known/acme-challenge'
-
-
-def acme_token(scope):
-    """The challenge token, or '' when this is a challenge URL we will not serve."""
-    if not acme_attempt(scope):
-        return None
-    path = scope.get('path') or ''
-    decoded = _decoded_path(scope)
-    if _hostile_path(path) or _hostile_path(decoded) or _hostile_path(_raw_path(scope)):
-        return ''
-    if not path.startswith(ACME_PREFIX):
-        return ''
-    token = path[len(ACME_PREFIX):]
-    if not TOKEN_RE.fullmatch(token):
-        return ''
-    if decoded.split('/')[-1] != token:
-        return ''
-    return token
-
-
-def load_challenge(webroot, token):
-    """Bytes of one challenge file, or None. The token is the only path segment used."""
-    if not webroot or TOKEN_RE.fullmatch(token or '') is None:
-        return None
-    try:
-        root = Path(webroot).resolve(strict=True)
-    except OSError:
-        return None
-    if not root.is_dir():
-        return None
-    challenge = root / '.well-known' / 'acme-challenge'
-    try:
-        challenge_r = challenge.resolve(strict=True)
-        challenge_r.relative_to(root)
-    except (OSError, ValueError):
-        return None
-    if not challenge_r.is_dir():
-        return None
-    candidate = challenge_r / token
-    # One file, read-only, and only when its real name is the token. A symlink,
-    # a directory, or a file outside this folder is not served, and the folder
-    # itself is never listed.
-    if candidate.is_symlink():
-        return None
-    flags = os.O_RDONLY | getattr(os, 'O_CLOEXEC', 0) | getattr(os, 'O_NOFOLLOW', 0)
-    try:
-        fd = os.open(str(candidate), flags)
-    except OSError:
-        return None
-    try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_CHALLENGE:
-            return None
-        try:
-            real = Path(os.path.realpath(candidate)).resolve()
-            real.relative_to(challenge_r)
-        except (OSError, ValueError):
-            return None
-        if real.name != token or real.parent != challenge_r:
-            return None
-        data = os.read(fd, MAX_CHALLENGE + 1)
-    finally:
-        os.close(fd)
-    if len(data) > MAX_CHALLENGE:
-        return None
-    return data
-
 
 def _host_header(scope):
     for name, value in scope.get('headers') or []:
@@ -698,68 +455,6 @@ def _add_upgrade(headers):
         headers.append([b'content-security-policy', directive])
     return headers
 
-
-def parse_not_after(text):
-    """OpenSSL ``notAfter`` (``Nov 14 00:00:00 2026 GMT``) as an aware UTC datetime."""
-    parts = (text or '').split()
-    if len(parts) < 4 or parts[0] not in _MONTHS:
-        return None
-    try:
-        hour, minute, second = (int(piece) for piece in parts[2].split(':'))
-        when = datetime(int(parts[3]), _MONTHS[parts[0]], int(parts[1]), hour, minute, second, tzinfo=timezone.utc)
-    except (TypeError, ValueError):
-        return None
-    return when
-
-
-def days_left(not_after, now):
-    return math.floor((not_after - now).total_seconds() / 86400)
-
-
-def _load_expiry(path):
-    info = ssl._ssl._test_decode_cert(path)
-    when = parse_not_after(info.get('notAfter') or '')
-    if when is None:
-        return None, None
-    now = datetime.now(timezone.utc)
-    return when.strftime('%Y-%m-%dT%H:%M:%SZ'), days_left(when, now)
-
-
-def _tls_body(enabled, iso, left):
-    warning = bool(enabled and isinstance(left, int) and left < WARN_DAYS)
-    return {
-        'enabled': bool(enabled),
-        'cert_not_after': iso,
-        'days_left': left,
-        'warning': warning,
-        'reason': ('certificate has %d days left' % left) if warning else None,
-    }
-
-
-def tls_status(now=None):
-    """Health ``tls`` object. The certificate file is re-read at most every 60 seconds.
-
-    ``enabled`` follows the live listener, not the mere presence of the env vars.
-    ``ok`` on ``/api/health`` is computed by the caller and does not use this.
-    ``warning`` is true once fewer than 14 days remain.
-    """
-    clock = time.monotonic() if now is None else now
-    with _lock:
-        if not LISTENER_ON or not ACTIVE_CERT:
-            return _tls_body(False, None, None)
-        path = ACTIVE_CERT
-        cached = _cache['payload']
-        if cached is not None and _cache['path'] == path and clock - _cache['mono'] < 60:
-            return _tls_body(True, cached[0], cached[1])
-        try:
-            iso, left = _load_expiry(path)
-        except Exception as exc:
-            _log('TLS certificate re-read failed (%s); health tls dates cleared' % exc)
-            iso, left = None, None
-        _cache['mono'] = clock
-        _cache['path'] = path
-        _cache['payload'] = (iso, left)
-        return _tls_body(True, iso, left)
 
 
 def _pairs(items):
@@ -845,24 +540,109 @@ def request_origin(scope):
     return '%s://%s' % (scheme, host)
 
 
-def redirect_suppressed(scope):
-    """True when this request must stay on plain HTTP.
+def _peer_ip(scope):
+    """The TCP peer, never a forwarding header. Empty when it is not an IP."""
+    client = scope.get('client') or None
+    if not client:
+        return ''
+    host = client[0]
+    if isinstance(host, bytes):
+        host = host.decode('ascii', 'replace')
+    host = str(host or '').strip()
+    if host.startswith('[') and host.endswith(']'):
+        host = host[1:-1]
+    try:
+        return str(ipaddress.ip_address(host))
+    except ValueError:
+        return ''
 
-    The redirect runs only when HTTPS_ENABLED and HTTPS_REDIRECT are both ``1``,
-    HTTPS_HOST is a single hostname, and a certificate is actually listening.
-    The loopback test seam counts as that listener. A target that is this same
-    origin is also skipped, so a redirect cannot loop. A missing certificate
-    is logged once and port 80 keeps serving the page.
+
+def _forwarded_values(scope, name):
+    found = []
+    for key, value in scope.get('headers') or []:
+        if key.lower() == name:
+            try:
+                text = value.decode('latin1')
+            except AttributeError:
+                text = str(value)
+            found.append(text)
+    return found
+
+
+def _single_forwarded(values):
+    """``('missing', '')``, ``('one', text)``, or ``('bad', '')``."""
+    if not values:
+        return 'missing', ''
+    if len(values) != 1:
+        return 'bad', ''
+    text = values[0]
+    if text != text.strip() or not text or any(c in text for c in ', \t\r\n'):
+        return 'bad', ''
+    return 'one', text
+
+
+def _apply_forwarded(scope):
+    """Apply X-Forwarded-Proto and X-Forwarded-Host from a trusted peer.
+
+    A peer that is not in TRUSTED_PROXY_IPS is returned unchanged, headers and
+    all. A trusted peer that sends a malformed or repeated value returns None,
+    which the caller answers with 400. X-Forwarded-For is never read.
     """
-    if not ENABLED or not REDIRECT:
+    if _peer_ip(scope) not in PROXY_IPS:
+        return scope
+    proto_kind, proto = _single_forwarded(_forwarded_values(scope, b'x-forwarded-proto'))
+    host_kind, host = _single_forwarded(_forwarded_values(scope, b'x-forwarded-host'))
+    if proto_kind == 'bad' or host_kind == 'bad':
+        return None
+    scope = dict(scope)
+    scope['headers'] = [tuple(item) for item in (scope.get('headers') or [])]
+    if proto_kind == 'one':
+        value = proto.lower()
+        if value not in ('http', 'https'):
+            return None
+        websocket = scope.get('type') == 'websocket' or (scope.get('scheme') or '') in ('ws', 'wss')
+        if value == 'https':
+            scope['scheme'] = 'wss' if websocket else 'https'
+        else:
+            scope['scheme'] = 'ws' if websocket else 'http'
+    if host_kind == 'one':
+        name = normalize_host(host)
+        if not name or not valid_https_host(name):
+            return None
+        if ALLOWED is not None and name not in ALLOWED:
+            return None
+        if ALLOWED is not None:
+            encoded = host.encode('latin1')
+            headers = []
+            replaced = False
+            for key, value in scope['headers']:
+                if key.lower() == b'host':
+                    headers.append((b'host', encoded))
+                    replaced = True
+                else:
+                    headers.append((key, value))
+            if not replaced:
+                headers.insert(0, (b'host', encoded))
+            scope['headers'] = headers
+    return scope
+
+
+def redirect_suppressed(scope):
+    """True when this request must not be redirected.
+
+    The redirect runs only when HTTPS_ENABLED is ``1`` and HTTPS_HOST is a
+    single hostname. A request the trusted proxy already marked https, and a
+    request that is already on the public origin, stay put.
+    """
+    if not ENABLED:
         return True
     if not valid_https_host(HTTPS_HOST):
-        _warn_once('redirect-host', 'HTTPS_REDIRECT is on but HTTPS_HOST is empty or invalid; redirect stays off')
+        _warn_once('redirect-host', 'HTTPS_ENABLED is on but HTTPS_HOST is empty or invalid; redirect stays off')
         return True
-    if not _REDIRECT_BASE and not LISTENER_ON:
-        _warn_once('redirect-cert', _CERT_DOWN)
+    scheme = scope.get('scheme') or ''
+    if scheme in ('https', 'wss'):
         return True
-    if (scope.get('scheme') or '') in ('http', 'ws') and request_origin(scope) == public_origin():
+    if scheme in ('http', 'ws') and request_origin(scope) == public_origin():
         return True
     return False
 
@@ -1148,11 +928,20 @@ class HttpsMiddleware:
         if kind not in ('http', 'websocket'):
             await self.app(scope, receive, send)
             return
-        # Master flag off: do not inspect the host, do not redirect, and do
-        # not add or remove a header. The response is the inner app's.
+        # Master flag off: do not inspect the host, do not read forwarding
+        # headers, do not redirect, and do not add or remove a header.
         if not ENABLED:
             await self.app(scope, receive, send)
             return
+        forwarded = _apply_forwarded(scope)
+        if forwarded is None:
+            socket_scheme = scope.get('scheme') or ''
+            if kind == 'websocket':
+                await _ws_reply(send, 400, 'bad request', socket_scheme)
+            else:
+                await _http_reply(send, 400, 'bad request', (), socket_scheme)
+            return
+        scope = forwarded
         scheme = scope.get('scheme') or ''
         scope = _origin_scope(scope)
         if scope is None:
@@ -1179,14 +968,11 @@ class HttpsMiddleware:
                 return
             await self.app(scope, receive, send)
             return
-        if acme_attempt(scope):
-            await self._acme(scope, receive, send, scheme)
-            return
         path = scope.get('path') or '/'
-        if REDIRECT and path in ('/migrate', '/migrate-done'):
+        if path in ('/migrate', '/migrate-done'):
             await self._migrate(scope, receive, send, scheme)
             return
-        if not redirect_suppressed(scope) and scheme == 'http' and not _is_health(scope):
+        if not redirect_suppressed(scope) and scheme in ('http', 'ws') and not _is_health(scope):
             if _ws_upgrade(scope):
                 await _http_reply(
                     send, 403,
@@ -1274,7 +1060,7 @@ class HttpsMiddleware:
         if path == '/migrate' and method == 'GET' and on_target:
             html, csp = _page(
                 'Moving your projects',
-                'clMigrate.receive(%s);' % _js({'target': origin, 'confirm': HSTS_SECONDS == 0}),
+                'clMigrate.receive(%s);' % _js({'target': origin, 'confirm': not (HSTS_ENABLED and HSTS_SECONDS > 0)}),
                 "'none'",
                 note='Moving your projects…',
             )
@@ -1330,7 +1116,7 @@ class HttpsMiddleware:
                 return
             html, csp = _page(
                 'Moving your projects',
-                'clMigrate.receive(%s);' % _js({'target': origin, 'confirm': HSTS_SECONDS == 0}),
+                'clMigrate.receive(%s);' % _js({'target': origin, 'confirm': not (HSTS_ENABLED and HSTS_SECONDS > 0)}),
                 "'none'",
                 embedded=obj,
                 note='Moving your projects…',
@@ -1340,34 +1126,11 @@ class HttpsMiddleware:
             html = _fail_html('')
             await self._send_html(send, html, _MOVE_CSP, scheme, status=400)
 
-    async def _acme(self, scope, receive, send, scheme):
-        method = (scope.get('method') or 'GET').upper()
-        token = acme_token(scope)
-        if not await _drain(receive):
-            return
-        if method not in ('GET', 'HEAD'):
-            await _http_reply(send, 405, 'method not allowed', ((b'allow', b'GET, HEAD'),), scheme)
-            return
-        data = load_challenge(WEBROOT, token) if token else None
-        if data is None:
-            await _http_reply(send, 404, 'not found', (), scheme)
-            return
-        # Exact media type. Challenge bodies are ASCII; no charset parameter.
-        headers = [
-            [b'content-type', b'text/plain'],
-            [b'content-length', str(len(data)).encode('ascii')],
-            [b'cache-control', b'no-store'],
-        ]
-        headers = _merge_response_headers(headers, scheme)
-        await send({'type': 'http.response.start', 'status': 200, 'headers': headers})
-        await send({'type': 'http.response.body', 'body': b'' if method == 'HEAD' else data})
-
-
 def _quiet_server(config):
     """A uvicorn server that does not install signal handlers.
 
-    Two listeners would otherwise replace each other's SIGTERM handler, and
-    the one that lost would keep running after ``docker stop``.
+    Tests run this inside a thread. The process entry installs its own
+    SIGINT and SIGTERM handlers instead.
     """
     import uvicorn
     server = uvicorn.Server(config)
@@ -1440,274 +1203,59 @@ def _install_target_capture():
         httptools_impl.HttpToolsProtocol.on_headers_complete = on_headers_complete
 
 
-def _uvicorn_config(app, host, port, *, certfile=None, keyfile=None, lifespan='on',
-                    log_level='warning', access_log=True):
+def _uvicorn_config(app, host, port, *, lifespan='on', log_level='warning', access_log=True):
     import uvicorn
     _install_target_capture()
     parser = (os.environ.get('UVICORN_HTTP') or 'auto').strip() or 'auto'
-    # proxy_headers stays False on both listeners. The scheme is the socket,
-    # never X-Forwarded-Proto. Staging tests look for this exact argument pair.
+    # proxy_headers stays off. Forwarding headers are read only from a peer in
+    # TRUSTED_PROXY_IPS. Staging tests look for this exact argument pair.
     return uvicorn.Config(
         app, host=host, port=port, log_level=log_level, access_log=access_log,
         proxy_headers=False, forwarded_allow_ips='',
-        ssl_certfile=certfile, ssl_keyfile=keyfile, lifespan=lifespan,
+        lifespan=lifespan,
         http=parser,
     )
 
 
-def _bind(host, port):
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind((host, port))
-        sock.setblocking(False)
-    except Exception:
-        sock.close()
-        raise
-    return sock
-
-
-def request_tls_reload():
-    """Ask the running process to reload the certificate. HTTP is not restarted.
-
-    Returns False when no listener is running. A failed reload is logged and
-    leaves port 80 serving the site.
-    """
-    cb = _reload_cb
-    if cb is None:
-        _log('certificate reload failed: no listener is running; serving HTTP')
-        return False
-    cb()
-    return True
-
-
 async def serve_listeners(app, host, http_port, *, tls_port=None, signals=False,
                           log_level='warning', access_log=True, ready=None):
-    """Serve HTTP, and HTTPS on ``tls_port`` when the master flag and the cert allow it.
+    """Serve one plain-HTTP listener. ``tls_port`` is accepted and ignored.
 
-    A missing cert, a bad key, a failed renewal, or a busy TLS port is logged.
-    HTTP keeps running, and port 80 does not redirect unless the TLS socket is up.
-    SIGHUP reloads the certificate without restarting HTTP.
+    TLS is terminated by Caddy. This process does not open a certificate socket.
     """
-    global _reload_cb
     import asyncio
-    set_listener(False, '')
+    del tls_port
     http = _quiet_server(_uvicorn_config(
         app, host, http_port, lifespan='on', log_level=log_level, access_log=access_log,
     ))
-    if not ENABLED:
-        material = None
-        if CERT_FILE or KEY_FILE or REDIRECT:
-            _log('HTTPS_ENABLED is off; TLS listener stays down, there is no redirect, and HTTP headers are unchanged')
-    else:
-        material = tls_material()
-        if REDIRECT and not material:
-            _log(_CERT_DOWN)
-    tls = None
-    tls_sock = None
-    if material and tls_port is not None:
-        try:
-            tls_sock = _bind(host, tls_port)
-        except OSError as exc:
-            _log('TLS disabled: cannot bind %s:%s (%s); serving HTTP only' % (host, tls_port, exc))
-            tls_sock = None
-        if tls_sock is not None:
-            cert, key = material
-            tls_config = _uvicorn_config(
-                app, host, tls_sock.getsockname()[1], certfile=cert, keyfile=key, lifespan='off',
-                log_level=log_level, access_log=access_log,
-            )
-            try:
-                tls_config.load()
-            except Exception as exc:
-                _log('TLS disabled: listener setup failed (%s); serving HTTP only' % exc)
-                tls_sock.close()
-                tls_sock = None
-            else:
-                tls = _quiet_server(tls_config)
-    if WEBROOT and not os.path.isdir(WEBROOT):
-        _warn_once('webroot', 'ACME_WEBROOT=%s is not a directory; challenge URLs will 404' % WEBROOT)
-
-    slot = {'server': tls, 'task': None, 'sock': tls_sock}
-    generation = {'n': 0}
-    reload = asyncio.Event()
-    loop = asyncio.get_running_loop()
-
-    def _kick():
-        loop.call_soon_threadsafe(reload.set)
-
-    _reload_cb = _kick
-
-    def _current():
-        return slot['server']
-
     if signals and threading.current_thread() is threading.main_thread():
         import signal
+
         def _stop(signum, _frame):
-            current = _current()
             if http.should_exit:
                 http.force_exit = True
-                if current is not None:
-                    current.force_exit = True
             else:
                 http.should_exit = True
-                if current is not None:
-                    current.should_exit = True
+
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, _stop)
-        signal.signal(signal.SIGHUP, lambda _signum, _frame: _kick())
-
-    async def _serve_tls(server, sock, gen):
-        try:
-            await server.serve(sockets=[sock])
-        except SystemExit as exc:
-            _log('TLS listener exited (%s); serving HTTP only' % exc)
-            if generation['n'] == gen:
-                set_listener(False, '')
-        except Exception as exc:
-            _log('TLS listener failed (%s); serving HTTP only' % exc)
-            if generation['n'] == gen:
-                set_listener(False, '')
-
-    async def _swap_tls():
-        if not ENABLED:
-            _log('HTTPS_ENABLED is off; certificate reload left HTTP unchanged')
-            return
-        if tls_port is None:
-            _log('certificate reload skipped: TLS port is not configured; serving HTTP')
-            return
-        new_material = tls_material()
-        current = slot['server']
-        if not new_material:
-            if current is not None and getattr(current, 'started', False) and not current.should_exit:
-                _log('certificate reload failed; the current certificate keeps serving and HTTP stays up')
-            else:
-                set_listener(False, '')
-                _log('certificate reload failed; HTTP stays up and port 80 does not redirect to a broken 443')
-            return
-        generation['n'] += 1
-        gen = generation['n']
-        set_listener(False, '')
-        old = slot['server']
-        old_task = slot['task']
-        old_sock = slot['sock']
-        slot['server'] = None
-        slot['task'] = None
-        slot['sock'] = None
-        if old is not None:
-            old.should_exit = True
-        if old_task is not None:
-            try:
-                await asyncio.wait_for(old_task, 5)
-            except Exception:
-                pass
-        if old_sock is not None:
-            try:
-                old_sock.close()
-            except Exception:
-                pass
-        new_sock = None
-        try:
-            new_sock = _bind(host, tls_port)
-            cert, _key = new_material
-            cfg = _uvicorn_config(
-                app, host, new_sock.getsockname()[1], certfile=cert, keyfile=_key, lifespan='off',
-                log_level=log_level, access_log=access_log,
-            )
-            cfg.load()
-            new_server = _quiet_server(cfg)
-        except Exception as exc:
-            if new_sock is not None:
-                new_sock.close()
-            _log('certificate reload failed (%s); HTTP stays up and port 80 does not redirect to a broken 443' % exc)
-            set_listener(False, '')
-            return
-        new_task = asyncio.create_task(_serve_tls(new_server, new_sock, gen))
-        if await _wait_started(new_server, new_task):
-            set_listener(True, cert)
-            bound = new_server.servers[0].sockets[0].getsockname()
-            _log('TLS reloaded on %s:%s' % (host, bound[1]))
-            slot['server'] = new_server
-            slot['task'] = new_task
-            slot['sock'] = new_sock
-        else:
-            new_server.should_exit = True
-            try:
-                new_sock.close()
-            except Exception:
-                pass
-            _log('certificate reload failed: listener did not stay up; HTTP stays up and port 80 does not redirect to a broken 443')
-            set_listener(False, '')
-
-    async def _reload_loop():
-        while not http.should_exit:
-            await reload.wait()
-            reload.clear()
-            if http.should_exit:
-                return
-            await _swap_tls()
-
     http_task = asyncio.create_task(http.serve())
-    tls_task = asyncio.create_task(_serve_tls(tls, tls_sock, 0)) if tls is not None else None
-    slot['task'] = tls_task
-    reload_task = asyncio.create_task(_reload_loop())
     try:
         started = await _wait_started(http, http_task)
-        if not started:
-            set_listener(False, '')
-            if tls is not None:
-                tls.should_exit = True
-            if tls_task is not None:
-                await tls_task
-            await http_task
-            if ready is not None:
-                ready(http, None)
-            return
-        tls_up = None
-        if tls is not None:
-            if await _wait_started(tls, tls_task):
-                set_listener(True, material[0])
-                bound = tls.servers[0].sockets[0].getsockname()
-                _log('TLS listening on %s:%s' % (host, bound[1]))
-                tls_up = tls
-            else:
-                set_listener(False, '')
-                tls.should_exit = True
-                _log('TLS disabled: listener did not stay up; serving HTTP only')
-                tls_up = None
         if ready is not None:
-            ready(http, tls_up)
-        await http_task
-        current = slot['server']
-        if current is not None and not current.should_exit:
-            current.should_exit = True
-        current_task = slot['task']
-        if current_task is not None:
-            await current_task
+            ready(http, None)
+        if started:
+            await http_task
+        else:
+            http.should_exit = True
+            await http_task
     finally:
-        reload.set()
-        current = slot['server']
-        if current is not None:
-            current.should_exit = True
-        current_task = slot['task']
-        if current_task is not None and not current_task.done():
-            try:
-                await current_task
-            except Exception:
-                pass
-        if not reload_task.done():
-            reload_task.cancel()
-            try:
-                await reload_task
-            except (Exception, asyncio.CancelledError):
-                pass
-        if _reload_cb is _kick:
-            _reload_cb = None
-        set_listener(False, '')
+        http.should_exit = True
 
 
 async def _wait_started(server, task, timeout=8):
     import asyncio
+    import time
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if getattr(server, 'started', False):
@@ -1722,15 +1270,11 @@ def serve_forever(app, host, port):
     """Process entry. Reads the environment, then serves until SIGTERM."""
     import asyncio
     apply_env()
-    if not CERT_FILE and not KEY_FILE:
-        _log('TLS not configured (TLS_CERT_FILE and TLS_KEY_FILE unset); serving HTTP only')
-    asyncio.run(serve_listeners(
-        app, host, port, tls_port=tls_port_from_env(), signals=True, ready=None,
-    ))
+    asyncio.run(serve_listeners(app, host, port, signals=True, ready=None))
 
 
 class Background:
-    """One HTTP listener and, when the cert loads, one HTTPS listener. For tests."""
+    """One HTTP listener for tests. TLS is not started here."""
 
     def __init__(self, app, host='127.0.0.1', http_port=0, tls_port=0):
         self.app = app
@@ -1782,18 +1326,12 @@ class Background:
             self.http_port = http.servers[0].sockets[0].getsockname()[1]
         except Exception:
             self.http_port = None
-        if tls is not None and getattr(tls, 'started', False):
-            try:
-                self.tls_port = tls.servers[0].sockets[0].getsockname()[1]
-            except Exception:
-                self.tls_port = None
+        self.tls_port = None
         self.ready.set()
 
     def stop(self):
         if self.http is not None:
             self.http.should_exit = True
-        if self.tls is not None:
-            self.tls.should_exit = True
         if self.thread is not None:
             self.thread.join(5)
 

@@ -1,323 +1,107 @@
-# HTTPS for esp32lab.duckdns.org
+# HTTPS
 
-The hostname is configuration. `HTTPS_HOST` defaults to empty, which leaves the redirect off. The documented value is `esp32lab.duckdns.org`, which already points at `129.158.200.25`. Any other single hostname works when `HTTPS_HOST` is set to it. Hari has approved HTTPS on the live host. A temporary Caddy container is serving port 443 for that name and reverse-proxying to the app. That stopgap does not change port 80 or the app. This repository still does not open port 443. The hand-over section is the operator step that replaces Caddy with this pull request.
+Caddy is the TLS terminator. The container is `circuitlab-caddy`. It listens on 443, obtains the Let's Encrypt certificate for `esp32lab.duckdns.org` with TLS-ALPN-01, and reverse-proxies to the app at `esp32lab:8765` on the shared Docker network. Port 80 is published to the app (`-p 80:8765`) and does not go through Caddy. This process does not issue a certificate, does not listen on 443, and does not reload a certificate.
 
-`HTTPS_ENABLED` defaults to `0`. While it is off, the process is plain HTTP: no TLS listener, no redirect, and no header this feature adds.
+The app container publishes port 80 only. Do not publish 8765.
 
-## Certificate
+## Reference Caddyfile
 
-Let's Encrypt, HTTP-01, on the port 80 site that is already open. No paid certificate and no DNS API token. Certbot stays on the host. The container only reads the files.
-
-Webroot, on the host, mounted read-only:
+The file on the server is `/home/opc/caddy/Caddyfile`. That copy is authoritative. This block is the reference built from the settings that are known: the domain, `auto_https disable_redirects`, the HTTP challenge disabled so issuance is TLS-ALPN only, and `reverse_proxy esp32lab:8765`. It is not a claim that the server file is byte-for-byte this text.
 
 ```
-sudo mkdir -p /var/lib/esp32lab/acme
-sudo chmod 755 /var/lib/esp32lab/acme
+{
+	auto_https disable_redirects
+}
+
+esp32lab.duckdns.org {
+	tls {
+		issuer acme {
+			disable_http_challenge
+		}
+	}
+	reverse_proxy esp32lab:8765 {
+		header_up Host {host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+}
 ```
 
-Check the client against the staging CA first so a mistake does not spend the production rate limit. This writes a staging certificate, which browsers will not trust. Use it on a staging copy or throw it away. Do not install it as the live certificate.
+`auto_https disable_redirects` keeps Caddy from answering port 80. Port 80 belongs to the app, which is what serves `/api/health` and, while the redirect flag is off, the site itself. The HTTP challenge is off because Caddy is not the process on port 80. Let's Encrypt uses TLS-ALPN-01 on 443.
+
+Caddy replaces forwarding headers that the client sent. The app trusts `X-Forwarded-Proto` and `X-Forwarded-Host` for that reason, and only when the TCP peer is the pinned proxy address. A header the client sent to the app directly is not Caddy's header.
+
+## Caddy on the host
+
+Pin the container to `172.18.0.250`. The network is the Docker network where the app is reachable as `esp32lab` and where staging also runs. The data volume is the one already mounted at `/data` on `circuitlab-caddy`. Keep that volume. Deleting it throws away the account and the certificate, and a replacement issuance counts against Let's Encrypt's duplicate-certificate limit (five certificates for the same name per week).
 
 ```
-sudo certbot certonly --staging --webroot -w /var/lib/esp32lab/acme \
-  -d esp32lab.duckdns.org \
-  --agree-tos --register-unsafely-without-email --non-interactive \
-  --dry-run
+docker run -d --name circuitlab-caddy --restart unless-stopped \
+  --network <shared-network> --ip 172.18.0.250 \
+  -p 443:443 \
+  -v <caddy-data>:/data \
+  -v /home/opc/caddy/Caddyfile:/etc/caddy/Caddyfile:ro \
+  caddy:2
 ```
 
-`--dry-run` checks the challenge without saving a certificate. After that succeeds, and only after Hari has approved the live cutover, issue once without `--staging`:
+`<shared-network>` and `<caddy-data>` are the ones `docker inspect circuitlab-caddy` already shows. Do not create a second data volume.
 
-```
-sudo certbot certonly --webroot -w /var/lib/esp32lab/acme \
-  -d esp32lab.duckdns.org \
-  --agree-tos --register-unsafely-without-email --non-interactive
-```
+## Trusted proxy
 
-A staging copy that must not share the production name can use a staging hostname of its own, for example `staging.esp32lab.duckdns.org`, still with `--staging` until the production name is needed. The staging container stays on the internal network. Do not publish 80, 443, or 8765 on it.
+`TRUSTED_PROXY_IPS` is a comma-separated list of exact IP addresses. The documented value is `172.18.0.250`, the address Caddy is pinned to with `--ip 172.18.0.250`.
 
-## When port 80 redirects
+The setting never accepts a CIDR range. A value that contains `/`, or any token that is not an IP address, is rejected at startup. The process logs `TRUSTED_PROXY_IPS rejected (...); trusting nobody` and trusts no peer.
 
-All four have to be true. Otherwise the site stays on HTTP and does not send browsers to 443.
+Do not trust the Docker subnet. Staging runs on that same network, so another container can open a connection to the app. Only the pinned Caddy address is a proxy. `X-Forwarded-For` is never the thing that decides trust. The TCP peer is.
 
-1. `HTTPS_ENABLED=1`
-2. `HTTPS_REDIRECT=1`
-3. `HTTPS_HOST` is one hostname, such as `esp32lab.duckdns.org`
-4. The TLS listener is up with a certificate that loaded
+From a peer that is not in the list, including another address on the Docker network and including `127.0.0.1`, `X-Forwarded-Proto` and `X-Forwarded-For` are ignored. A malformed or repeated `X-Forwarded-Proto` or `X-Forwarded-Host` from the pinned address is 400. `X-Forwarded-Host` is adopted only when `ALLOWED_HOSTS` is set and the value is in that list. The redirect target is still only `https://HTTPS_HOST` plus the path and query.
 
-GET and HEAD of an asset or API path are 301 to `https://HTTPS_HOST` plus the path and query. Other methods are 308, so a form submit stays a form submit. A top-level HTML GET gets the same-page handoff that moves saved projects. `/.well-known/acme-challenge/` stays on plain HTTP so renewal can finish. `/api/health` stays on HTTP.
+## Flags
 
-If issuance fails, or the key is missing, unreadable, or not a valid PEM, the process logs one error and keeps serving HTTP. Port 80 does not redirect.
+| Variable | Default | Meaning |
+|---|---|---|
+| `HTTPS_ENABLED` | `0` | Only the string `1` turns the redirect on. While it is off the app does not read forwarding headers, does not redirect, and does not add or remove a header. |
+| `HTTPS_HOST` | empty | The only redirect target. Empty or invalid leaves the redirect off and logs that. Documented value: `esp32lab.duckdns.org`. The Host header is never copied into `Location`. |
+| `TRUSTED_PROXY_IPS` | empty | Exact IPs. Empty trusts nobody. Documented value: `172.18.0.250`. |
+| `HSTS_ENABLED` | `0` | Only the string `1` may send `Strict-Transport-Security`, and only on a request the trusted proxy confirmed as https. |
+| `HSTS_SECONDS` | `0` | `max-age` once HSTS is on. No `includeSubDomains`, no `preload`. Above 63072000 is rejected and HSTS stays off. Later rollout: 300, then 86400, then 31536000. |
+| `ALLOWED_HOSTS` | unset (accept every Host) | Comma-separated hosts. Any other Host is 400, including an absolute-form request target. |
+
+`/api/health` stays on plain HTTP with no redirect. Its JSON does not grow a certificate object. `ok` is the qemu and arduino-cli check.
+
+With `HTTPS_ENABLED=1`, a plain HTTP request (the peer is not the trusted proxy, or the trusted proxy says `http`) for an allowed host is 301 for GET and HEAD and 308 for every other method. The target is `https://HTTPS_HOST` plus the path and query. A top-level HTML GET (`/`, `/index.html`, other `.html`) is the project handoff page instead of a 301. A WebSocket on plain HTTP is 403 with the body `WebSocket over plain HTTP is refused while HTTPS redirect is on. Use wss://.`
+
+A request the trusted proxy marks `https` is not redirected. The app treats that request as https, so the staging cookie is `Secure` and HSTS can be sent. The same is true for `/staging/...`: the redirect, when it happens, keeps the path and the query (`/staging/foo?x=1` stays `/staging/foo?x=1`). With `HTTPS_ENABLED=0`, `/staging/` is unchanged.
+
+HSTS is not sent on plain HTTP. Confirmed-https responses also send `Content-Security-Policy: upgrade-insecure-requests`, appended when a policy is already there. The handoff page and `/migrate` do not. Their policy is `default-src 'none'` with the nonce those pages need.
+
+## Project handoff
+
+A browser that still has projects on the plain HTTP origin gets one page from this server. That page reads the saved keys and navigates to `https://HTTPS_HOST/migrate#…`, or, above about 1.5 MB and within 2 MB, posts the same record. The fragment is removed with `history.replaceState` before any other script runs. The HTTPS page merges without replacing a project that is already there. A different body for the same id is kept as “(moved copy)”. The HTTP copy is not deleted. `cl_migrated_to_https` is set on the HTTP origin only after the HTTPS page confirms. When HSTS is on, that confirmation skips the extra HTTP round trip. A POST larger than 2 MB is 413 and is not written to disk or to the log.
+
+## Turning the redirect on
+
+1. Caddy is already on 443 at `172.18.0.250`, and `https://esp32lab.duckdns.org/api/health` answers.
+2. Set `TRUSTED_PROXY_IPS=172.18.0.250` and `HTTPS_HOST=esp32lab.duckdns.org`. Leave `HTTPS_ENABLED=0` and recreate the app container. Plain HTTP is unchanged. A client that sends `X-Forwarded-Proto: https` still gets the HTTP site.
+3. Set `HTTPS_ENABLED=1` and recreate. An asset on port 80 is 301 to `https://esp32lab.duckdns.org` with the path and query kept. `GET /` on HTTP is the handoff page. `GET /api/health` on HTTP is 200 with no `Location`. `GET /staging/...` on HTTP redirects to the same path on `https://esp32lab.duckdns.org`.
+4. Leave `HSTS_ENABLED=0` until the redirect has been checked. Then 300, then 86400, then 31536000. Each step is a recreate. A browser that stored HSTS does not forget it when the flag goes back to 0. A browser that stored a 301 does not forget it either.
+
+Sign-in callback URLs for the later auth work are `https://esp32lab.duckdns.org/auth/callback/google` and `https://esp32lab.duckdns.org/auth/callback/github`.
 
 ## Renewal
 
-Weekly timer: `docker/letsencrypt/esp32lab-certbot.timer`. The service runs `certbot renew --dry-run` and, only if that exits 0, `certbot renew`. A failed dry-run leaves the current certificate in place and does not reload the process.
-
-Check renewal the same way, on the host:
+Caddy renews the certificate by itself, about 30 days before it expires, and stores it in its data volume. Check:
 
 ```
-sudo certbot renew --dry-run
+docker logs circuitlab-caddy
+openssl s_client -connect esp32lab.duckdns.org:443 -servername esp32lab.duckdns.org | openssl x509 -noout -dates
 ```
 
-After a real renewal, `docker/letsencrypt/esp32lab-deploy-hook.sh` checks that the new files load, then runs `docker kill -s HUP` on the container. The process reloads TLS and does not restart, so port 80 stays up. If the new files do not load, the hook logs the failure and does not signal. The certificate already in memory keeps serving. If a reload starts and the new listener does not stay up, the process logs that, leaves HTTP up, and stops redirecting so port 80 is not pointed at a broken 443.
-
-Install the timer and the hook once, on the host. Disable the distro timer so renewal does not run twice:
-
-```
-sudo install -m 755 docker/letsencrypt/esp32lab-certbot-renew.sh /usr/local/sbin/esp32lab-certbot-renew
-sudo install -m 755 docker/letsencrypt/esp32lab-deploy-hook.sh /etc/letsencrypt/renewal-hooks/deploy/esp32lab
-sudo install -m 644 docker/letsencrypt/esp32lab-certbot.service /etc/systemd/system/esp32lab-certbot.service
-sudo install -m 644 docker/letsencrypt/esp32lab-certbot.timer /etc/systemd/system/esp32lab-certbot.timer
-sudo systemctl daemon-reload
-sudo systemctl disable --now certbot.timer certbot-renew.timer
-sudo systemctl enable --now esp32lab-certbot.timer
-```
-
-## HSTS
-
-`HSTS_ENABLED` defaults to `0`. No `Strict-Transport-Security` header is sent. Later, after HTTPS has been checked on the live name, set `HSTS_ENABLED=1` and raise `HSTS_SECONDS` one step at a time: `300`, then `86400`, then `31536000`. The header is `max-age` only. No `includeSubDomains` and no `preload`.
-
-## Opening port 443 later
-
-Hari has approved this. On the live host, port 443 is already taken by the temporary Caddy proxy, so follow [Hand-over from the temporary Caddy proxy](#hand-over-from-the-temporary-caddy-proxy) and do not add `-p 443:8443` while that container is still bound. Merging the pull request does not bind the port. The firewall commands below apply on a host where 443 is not open yet. The live host already answers HTTPS through Caddy, so do not add the rule a second time.
-
-OCI security list: ingress TCP 443 from `0.0.0.0/0`. Do not add 8765.
-
-If firewalld is running:
-
-```
-sudo firewall-cmd --permanent --add-port=443/tcp
-sudo firewall-cmd --reload
-```
-
-If the host uses iptables:
-
-```
-sudo iptables -I INPUT -m state --state NEW -p tcp --dport 443 -j ACCEPT
-sudo netfilter-persistent save
-```
-
-Recreate the container with host 443 mapped to container 8443. Redirect and HSTS stay off until the curl below succeeds. Replace the image name with the one just built.
-
-```
-docker rm -f esp32lab
-docker run -d --name esp32lab --restart unless-stopped \
-  -p 80:8765 \
-  -p 443:8443 \
-  -e HTTPS_ENABLED=1 \
-  -e ACME_WEBROOT=/var/lib/esp32lab/acme \
-  -e TLS_CERT_FILE=/etc/letsencrypt/live/esp32lab.duckdns.org/fullchain.pem \
-  -e TLS_KEY_FILE=/etc/letsencrypt/live/esp32lab.duckdns.org/privkey.pem \
-  -e HTTPS_HOST=esp32lab.duckdns.org \
-  -e HTTPS_REDIRECT=0 \
-  -e HSTS_ENABLED=0 \
-  -e HSTS_SECONDS=0 \
-  -e ALLOWED_HOSTS=129.158.200.25,esp32lab.duckdns.org \
-  -v /etc/letsencrypt:/etc/letsencrypt:ro \
-  -v /var/lib/esp32lab/acme:/var/lib/esp32lab/acme:ro \
-  -v esp32lab-data:/home/sim/.esp32lab \
-  -v esp32lab-cache:/home/sim/.cache/arduino \
-  esp32-lab
-```
-
-Never `-p 8765`, `-p 8765:8765`, or `-p 8443:8443`.
-
-Then, on the live host:
-
-```
-curl -sI https://esp32lab.duckdns.org/api/health
-```
-
-Only after that succeeds, recreate with `HTTPS_REDIRECT=1`. Leave `HSTS_ENABLED=0` until the redirect has been checked.
-
-## Staging plan
-
-Do this on a copy that is not the live host.
-
-1. HTTP only. `HTTPS_ENABLED` unset. Save a project. Reload. It is still there. `/api/health` is `ok` from qemu and arduino-cli, and `tls.enabled` is false. The response has no `Location` and no `Strict-Transport-Security`.
-2. `certbot certonly --staging --webroot` for a staging name, or `--dry-run` against `esp32lab.duckdns.org`. Do not use the production CA until the live cutover.
-3. Mount that certificate with `HTTPS_ENABLED=1`, `HTTPS_REDIRECT=0`, `HSTS_ENABLED=0`. `curl --cacert` the HTTPS health URL from another container on `circuitlab-staging`. `tls.enabled` is true. `tls.warning` is false while 14 or more days remain.
-4. Set `HTTPS_REDIRECT=1` with `HTTPS_HOST` set to that staging name. Open the HTTP address that has the saved project. The project appears on the new origin. The address bar does not keep the saved project, and Back does not show it. The HTTP copy is still there.
-5. `curl -I` an asset and expect 301 to `https://HTTPS_HOST` with the query kept. `GET /` on HTTP returns the handoff page, not a 301. `GET /.well-known/acme-challenge/<token>` on HTTP returns the token file and is not redirected.
-6. Remove the certificate files and start again with `HTTPS_REDIRECT=1`. The log names the failure. `GET /` on HTTP is the site, not a redirect.
-7. Confirm the TLS response has no `Strict-Transport-Security` while `HSTS_ENABLED=0`.
+Do not delete the data volume. Do not loop issuance. Let's Encrypt allows five duplicate certificates for the same name per week, and the certificate Caddy already has counts.
 
 ## Rollback
 
-1. Recreate the container with `HTTPS_ENABLED=0`, `HTTPS_REDIRECT=0`, and `HSTS_ENABLED=0`. Restart is the rollback. Renewal does not use restart.
-2. Confirm plain HTTP. From the host:
+Set `HTTPS_ENABLED=0` and recreate the app container. The redirect stops. Caddy keeps serving the certificate. `HSTS_ENABLED=0` stops new HSTS headers. It does not clear a `Strict-Transport-Security` value a browser already stored, and it does not clear a 301 a browser already stored.
 
-```
-curl -sI http://127.0.0.1/api/health
-```
+To take HTTPS off the host, stop `circuitlab-caddy` and close 443. Keep the data volume. The app keeps publishing port 80 only.
 
-The status is 200. There is no `Location` header and no `Strict-Transport-Security` header. A browser that opens `http://esp32lab.duckdns.org/` gets the site, not a redirect.
-
-3. Leave the certificate where it is. It is unused while the flag is off. To revoke it, on the host:
-
-```
-sudo certbot revoke --cert-name esp32lab.duckdns.org
-```
-
-Revoke only when the key is no longer trusted. Leaving the files in place is enough to roll the site back.
-
-4. Close port 443. Drop `-p 443:8443` from the container. Remove the OCI ingress rule for TCP 443. If firewalld was opened: `sudo firewall-cmd --permanent --remove-port=443/tcp && sudo firewall-cmd --reload`. If iptables was opened, delete that ACCEPT rule and save.
-
-HSTS that a browser already stored is not cleared by the flag. That is why `HSTS_ENABLED` stays 0 until the redirect has been checked.
-
-If port 443 is the temporary Caddy proxy, use the hand-over rollback below. That brings Caddy back from its stored certificate and does not issue a new one.
-
-## Hand-over from the temporary Caddy proxy
-
-Grok Bot is running a temporary Caddy container on port 443 for `esp32lab.duckdns.org`. Caddy reverse-proxies to the app. Port 80 and the app are untouched. This pull request stays the permanent version. The steps below replace Caddy with this image. Do them on the live host, in this order, and do not loop a failed certificate request.
-
-### 1. Record Caddy before changing anything
-
-Write down the container name, the image, the certificate and data volume, and the published 443 binding. Keep that note until the new certificate has been checked.
-
-```
-docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}'
-ss -ltnp | grep :443
-```
-
-Then inspect the Caddy container whose name `docker ps` showed. Save `Name`, `Config.Image`, `HostConfig.PortBindings`, `HostConfig.Binds`, `HostConfig.RestartPolicy`, and every `Mounts` entry (`Name`, `Source`, `Destination`):
-
-```
-docker inspect <caddy-name>
-```
-
-Confirm HTTPS already works. Leave Caddy running if this is not 200:
-
-```
-curl -sI https://esp32lab.duckdns.org/api/health
-```
-
-Do not delete the Caddy volume. The rollback reuses the certificate stored there.
-
-### 2. Start this image with no 443 binding
-
-Deploy this pull request's image while Caddy still owns 443. Publish port 80 only. Set `HTTPS_ENABLED=1`, `HTTPS_HOST=esp32lab.duckdns.org`, and `HSTS_ENABLED=0`. Leave `HTTPS_REDIRECT=0` until the certificate is listening.
-
-```
-docker rm -f esp32lab
-docker run -d --name esp32lab --restart unless-stopped \
-  -p 80:8765 \
-  -e HTTPS_ENABLED=1 \
-  -e ACME_WEBROOT=/var/lib/esp32lab/acme \
-  -e TLS_CERT_FILE=/etc/letsencrypt/live/esp32lab.duckdns.org/fullchain.pem \
-  -e TLS_KEY_FILE=/etc/letsencrypt/live/esp32lab.duckdns.org/privkey.pem \
-  -e HTTPS_HOST=esp32lab.duckdns.org \
-  -e HTTPS_REDIRECT=0 \
-  -e HSTS_ENABLED=0 \
-  -e HSTS_SECONDS=0 \
-  -e ALLOWED_HOSTS=129.158.200.25,esp32lab.duckdns.org \
-  -v /etc/letsencrypt:/etc/letsencrypt:ro \
-  -v /var/lib/esp32lab/acme:/var/lib/esp32lab/acme:ro \
-  -v esp32lab-data:/home/sim/.esp32lab \
-  -v esp32lab-cache:/home/sim/.cache/arduino \
-  esp32-lab
-```
-
-There is no `-p 443`. Confirm plain HTTP still serves, with no redirect and no HSTS header:
-
-```
-curl -sI http://127.0.0.1/api/health
-```
-
-The status is 200. There is no `Location` and no `Strict-Transport-Security`.
-
-Confirm the ACME path answers on port 80 and is not redirected. A token of the right shape with no file yet is 404 `not found` and has no `Location`:
-
-```
-curl -sI http://127.0.0.1/.well-known/acme-challenge/aaaaaaaaaaaaaaaaaaaa
-```
-
-Caddy is still serving `https://esp32lab.duckdns.org` during this step.
-
-### 3. Stop Caddy, then bind 443, then issue once
-
-Stop and remove Caddy before the app publishes 443. Use the name recorded above. Do not remove its volume.
-
-```
-docker stop <caddy-name>
-docker rm <caddy-name>
-```
-
-From `docker stop` until this app's certificate is listening, `https://esp32lab.duckdns.org` does not answer. That gap is seconds to about a minute. Recreating the app container to add the port also restarts port 80 for that recreate, and port 80 serves again as soon as the container is up.
-
-Bind 443 only after Caddy is gone:
-
-```
-docker rm -f esp32lab
-docker run -d --name esp32lab --restart unless-stopped \
-  -p 80:8765 \
-  -p 443:8443 \
-  -e HTTPS_ENABLED=1 \
-  -e ACME_WEBROOT=/var/lib/esp32lab/acme \
-  -e TLS_CERT_FILE=/etc/letsencrypt/live/esp32lab.duckdns.org/fullchain.pem \
-  -e TLS_KEY_FILE=/etc/letsencrypt/live/esp32lab.duckdns.org/privkey.pem \
-  -e HTTPS_HOST=esp32lab.duckdns.org \
-  -e HTTPS_REDIRECT=0 \
-  -e HSTS_ENABLED=0 \
-  -e HSTS_SECONDS=0 \
-  -e ALLOWED_HOSTS=129.158.200.25,esp32lab.duckdns.org \
-  -v /etc/letsencrypt:/etc/letsencrypt:ro \
-  -v /var/lib/esp32lab/acme:/var/lib/esp32lab/acme:ro \
-  -v esp32lab-data:/home/sim/.esp32lab \
-  -v esp32lab-cache:/home/sim/.cache/arduino \
-  esp32-lab
-```
-
-Issue this pull request's own certificate once. Let's Encrypt allows 5 duplicate certificates per week for the same name. Caddy's existing certificate counts toward those 5. One attempt. If it fails, stop and follow the rollback in this section. Do not loop retries.
-
-```
-sudo certbot certonly --webroot -w /var/lib/esp32lab/acme \
-  -d esp32lab.duckdns.org \
-  --agree-tos --register-unsafely-without-email --non-interactive
-```
-
-If the deploy hook is installed, a successful issuance sends `SIGHUP` and the process loads the new files without a restart. If the hook is not installed yet, signal once: `docker kill -s HUP esp32lab`. Leave `HTTPS_REDIRECT=0` until the verify step shows the certificate is listening.
-
-### 4. Verify
-
-The issuer is Let's Encrypt:
-
-```
-echo | openssl s_client -connect esp32lab.duckdns.org:443 -servername esp32lab.duckdns.org 2>/dev/null | openssl x509 -noout -issuer
-```
-
-The issuer contains `Let's Encrypt`. Then:
-
-```
-curl -sI https://esp32lab.duckdns.org/api/health
-curl -sI http://127.0.0.1/api/health
-```
-
-Both are 200. Neither response has `Strict-Transport-Security` while `HSTS_ENABLED=0`. The HTTP response has no `Location` while `HTTPS_REDIRECT=0`.
-
-Turn the redirect on only after that HTTPS check succeeds. Recreate with the same settings and `HTTPS_REDIRECT=1`. An asset on port 80 is then 301 to `https://esp32lab.duckdns.org` with the path and query kept. `GET /` on HTTP is the handoff page, not a 301. If the listener is down, port 80 keeps serving and does not redirect.
-
-The challenge path stays on plain HTTP, including after the redirect is on:
-
-```
-curl -sI http://esp32lab.duckdns.org/.well-known/acme-challenge/aaaaaaaaaaaaaaaaaaaa
-```
-
-That response has no `Location`.
-
-### 5. Rollback to Caddy
-
-If this pull request's certificate or TLS listener fails, take 443 off the app and set `HTTPS_ENABLED=0`, `HTTPS_REDIRECT=0`, and `HSTS_ENABLED=0`. Publish port 80 only.
-
-Start Caddy again from the name, image, port binding, and volume recorded in step 1. Do not issue a certificate. Caddy reuses the certificate already in that volume.
-
-```
-docker run -d --name <caddy-name> --restart unless-stopped \
-  -p 443:443 \
-  -v <recorded-volume>:<recorded-destination> \
-  <recorded-image>
-```
-
-Use the inspect output where it differs from that sketch. Confirm `curl -sI https://esp32lab.duckdns.org/api/health` is 200 again, and `curl -sI http://127.0.0.1/api/health` is 200 with no `Location`.
-
-### 6. Saved projects
-
-A browser keeps localStorage per origin. Projects saved on `http://129.158.200.25` do not appear on `https://esp32lab.duckdns.org` until this pull request's link handoff moves them. Under Caddy there is no handoff and no redirect, so those projects stay on the HTTP origin.
+Previous app images, if the app container itself has to be rolled back: v66 `e3d38a538a45` (tag `rollback-keep-v66`) with `/home/opc/backup-v66`, and v65 `356f7c19711d` with `/home/opc/backup-v65`.

@@ -1,8 +1,0 @@
-[Unit]
-Description=Renew the Circuit Lab certificate
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/sbin/esp32lab-certbot-renew

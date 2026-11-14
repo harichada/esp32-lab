@@ -1,10 +1,10 @@
-"""HTTPS flags: ACME webroot, redirect, HSTS, the TLS listener, and health.
+"""HTTPS flags: trusted-proxy redirect, HSTS, and the project handoff.
 
 Flags default off. Nothing here contacts the live host. Host names in these
-tests are headers sent to 127.0.0.1.
+tests are headers sent to 127.0.0.1. The documented proxy address is
+172.18.0.250. This process does not terminate TLS.
 """
-import asyncio, base64, http.client, json, os, re, socket, ssl, subprocess, sys, tempfile, time, unittest, urllib.parse
-from datetime import datetime, timezone
+import asyncio, base64, http.client, json, os, re, socket, ssl, sys, unittest, urllib.parse
 from pathlib import Path
 
 os.environ['SIM_PREWARM'] = '0'
@@ -15,6 +15,8 @@ import server
 import staging
 
 HOST = 'esp32lab.duckdns.org'
+PROXY = '172.18.0.250'
+NEIGHBOR = '172.18.0.5'
 
 
 def _on(env):
@@ -94,14 +96,20 @@ def _assert_move_page(body, csp, form_action):
     assert 'upgrade-insecure-requests' not in csp
 
 
-def _chunked_post(port, host, cafile, piece, total):
-    ctx = ssl.create_default_context(cafile=cafile)
-    raw = socket.create_connection(('127.0.0.1', port), 30)
-    sock = ctx.wrap_socket(raw, server_hostname='127.0.0.1')
+def _via_caddy(port, method, path, host=HOST, **kwargs):
+    """A request the loopback peer presents as the trusted proxy."""
+    headers = {'X-Forwarded-Proto': 'https'}
+    headers.update(kwargs.pop('headers', None) or {})
+    return request(port, method, path, host=host, headers=headers, **kwargs)
+
+
+def _chunked_post(port, host, piece, total):
+    sock = socket.create_connection(('127.0.0.1', port), 30)
     try:
         sock.settimeout(30)
         sock.sendall((
             'POST /migrate HTTP/1.1\r\nHost: %s\r\n'
+            'X-Forwarded-Proto: https\r\n'
             'Content-Type: application/x-www-form-urlencoded\r\n'
             'Transfer-Encoding: chunked\r\n\r\n' % host
         ).encode())
@@ -201,52 +209,25 @@ def ws_status(port, host, path='/nowhere'):
         sock.close()
 
 
-def _make_cert(directory, days=40):
-    cert = os.path.join(directory, 'cert.pem')
-    key = os.path.join(directory, 'key.pem')
-    subprocess.check_call([
-        'openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-keyout', key, '-out', cert,
-        '-days', str(days), '-nodes', '-subj', '/CN=127.0.0.1',
-        '-addext', 'subjectAltName=IP:127.0.0.1',
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    os.chmod(key, 0o600)
-    return cert, key
-
-
 class HttpsUnitTest(unittest.TestCase):
     def tearDown(self):
         https.apply_env({})
-        https.set_listener(False, '')
         https.set_logger(https._default_log)
 
-    def test_token_alphabet_and_length(self):
-        self.assertEqual(https.TOKEN_RE.pattern, r'^[A-Za-z0-9_-]{20,128}$')
-        self.assertIsNotNone(https.TOKEN_RE.fullmatch('abcXYZ_09-abcdefghij'))
-        self.assertIsNotNone(https.TOKEN_RE.fullmatch('a' * 20))
-        self.assertIsNotNone(https.TOKEN_RE.fullmatch('a' * 128))
-        for bad in ('', 'a' * 19, 'a' * 129, '.', '..', '../etc/passwd', 'a/b', 'a.b', 'a b', 'a\\b', 'a%2e', '%2e%2e', '%2f', '%5c'):
-            self.assertIsNone(https.TOKEN_RE.fullmatch(bad), bad)
-
-    def test_challenge_file_layout_and_traversal(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            challenge = Path(tmp) / '.well-known' / 'acme-challenge'
-            challenge.mkdir(parents=True)
-            token = 'a' * 20
-            (challenge / token).write_bytes(b'challenge-body')
-            (challenge / ('b' * 19)).write_bytes(b'too-short')
-            (Path(tmp) / token).write_bytes(b'wrong-place')
-            (challenge / ('c' * 20)).symlink_to('/etc/passwd')
-            (challenge / ('d' * 20)).symlink_to(challenge / token)
-            (challenge / 'subdir').mkdir()
-            self.assertEqual(https.load_challenge(tmp, token), b'challenge-body')
-            self.assertIsNone(https.load_challenge(tmp, 'b' * 19))
-            self.assertIsNone(https.load_challenge(tmp, 'c' * 20))
-            self.assertIsNone(https.load_challenge(tmp, 'd' * 20))
-            self.assertIsNone(https.load_challenge(tmp, 'missingtoken1234567890'))
-            self.assertIsNone(https.load_challenge(tmp, '..'))
-            self.assertIsNone(https.load_challenge(tmp, 'subdir'))
-            self.assertIsNone(https.load_challenge('', token))
-            self.assertIsNone(https.load_challenge(tmp, 'a/b'))
+    def test_trusted_proxy_ips_are_exact_addresses(self):
+        logs = []
+        https.set_logger(lambda msg: logs.append(str(msg)))
+        https.apply_env({})
+        self.assertEqual(https.PROXY_IPS, frozenset())
+        https.apply_env({'TRUSTED_PROXY_IPS': PROXY})
+        self.assertEqual(https.PROXY_IPS, frozenset({PROXY}))
+        https.apply_env({'TRUSTED_PROXY_IPS': '%s, 127.0.0.1' % PROXY})
+        self.assertEqual(https.PROXY_IPS, frozenset({PROXY, '127.0.0.1'}))
+        for bad in ('172.18.0.0/24', '%s/32' % PROXY, 'nope', '%s, nope' % PROXY, '%s,' % PROXY, '::/0'):
+            logs.clear()
+            https.apply_env({'TRUSTED_PROXY_IPS': bad})
+            self.assertEqual(https.PROXY_IPS, frozenset(), bad)
+            self.assertTrue(any('trusting nobody' in line for line in logs), (bad, logs))
 
     def test_redirect_status_and_location_ignore_host(self):
         self.assertEqual(https.redirect_status('GET'), 301)
@@ -294,8 +275,7 @@ class HttpsUnitTest(unittest.TestCase):
         self.assertEqual(origin['query_string'], b'x=1')
         self.assertNotIn(b'://', origin['raw_path'])
         self.assertEqual(https.redirect_location(origin, HOST), 'https://%s/some/path?x=1' % HOST)
-        https.apply_env({'HTTPS_ENABLED': '1', 'HTTPS_REDIRECT': '1', 'HTTPS_HOST': 'lab.example'})
-        https.set_listener(True, '/tmp/esp32lab-configured-host.pem')
+        https.apply_env({'HTTPS_ENABLED': '1', 'HTTPS_HOST': 'lab.example'})
         configured = {
             'type': 'http', 'scheme': 'http', 'method': 'GET', 'path': '/some/path',
             'raw_path': b'/some/path', 'query_string': b'x=1',
@@ -319,64 +299,18 @@ class HttpsUnitTest(unittest.TestCase):
         https.apply_env({})
         self.assertFalse(https.ENABLED)
         self.assertFalse(https.HSTS_ENABLED)
-        self.assertFalse(https.REDIRECT)
         self.assertEqual(https.HTTPS_HOST, '')
         self.assertIsNone(https.ALLOWED)
+        self.assertEqual(https.PROXY_IPS, frozenset())
         https.apply_env({'ALLOWED_HOSTS': '129.158.200.25, %s' % HOST})
         self.assertEqual(https.ALLOWED, frozenset({IP_HOST, HOST}))
         self.assertEqual(https.normalize_host('129.158.200.25:80'), IP_HOST)
         self.assertEqual(https.normalize_host(HOST.upper()), HOST)
-        self.assertEqual(https.tls_port_from_env({}), 8443)
-
-    def test_cert_date_math(self):
-        when = https.parse_not_after('Nov 14 00:00:00 2027 GMT')
-        self.assertEqual(when, datetime(2027, 11, 14, tzinfo=timezone.utc))
-        self.assertEqual(https.days_left(when, datetime(2027, 11, 13, 12, tzinfo=timezone.utc)), 0)
-        self.assertEqual(https.days_left(when, datetime(2027, 11, 4, tzinfo=timezone.utc)), 10)
-        self.assertIsNone(https.parse_not_after('not a date'))
-
-    def test_expiry_cache_rereads_at_most_every_60s(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            cert, _key = _make_cert(tmp)
-            calls = {'n': 0}
-            real = https._load_expiry
-            def wrapped(path):
-                calls['n'] += 1
-                return real(path)
-            https._load_expiry = wrapped
-            try:
-                https.set_listener(True, cert)
-                first = https.tls_status(now=1000)
-                second = https.tls_status(now=1059.9)
-                self.assertEqual(calls['n'], 1)
-                self.assertEqual(second, first)
-                third = https.tls_status(now=1060)
-                self.assertEqual(calls['n'], 2)
-                self.assertEqual(third['cert_not_after'], first['cert_not_after'])
-                self.assertTrue(first['enabled'])
-                self.assertRegex(first['cert_not_after'], r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$')
-                self.assertIsInstance(first['days_left'], int)
-                https.set_listener(False, '')
-                off = https.tls_status(now=2000)
-                self.assertEqual(off, {'enabled': False, 'cert_not_after': None, 'days_left': None, 'warning': False, 'reason': None})
-                https._load_expiry = lambda path: ('2026-12-01T00:00:00Z', 13)
-                https.set_listener(True, cert)
-                soon = https.tls_status(now=3000)
-                self.assertTrue(soon['warning'])
-                self.assertEqual(soon['reason'], 'certificate has 13 days left')
-                https._load_expiry = lambda path: ('2026-12-01T00:00:00Z', 14)
-                https.set_listener(True, cert)
-                later = https.tls_status(now=4000)
-                self.assertFalse(later['warning'])
-                self.assertIsNone(later['reason'])
-                self.assertEqual(calls['n'], 2)
-            finally:
-                https._load_expiry = real
 
     def test_redirect_stays_off_without_a_valid_host(self):
         logs = []
         https.set_logger(lambda msg: logs.append(str(msg)))
-        https.apply_env({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': 'https://evil.example/steal'})
+        https.apply_env({'HTTPS_ENABLED': '1', 'HTTPS_HOST': 'https://evil.example/steal'})
         self.assertEqual(https.HTTPS_HOST, '')
         self.assertTrue(any('HTTPS_HOST rejected' in line for line in logs))
         called = {}
@@ -399,14 +333,14 @@ class HttpsUnitTest(unittest.TestCase):
         }, receive, send))
         self.assertTrue(called.get('yes'))
 
-    def test_unset_tls_is_quiet(self):
+    def test_empty_proxy_list_is_quiet(self):
         logs = []
         https.set_logger(lambda msg: logs.append(str(msg)))
         https.apply_env({})
-        self.assertIsNone(https.tls_material())
+        self.assertEqual(https.PROXY_IPS, frozenset())
         self.assertEqual(logs, [])
 
-    def test_no_fetchable_http_urls_and_hook_restarts(self):
+    def test_no_fetchable_http_urls(self):
         root = Path(__file__).resolve().parents[1]
         files = [root / 'index.html']
         files += [p for p in (root / 'css').rglob('*') if p.is_file()]
@@ -430,22 +364,12 @@ class HttpsUnitTest(unittest.TestCase):
                 self.assertIsNone(loader.search(path.read_text(encoding='utf-8', errors='replace')), path)
         for page in (staging.PRIVATE_HTML, staging.DOWN_HTML):
             self.assertNotIn('http://', page)
-        hook = (root.parents[0] / 'docker' / 'letsencrypt' / 'esp32lab-deploy-hook.sh').read_text()
-        self.assertIn('docker kill -s HUP', hook)
-        self.assertNotIn('docker restart', hook)
-        self.assertNotIn('sslip', hook)
-        self.assertIn('esp32lab.duckdns.org', hook)
-        self.assertNotIn('-p 8765', hook)
-        self.assertNotIn('8765:8765', hook)
-        renew = (root.parents[0] / 'docker' / 'letsencrypt' / 'esp32lab-certbot-renew.sh').read_text()
-        self.assertIn('set -eu', renew)
-        self.assertLess(renew.index('certbot renew --dry-run'), renew.index('certbot renew\n'))
-        timer = (root.parents[0] / 'docker' / 'letsencrypt' / 'esp32lab-certbot.timer').read_text()
-        self.assertIn('OnCalendar=weekly', timer)
-        self.assertIn('Persistent=true', timer)
-        unit = (root.parents[0] / 'docker' / 'letsencrypt' / 'esp32lab-certbot.service').read_text()
-        self.assertIn('Type=oneshot', unit)
-        self.assertIn('esp32lab-certbot-renew', unit)
+        doc = (root.parents[0] / 'docs' / 'https.md').read_text()
+        self.assertIn(PROXY, doc)
+        self.assertIn('circuitlab-caddy', doc)
+        self.assertNotIn('172.18.0.0/16', doc)
+        self.assertNotIn('-p 443:8443', doc)
+        self.assertNotIn('sslip', doc)
 
     def test_each_project_is_checked_before_a_merge_would_run(self):
         big = 'x' * (https.PROJECT_CAP + 1)
@@ -488,8 +412,8 @@ class HttpsUnitTest(unittest.TestCase):
             'HSTS_ENABLED': '1',
             'HSTS_SECONDS': '300',
             'ALLOWED_HOSTS': '127.0.0.1',
+            'TRUSTED_PROXY_IPS': PROXY,
         })
-        https.set_listener(True, '/tmp/esp32lab-unused.pem')
         headers = [
             [b'content-type', b'text/plain'],
             [b'x-parity', b'same'],
@@ -506,7 +430,12 @@ class HttpsUnitTest(unittest.TestCase):
         scope = {
             'type': 'http', 'scheme': 'http', 'method': 'GET', 'path': '/some/path',
             'raw_path': b'/some/path', 'query_string': b'',
-            'headers': [(b'host', b'evil.example')],
+            'client': ('127.0.0.1', 9),
+            'headers': [
+                (b'host', b'evil.example'),
+                (b'x-forwarded-proto', b'https'),
+                (b'x-forwarded-for', b'172.18.0.250'),
+            ],
         }
 
         async def run(target):
@@ -527,66 +456,129 @@ class HttpsUnitTest(unittest.TestCase):
         self.assertEqual(wrapped[0]['status'], 204)
         self.assertEqual(wrapped[0]['headers'], headers)
 
+    def _scope(self, peer, proto='https', method='GET', path='/some/path', query=b'x=1', extra=None, kind='http'):
+        headers = [(b'host', HOST.encode()), (b'x-forwarded-proto', proto.encode() if isinstance(proto, str) else proto)]
+        if extra:
+            headers.extend(extra)
+        scheme = 'ws' if kind == 'websocket' else 'http'
+        return {
+            'type': kind, 'scheme': scheme, 'method': method, 'path': path,
+            'raw_path': path.encode(), 'query_string': query,
+            'headers': headers, 'client': (peer, 1234),
+        }
+
+    def _invoke(self, scope):
+        seen = {}
+        sent = []
+
+        async def app(scope, receive, send):
+            seen['scheme'] = scope.get('scheme')
+            seen['host'] = https._host_header(scope)
+            if scope.get('type') == 'websocket':
+                await send({'type': 'websocket.close', 'code': 1000})
+                return
+            await send({'type': 'http.response.start', 'status': 204, 'headers': []})
+            await send({'type': 'http.response.body', 'body': b''})
+
+        async def receive():
+            return {'type': 'http.request', 'body': b'', 'more_body': False}
+
+        async def send(message):
+            sent.append(message)
+
+        asyncio.run(https.HttpsMiddleware(app)(scope, receive, send))
+        return sent, seen
+
+    def _location(self, sent):
+        for key, value in sent[0].get('headers') or []:
+            if bytes(key).lower() == b'location':
+                return bytes(value)
+        return None
+
+    def test_forwarded_headers_from_anyone_but_the_pinned_proxy_are_ignored(self):
+        https.apply_env({
+            'HTTPS_ENABLED': '1', 'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': PROXY,
+            'HSTS_ENABLED': '1', 'HSTS_SECONDS': '300',
+        })
+        target = b'https://%s/some/path?x=1' % HOST.encode()
+        for peer in (NEIGHBOR, '127.0.0.1'):
+            sent, seen = self._invoke(self._scope(peer, extra=[(b'x-forwarded-for', PROXY.encode())]))
+            self.assertEqual(sent[0]['status'], 301, peer)
+            self.assertEqual(self._location(sent), target, peer)
+            self.assertEqual(seen, {}, peer)
+            sts = self._location(sent)
+            self.assertNotIn(b'strict-transport-security', b' '.join(
+                bytes(k) for k, _v in sent[0].get('headers') or []
+            ))
+            self.assertIsNotNone(sts)
+        sent, seen = self._invoke(self._scope(PROXY, extra=[(b'x-forwarded-for', NEIGHBOR.encode())]))
+        self.assertEqual(sent[0]['status'], 204)
+        self.assertEqual(seen['scheme'], 'https')
+        self.assertIsNone(self._location(sent))
+        sent, seen = self._invoke(self._scope(PROXY, proto='http'))
+        self.assertEqual(sent[0]['status'], 301)
+        self.assertEqual(self._location(sent), target)
+        self.assertEqual(seen, {})
+        for proto in (b'https, http', b'https,https', b'', b'wss'):
+            sent, seen = self._invoke(self._scope(PROXY, proto=proto))
+            self.assertEqual(sent[0]['status'], 400, proto)
+            self.assertEqual(seen, {}, proto)
+        doubled = self._scope(PROXY)
+        doubled['headers'].append((b'x-forwarded-proto', b'http'))
+        sent, seen = self._invoke(doubled)
+        self.assertEqual(sent[0]['status'], 400)
+        self.assertEqual(seen, {})
+        # The same garbage from a neighbor is not an error. It is ignored.
+        sent, seen = self._invoke(self._scope(NEIGHBOR, proto=b'https, http'))
+        self.assertEqual(sent[0]['status'], 301)
+        self.assertEqual(self._location(sent), target)
+        https.apply_env({
+            'HTTPS_ENABLED': '1', 'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': PROXY,
+            'ALLOWED_HOSTS': HOST,
+        })
+        sent, seen = self._invoke(self._scope(PROXY, extra=[(b'x-forwarded-host', HOST.encode())]))
+        self.assertEqual(sent[0]['status'], 204)
+        self.assertEqual(seen['host'], HOST)
+        sent, seen = self._invoke(self._scope(PROXY, extra=[(b'x-forwarded-host', b'evil.example')]))
+        self.assertEqual(sent[0]['status'], 400)
+        self.assertEqual(seen, {})
+        sent, seen = self._invoke(self._scope(NEIGHBOR, extra=[(b'x-forwarded-host', b'evil.example')]))
+        self.assertEqual(sent[0]['status'], 301)
+        self.assertEqual(self._location(sent), target)
+
 
 class HttpsServerTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         os.environ['SIM_PREWARM'] = '0'
         os.environ['SIM_NETSTACK_WARM'] = '0'
-        cls.tmp = tempfile.TemporaryDirectory()
-        cls.cert, cls.key = _make_cert(cls.tmp.name)
-        cls.webroot = Path(cls.tmp.name) / 'acme'
-        challenge = cls.webroot / '.well-known' / 'acme-challenge'
-        challenge.mkdir(parents=True)
-        cls.token = 'goodtoken0123456789abcd'
-        (challenge / cls.token).write_text('challenge-body', encoding='ascii')
-        (challenge / 'short').write_text('too-short', encoding='ascii')
-        (challenge / 'escape').symlink_to('/etc/passwd')
-        _on({
-            'TLS_CERT_FILE': cls.cert,
-            'TLS_KEY_FILE': cls.key,
-            'HTTPS_HOST': HOST,
-            'ACME_WEBROOT': str(cls.webroot),
-        })
+        _on({'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': PROXY})
         cls.bg = https.Background(server.app).start()
         cls.http = cls.bg.http_port
-        cls.tls = cls.bg.tls_port
 
     @classmethod
     def tearDownClass(cls):
         cls.bg.stop()
-        cls.tmp.cleanup()
         _on({})
-        https.set_listener(False, '')
         staging.apply_env({})
         server.TOKEN = ''
         https.set_logger(https._default_log)
 
     def setUp(self):
-        _on({'HTTPS_HOST': HOST, 'ACME_WEBROOT': str(self.webroot)})
-        https.set_listener(True, self.cert)
+        _on({'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': PROXY})
         staging.apply_env({'SIM_STAGING': '0', 'SIM_ACCESS_TOKEN': '', 'SIM_STAGING_UPSTREAM': '', 'SIM_BASE_PATH': ''})
         server.TOKEN = ''
 
-    def test_listener_is_the_self_signed_cert_and_proxy_headers_stay_off(self):
-        self.assertIsNotNone(self.tls)
-        self.assertNotEqual(self.http, self.tls)
+    def test_proxy_headers_stay_off(self):
+        self.assertIsNone(self.bg.tls)
+        self.assertIsNone(self.bg.tls_port)
         self.assertFalse(self.bg.http.config.proxy_headers)
         self.assertEqual(self.bg.http.config.forwarded_allow_ips, '')
-        self.assertFalse(self.bg.tls.config.proxy_headers)
-        self.assertEqual(self.bg.tls.config.forwarded_allow_ips, '')
-        status, _, body = request(self.tls, 'GET', '/api/health', tls=True, cafile=self.cert)
-        self.assertEqual(status, 200)
-        ctx = ssl.create_default_context()
-        conn = http.client.HTTPSConnection('127.0.0.1', self.tls, context=ctx, timeout=5)
-        with self.assertRaises(ssl.SSLError):
-            conn.request('GET', '/api/health')
-            conn.getresponse()
-        conn.close()
-        self.assertIn(b'"ok"', body)
+        text = Path(https.__file__).read_text()
+        self.assertIn('proxy_headers=False, forwarded_allow_ips=\'\'', text)
 
     def test_redirect_matrix_for_ip_and_configured_host(self):
-        _on({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST, 'ACME_WEBROOT': str(self.webroot)})
+        _on({'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': PROXY})
         target = 'https://esp32lab.duckdns.org/some/path?x=1'
         for host in (IP_HOST, HOST, IP_HOST + ':80', 'evil.example'):
             for method, code in (('GET', 301), ('HEAD', 301), ('POST', 308), ('PUT', 308)):
@@ -618,66 +610,58 @@ class HttpsServerTest(unittest.TestCase):
         notices, _, notice = request(self.http, 'GET', '/notices.html', host=HOST)
         self.assertEqual(notices, 200)
         self.assertIn(b'clMigrate.handoff', notice)
-        # Redirect off: the same bookmark is not sent anywhere.
-        _on({'HTTPS_REDIRECT': '0', 'HTTPS_HOST': HOST})
-        status, pairs, _ = request(self.http, 'GET', '/some/path?x=1', host=IP_HOST)
+        # Flag off: the same bookmark is not sent anywhere, and a spoofed proto is ignored.
+        _on({'HTTPS_ENABLED': '0', 'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': PROXY})
+        status, pairs, _ = request(self.http, 'GET', '/some/path?x=1', host=IP_HOST, headers={
+            'X-Forwarded-Proto': 'https', 'X-Forwarded-For': PROXY,
+        })
         self.assertNotIn(status, (301, 308))
         self.assertIsNone(_header(pairs, 'location'))
 
-    def test_redirect_exempts_health_and_acme_and_refuses_websocket(self):
-        _on({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST, 'ACME_WEBROOT': str(self.webroot)})
+    def test_redirect_exempts_health_and_refuses_websocket(self):
+        _on({'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': PROXY})
         status, pairs, body = request(self.http, 'GET', '/api/health', host=IP_HOST)
         self.assertEqual(status, 200)
         self.assertIsNone(_header(pairs, 'location'))
+        self.assertNotIn(b'"tls"', body)
         self.assertIn(b'"ok"', body)
         status, pairs, _ = request(self.http, 'POST', '/api/health', host=HOST, body=b'{}')
         self.assertNotIn(status, (301, 308))
         self.assertIsNone(_header(pairs, 'location'))
-        status, pairs, body = request(self.http, 'GET', '/.well-known/acme-challenge/' + self.token, host=IP_HOST)
-        self.assertEqual(status, 200, body)
-        self.assertEqual(_header(pairs, 'content-type'), 'text/plain')
-        self.assertEqual(body, b'challenge-body')
-        self.assertIsNone(_header(pairs, 'location'))
-        status, _, body = request(self.http, 'GET', '/.well-known/acme-challenge/', host=IP_HOST)
-        self.assertEqual(status, 404)
-        self.assertNotIn(self.token.encode(), body)
         raw = ws_status(self.http, IP_HOST)
         self.assertTrue(raw.startswith(b'HTTP/1.1 403'), raw)
         self.assertIn(b'Use wss://', raw)
 
-    def test_acme_rejects_traversal_even_when_redirect_is_on(self):
-        _on({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST, 'ACME_WEBROOT': str(self.webroot)})
-        server.TOKEN = 'secret'
-        status, _, body = request(self.http, 'GET', '/.well-known/acme-challenge/' + self.token)
-        self.assertEqual(status, 200)
-        self.assertEqual(body, b'challenge-body')
-        status, _, _ = request(self.http, 'GET', '/api/health')
-        self.assertEqual(status, 401)
-        for path in (
-            '/.well-known/acme-challenge/escape',
-            '/.well-known/acme-challenge/..',
-            '/.well-known/acme-challenge/%2e%2e',
-            '/.well-known/acme-challenge/%2e%2e/%2e%2e/etc/passwd',
-            '/.well-known/acme-challenge/' + self.token + '/../../etc/passwd',
-            '/.well-known/acme-challenge/a.b',
-            '/.well-known/acme-challenge/' + ('a' * 129),
-            '/.well-known/acme-challenge/%2fetc%2fpasswd',
-            '/.well-known/acme-challenge/%5cetc%5cpasswd',
-            '/.well-known/acme-challenge/%252e%252e',
-            '/.well-known/acme-challenge/%252fetc',
-            '/.well-known/acme-challenge/%255cetc',
-            '/.well-known/acme-challenge/short',
-            '/.well-known/acme-challenge/' + ('a' * 19),
-        ):
-            status, pairs, body = request(self.http, 'GET', path, host=IP_HOST)
-            self.assertNotIn(status, (301, 308), path)
-            self.assertNotEqual(status, 200, path)
-            self.assertNotIn(b'root:', body, path)
-            self.assertIsNone(_header(pairs, 'location'), path)
+    def test_staging_path_keeps_its_path_and_is_unchanged_when_the_flag_is_off(self):
+        staging.apply_env({'SIM_STAGING': '1', 'SIM_ACCESS_TOKEN': '', 'SIM_STAGING_UPSTREAM': '', 'SIM_BASE_PATH': ''})
+        _on({'HTTPS_ENABLED': '0', 'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': PROXY})
+        off, off_pairs, _ = request(self.http, 'GET', '/staging/foo?x=1', host=HOST, headers={
+            'X-Forwarded-Proto': 'https', 'X-Forwarded-For': PROXY,
+        })
+        self.assertNotIn(off, (301, 308))
+        self.assertIsNone(_header(off_pairs, 'location'))
+        _on({'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': PROXY})
+        status, pairs, _ = request(self.http, 'GET', '/staging/foo?x=1', host=HOST, headers={
+            'X-Forwarded-Proto': 'https', 'X-Forwarded-For': PROXY,
+        })
+        self.assertEqual(status, 301)
+        self.assertEqual(_header(pairs, 'location'), 'https://%s/staging/foo?x=1' % HOST)
+        posted, pairs, _ = request(self.http, 'POST', '/staging/foo?x=1', host=HOST, body=b'a=1')
+        self.assertEqual(posted, 308)
+        self.assertEqual(_header(pairs, 'location'), 'https://%s/staging/foo?x=1' % HOST)
+        _on({'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': '127.0.0.1'})
+        stayed, stayed_pairs, _ = request(self.http, 'GET', '/staging/foo?x=1', host=HOST, headers={
+            'X-Forwarded-Proto': 'https',
+        })
+        self.assertEqual(stayed, off)
+        self.assertIsNone(_header(stayed_pairs, 'location'))
 
     def test_hsts_and_upgrade_insecure_requests_only_on_https(self):
-        _on({'HSTS_ENABLED': '1', 'HSTS_SECONDS': '300', 'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST})
-        status, pairs, _ = request(self.tls, 'GET', '/api/health', tls=True, cafile=self.cert)
+        _on({
+            'HSTS_ENABLED': '1', 'HSTS_SECONDS': '300', 'HTTPS_HOST': HOST,
+            'TRUSTED_PROXY_IPS': '127.0.0.1',
+        })
+        status, pairs, _ = _via_caddy(self.http, 'GET', '/api/health')
         self.assertEqual(status, 200)
         self.assertEqual(_header(pairs, 'strict-transport-security'), 'max-age=300')
         self.assertNotIn('includeSubDomains', _header(pairs, 'strict-transport-security'))
@@ -687,12 +671,12 @@ class HttpsServerTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIsNone(_header(pairs, 'strict-transport-security'))
         self.assertNotIn('upgrade-insecure-requests', _header(pairs, 'content-security-policy') or '')
-        _on({'HSTS_SECONDS': '0', 'HTTPS_HOST': HOST})
-        _, pairs, _ = request(self.tls, 'GET', '/api/health', tls=True, cafile=self.cert)
+        _on({'HSTS_SECONDS': '0', 'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': '127.0.0.1'})
+        _, pairs, _ = _via_caddy(self.http, 'GET', '/api/health')
         self.assertIsNone(_header(pairs, 'strict-transport-security'))
-        # An existing page CSP gains the directive on HTTPS and keeps it off on HTTP.
+        # An existing page CSP gains the directive on confirmed https and stays off on plain http.
         staging.apply_env({'SIM_ACCESS_TOKEN': 'tok', 'SIM_STAGING': '0', 'SIM_BASE_PATH': '/'})
-        _, secure_pairs, _ = request(self.tls, 'GET', '/api/health', tls=True, cafile=self.cert)
+        _, secure_pairs, _ = _via_caddy(self.http, 'GET', '/api/health')
         csp = _header(secure_pairs, 'content-security-policy')
         self.assertIn("default-src 'none'", csp)
         self.assertIn('upgrade-insecure-requests', csp)
@@ -700,24 +684,30 @@ class HttpsServerTest(unittest.TestCase):
         plain = _header(plain_pairs, 'content-security-policy')
         self.assertIn("default-src 'none'", plain)
         self.assertNotIn('upgrade-insecure-requests', plain)
+        # Loopback is not the documented proxy. Its proto header does not turn HSTS on.
+        _on({'HSTS_ENABLED': '1', 'HSTS_SECONDS': '300', 'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': PROXY})
+        _, spoofed, _ = request(self.http, 'GET', '/api/health', headers={'X-Forwarded-Proto': 'https'})
+        self.assertIsNone(_header(spoofed, 'strict-transport-security'))
 
-    def test_secure_staging_cookie_follows_the_socket(self):
-        _on({'HTTPS_REDIRECT': '0', 'HTTPS_HOST': HOST})
+    def test_secure_staging_cookie_follows_a_trusted_proxy(self):
         staging.apply_env({
             'SIM_STAGING': '1', 'SIM_ACCESS_TOKEN': 'stage-token',
             'SIM_STAGING_UPSTREAM': '', 'SIM_BASE_PATH': '/',
         })
-        status, pairs, _ = request(self.tls, 'GET', '/?t=stage-token', tls=True, cafile=self.cert)
+        _on({'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': '127.0.0.1'})
+        status, pairs, _ = _via_caddy(self.http, 'GET', '/api/health?t=stage-token')
         self.assertEqual(status, 302)
         cookie = _header(pairs, 'set-cookie')
         self.assertIn('cl_stage=', cookie)
         self.assertNotIn('stage-token', cookie)
         self.assertIn('Secure', cookie)
         self.assertIn('HttpOnly', cookie)
-        status, pairs, _ = request(self.http, 'GET', '/?t=stage-token', headers={
+        _on({'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': PROXY})
+        status, pairs, _ = request(self.http, 'GET', '/api/health?t=stage-token', headers={
             'X-Forwarded-Proto': 'https',
             'Forwarded': 'proto=https',
             'X-Forwarded-Host': 'evil.example',
+            'X-Forwarded-For': PROXY,
         })
         self.assertEqual(status, 302)
         plain = _header(pairs, 'set-cookie').lower()
@@ -727,9 +717,9 @@ class HttpsServerTest(unittest.TestCase):
     def test_allowed_hosts_and_health_tls_fields(self):
         _on({
             'ALLOWED_HOSTS': '129.158.200.25, %s' % HOST,
-            'HTTPS_REDIRECT': '1',
             'HTTPS_HOST': HOST,
             'HSTS_SECONDS': '300',
+            'TRUSTED_PROXY_IPS': PROXY,
         })
         for host in (IP_HOST, HOST, IP_HOST + ':80', HOST.upper()):
             status, pairs, _ = request(self.http, 'GET', '/some/path?x=1', host=host)
@@ -743,17 +733,13 @@ class HttpsServerTest(unittest.TestCase):
         self.assertEqual(status, 200)
         data = json.loads(body)
         self.assertEqual(data['ok'], _qemu_ok())
-        self.assertEqual(set(data['tls']), {'enabled', 'cert_not_after', 'days_left', 'warning', 'reason'})
-        iso, left = https._load_expiry(self.cert)
-        self.assertEqual(data['tls']['enabled'], True)
-        self.assertEqual(data['tls']['cert_not_after'], iso)
-        self.assertEqual(data['tls']['days_left'], left)
+        self.assertNotIn('tls', data)
         raw = ws_status(self.http, 'evil.example')
         self.assertTrue(raw.startswith(b'HTTP/1.1 400'), raw)
         self.assertIn(b'unknown host', raw)
 
     def test_wss_is_not_refused_when_redirect_is_on(self):
-        _on({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST})
+        _on({'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': PROXY})
         called = {}
 
         async def app(scope, receive, send):
@@ -774,41 +760,87 @@ class HttpsServerTest(unittest.TestCase):
         }, receive, send))
         self.assertEqual(called.get('scheme'), 'wss')
         self.assertTrue(any(item.get('type') == 'websocket.close' for item in sent))
+        called.clear()
+        sent.clear()
+        asyncio.run(https.HttpsMiddleware(app)({
+            'type': 'websocket', 'scheme': 'ws', 'path': '/api/run/x',
+            'headers': [(b'host', HOST.encode()), (b'x-forwarded-proto', b'https')],
+            'query_string': b'', 'client': (PROXY, 9),
+        }, receive, send))
+        self.assertEqual(called.get('scheme'), 'wss')
+        called.clear()
+        sent.clear()
+        asyncio.run(https.HttpsMiddleware(app)({
+            'type': 'websocket', 'scheme': 'ws', 'path': '/api/run/x',
+            'headers': [(b'host', HOST.encode()), (b'x-forwarded-proto', b'https')],
+            'query_string': b'', 'client': (NEIGHBOR, 9),
+        }, receive, send))
+        self.assertNotIn('scheme', called)
+        self.assertTrue(any(item.get('type') == 'websocket.http.response.start' and item.get('status') == 403 for item in sent))
 
     def test_index_html_has_no_mixed_content_url(self):
-        status, _, body = request(self.tls, 'GET', '/', tls=True, cafile=self.cert)
+        _on({'HTTPS_ENABLED': '0', 'HTTPS_HOST': HOST})
+        status, _, body = request(self.http, 'GET', '/')
         self.assertEqual(status, 200)
         text = body.decode('utf-8')
         for match in re.finditer(r'http://[^\s\'"<>)]+', text):
             self.assertTrue(match.group(0).startswith(NS_HTTP), match.group(0))
         self.assertIn('http://www.w3.org/2000/svg', text)
 
-    def test_redirect_stays_off_for_the_ip_while_tls_is_down(self):
-        logs = []
-        https.set_logger(lambda msg: logs.append(str(msg)))
-        https.set_listener(False, '')
-        _on({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': IP_HOST})
-        status, pairs, _ = request(self.http, 'GET', '/some/path?x=1', host=IP_HOST)
+    def test_a_trusted_https_request_is_not_redirected(self):
+        _on({'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': '127.0.0.1'})
+        status, pairs, _ = _via_caddy(self.http, 'GET', '/some/path?x=1', host=IP_HOST)
         self.assertNotIn(status, (301, 308))
         self.assertIsNone(_header(pairs, 'location'))
-        self.assertTrue(any('no valid certificate is listening' in line for line in logs), logs)
-        logs.clear()
-        _on({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST})
-        status, pairs, _ = request(self.http, 'GET', '/some/path?x=1', host=HOST)
-        self.assertNotIn(status, (301, 308))
-        self.assertIsNone(_header(pairs, 'location'))
-        self.assertTrue(any('no valid certificate is listening' in line for line in logs), logs)
-        https.set_listener(True, self.cert)
-        _on({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST})
-        status, pairs, _ = request(self.http, 'GET', '/some/path?x=1', host=IP_HOST)
+        _on({'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': PROXY})
+        status, pairs, _ = request(self.http, 'GET', '/some/path?x=1', host=IP_HOST, headers={
+            'X-Forwarded-Proto': 'https', 'X-Forwarded-For': PROXY,
+        })
         self.assertEqual(status, 301)
         self.assertEqual(_header(pairs, 'location'), 'https://%s/some/path?x=1' % HOST)
+
+    def test_head_matches_get_headers_and_has_no_body(self):
+        _on({'HTTPS_ENABLED': '0'})
+        get_status, get_pairs, get_body = request(self.http, 'GET', '/')
+        head_status, head_pairs, head_body = request(self.http, 'HEAD', '/')
+        self.assertEqual(get_status, 200)
+        self.assertEqual(head_status, 200)
+        self.assertEqual(head_body, b'')
+        for name in ('content-type', 'etag', 'last-modified', 'content-length'):
+            self.assertEqual(_header(head_pairs, name), _header(get_pairs, name), name)
+        self.assertEqual(_header(head_pairs, 'content-length'), str(len(get_body)))
+        page_get, page_pairs, page_body = request(self.http, 'GET', '/index.html')
+        page_head, page_head_pairs, page_head_body = request(self.http, 'HEAD', '/index.html')
+        self.assertEqual(page_get, 200)
+        self.assertEqual(page_head, 200)
+        self.assertEqual(page_head_body, b'')
+        self.assertEqual(page_body, get_body)
+        for name in ('content-type', 'etag', 'last-modified', 'content-length'):
+            self.assertEqual(_header(page_head_pairs, name), _header(page_pairs, name), name)
+        asset_get, asset_pairs, asset_body = request(self.http, 'GET', '/css/theme.css')
+        asset_head, asset_head_pairs, asset_head_body = request(self.http, 'HEAD', '/css/theme.css')
+        self.assertEqual(asset_get, 200)
+        self.assertEqual(asset_head, 200)
+        self.assertEqual(asset_head_body, b'')
+        self.assertGreater(len(asset_body), 0)
+        for name in ('content-type', 'etag', 'last-modified', 'content-length'):
+            self.assertEqual(_header(asset_head_pairs, name), _header(asset_pairs, name), name)
+        staging.apply_env({'SIM_STAGING': '1', 'SIM_ACCESS_TOKEN': '', 'SIM_STAGING_UPSTREAM': '', 'SIM_BASE_PATH': ''})
+        staged_get, staged_pairs, staged_body = request(self.http, 'GET', '/')
+        staged_head, staged_head_pairs, staged_head_body = request(self.http, 'HEAD', '/')
+        self.assertEqual(staged_get, 200)
+        self.assertEqual(staged_head, 200)
+        self.assertIn(b'data-cl-env="staging"', staged_body)
+        self.assertEqual(staged_head_body, b'')
+        self.assertEqual(_header(staged_head_pairs, 'content-length'), str(len(staged_body)))
+        for name in ('content-type', 'etag', 'last-modified', 'content-length'):
+            self.assertEqual(_header(staged_head_pairs, name), _header(staged_pairs, name), name)
 
     def test_forged_host_is_not_a_redirect_target(self):
         _on({
             'ALLOWED_HOSTS': '%s,%s' % (IP_HOST, HOST),
-            'HTTPS_REDIRECT': '1',
             'HTTPS_HOST': HOST,
+            'TRUSTED_PROXY_IPS': PROXY,
         })
         for host in (HOST + ':443', HOST + '.', HOST.upper(), IP_HOST + ':80'):
             status, pairs, _ = request(self.http, 'GET', '/some/path?x=1', host=host)
@@ -852,7 +884,7 @@ class HttpsServerTest(unittest.TestCase):
         self.assertNotIn(b':80', head.lower())
 
     def test_move_post_is_validated_and_not_stored(self):
-        _on({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST})
+        _on({'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': '127.0.0.1'})
         record = {
             'v': 1,
             'origin': 'http://127.0.0.1',
@@ -868,8 +900,8 @@ class HttpsServerTest(unittest.TestCase):
             }],
         }
         packed = '0.' + _b64url(json.dumps(record).encode())
-        status, _, body = request(
-            self.tls, 'POST', '/migrate', host=HOST, tls=True, cafile=self.cert,
+        status, _, body = _via_caddy(
+            self.http, 'POST', '/migrate', host=HOST,
             headers={'Content-Type': 'application/x-www-form-urlencoded'},
             body=urllib_body(packed),
         )
@@ -877,8 +909,8 @@ class HttpsServerTest(unittest.TestCase):
         self.assertIn(b'clMigrate.receive', body)
         self.assertNotIn(b'Lamp </script>', body)
         self.assertIn(b'Lamp \\u003c/script>', body)
-        bad = request(
-            self.tls, 'POST', '/migrate', host=HOST, tls=True, cafile=self.cert,
+        bad = _via_caddy(
+            self.http, 'POST', '/migrate', host=HOST,
             headers={'Content-Type': 'application/x-www-form-urlencoded'},
             body=urllib_body('0.' + _b64url(b'{"v":2}')),
         )
@@ -889,8 +921,8 @@ class HttpsServerTest(unittest.TestCase):
         self.assertIn("default-src 'none'", _header(bad[1], 'content-security-policy'))
 
     def test_migrate_page_clears_the_fragment_first_and_locks_the_csp(self):
-        _on({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST})
-        status, pairs, body = request(self.tls, 'GET', '/migrate', host=HOST, tls=True, cafile=self.cert)
+        _on({'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': '127.0.0.1'})
+        status, pairs, body = _via_caddy(self.http, 'GET', '/migrate', host=HOST)
         self.assertEqual(status, 200, body[:180])
         self.assertIn(b'clMigrate.receive', body)
         _assert_move_page(body, _header(pairs, 'content-security-policy'), "'none'")
@@ -901,7 +933,7 @@ class HttpsServerTest(unittest.TestCase):
 
     def test_post_cap_content_type_and_no_body_in_logs(self):
         import logging
-        _on({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST})
+        _on({'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': '127.0.0.1'})
         logs = []
         https.set_logger(lambda msg: logs.append(str(msg)))
         grabbed = []
@@ -920,8 +952,8 @@ class HttpsServerTest(unittest.TestCase):
             lg.addHandler(handler)
         marker = 'MOVESECRET-not-stored-991'
         try:
-            over = request(
-                self.tls, 'POST', '/migrate', host=HOST, tls=True, cafile=self.cert,
+            over = _via_caddy(
+                self.http, 'POST', '/migrate', host=HOST,
                 headers={
                     'Content-Type': 'application/x-www-form-urlencoded',
                     'Content-Length': str(https.MIGRATE_CAP + 1),
@@ -933,8 +965,8 @@ class HttpsServerTest(unittest.TestCase):
             self.assertIn(b'request too large', over[2])
             self.assertNotIn(marker.encode(), over[2])
 
-            missing = request(
-                self.tls, 'POST', '/migrate', host=HOST, tls=True, cafile=self.cert,
+            missing = _via_caddy(
+                self.http, 'POST', '/migrate', host=HOST,
                 body=('payload=' + marker).encode(),
             )
             self.assertEqual(missing[0], 415)
@@ -943,8 +975,8 @@ class HttpsServerTest(unittest.TestCase):
             self.assertNotIn(marker.encode(), missing[2])
 
             for media in ('text/plain', 'application/json', 'application/x-www-form-urlencoded; charset=utf-8'):
-                sent = request(
-                    self.tls, 'POST', '/migrate', host=HOST, tls=True, cafile=self.cert,
+                sent = _via_caddy(
+                    self.http, 'POST', '/migrate', host=HOST,
                     headers={'Content-Type': media},
                     body=('payload=' + marker).encode(),
                 )
@@ -957,8 +989,8 @@ class HttpsServerTest(unittest.TestCase):
                 self.assertEqual(_header(sent[1], 'cache-control'), 'no-store', media)
                 self.assertNotIn(marker.encode(), sent[2])
 
-            malformed = request(
-                self.tls, 'POST', '/migrate', host=HOST, tls=True, cafile=self.cert,
+            malformed = _via_caddy(
+                self.http, 'POST', '/migrate', host=HOST,
                 headers={'Content-Type': 'application/x-www-form-urlencoded'},
                 body=urllib_body('0.' + _b64url(('{"v":2,"note":"%s"}' % marker).encode())),
             )
@@ -973,8 +1005,8 @@ class HttpsServerTest(unittest.TestCase):
                 raise RuntimeError('TRACE-MARKER-991')
             https.unpack_payload = boom
             try:
-                traced = request(
-                    self.tls, 'POST', '/migrate', host=HOST, tls=True, cafile=self.cert,
+                traced = _via_caddy(
+                    self.http, 'POST', '/migrate', host=HOST,
                     headers={'Content-Type': 'application/x-www-form-urlencoded'},
                     body=urllib_body('0.' + _b64url(b'{"v":1}')),
                 )
@@ -984,7 +1016,7 @@ class HttpsServerTest(unittest.TestCase):
             self.assertNotIn(b'TRACE-MARKER-991', traced[2])
             self.assertNotIn(b'clMigrate.receive', traced[2])
 
-            chunked = _chunked_post(self.tls, HOST, self.cert, marker.encode() * 64, https.MIGRATE_CAP + 1)
+            chunked = _chunked_post(self.http, HOST, marker.encode() * 64, https.MIGRATE_CAP + 1)
             self.assertEqual(chunked[0], 413, chunked[2][:200])
             self.assertEqual(_header(chunked[1], 'cache-control'), 'no-store')
             self.assertIn(b'request too large', chunked[2])
@@ -999,196 +1031,15 @@ class HttpsServerTest(unittest.TestCase):
         self.assertNotIn('TRACE-MARKER-991', joined)
 
     def test_hsts_header_is_absent_by_default(self):
-        _on({'HTTPS_HOST': HOST, 'HSTS_ENABLED': '0', 'HSTS_SECONDS': '31536000'})
-        _, pairs, _ = request(self.tls, 'GET', '/api/health', tls=True, cafile=self.cert)
+        _on({
+            'HTTPS_HOST': HOST, 'HSTS_ENABLED': '0', 'HSTS_SECONDS': '31536000',
+            'TRUSTED_PROXY_IPS': '127.0.0.1',
+        })
+        _, pairs, _ = _via_caddy(self.http, 'GET', '/api/health')
         self.assertIsNone(_header(pairs, 'strict-transport-security'))
-        _on({'HTTPS_HOST': HOST})
-        _, pairs, _ = request(self.tls, 'GET', '/api/health', tls=True, cafile=self.cert)
+        _on({'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': '127.0.0.1'})
+        _, pairs, _ = _via_caddy(self.http, 'GET', '/api/health')
         self.assertIsNone(_header(pairs, 'strict-transport-security'))
         self.assertNotIn('strict-transport-security', ' '.join(name for name, _value in pairs))
 
 
-class HttpsFailSafeTest(unittest.TestCase):
-    def tearDown(self):
-        _on({})
-        https.set_listener(False, '')
-        https.set_logger(https._default_log)
-        server.TOKEN = ''
-
-    def test_missing_cert_serves_http_and_health_ok_is_unchanged(self):
-        logs = []
-        https.set_logger(lambda msg: logs.append(str(msg)))
-        _on({
-            'TLS_CERT_FILE': '/tmp/esp32lab-no-such-fullchain.pem',
-            'TLS_KEY_FILE': '/tmp/esp32lab-no-such-privkey.pem',
-            'HTTPS_HOST': HOST,
-        })
-        bg = https.Background(server.app, tls_port=0).start()
-        try:
-            self.assertIsNone(bg.tls)
-            self.assertIsNone(bg.tls_port)
-            status, _, body = request(bg.http_port, 'GET', '/api/health')
-            self.assertEqual(status, 200)
-            data = json.loads(body)
-            self.assertEqual(data['ok'], _qemu_ok())
-            self.assertEqual(data['tls']['enabled'], False)
-            self.assertEqual(data['tls']['warning'], False)
-            self.assertEqual(data['ok'], _qemu_ok())
-        finally:
-            bg.stop()
-        warnings = [line for line in logs if line.startswith('tls key warning')]
-        self.assertEqual(len(warnings), 1, logs)
-        self.assertIn('reason=missing', warnings[0])
-        self.assertIn('serving=http', warnings[0])
-        self.assertIn('path=/tmp/esp32lab-no-such-privkey.pem', warnings[0])
-
-    def test_bad_pem_and_busy_port_keep_http(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            cert = os.path.join(tmp, 'cert.pem')
-            key = os.path.join(tmp, 'key.pem')
-            Path(cert).write_text('not a certificate\n', encoding='ascii')
-            Path(key).write_text('not a key\n', encoding='ascii')
-            os.chmod(key, 0o600)
-            logs = []
-            https.set_logger(lambda msg: logs.append(str(msg)))
-            _on({'TLS_CERT_FILE': cert, 'TLS_KEY_FILE': key})
-            bg = https.Background(server.app, tls_port=0).start()
-            try:
-                self.assertIsNone(bg.tls_port)
-                status, _, body = request(bg.http_port, 'GET', '/api/health')
-                self.assertEqual(status, 200)
-                self.assertFalse(json.loads(body)['tls']['enabled'])
-                self.assertEqual(json.loads(body)['ok'], _qemu_ok())
-            finally:
-                bg.stop()
-            warnings = [line for line in logs if line.startswith('tls key warning')]
-            self.assertEqual(len(warnings), 1, logs)
-            self.assertIn('reason=invalid', warnings[0])
-            self.assertIn('serving=http', warnings[0])
-            self.assertIn('mode=600', warnings[0])
-
-            good, good_key = _make_cert(tmp)
-            blocker = socket.socket()
-            blocker.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            blocker.bind(('127.0.0.1', 0))
-            blocker.listen(1)
-            busy = blocker.getsockname()[1]
-            logs.clear()
-            _on({'TLS_CERT_FILE': good, 'TLS_KEY_FILE': good_key})
-            bg = https.Background(server.app, tls_port=busy).start()
-            try:
-                self.assertIsNone(bg.tls_port)
-                status, _, body = request(bg.http_port, 'GET', '/api/health')
-                self.assertEqual(status, 200)
-                self.assertFalse(json.loads(body)['tls']['enabled'])
-            finally:
-                bg.stop()
-                blocker.close()
-            self.assertTrue(any('cannot bind' in line and 'serving HTTP only' in line for line in logs), logs)
-
-    def test_unreadable_key_keeps_http(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            cert, key = _make_cert(tmp)
-            os.chmod(key, 0o000)
-            logs = []
-            https.set_logger(lambda msg: logs.append(str(msg)))
-            _on({'TLS_CERT_FILE': cert, 'TLS_KEY_FILE': key, 'HTTPS_HOST': HOST, 'HTTPS_REDIRECT': '1'})
-            bg = https.Background(server.app, tls_port=0).start()
-            try:
-                self.assertIsNone(bg.tls_port)
-                status, pairs, body = request(bg.http_port, 'GET', '/api/health')
-                self.assertEqual(status, 200)
-                data = json.loads(body)
-                self.assertEqual(data['ok'], _qemu_ok())
-                self.assertFalse(data['tls']['enabled'])
-                page, page_pairs, _ = request(bg.http_port, 'GET', '/')
-                self.assertNotIn(page, (301, 308))
-                self.assertIsNone(_header(page_pairs, 'location'))
-                posture = https.key_posture(key)
-                self.assertEqual(posture['mode'], '000')
-                self.assertFalse(posture['readable'])
-                self.assertIn('root', https.key_posture.__doc__)
-                self.assertIn('600', https.key_posture.__doc__)
-                self.assertIn('read-only', https.key_posture.__doc__)
-            finally:
-                os.chmod(key, 0o600)
-                bg.stop()
-            warnings = [line for line in logs if line.startswith('tls key warning')]
-            self.assertEqual(len(warnings), 1, logs)
-            self.assertIn('reason=unreadable', warnings[0])
-            self.assertIn('mode=000', warnings[0])
-            self.assertIn('serving=http', warnings[0])
-            self.assertTrue(any('no valid certificate is listening' in line for line in logs), logs)
-
-    def test_master_flag_off_does_not_listen_or_redirect(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            cert, key = _make_cert(tmp)
-            logs = []
-            https.set_logger(lambda msg: logs.append(str(msg)))
-            https.apply_env({
-                'HTTPS_ENABLED': '0',
-                'HTTPS_REDIRECT': '1',
-                'HTTPS_HOST': HOST,
-                'HSTS_ENABLED': '1',
-                'HSTS_SECONDS': '31536000',
-                'TLS_CERT_FILE': cert,
-                'TLS_KEY_FILE': key,
-            })
-            bg = https.Background(server.app, tls_port=0).start()
-            try:
-                self.assertIsNone(bg.tls)
-                self.assertIsNone(bg.tls_port)
-                status, pairs, body = request(bg.http_port, 'GET', '/api/health', host='evil.example')
-                self.assertEqual(status, 200)
-                self.assertIsNone(_header(pairs, 'location'))
-                self.assertIsNone(_header(pairs, 'strict-transport-security'))
-                self.assertFalse(json.loads(body)['tls']['enabled'])
-                page, page_pairs, _ = request(bg.http_port, 'GET', '/js/app.js?v=80')
-                self.assertNotIn(page, (301, 308))
-                self.assertIsNone(_header(page_pairs, 'location'))
-                self.assertIsNone(_header(page_pairs, 'strict-transport-security'))
-            finally:
-                bg.stop()
-            self.assertFalse(any(line.startswith('tls key warning') for line in logs), logs)
-            self.assertTrue(any('HTTPS_ENABLED is off' in line for line in logs), logs)
-
-    def test_bad_reload_keeps_http_and_the_current_certificate(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            cert, key = _make_cert(tmp)
-            logs = []
-            https.set_logger(lambda msg: logs.append(str(msg)))
-            https.apply_env({
-                'HTTPS_ENABLED': '1',
-                'HTTPS_REDIRECT': '1',
-                'HTTPS_HOST': HOST,
-                'TLS_CERT_FILE': cert,
-                'TLS_KEY_FILE': key,
-            })
-            bg = https.Background(server.app, tls_port=0).start()
-            try:
-                status, pairs, _ = request(bg.http_port, 'GET', '/js/app.js?v=80', host=IP_HOST)
-                self.assertEqual(status, 301)
-                self.assertEqual(_header(pairs, 'location'), 'https://%s/js/app.js?v=80' % HOST)
-                Path(key).write_text('not a key\n', encoding='ascii')
-                os.chmod(key, 0o600)
-                self.assertTrue(https.request_tls_reload())
-                deadline = time.monotonic() + 5
-                while time.monotonic() < deadline and not any('certificate reload failed' in line for line in logs):
-                    time.sleep(0.05)
-                self.assertTrue(
-                    any('certificate reload failed' in line and 'HTTP stays up' in line for line in logs),
-                    logs,
-                )
-                status, pairs, _ = request(bg.http_port, 'GET', '/js/app.js?v=80', host=IP_HOST)
-                self.assertEqual(status, 301)
-                self.assertEqual(_header(pairs, 'location'), 'https://%s/js/app.js?v=80' % HOST)
-                health, health_pairs, body = request(bg.http_port, 'GET', '/api/health')
-                self.assertEqual(health, 200)
-                self.assertIsNone(_header(health_pairs, 'location'))
-                self.assertTrue(json.loads(body)['tls']['enabled'])
-            finally:
-                bg.stop()
-
-
-if __name__ == '__main__':
-    unittest.main()

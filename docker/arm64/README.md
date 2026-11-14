@@ -28,4 +28,4 @@ docker build -t esp32-lab ctx
 docker run -d --name esp32lab -p 80:8765 --restart unless-stopped \
   -v esp32lab-data:/home/sim/.esp32lab -v esp32lab-cache:/home/sim/.cache/arduino esp32-lab
 ```
-Do not add `-p 8765`. Host port 443 (`-p 443:8443`) is added only after HTTPS is approved. This repository does not open it. See `web/README.md` and `docs/https.md`.
+Do not add `-p 8765`. The app does not publish 443. Caddy (`circuitlab-caddy`) terminates TLS. See `web/README.md` and `docs/https.md`.

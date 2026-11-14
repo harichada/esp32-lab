@@ -13,10 +13,11 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       SCHEMATIC_MATCH_LAYOUT (default 1). 0 puts <meta name="schmatch" content="0"> on the lab page
       so every visitor gets the column schematic. Any other value leaves index.html unchanged,
       and ?schmatch= on that page is then free to choose.
-      HTTPS (off unless set): HTTPS_ENABLED, ACME_WEBROOT, TLS_CERT_FILE, TLS_KEY_FILE,
-      TLS_PORT, HTTPS_REDIRECT, HTTPS_HOST, HSTS_ENABLED, HSTS_SECONDS, ALLOWED_HOSTS.
+      HTTPS (off unless set): HTTPS_ENABLED, HTTPS_HOST, HSTS_ENABLED, HSTS_SECONDS,
+      ALLOWED_HOSTS, TRUSTED_PROXY_IPS.
       See https.py. The documented host is esp32lab.duckdns.org; the default is empty.
-      The process is started with proxy_headers off, so the scheme is the socket.
+      Caddy terminates TLS. proxy_headers stays off. Forwarding headers are honored
+      only from an address in TRUSTED_PROXY_IPS. The documented address is 172.18.0.250.
 """
 import asyncio, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, argparse
 from email.utils import formatdate
@@ -27,7 +28,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
 import secrets
 from fastapi.responses import PlainTextResponse
-from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 HERE = Path(__file__).resolve().parent
@@ -122,7 +123,34 @@ async def gate(request: Request, call_next):
     _maybe_simtok(request, resp)
     if staging.staging_on():
         resp = await staging.decorate(request, resp)
+    if request.method == 'HEAD':
+        resp = await _blank_head(resp)
     return resp
+async def _blank_head(resp):
+    """HEAD keeps the headers of the rendered response and sends no body.
+
+    Middleware above the route sees the GET body (so a staging inject can
+    change Content-Length). The bytes are then dropped. Content-Length stays
+    the length of that rendered body.
+    """
+    iterator = getattr(resp, 'body_iterator', None)
+    raw_body = getattr(resp, 'body', None)
+    if iterator is not None and not isinstance(raw_body, (bytes, bytearray, memoryview)):
+        chunks = []
+        async for chunk in iterator:
+            if isinstance(chunk, (bytes, bytearray)):
+                chunks.append(bytes(chunk))
+        raw = list(resp.raw_headers)
+        if not any(name.lower() == b'content-length' for name, _value in raw):
+            raw.append((b'content-length', str(sum(len(part) for part in chunks)).encode('ascii')))
+        empty = Response(content=b'', status_code=resp.status_code, background=getattr(resp, 'background', None))
+        empty.raw_headers = raw
+        return empty
+    raw = list(getattr(resp, 'raw_headers', []) or [])
+    empty = Response(content=b'', status_code=resp.status_code, background=getattr(resp, 'background', None))
+    if raw:
+        empty.raw_headers = raw
+    return empty
 def _index_headers():
     names = set(); roots = [HOME / '.arduino15/packages', HOME / 'Arduino/libraries', SHIMS]
     for r in roots:
@@ -158,8 +186,6 @@ def health():
     ok_q = Path(QEMU).exists(); ok_c = Path(CLI).exists() if CLI else False
     body = {'ok': ok_q and ok_c, 'qemu': QEMU if ok_q else None, 'arduino_cli': CLI if ok_c else None, 'fqbn': FQBN, 'runs': len(runs),
             'notes': 'Real Xtensa emulation (Espressif QEMU, patched esp32.gpio/iomux/rtcio). Wi-Fi radio not emulated: network sketches use the QemuNet shim (WiFi/HTTPClient/WiFiUdp -> mock devices).'}
-    # ok stays the qemu/cli check. A missing certificate does not flip it.
-    body['tls'] = https.tls_status()
     if staging.staging_on():
         body['staging'] = True
     return body
@@ -1441,7 +1467,6 @@ def robots_txt():
     if found.is_file():
         return FileResponse(found)
     raise HTTPException(status_code=404)
-
 # Site-wide schematic switch. Read on each page load so a restart picks it up
 # with no second request. Only "0" turns it off; the file is served unchanged otherwise.
 SCHEMATIC_META = '<meta name="schmatch" content="0">'
@@ -1457,20 +1482,35 @@ def lab_page(env=None):
     if SCHEMATIC_META not in text and '<head>' in text:
         text = text.replace('<head>', '<head>\n' + SCHEMATIC_META, 1)
     return text.encode('utf-8'), False
-@app.get('/')
-@app.get('/index.html')
-def index():
+def _index_response():
+    """The lab page for GET and HEAD of ``/`` and ``/index.html``.
+
+    HEAD must hit this route. The static mount treats ``/`` as a directory.
+    The full body is returned so later middleware can inject, then blank HEAD.
+    Unchanged HTML uses FileResponse's mtime-size ETag. The schematic-off page
+    uses a hash of the injected body and keeps the file's Last-Modified.
+    """
     body, plain = lab_page()
+    st = (SITE / 'index.html').stat()
     if plain:
-        return FileResponse(SITE / 'index.html')
-    # The off page is the file plus one meta tag, so its validators are over that
-    # body. Last-Modified stays the file's mtime; ETag changes with the injection.
-    stat = (SITE / 'index.html').stat()
-    etag = '"' + hashlib.sha256(body).hexdigest() + '"'
-    return HTMLResponse(body, headers={
-        'ETag': etag,
-        'Last-Modified': formatdate(stat.st_mtime, usegmt=True),
-    })
+        etag_base = str(st.st_mtime) + '-' + str(st.st_size)
+        etag = '"%s"' % hashlib.md5(etag_base.encode(), usedforsecurity=False).hexdigest()
+        headers = {
+            'accept-ranges': 'bytes',
+            'last-modified': formatdate(st.st_mtime, usegmt=True),
+            'etag': etag,
+        }
+    else:
+        etag = '"' + hashlib.sha256(body).hexdigest() + '"'
+        headers = {
+            'last-modified': formatdate(st.st_mtime, usegmt=True),
+            'etag': etag,
+        }
+    return Response(content=body, media_type='text/html', headers=headers)
+@app.api_route('/', methods=['GET', 'HEAD'])
+@app.api_route('/index.html', methods=['GET', 'HEAD'])
+def index():
+    return _index_response()
 app.mount('/', StaticFiles(directory=str(SITE)), name='site')
 app.add_middleware(staging.StagingMiddleware)
 app.add_middleware(https.HttpsMiddleware)
@@ -1479,6 +1519,6 @@ if __name__ == '__main__':
     ap = argparse.ArgumentParser(); ap.add_argument('--port', type=int, default=8765); ap.add_argument('--host', default='127.0.0.1')
     a = ap.parse_args()
     print(f'QEMU={QEMU}\nROMDIR={ROMDIR}\nCLI={CLI}\nFQBN={FQBN}')
-    # HTTP on --port (8765 in the container). HTTPS on TLS_PORT (8443) when the cert loads.
-    # proxy_headers=False and forwarded_allow_ips='' are set on both listeners in https.py.
+    # HTTP on --port (8765 in the container). Caddy terminates TLS.
+    # proxy_headers=False and forwarded_allow_ips='' are set in https.py.
     https.serve_forever(app, a.host, a.port)

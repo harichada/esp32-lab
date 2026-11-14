@@ -254,7 +254,7 @@ def access_gate(request):
             resp.set_cookie(
                 'cl_stage', cookie_value(ACCESS),
                 max_age=86400 * 7, httponly=True, samesite='strict', path=COOKIE_PATH,
-                # The socket scheme. proxy_headers is off, so X-Forwarded-Proto cannot set this.
+                # The socket scheme, unless HTTPS is on and this peer is a trusted proxy.
                 secure=(request.url.scheme == 'https'),
             )
             return seal(resp)
