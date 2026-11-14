@@ -69,8 +69,8 @@ test('the match flag defaults on and ?schmatch=0 is the off switch', () => {
   const mobile = fs.readFileSync(path.join(__dirname, '../css/mobile.css'), 'utf8');
   assert.match(html, /schematic\.js\?v=62/);
   assert.match(html, /pinch\.js\?v=62/);
-  assert.match(html, /theme\.css\?v=65/);
-  assert.match(html, /mobile\.css\?v=69/);
+  assert.match(html, /theme\.css\?v=66/);
+  assert.match(html, /mobile\.css\?v=70/);
   for (const state of [':hover', ':active', ':focus-visible', ':disabled']) {
     assert.match(css, new RegExp('\\.sch-lay' + state));
   }
@@ -78,6 +78,57 @@ test('the match flag defaults on and ?schmatch=0 is the off switch', () => {
   assert.match(css, /min-width:44px/);
   assert.match(mobile, /body\.m \.sch-layout/);
   assert.match(mobile, /min-height:44px/);
+});
+
+function docWith(meta, data) {
+  return {
+    documentElement: { getAttribute: (name) => (name === 'data-schmatch' ? data : null) },
+    querySelector: (sel) => (sel === 'meta[name="schmatch"]' && meta != null ? { getAttribute: () => meta, content: meta } : null),
+  };
+}
+
+test('the server off switch wins, and ?schmatch applies only when the server allows it', () => {
+  const prev = S.SCHEMATIC_MATCH_LAYOUT;
+  const blink = E.EX.blink();
+  const tidy = seats(layout(blink));
+  try {
+    assert.equal(S.configureMatch(null, ''), true);
+    assert.equal(S.configureMatch(null, '?schmatch=0'), false);
+    assert.equal(S.configureMatch(null, '?schmatch=1'), true);
+    assert.equal(S.configureMatch(null, '?schmatch=sideways'), true);
+    assert.equal(S.configureMatch(docWith('0', null), '?schmatch=1'), false);
+    assert.equal(S.SCHEMATIC_MATCH_LAYOUT, false);
+    S.SCHEMATIC_MATCH_LAYOUT = true;
+    assert.equal(S.SCHEMATIC_MATCH_LAYOUT, false, 'a page cannot turn the server switch back on');
+    assert.deepStrictEqual(seats(layout(blink, { match: true })), tidy);
+    assert.equal(S.configureMatch(docWith(null, '0'), '?schmatch=1'), false);
+    assert.equal(S.configureMatch(docWith('1', null), '?schmatch=0'), false);
+    assert.equal(S.configureMatch(docWith('1', null), ''), true);
+    assert.equal(S.configureMatch(docWith('no', null), '?schmatch=1'), true);
+  } finally {
+    S.configureMatch(null, '');
+    S.SCHEMATIC_MATCH_LAYOUT = prev;
+  }
+});
+
+test('open zoom keeps labels at 11 screen px, and a readable fit stays fitted', () => {
+  assert.equal(S.labelScreenPx(9.5, 0.25, 1), 2.375);
+  assert.equal(S.labelScreenPx(9.5, 0.25, 2), 4.75);
+  const tight = S.openScale(9.5, 0.25, 1);
+  assert.equal(tight.fitAll, true);
+  assert.ok(Math.abs(tight.s - (11 / 9.5)) < 1e-9);
+  assert.ok(tight.px >= 11);
+  const easy = S.openScale(12, 1.2, 1);
+  assert.equal(easy.fitAll, false);
+  assert.equal(easy.s, 1.2);
+  const remote = layout(E.EX.remote(), { match: true });
+  const phone = screenLabelPx(remote, 390, 780, 160);
+  const opened = S.openScale(phone.minFont, phone.s, 1);
+  assert.equal(opened.fitAll, true, 'remote at 390 fitted labels are ' + phone.minPx.toFixed(2) + 'px');
+  assert.ok(opened.px >= 11);
+  const blink = layout(E.EX.blink(), { match: true });
+  const desk = screenLabelPx(blink, 1280, 800, 120);
+  if (desk.minPx >= 11) assert.equal(S.openScale(desk.minFont, desk.s, 1).fitAll, false);
 });
 
 test('junction dots mark a shared node and crossings of two nets do not', () => {
@@ -145,7 +196,12 @@ test('match layout follows the breadboard, hides it, and keeps power as labels',
   const sorted = order.slice().sort((a, b) => a - b);
   assert.deepStrictEqual(order, sorted, 'symbol order follows the breadboard left to right');
   const fit = screenLabelPx(model, 390, 700, 48);
-  assert.ok(fit.minPx >= 6, 'blink labels at 390px are ' + fit.minPx.toFixed(2) + 'px');
+  const open = S.openScale(fit.minFont, fit.s, 1);
+  assert.ok(open.px >= S.READABLE_PX - 1e-6, 'open labels are ' + open.px.toFixed(2) + 'px');
+  assert.equal(S.labelScreenPx(fit.minFont, open.s, 1), open.px);
+  const wide = screenLabelPx(model, 1600, 1200, 80);
+  const wideOpen = S.openScale(wide.minFont, wide.s, 1);
+  if (wide.minPx >= S.READABLE_PX) assert.equal(wideOpen.fitAll, false);
   const again = layout(clone(raw), { match: true });
   assert.deepStrictEqual(seats(model), seats(again));
 

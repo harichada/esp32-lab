@@ -290,10 +290,13 @@ body.m.view3d .canvas-tools,body.m.view3d .zoom-tools{z-index:12}
 body.m .exit3d{top:72px;right:auto;left:50%;transform:translateX(-50%);height:44px;line-height:44px;padding:0 20px;border-radius:8px;font-size:13px}
 body.m.view3d #mParts{opacity:.3;pointer-events:none}
 body.m.view3d .hint{display:none}
-body.m.viewsch .hint{display:block;left:12px;right:12px;bottom:calc(176px + env(safe-area-inset-bottom));max-width:none!important;height:auto;white-space:normal!important;overflow:visible!important;text-overflow:clip;line-height:1.35}
-/* Thumb reach, clear of the hub and the canvas tools, and clear of the drawing (fit treats #schLayout as chrome). */
-body.m .sch-layout{top:auto;right:auto;left:50%;bottom:calc(168px + env(safe-area-inset-bottom));transform:translateX(-50%);max-width:calc(100% - 24px)}
-body.m .sch-layout .sch-lay{min-width:44px;min-height:44px;padding:0 12px;font-size:13px}
+body.m.viewsch .hint{display:block;left:12px;right:12px;bottom:calc(236px + env(safe-area-inset-bottom));max-width:none!important;height:auto;white-space:normal!important;overflow:visible!important;text-overflow:clip;line-height:1.35}
+/* The arrangement control is a second row of the view toolbar, still beside 2D/Sch.
+   The hint and the toast sit above that row. */
+body.m.viewsch .canvas-tools{flex-wrap:wrap;max-width:calc(100% - 120px)}
+body.m.viewsch .sch-layout{flex:1 0 auto}
+body.m.viewsch .toast{bottom:calc(300px + env(safe-area-inset-bottom))}
+body.m .sch-layout .sch-lay,body.m .sch-fitall{min-width:44px;min-height:44px;padding:0 12px;font-size:13px}
 body.m.viewsch #mSel [data-a=rot],body.m.viewsch #mSel [data-a=del]{display:none!important}
 body.m .view-toggle .seg{padding:0 10px}
 /* oscilloscope HUD sheet (full-screen) */

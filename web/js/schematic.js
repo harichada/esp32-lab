@@ -7,8 +7,10 @@
  * A supply that feeds a chip or transistor stays a flag once it has 3+ pins. A battery
  * that only feeds discrete branches is drawn as wires, so parallel strings stay visible.
  * GND is a ground symbol, not a long wire.
- * SCHEMATIC_MATCH_LAYOUT (default on; ?schmatch=0 turns it off) lets the view seat each symbol
- * where its part sits on the 2D board. Off, or the Tidy choice, is this column layout exactly.
+ * SCHEMATIC_MATCH_LAYOUT (default on) lets the view seat each symbol where its part sits
+ * on the 2D board. The server env of the same name, delivered as <meta name="schmatch" content="0">
+ * or data-schmatch="0", forces it off for every visitor; ?schmatch= applies only when the server allows it.
+ * Off, or the Tidy choice, is this column layout exactly.
  * The breadboard body is never a symbol. Its strips are wires between the parts.
  * A ground part on a net that already has another pin is omitted; that pin draws the GND symbol.
  * Only a part whose every pin is open is parked, under a "Not connected" caption.
@@ -216,18 +218,45 @@
   function snap(v) { return Math.round(v / GS) * GS; }
   function snapCeil(v) { return Math.ceil((v - 1e-9) / GS) * GS; }
 
-  // Front-end flag, same shape as ?netlog=0: default on, ?schmatch=0 forces today's tidy layout.
+  // Default on. The server's 0 (meta or data-schmatch) wins over ?schmatch=.
+  // ?schmatch=0 / ?schmatch=1 apply only when the server left the flag on.
+  let serverOff = false;
   let matchFlag = true;
+  function serverDeniesMatch(doc) {
+    try {
+      if (!doc) return false;
+      const el = doc.documentElement;
+      if (el && typeof el.getAttribute === 'function' && el.getAttribute('data-schmatch') === '0') return true;
+      if (typeof doc.querySelector !== 'function') return false;
+      const meta = doc.querySelector('meta[name="schmatch"]');
+      if (!meta) return false;
+      const content = typeof meta.getAttribute === 'function' ? meta.getAttribute('content') : meta.content;
+      return String(content) === '0';
+    } catch (e) { return false; }
+  }
+  function urlMatch(search) {
+    if (search == null || search === '') return null;
+    let q = null;
+    try { q = new URLSearchParams(String(search)).get('schmatch'); }
+    catch (e) { return null; }
+    if (q === '0') return false;
+    if (q === '1') return true;
+    return null;
+  }
+  function configureMatch(doc, search) {
+    serverOff = serverDeniesMatch(doc);
+    if (serverOff) { matchFlag = false; return false; }
+    const q = urlMatch(search);
+    matchFlag = q == null ? true : q;
+    return matchFlag;
+  }
   (function initMatchFlag() {
     try {
-      const loc = root.location;
-      if (!loc || !loc.search) return;
-      const q = new URLSearchParams(loc.search).get('schmatch');
-      if (q === '0') matchFlag = false;
-      else if (q === '1') matchFlag = true;
-    } catch (e) { /* node tests have no location */ }
+      const search = root.location && root.location.search;
+      configureMatch(root.document, search || '');
+    } catch (e) { serverOff = false; matchFlag = true; }
   })();
-  function matchFlagOn() { return !!matchFlag; }
+  function matchFlagOn() { return !serverOff && !!matchFlag; }
 
   const LAYOUT_STORE = 'esp32lab.schLayout';
   const MIN_LABEL_FONT = 9.5;
@@ -545,7 +574,108 @@
     return { dots: dots, crosses: crosses };
   }
 
-  // Screen size of the smallest label after the same fit the view uses.
+  const READABLE_PX = 11;
+  function smallestLabel(model) {
+    let min = Infinity;
+    const texts = (model && model.texts) || [];
+    for (const t of texts) min = Math.min(min, t.size || MIN_LABEL_FONT);
+    if (!isFinite(min)) min = MIN_LABEL_FONT;
+    return min;
+  }
+  // On-screen pixels: drawing-unit font × zoom × any CSS scale on the svg.
+  function labelScreenPx(fontPx, zoom, cssScale) {
+    const font = fontPx > 0 && isFinite(fontPx) ? fontPx : MIN_LABEL_FONT;
+    const z = zoom > 0 && isFinite(zoom) ? zoom : 0;
+    const css = cssScale > 0 && isFinite(cssScale) ? cssScale : 1;
+    return font * z * css;
+  }
+  // Smallest zoom that keeps the smallest label at READABLE_PX, unless the
+  // fit-all zoom already does. fitAll means the sheet opened larger than a full fit.
+  function openScale(minFont, fittedS, cssScale) {
+    const css = cssScale > 0 && isFinite(cssScale) ? cssScale : 1;
+    const font = minFont > 0 && isFinite(minFont) ? minFont : MIN_LABEL_FONT;
+    const fitted = fittedS > 0 && isFinite(fittedS) ? fittedS : 0.12;
+    const fittedPx = labelScreenPx(font, fitted, css);
+    if (fittedPx >= READABLE_PX) return { s: fitted, px: fittedPx, fitAll: false };
+    const s = READABLE_PX / (font * css);
+    return { s: s, px: labelScreenPx(font, s, css), fitAll: true };
+  }
+  function cssScaleOf(el) {
+    let s = 1;
+    try {
+      if (el && el.currentScale && isFinite(+el.currentScale) && +el.currentScale > 0) s = +el.currentScale;
+      const cs = root.getComputedStyle && el && root.getComputedStyle(el);
+      const tr = cs && cs.transform;
+      if (tr && tr !== 'none') {
+        const m = String(tr).match(/matrix\(([^)]+)\)/);
+        if (m) {
+          const p = m[1].split(',').map((n) => +n);
+          const sx = Math.hypot(p[0] || 0, p[1] || 0);
+          if (sx > 0 && isFinite(sx)) s *= sx;
+        }
+      }
+    } catch (e) { /* keep 1 */ }
+    return s > 0 && isFinite(s) ? s : 1;
+  }
+  function placeReadable(model, frame, fitted, css) {
+    const open = openScale(smallestLabel(model), fitted.s, css);
+    if (!open.fitAll) return { view: { s: fitted.s, x: fitted.x, y: fitted.y }, open: open };
+    const syms = (model && model.symbols) || [];
+    const sym = syms.find((s) => s.kind === 'ESP') || syms.find((s) => s.part && s.part.type === 'esp32');
+    const b = (model && model.bounds) || { x: 0, y: 0, w: 1, h: 1 };
+    const cx = sym ? sym.x + sym.w / 2 : b.x + b.w / 2;
+    const cy = sym ? sym.y + sym.h / 2 : b.y + b.h / 2;
+    const stage = frame.stage || { left: 0, top: 0 };
+    const clear = frame.clear || stage;
+    const sx = ((+clear.left + +clear.right) / 2) - (+stage.left || 0);
+    const sy = ((+clear.top + +clear.bottom) / 2) - (+stage.top || 0);
+    const s = open.s;
+    return { view: { s: s, x: cx - sx / s, y: cy - sy / s }, open: open };
+  }
+  // The readable zoom is larger than a fit, so a symbol can sit on the
+  // arrangement control. Nudge the sheet, keeping the ESP32 on screen.
+  function liftOff(view, model, svg) {
+    if (!view || !svg || typeof document === 'undefined' || !document.getElementById) return view;
+    const bar = document.getElementById('schLayout');
+    if (!bar) return view;
+    const br = bar.getBoundingClientRect();
+    if (br.width < 1 || br.height < 1) return view;
+    const host = svg.getBoundingClientRect();
+    const block = { x: br.left, y: br.top, x2: br.right, y2: br.bottom };
+    const syms = (model && model.symbols) || [];
+    const s = view.s;
+    const hits = (x, y) => {
+      for (const sym of syms) {
+        const x1 = host.left + (sym.x - x) * s;
+        const y1 = host.top + (sym.y - y) * s;
+        const ix = Math.min(x1 + sym.w * s, block.x2) - Math.max(x1, block.x);
+        const iy = Math.min(y1 + sym.h * s, block.y2) - Math.max(y1, block.y);
+        if (ix > 1 && iy > 1) return true;
+      }
+      return false;
+    };
+    if (!hits(view.x, view.y)) return view;
+    const esp = syms.find((sym) => sym.kind === 'ESP') || syms.find((sym) => sym.part && sym.part.type === 'esp32');
+    let best = null;
+    const span = 220;
+    const step = 8;
+    for (let py = -span; py <= span; py += step) {
+      for (let px = -span; px <= span; px += step) {
+        const x = view.x - px / s;
+        const y = view.y - py / s;
+        if (esp) {
+          const cx = host.left + (esp.x + esp.w / 2 - x) * s;
+          const cy = host.top + (esp.y + esp.h / 2 - y) * s;
+          if (cx < 24 || cy < 24 || cx > host.right - 24 || cy > block.y - 24) continue;
+        }
+        if (hits(x, y)) continue;
+        const dist = px * px + py * py;
+        if (!best || dist < best.dist) best = { x: x, y: y, dist: dist };
+      }
+    }
+    return best ? { s: s, x: best.x, y: best.y } : view;
+  }
+  // Screen size of the smallest label after a fit-all into this viewport.
   function screenLabelPx(model, width, height, chrome) {
     const b = (model && model.bounds) || { w: 1, h: 1 };
     const pad = 14;
@@ -554,11 +684,9 @@
     const availH = Math.max(1, height - pad * 2 - block);
     const raw = Math.min(availW / Math.max(b.w || 1, 1), availH / Math.max(b.h || 1, 1));
     const s = Math.max(0.12, Math.min(2.4, raw));
-    let min = Infinity;
-    const texts = (model && model.texts) || [];
-    for (const t of texts) min = Math.min(min, (t.size || MIN_LABEL_FONT) * s);
-    if (!isFinite(min)) min = MIN_LABEL_FONT * s;
-    return { s: s, minPx: min, raw: raw };
+    const font = smallestLabel(model);
+    const min = labelScreenPx(font, s, 1);
+    return { s: s, minPx: min, minFont: font, raw: raw };
   }
   function textWidth(text, px) { return Math.max(4, Math.ceil(String(text || '').length * px * 0.62)); }
   function pinText(t, kind) { return (kind === 'DIP' && t.num ? t.num + ' ' : '') + (t.name || ''); }
@@ -2115,6 +2243,7 @@
       this._queued = false;
       this._fitQueued = false;
       this._mountLayout();
+      this._mountFit();
       this._bind();
     }
     _layoutSig() {
@@ -2140,6 +2269,7 @@
         } else if (this._hint0) hint.textContent = this._hint0;
       }
       this._syncLayout();
+      if (!this.active) this._syncFitAll(false);
       if (this.active) this.rebuild(true);
     }
     invalidate() { this._sig = ''; if (this.active) this._queue(false); }
@@ -2173,7 +2303,12 @@
       try { this.model = layout(this.proj, { match: this._useMatch() }); }
       catch (e) { console.error('schematic layout', e); this.model = { symbols: [], rails: [], polys: [], dots: [], labels: [], texts: [], bounds: { x: 0, y: 0, w: 10, h: 10 }, fallback: true }; }
       this.paint();
-      if (fit) this.fit();
+      if (fit) { this._fitMode = 'open'; this.fit(); }
+    }
+    fitAll() {
+      this._fitGen = (this._fitGen || 0) + 1;
+      this._fitMode = 'all';
+      this.fit(0);
     }
     setLayoutMode(mode) {
       if (mode !== 'board' && mode !== 'tidy') return;
@@ -2188,8 +2323,8 @@
       if (this.active) this.rebuild(true);
     }
     _mountLayout() {
-      if (!this.host) return;
-      let bar = this.host.querySelector('#schLayout');
+      const tools = document.querySelector('.canvas-tools .view-toggle');
+      let bar = document.getElementById('schLayout');
       if (!bar) {
         bar = document.createElement('div');
         bar.id = 'schLayout';
@@ -2204,11 +2339,16 @@
           b.textContent = label;
           b.dataset.mode = mode;
           b.setAttribute('aria-pressed', 'false');
-          b.addEventListener('click', () => this.setLayoutMode(mode));
           return b;
         };
         bar.appendChild(mk('schLayBoard', 'Like breadboard', 'board'));
         bar.appendChild(mk('schLayTidy', 'Tidy', 'tidy'));
+        if (tools) tools.insertAdjacentElement('afterend', bar);
+        else if (this.host) this.host.appendChild(bar);
+      }
+      if (!bar._schBound) {
+        bar._schBound = true;
+        bar.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => this.setLayoutMode(b.dataset.mode)));
         bar.addEventListener('keydown', (e) => {
           if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' && e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
           const buttons = [...bar.querySelectorAll('button:not(:disabled)')];
@@ -2220,11 +2360,39 @@
           next.focus();
           this.setLayoutMode(next.dataset.mode);
         });
-        this.host.appendChild(bar);
       }
       bar.hidden = true;
       this._bar = bar;
       this._syncLayout();
+    }
+    _mountFit() {
+      let b = document.getElementById('schFitAll');
+      if (!b) {
+        b = document.createElement('button');
+        b.type = 'button';
+        b.id = 'schFitAll';
+        b.className = 'sch-fitall';
+        b.textContent = 'Fit all';
+        const tools = document.querySelector('.canvas-tools');
+        const lay = document.getElementById('schLayout');
+        if (lay) lay.insertAdjacentElement('afterend', b);
+        else if (tools) tools.appendChild(b);
+        else if (this.host) this.host.appendChild(b);
+      }
+      if (!b._schBound) {
+        b._schBound = true;
+        b.addEventListener('click', () => this.fitAll());
+      }
+      b.hidden = true;
+      this._fitAll = b;
+    }
+    _syncFitAll(show) {
+      const b = this._fitAll;
+      if (!b) return;
+      const on = !!show && !!this.active;
+      b.hidden = !on;
+      b.disabled = !on;
+      b.tabIndex = on ? 0 : -1;
     }
     _syncLayout() {
       const bar = this._bar;
@@ -2269,7 +2437,11 @@
       const limits = { min: 0.12, max: 2.4 };
       const clear = root.Pinch.resolveClear(frame, b, 14, limits);
       const fitted = root.Pinch.fitView(b, frame.stage, clear, 14, limits);
-      this.view.s = fitted.s; this.view.x = fitted.x; this.view.y = fitted.y;
+      const placed = placeReadable(this.model, { stage: frame.stage, clear: clear }, fitted, cssScaleOf(this.svg));
+      const whole = this._fitMode === 'all' || !placed.open.fitAll;
+      const view = whole ? fitted : liftOff(placed.view, this.model, this.svg);
+      this.view.s = view.s; this.view.x = view.x; this.view.y = view.y;
+      this._syncFitAll(!!placed.open.fitAll);
       this.apply();
       if (n === 0 && typeof requestAnimationFrame === 'function') {
         this._fitGen = (this._fitGen || 0) + 1;
@@ -2420,11 +2592,12 @@
 
   const api = {
     layout, toSvg, SchematicView, signature, pinNets: pinNetMap,
-    separateSymbols, wireJoints, layoutStoreKey, layoutModeOf, screenLabelPx, MIN_LABEL_FONT,
+    separateSymbols, wireJoints, layoutStoreKey, layoutModeOf, screenLabelPx, labelScreenPx, openScale, READABLE_PX, MIN_LABEL_FONT,
+    configureMatch,
   };
   Object.defineProperty(api, 'SCHEMATIC_MATCH_LAYOUT', {
-    get() { return matchFlag; },
-    set(v) { matchFlag = !!v; },
+    get() { return matchFlagOn(); },
+    set(v) { if (!serverOff) matchFlag = !!v; },
     enumerable: true,
   });
   root.Schematic = api;
