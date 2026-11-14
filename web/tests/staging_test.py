@@ -142,8 +142,8 @@ def _http_app(record):
                 b'X-Upstream: yes\r\nConnection: close\r\n\r\n' % len(payload) + payload)
             await writer.drain()
         finally:
-            writer.close()
             try:
+                writer.close()
                 await writer.wait_closed()
             except Exception:
                 pass
@@ -221,7 +221,48 @@ class StagingTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.uvicorn.should_exit = True
         cls.serve_thread.join(3)
-        cls.loop.call_soon_threadsafe(cls.loop.stop)
+        cls._stop_mock_loop()
+
+    @classmethod
+    def _stop_mock_loop(cls):
+        """Stop the mock loop, join its thread, and only then close the loop.
+
+        Handlers finish while the loop can still schedule their close. Closing
+        the loop before the thread has exited is what logs "Event loop is closed".
+        """
+        async def drain():
+            current = asyncio.current_task()
+            to_cancel = []
+            for task in list(asyncio.all_tasks()):
+                if task is current:
+                    continue
+                qual = getattr(task.get_coro(), '__qualname__', '')
+                if qual.endswith('.handle') or qual.endswith('.ws_handler'):
+                    to_cancel.append(task)
+            for ws in list(getattr(cls.ws_server, 'websockets', ())):
+                task = getattr(ws, 'handler_task', None)
+                if task is not None and task is not current and not task.done():
+                    to_cancel.append(task)
+            for task in to_cancel:
+                task.cancel()
+            if to_cancel:
+                await asyncio.gather(*to_cancel, return_exceptions=True)
+            cls.http_server.close()
+            cls.ws_server.close()
+            await cls.http_server.wait_closed()
+            await cls.ws_server.wait_closed()
+
+        try:
+            asyncio.run_coroutine_threadsafe(drain(), cls.loop).result(5)
+        except Exception:
+            pass
+        try:
+            cls.loop.call_soon_threadsafe(cls.loop.stop)
+        except RuntimeError:
+            pass
+        cls.loop_thread.join(5)
+        if not cls.loop_thread.is_alive() and not cls.loop.is_closed():
+            cls.loop.close()
 
     def setUp(self):
         self.logs = []
