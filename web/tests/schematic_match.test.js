@@ -111,24 +111,53 @@ test('the server off switch wins, and ?schmatch applies only when the server all
   }
 });
 
-test('open zoom keeps labels at 11 screen px, and a readable fit stays fitted', () => {
+function fitScale(box, clear, pad) {
+  const availW = Math.max(1, clear.width - pad * 2);
+  const availH = Math.max(1, clear.height - pad * 2);
+  return Math.max(0.12, Math.min(2.4, Math.min(availW / Math.max(box.w, 1), availH / Math.max(box.h, 1))));
+}
+function groupInside(model, ids, view, clear) {
+  const s = view.s;
+  const x0 = view.x, y0 = view.y;
+  const x1 = view.x + clear.width / s, y1 = view.y + clear.height / s;
+  return model.symbols.filter((sym) => ids.includes(sym.id)).every((sym) => sym.x >= x0 - 1 && sym.y >= y0 - 1 && sym.x + sym.w <= x1 + 1 && sym.y + sym.h <= y1 + 1);
+}
+
+test('open zoom frames the wired parts, and only a crowded sheet zooms for part names', () => {
   assert.equal(S.labelScreenPx(9.5, 0.25, 1), 2.375);
-  assert.equal(S.labelScreenPx(9.5, 0.25, 2), 4.75);
-  const tight = S.openScale(9.5, 0.25, 1);
+  assert.equal(S.labelScreenPx(11, 0.25, 1), 2.75);
+  const tight = S.openScale(11, 0.25, 1);
   assert.equal(tight.fitAll, true);
-  assert.ok(Math.abs(tight.s - (11 / 9.5)) < 1e-9);
-  assert.ok(tight.px >= 11);
+  assert.ok(Math.abs(tight.s - 1) < 1e-9);
   const easy = S.openScale(12, 1.2, 1);
   assert.equal(easy.fitAll, false);
   assert.equal(easy.s, 1.2);
-  const remote = layout(E.EX.remote(), { match: true });
-  const phone = screenLabelPx(remote, 390, 780, 160);
-  const opened = S.openScale(phone.minFont, phone.s, 1);
-  assert.equal(opened.fitAll, true, 'remote at 390 fitted labels are ' + phone.minPx.toFixed(2) + 'px');
-  assert.ok(opened.px >= 11);
+  const phone = { width: 320, height: 412 };
+  const desk = { width: 796, height: 219 };
   const blink = layout(E.EX.blink(), { match: true });
-  const desk = screenLabelPx(blink, 1280, 800, 120);
-  if (desk.minPx >= 11) assert.equal(S.openScale(desk.minFont, desk.s, 1).fitAll, false);
+  const blinkFrame = S.openFrame(blink);
+  assert.deepStrictEqual(blinkFrame.ids.slice().sort(), ['LED1', 'R1', 'esp']);
+  assert.equal(blinkFrame.font, 11);
+  for (const clear of [phone, desk]) {
+    const fitted = fitScale(blinkFrame.box, clear, 14);
+    const choice = S.chooseOpen(blinkFrame.font, fitted, 1, { group: blinkFrame.box, esp: blinkFrame.esp, clear, pad: 14, count: blinkFrame.count });
+    assert.equal(choice.zoomed, false, 'blink stays framed at ' + (choice.s * 100).toFixed(0) + '%');
+    assert.ok(choice.s < 0.9, 'blink is not the old 116% pin zoom');
+    assert.ok(groupInside(blink, blinkFrame.ids, { s: choice.s, x: blinkFrame.box.x, y: blinkFrame.box.y }, { width: clear.width - 28, height: clear.height - 28 }));
+  }
+  const simon = layout(E.EX.simon(), { match: true });
+  const simonFrame = S.openFrame(simon);
+  assert.ok(simonFrame.count < 24);
+  const simonFit = fitScale(simonFrame.box, phone, 14);
+  const simonOpen = S.chooseOpen(simonFrame.font, simonFit, 1, { group: simonFrame.box, esp: simonFrame.esp, clear: phone, pad: 14, count: simonFrame.count });
+  assert.equal(simonOpen.zoomed, false);
+  const remote = layout(E.EX.remote(), { match: true });
+  const remoteFrame = S.openFrame(remote);
+  assert.ok(remoteFrame.count >= 24);
+  const remoteFit = fitScale(remoteFrame.box, phone, 14);
+  const remoteOpen = S.chooseOpen(remoteFrame.font, remoteFit, 1, { group: remoteFrame.box, esp: remoteFrame.esp, clear: phone, pad: 14, count: remoteFrame.count });
+  assert.equal(remoteOpen.zoomed, true);
+  assert.ok(remoteOpen.px >= 11, 'remote part names are ' + remoteOpen.px.toFixed(2) + 'px');
 });
 
 test('junction dots mark a shared node and crossings of two nets do not', () => {
@@ -196,8 +225,8 @@ test('match layout follows the breadboard, hides it, and keeps power as labels',
   const sorted = order.slice().sort((a, b) => a - b);
   assert.deepStrictEqual(order, sorted, 'symbol order follows the breadboard left to right');
   const fit = screenLabelPx(model, 390, 700, 48);
+  assert.equal(fit.minFont, 11);
   const open = S.openScale(fit.minFont, fit.s, 1);
-  assert.ok(open.px >= S.READABLE_PX - 1e-6, 'open labels are ' + open.px.toFixed(2) + 'px');
   assert.equal(S.labelScreenPx(fit.minFont, open.s, 1), open.px);
   const wide = screenLabelPx(model, 1600, 1200, 80);
   const wideOpen = S.openScale(wide.minFont, wide.s, 1);

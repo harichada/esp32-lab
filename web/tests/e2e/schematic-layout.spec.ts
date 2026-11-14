@@ -23,7 +23,7 @@ async function install(page: Page) {
 }
 
 async function openExample(page: Page, id: string, width: number) {
-  await page.setViewportSize({ width: width, height: width === 390 ? 780 : 800 });
+  await page.setViewportSize({ width: width, height: width === 390 ? 844 : 800 });
   await page.goto('/?ex=' + id + '&resume=0');
   await page.waitForFunction((key) => {
     const app = (window as unknown as { app?: { proj?: { example?: string; parts?: unknown[] }; schematic?: unknown } }).app;
@@ -50,7 +50,7 @@ async function drawing(page: Page) {
       app: { schematic: { model: {
         bounds: { x: number; y: number; w: number; h: number };
         symbols: { id: string; x: number; y: number; w: number; h: number }[];
-        texts: { x: number; y: number; x2: number; y2: number; own: string | null; text: string }[];
+        texts: { x: number; y: number; x2: number; y2: number; own: string | null; text: string; kind?: string; size?: number }[];
       } } };
     }).app.schematic.model;
     const bodies: Box[] = model.symbols.map((s) => ({ x: s.x, y: s.y, x2: s.x + s.w, y2: s.y + s.h, id: s.id, text: '' }));
@@ -87,7 +87,8 @@ async function drawing(page: Page) {
       const sx = Math.hypot(p[0] || 0, p[1] || 0);
       if (sx > 0 && isFinite(sx)) css *= sx;
     }
-    const font = (model.texts || []).reduce((m, text) => Math.min(m, text.size || 9.5), Infinity);
+    const partTexts = (model.texts || []).filter((text) => text.kind === 'ref' || text.kind === 'val' || text.kind === 'title');
+    const font = partTexts.reduce((m, text) => Math.min(m, text.size || 11), Infinity);
     const b = model.bounds;
     const covers = vb.x <= b.x + 8 && vb.y <= b.y + 8 && vb.x + vb.width >= b.x + b.w - 8 && vb.y + vb.height >= b.y + b.h - 8;
     const fitAll = document.getElementById('schFitAll');
@@ -100,13 +101,41 @@ async function drawing(page: Page) {
     const cy = er ? (er.top + er.bottom) / 2 : 0;
     const espInView = !!er && er.width > 4 && er.height > 4 && cx >= 0 && cy >= 0 && cx <= window.innerWidth && cy <= window.innerHeight
       && !(trTools && cx >= trTools.left && cx <= trTools.right && cy >= trTools.top && cy <= trTools.bottom);
+    const edge = (sel: string) => {
+      const el = document.querySelector(sel);
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) return null;
+      return { top: r.top, bottom: r.bottom, left: r.left, right: r.right };
+    };
+    let top = 0;
+    let bottom = window.innerHeight;
+    for (const sel of ['header#top', '.projbanner']) {
+      const r = edge(sel);
+      if (r && r.bottom > top && r.top < window.innerHeight * 0.5) top = Math.max(top, r.bottom);
+    }
+    for (const sel of ['.canvas-tools', '.hint']) {
+      const r = edge(sel);
+      if (r && r.top < bottom && r.bottom > window.innerHeight * 0.4) bottom = Math.min(bottom, r.top);
+    }
+    const open = { left: 0, top, right: window.innerWidth, bottom };
+    const wired = new Set((window as unknown as { Schematic: { openFrame: (m: unknown) => { ids: string[] } } }).Schematic.openFrame(model).ids);
+    const outside: string[] = [];
+    for (const body of screenBodies) {
+      if (!wired.has(body.id)) continue;
+      if (body.x < open.left - 1 || body.y < open.top - 1 || body.x2 > open.right + 1 || body.y2 > open.bottom + 1) outside.push(body.id);
+    }
     return {
       bodies: bodies,
       labels: labels,
       screenBodies: screenBodies,
       toggle: t ? { x: t.left, y: t.top, x2: t.right, y2: t.bottom, w: t.width, h: t.height } : null,
       buttons: buttons,
-      screenPx: (isFinite(font) ? font : 9.5) * zoom * css,
+      screenPx: (isFinite(font) ? font : 11) * zoom * css,
+      zoomPct: zoom * 100,
+      wiredOutside: outside,
+      openTop: open.top,
+      openBottom: open.bottom,
       covers: covers,
       fitAll: !!(fitAll && !fitAll.hidden),
       espInView: espInView,
@@ -144,7 +173,6 @@ function overlaps(a: Box, b: Box) {
 
 function assertClear(report: Awaited<ReturnType<typeof drawing>>, where: string) {
   expect(report.hidden, where + ' toggle').toBe(false);
-  expect(report.screenPx, where + ' screen font').toBeGreaterThanOrEqual(11);
   if (!report.fitAll) expect(report.covers, where + ' fitted').toBe(true);
   expect(report.buttons.map((b) => b.name), where).toEqual(['Like breadboard', 'Tidy']);
   for (const b of report.buttons) {
@@ -179,6 +207,9 @@ for (const example of EXAMPLES) {
       await openExample(page, example.id, width);
       const report = await drawing(page);
       assertClear(report, example.id + '@' + width);
+      if (example.id === 'blink' || example.id === 'simon') {
+        expect(report.wiredOutside, example.id + '@' + width + ' off screen ' + JSON.stringify(report.wiredOutside)).toEqual([]);
+      }
       if (width === 390 && report.toggle) {
         const mid = (report.toggle.y + report.toggle.y2) / 2;
         expect(mid, 'thumb reach').toBeGreaterThan(report.innerH * 0.55);
@@ -212,7 +243,11 @@ for (const example of EXAMPLES) {
       await page.evaluate(() => new Promise((resolve) => {
         requestAnimationFrame(() => requestAnimationFrame(() => resolve(null)));
       }));
-      assertClear(await drawing(page), example.id + '@' + width + ' moved');
+      const moved = await drawing(page);
+      assertClear(moved, example.id + '@' + width + ' moved');
+      if (example.id === 'blink' || example.id === 'simon') {
+        expect(moved.wiredOutside, example.id + '@' + width + ' moved off screen').toEqual([]);
+      }
       await expect(page.locator('.toast')).toHaveCount(0);
       await chromeClear(page, example.id + '@' + width + ' after the toast fades');
     });
@@ -224,7 +259,7 @@ test('remote at 390 keeps labels readable and Fit all shows every part', async (
   await openExample(page, 'remote', 390);
   const opened = await drawing(page);
   expect(opened.fitAll).toBe(true);
-  expect(opened.screenPx).toBeGreaterThanOrEqual(11);
+  expect(opened.screenPx, 'part labels ' + opened.screenPx.toFixed(2) + 'px at ' + opened.zoomPct.toFixed(0) + '%').toBeGreaterThanOrEqual(11);
   expect(opened.espInView).toBe(true);
   const fit = page.locator('#schFitAll');
   await expect(fit).toBeVisible();
