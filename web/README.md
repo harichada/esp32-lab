@@ -121,7 +121,7 @@ A repeated Run from the **same tab** (the `X-Client-Id` sent from that tab's `se
 
 ## Staging copy
 
-The public server stays the live lab. In Docker the live container is on the default bridge, so `127.0.0.1` inside it is the live container itself. The only upstream the env var accepts is `http://esp32lab-staging:8765` on an internal network. A loopback URL is refused. With the flag empty or rejected, `/staging` and `/staging/*` are 404 and every other response is unchanged. A rejected value never proxies. Unit tests that need a local upstream call `set_test_upstream`; that override is not an environment variable.
+The public server stays the live lab. Caddy on `circuitlab-prod` is the way into staging: `https://esp32lab.duckdns.org/staging/` goes to `esp32lab-staging:8765`. `STAGING_PROXY_ENABLED` defaults to `0`. While it is `0`, `/staging` and `/staging/*` on this process are 502, the page names only `https://esp32lab.duckdns.org/staging/`, and no upstream connection is opened. Set it to `1` to restore the pass-through below. The only upstream that env var accepts is `http://esp32lab-staging:8765`. A loopback URL is refused. With the proxy flag on and the upstream empty or rejected, `/staging` and `/staging/*` are 404 and every other response is unchanged. A rejected value never proxies. Unit tests that need a local upstream call `set_test_upstream`; that override is not an environment variable.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -151,7 +151,7 @@ curl -sI http://127.0.0.1:8766/api/health                 # 401, plain private-c
 curl -sI -H "Cookie: cl_stage=<value>" http://127.0.0.1:8766/api/health   # 200, X-Robots-Tag: noindex, nofollow
 ```
 
-On the live process, leave `SIM_STAGING_UPSTREAM` empty and `http://127.0.0.1:8765/staging/` is 404. Forwarding is the container name in the run steps below.
+On the live process, `STAGING_PROXY_ENABLED` defaults to `0`, so `http://127.0.0.1:8765/staging/` is 502 and names `https://esp32lab.duckdns.org/staging/`. With the proxy flag at `1` and `SIM_STAGING_UPSTREAM` empty, that URL is 404. Forwarding is the container name in the run steps below.
 
 ## Test-copy container
 
@@ -175,17 +175,18 @@ docker run -d --name esp32lab-staging --network circuitlab-staging --cpus 0.5 \
 
 Verify on the live origin: `/api/health` is 200, `/staging/` with the `cl_stage` cookie is 200, `/staging/` without the cookie is 401 (the cookie gate is unchanged), and one compile on the main site succeeds.
 
-Rollback: recreate `esp32lab` from the saved inspect without `SIM_STAGING_UPSTREAM`, or from the v64 image `65ffe4981b43` (main `21340d3`) plus `/home/opc/backup-v64`. Then `docker rm -f esp32lab-staging` and `docker network rm circuitlab-staging`. `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/staging/` is 404.
+Rollback of this container layout: recreate `esp32lab` from the saved inspect without `SIM_STAGING_UPSTREAM`, or from the v64 image `65ffe4981b43` (main `21340d3`) plus `/home/opc/backup-v64`. Then `docker rm -f esp32lab-staging` and `docker network rm circuitlab-staging`. With `STAGING_PROXY_ENABLED` left at `0`, `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/staging/` is 502. Turning the built-in proxy back on is `STAGING_PROXY_ENABLED=1` and reconnecting live to `circuitlab-staging`. The network reconnect does not restart the container. See `docs/https.md`.
 
 ## HTTPS
 
-Caddy (`circuitlab-caddy`) terminates TLS on port 443 and reverse-proxies to this process. The app publishes port 80 only (`-p 80:8765`). It does not listen on 443 and it does not issue a certificate. `proxy_headers` stays off. Forwarding headers count only from an address in `TRUSTED_PROXY_IPS`. The documented address is `172.18.0.250`, which is the address Caddy is pinned to. The Docker subnet is not a trusted proxy: staging runs on that network. Plain HTTP is unchanged until `HTTPS_ENABLED=1`. `HTTPS_HOST` defaults to empty. The documented hostname is `esp32lab.duckdns.org`. Renewal, the reference Caddyfile, and rollback are in `docs/https.md`.
+Caddy (`circuitlab-caddy`) terminates TLS on port 443 and reverse-proxies to this process. The app publishes port 80 only (`-p 80:8765`). It does not listen on 443 and it does not issue a certificate. `proxy_headers` stays off. Forwarding headers count only from an address in `TRUSTED_PROXY_IPS`. The documented address is `172.30.0.250` on the `circuitlab-prod` network (`172.30.0.0/24`). Caddy is pinned to that address. The subnet is not a trusted proxy. Plain HTTP is unchanged until `HTTPS_ENABLED=1`. `HTTPS_HOST` defaults to empty. The documented hostname is `esp32lab.duckdns.org`. Renewal, the reference Caddyfile, and rollback are in `docs/https.md`.
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `HTTPS_ENABLED` | `0` | Only the string `1` turns the redirect on. While it is off there is no redirect and no header this feature adds or removes. Forwarding headers are ignored. |
 | `HTTPS_HOST` | empty | The only redirect target. Empty means the redirect stays off. Documented value: `esp32lab.duckdns.org`. The Host header is never copied into `Location`. |
-| `TRUSTED_PROXY_IPS` | empty (trust nobody) | Comma-separated exact IP addresses. A `/` or a token that is not an IP is logged and the process trusts nobody. Documented value: `172.18.0.250`. |
+| `TRUSTED_PROXY_IPS` | empty (trust nobody) | Comma-separated exact IP addresses. A `/` or a token that is not an IP is logged and the process trusts nobody. Documented value: `172.30.0.250`. |
+| `STAGING_PROXY_ENABLED` | `0` | Only `1` forwards `/staging` to the staging container. Off, `/staging` and `/staging/*` are 502, the body names `https://esp32lab.duckdns.org/staging/`, and no upstream connection is opened. `1` is the previous pass-through. |
 | `HSTS_ENABLED` | `0` | Only the string `1` may send `Strict-Transport-Security`, and only on a request the trusted proxy confirmed as https. |
 | `HSTS_SECONDS` | `0` | The `max-age` used once `HSTS_ENABLED=1`. No `includeSubDomains` and no `preload`. Later rollout: 300, then 86400, then 31536000. `0` sends nothing. Values above 63072000 are rejected. |
 | `ALLOWED_HOSTS` | unset (accept all) | Comma-separated hosts, for example `129.158.200.25,esp32lab.duckdns.org`. Any other Host is 400. An absolute-form request target is checked the same way. |
@@ -198,7 +199,7 @@ With the redirect on, a browser that has saved projects on the plain HTTP origin
 - `node --test tests/*.test.js`: solver, JS-sketch runner, remote logic and the network log.
 - `python3 tests/diskkeep_test.py`: firmware-image reclaim, sketch/core LRU eviction, orphan sweep, the low-disk guard, the network-stack cache (it survives sketch cleanup and the orphan sweep, the size cap evicts the oldest entry, a shim-hash change misses, a firmware-cache hit is only the `[0.0s] cached` line, and the startup warm-up uses the browser's `SIM` define so its key matches a browser compile), and the compile-queue flags.
 - `python3 -m unittest tests/compile_queue_test.py` (from `web/`): two clients compile at once and the second waits, the same tab is still rate-limited, the queue cap and the timeout answer 429, a warm-up wait is logged, `SIM_COMPILE_QUEUE=0` restores the old 429, and a cache hit does not wait.
-- `python3 -m unittest tests/https_test.py` (from `web/`): exact-IP `TRUSTED_PROXY_IPS` (a slash or a bad token trusts nobody), forwarding headers from `172.18.0.5` and from `127.0.0.1` ignored, only `172.18.0.250` honored, the redirect matrix (301/308, path and query kept, `/staging/` kept, Host ignored), `/api/health` exempt, HSTS only on a trusted-proxy https request, the Secure staging cookie, `HEAD /` matching GET, and flag-off parity.
+- `python3 -m unittest tests/https_test.py` (from `web/`): exact-IP `TRUSTED_PROXY_IPS` (a slash or a bad token trusts nobody), forwarding headers from `172.30.0.5`, `172.18.0.5`, and `127.0.0.1` ignored, only `172.30.0.250` honored, the redirect matrix (301/308, path and query kept, `/staging/` kept, Host ignored), `/api/health` exempt, HSTS only on a trusted-proxy https request, the Secure staging cookie, `HEAD /` matching GET, and flag-off parity.
 - `python3 -m unittest tests/staging_test.py` (from `web/`): noindex and the page flag only when `SIM_STAGING=1`, the access-token 401 / cookie / redirect, a WebSocket upgrade without the cookie, `/staging` 404 when the upstream is empty, a rejected upstream URL, `http://esp32lab-staging:8765` accepted and a wrong port, a lookalike host, userinfo, `https`, an IP literal, and a path refused, a patched resolver that fails the name, a refused connection, and a blackholed address that times out, each answered with the 502 page (`reason=upstream_unreachable` or `reason=upstream_timeout`), an upstream 302 returned without a second request, prefix stripping, `X-Forwarded-For` / `Forwarded` / `X-Real-IP` / `X-Forwarded-Host` / `X-Forwarded-Proto` / `X-Client-IP` dropped (including mixed case and duplicates) and replaced with one peer `X-Forwarded-For`, a rotating `X-Forwarded-For` that still returns 429, backslash and double-encoded dot paths answered 404 with no upstream request, HEAD and OPTIONS auth plus method forwarding, a chunked body over 200 KiB answered 413, an unauthenticated `/staging` WebSocket refused before the upstream connection, the body limit, a connect failure and a timeout before the first byte both answered 502, and a WebSocket echo (text, binary, close code).
 - `node --test tests/storage.test.js`: the storage prefix is off by default and on in staging, and the app does not touch an unprefixed key in staging mode.
 - `node --test` also covers the project store (`tests/projects.test.js`).

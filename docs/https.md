@@ -1,12 +1,12 @@
 # HTTPS
 
-Caddy is the TLS terminator. The container is `circuitlab-caddy`. It listens on 443, obtains the Let's Encrypt certificate for `esp32lab.duckdns.org` with TLS-ALPN-01, and reverse-proxies to the app at `esp32lab:8765` on the shared Docker network. Port 80 is published to the app (`-p 80:8765`) and does not go through Caddy. This process does not issue a certificate, does not listen on 443, and does not reload a certificate.
+Caddy is the TLS terminator. The container is `circuitlab-caddy`. Live and Caddy sit on the internal network `circuitlab-prod` (`172.30.0.0/24`). Caddy is pinned at `172.30.0.250`. It listens on 443, obtains the Let's Encrypt certificate for `esp32lab.duckdns.org` with TLS-ALPN-01, and reverse-proxies the site to the app at `esp32lab:8765`. A request whose path is `/staging*` goes straight to `esp32lab-staging:8765` and does not enter the live app. Port 80 is published to the app (`-p 80:8765`) and does not go through Caddy. This process does not issue a certificate, does not listen on 443, and does not reload a certificate.
 
 The app container publishes port 80 only. Do not publish 8765.
 
 ## Reference Caddyfile
 
-The file on the server is `/home/opc/caddy/Caddyfile`. That copy is authoritative. This block is the reference built from the settings that are known: the domain, `auto_https disable_redirects`, the HTTP challenge disabled so issuance is TLS-ALPN only, and `reverse_proxy esp32lab:8765`. It is not a claim that the server file is byte-for-byte this text.
+The file on the server is `/home/opc/caddy/Caddyfile`. That copy is authoritative. This block is the reference built from the settings that are known: the domain, `auto_https disable_redirects`, the HTTP challenge disabled so issuance is TLS-ALPN only, `reverse_proxy esp32lab:8765`, and `/staging*` routed to `esp32lab-staging:8765`. It is not a claim that the server file is byte-for-byte this text.
 
 ```
 {
@@ -19,9 +19,14 @@ esp32lab.duckdns.org {
 			disable_http_challenge
 		}
 	}
-	reverse_proxy esp32lab:8765 {
-		header_up Host {host}
-		header_up X-Forwarded-Proto {scheme}
+	handle /staging* {
+		reverse_proxy esp32lab-staging:8765
+	}
+	handle {
+		reverse_proxy esp32lab:8765 {
+			header_up Host {host}
+			header_up X-Forwarded-Proto {scheme}
+		}
 	}
 }
 ```
@@ -32,28 +37,28 @@ Caddy replaces forwarding headers that the client sent. The app trusts `X-Forwar
 
 ## Caddy on the host
 
-Pin the container to `172.18.0.250`. The network is the Docker network where the app is reachable as `esp32lab` and where staging also runs. The data volume is the one already mounted at `/data` on `circuitlab-caddy`. Keep that volume. Deleting it throws away the account and the certificate, and a replacement issuance counts against Let's Encrypt's duplicate-certificate limit (five certificates for the same name per week).
+Pin the container to `172.30.0.250` on `circuitlab-prod`. Live moves to that same network. Staging stays the container Caddy reaches as `esp32lab-staging`. The data volume is the one already mounted at `/data` on `circuitlab-caddy`. Keep that volume. Deleting it throws away the account and the certificate, and a replacement issuance counts against Let's Encrypt's duplicate-certificate limit (five certificates for the same name per week).
 
 ```
 docker run -d --name circuitlab-caddy --restart unless-stopped \
-  --network <shared-network> --ip 172.18.0.250 \
+  --network circuitlab-prod --ip 172.30.0.250 \
   -p 443:443 \
   -v <caddy-data>:/data \
   -v /home/opc/caddy/Caddyfile:/etc/caddy/Caddyfile:ro \
   caddy:2
 ```
 
-`<shared-network>` and `<caddy-data>` are the ones `docker inspect circuitlab-caddy` already shows. Do not create a second data volume.
+`<caddy-data>` is the volume `docker inspect circuitlab-caddy` already shows. Do not create a second data volume.
 
 ## Trusted proxy
 
-`TRUSTED_PROXY_IPS` is a comma-separated list of exact IP addresses. The documented value is `172.18.0.250`, the address Caddy is pinned to with `--ip 172.18.0.250`.
+`TRUSTED_PROXY_IPS` is a comma-separated list of exact IP addresses. The documented value is `172.30.0.250`, the address Caddy is pinned to with `--ip 172.30.0.250` on `circuitlab-prod`.
 
-The setting never accepts a CIDR range. A value that contains `/`, or any token that is not an IP address, is rejected at startup. The process logs `TRUSTED_PROXY_IPS rejected (...); trusting nobody` and trusts no peer.
+The setting never accepts a CIDR range. A value that contains `/`, or any token that is not an IP address, is rejected at startup. The process logs `TRUSTED_PROXY_IPS rejected (...); trusting nobody` and trusts no peer. `172.30.0.0/24` is the Docker network, not a value for this setting.
 
-Do not trust the Docker subnet. Staging runs on that same network, so another container can open a connection to the app. Only the pinned Caddy address is a proxy. `X-Forwarded-For` is never the thing that decides trust. The TCP peer is.
+Do not trust the Docker subnet. Another container on `circuitlab-prod` can open a connection to the app. Only the pinned Caddy address is a proxy. `X-Forwarded-For` is never the thing that decides trust. The TCP peer is.
 
-From a peer that is not in the list, including another address on the Docker network and including `127.0.0.1`, `X-Forwarded-Proto` and `X-Forwarded-For` are ignored. A malformed or repeated `X-Forwarded-Proto` or `X-Forwarded-Host` from the pinned address is 400. `X-Forwarded-Host` is adopted only when `ALLOWED_HOSTS` is set and the value is in that list. The redirect target is still only `https://HTTPS_HOST` plus the path and query.
+From a peer that is not in the list, including `172.30.0.5` on the new network, `172.18.0.5` on the old one, and `127.0.0.1`, `X-Forwarded-Proto` and `X-Forwarded-For` are ignored. A malformed or repeated `X-Forwarded-Proto` or `X-Forwarded-Host` from the pinned address is 400. `X-Forwarded-Host` is adopted only when `ALLOWED_HOSTS` is set and the value is in that list. The redirect target is still only `https://HTTPS_HOST` plus the path and query.
 
 ## Flags
 
@@ -61,7 +66,8 @@ From a peer that is not in the list, including another address on the Docker net
 |---|---|---|
 | `HTTPS_ENABLED` | `0` | Only the string `1` turns the redirect on. While it is off the app does not read forwarding headers, does not redirect, and does not add or remove a header. |
 | `HTTPS_HOST` | empty | The only redirect target. Empty or invalid leaves the redirect off and logs that. Documented value: `esp32lab.duckdns.org`. The Host header is never copied into `Location`. |
-| `TRUSTED_PROXY_IPS` | empty | Exact IPs. Empty trusts nobody. Documented value: `172.18.0.250`. |
+| `TRUSTED_PROXY_IPS` | empty | Exact IPs. Empty trusts nobody. Documented value: `172.30.0.250`. |
+| `STAGING_PROXY_ENABLED` | `0` | Only `1` turns on the app's `/staging` pass-through. Off, `/staging` and `/staging/*` are 502 and nothing is connected upstream. |
 | `HSTS_ENABLED` | `0` | Only the string `1` may send `Strict-Transport-Security`, and only on a request the trusted proxy confirmed as https. |
 | `HSTS_SECONDS` | `0` | `max-age` once HSTS is on. No `includeSubDomains`, no `preload`. Above 63072000 is rejected and HSTS stays off. Later rollout: 300, then 86400, then 31536000. |
 | `ALLOWED_HOSTS` | unset (accept every Host) | Comma-separated hosts. Any other Host is 400, including an absolute-form request target. |
@@ -70,7 +76,9 @@ From a peer that is not in the list, including another address on the Docker net
 
 With `HTTPS_ENABLED=1`, a plain HTTP request (the peer is not the trusted proxy, or the trusted proxy says `http`) for an allowed host is 301 for GET and HEAD and 308 for every other method. The target is `https://HTTPS_HOST` plus the path and query. A top-level HTML GET (`/`, `/index.html`, other `.html`) is the project handoff page instead of a 301. A WebSocket on plain HTTP is 403 with the body `WebSocket over plain HTTP is refused while HTTPS redirect is on. Use wss://.`
 
-A request the trusted proxy marks `https` is not redirected. The app treats that request as https, so the staging cookie is `Secure` and HSTS can be sent. The same is true for `/staging/...`: the redirect, when it happens, keeps the path and the query (`/staging/foo?x=1` stays `/staging/foo?x=1`). With `HTTPS_ENABLED=0`, `/staging/` is unchanged.
+A request the trusted proxy marks `https` is not redirected. The app treats that request as https, so the staging cookie is `Secure` and HSTS can be sent. If the HTTPS redirect is on and the request is still plain HTTP, `/staging/foo?x=1` keeps that path and query on `https://HTTPS_HOST`. Caddy then sends `/staging*` to the staging container.
+
+`STAGING_PROXY_ENABLED` defaults to `0`. A request that reaches the app at `/staging` or `/staging/*` is 502. The body says staging is only available at `https://esp32lab.duckdns.org/staging/`. It contains no container name, address, or token. `HEAD` is the same status with no body. No upstream connection is opened. That is what `http://<the public IP>/staging/` returns while this flag is off. `https://esp32lab.duckdns.org/staging/` does not hit this proxy. Set the flag to `1` and the app's pass-through is the previous one: empty upstream is 404, a configured upstream is forwarded.
 
 HSTS is not sent on plain HTTP. Confirmed-https responses also send `Content-Security-Policy: upgrade-insecure-requests`, appended when a policy is already there. The handoff page and `/migrate` do not. Their policy is `default-src 'none'` with the nonce those pages need.
 
@@ -80,9 +88,9 @@ A browser that still has projects on the plain HTTP origin gets one page from th
 
 ## Turning the redirect on
 
-1. Caddy is already on 443 at `172.18.0.250`, and `https://esp32lab.duckdns.org/api/health` answers.
-2. Set `TRUSTED_PROXY_IPS=172.18.0.250` and `HTTPS_HOST=esp32lab.duckdns.org`. Leave `HTTPS_ENABLED=0` and recreate the app container. Plain HTTP is unchanged. A client that sends `X-Forwarded-Proto: https` still gets the HTTP site.
-3. Set `HTTPS_ENABLED=1` and recreate. An asset on port 80 is 301 to `https://esp32lab.duckdns.org` with the path and query kept. `GET /` on HTTP is the handoff page. `GET /api/health` on HTTP is 200 with no `Location`. `GET /staging/...` on HTTP redirects to the same path on `https://esp32lab.duckdns.org`.
+1. Caddy is on 443 at `172.30.0.250` on `circuitlab-prod`, and `https://esp32lab.duckdns.org/api/health` answers. `https://esp32lab.duckdns.org/staging/` is served by Caddy from `esp32lab-staging:8765`.
+2. Set `TRUSTED_PROXY_IPS=172.30.0.250` and `HTTPS_HOST=esp32lab.duckdns.org`. Leave `HTTPS_ENABLED=0` and recreate the app container. Plain HTTP pages are unchanged. `http://<the public IP>/staging/` is 502. A client that sends `X-Forwarded-Proto: https` still gets the HTTP site.
+3. Set `HTTPS_ENABLED=1` and recreate. An asset on port 80 is 301 to `https://esp32lab.duckdns.org` with the path and query kept. `GET /` on HTTP is the handoff page. `GET /api/health` on HTTP is 200 with no `Location`. `GET /staging/...` on HTTP redirects to the same path on `https://esp32lab.duckdns.org`, which Caddy serves from the staging container.
 4. Leave `HSTS_ENABLED=0` until the redirect has been checked. Then 300, then 86400, then 31536000. Each step is a recreate. A browser that stored HSTS does not forget it when the flag goes back to 0. A browser that stored a 301 does not forget it either.
 
 Sign-in callback URLs for the later auth work are `https://esp32lab.duckdns.org/auth/callback/google` and `https://esp32lab.duckdns.org/auth/callback/github`.
@@ -101,6 +109,8 @@ Do not delete the data volume. Do not loop issuance. Let's Encrypt allows five d
 ## Rollback
 
 Set `HTTPS_ENABLED=0` and recreate the app container. The redirect stops. Caddy keeps serving the certificate. `HSTS_ENABLED=0` stops new HSTS headers. It does not clear a `Strict-Transport-Security` value a browser already stored, and it does not clear a 301 a browser already stored.
+
+To put `/staging/` back through the live app, set `STAGING_PROXY_ENABLED=1` and reconnect the live container to `circuitlab-staging` (`docker network connect circuitlab-staging esp32lab`). The network reconnect does not restart the container. The flag is read when the app process starts, so that part is a recreate. Caddy's `/staging*` route is what to remove in the server Caddyfile if https should stop going straight to the staging container. The server copy remains authoritative.
 
 To take HTTPS off the host, stop `circuitlab-caddy` and close 443. Keep the data volume. The app keeps publishing port 80 only.
 

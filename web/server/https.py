@@ -19,7 +19,7 @@ HSTS_SECONDS       default 0. The max-age used once HSTS_ENABLED is 1.
 TRUSTED_PROXY_IPS  default empty, which trusts nobody. Comma-separated exact
                    IP addresses. A slash or a value that is not an IP is
                    rejected at startup and the process trusts nobody. The
-                   documented address is ``172.18.0.250``.
+                   documented address is ``172.30.0.250``.
 ALLOWED_HOSTS      default unset (accept every Host). Comma-separated hostnames.
 """
 import base64, ipaddress, json, os, re, secrets, threading, zlib

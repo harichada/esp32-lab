@@ -175,8 +175,12 @@ class StagingTests(unittest.TestCase):
         self.http_log.clear()
         self.ws_log.clear()
 
-    def _env(self, staging='0', token='', upstream='', base=''):
-        """Apply flags. A loopback URL is the test seam, not the env var."""
+    def _env(self, staging='0', token='', upstream='', base='', proxy='1'):
+        """Apply flags. A loopback URL is the test seam, not the env var.
+
+        ``proxy`` defaults to ``1`` so these tests keep today's pass-through.
+        Production defaults ``STAGING_PROXY_ENABLED`` to ``0``.
+        """
         staging_mod = sys.modules['staging']
         local = None
         env_upstream = upstream or ''
@@ -190,6 +194,7 @@ class StagingTests(unittest.TestCase):
             'SIM_ACCESS_TOKEN': token,
             'SIM_STAGING_UPSTREAM': env_upstream,
             'SIM_BASE_PATH': base,
+            'STAGING_PROXY_ENABLED': proxy,
         })
 
     def fetch(self, path, headers=None, data=None, method=None, timeout=5):
@@ -315,6 +320,33 @@ class StagingTests(unittest.TestCase):
         self.assertEqual(staging.MAX_BODY, server.MAX_BODY)
         self.assertEqual(staging.PROXY_TIMEOUT, 30.0)
 
+    def test_proxy_flag_off_is_502_with_no_upstream_and_flag_on_matches_today(self):
+        self.http_log.clear()
+        self._env(upstream='http://127.0.0.1:%d' % self.http_port, proxy='0')
+        self.assertFalse(staging.PROXY_ENABLED)
+        public = 'https://esp32lab.duckdns.org/staging/'
+        for path in ('/staging', '/staging/', '/staging/api/health', '/staging/foo?x=1'):
+            code, _, body = self.fetch(path)
+            self.assertEqual(code, 502, path)
+            text = body.decode('utf-8')
+            self.assertIn('Staging is only available at %s.' % public, text)
+            self.assertNotIn('esp32lab-staging', text)
+            self.assertNotIn('172.', text)
+            self.assertNotIn('127.0.0.1', text)
+            self.assertNotIn('test123', text)
+        self.assertEqual(self.http_log, [])
+        code, _, body = self.fetch('/staging/', method='HEAD')
+        self.assertEqual(code, 502)
+        self.assertEqual(body, b'')
+        self.assertEqual(self.http_log, [])
+        self._env(upstream='http://127.0.0.1:%d' % self.http_port, proxy='1')
+        self.assertTrue(staging.PROXY_ENABLED)
+        code, _, body = self.fetch('/staging/api/health')
+        self.assertEqual(code, 200)
+        self.assertEqual(body, b'upstream-ok')
+        self.assertEqual(len(self.http_log), 1)
+        self.assertEqual(self.http_log[0]['target'].split('?', 1)[0], '/api/health')
+
     def test_noindex_only_when_staging(self):
         self._env(staging='1')
         status, headers, body = self.fetch('/api/health')
@@ -398,6 +430,7 @@ class StagingTests(unittest.TestCase):
             staging.apply_env({
                 'SIM_STAGING': '0', 'SIM_ACCESS_TOKEN': '',
                 'SIM_STAGING_UPSTREAM': value, 'SIM_BASE_PATH': '',
+                'STAGING_PROXY_ENABLED': '1',
             })
             code, _, _ = self.fetch('/staging/api/health')
             self.assertEqual(code, 404, value)

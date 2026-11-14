@@ -17,7 +17,8 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       ALLOWED_HOSTS, TRUSTED_PROXY_IPS.
       See https.py. The documented host is esp32lab.duckdns.org; the default is empty.
       Caddy terminates TLS. proxy_headers stays off. Forwarding headers are honored
-      only from an address in TRUSTED_PROXY_IPS. The documented address is 172.18.0.250.
+      only from an address in TRUSTED_PROXY_IPS. The documented address is 172.30.0.250.
+      STAGING_PROXY_ENABLED defaults to 0. /staging on this process is then 502.
 """
 import asyncio, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, argparse
 from email.utils import formatdate

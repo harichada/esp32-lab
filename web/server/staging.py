@@ -8,6 +8,8 @@ SIM_STAGING           default 0. 1 adds noindex, robots.txt, and the page flag.
 SIM_ACCESS_TOKEN      default empty (off). Cookie cl_stage, Secure only on the TLS listener, constant-time compare.
 SIM_STAGING_UPSTREAM  default empty (off). Only http://esp32lab-staging:8765.
 SIM_BASE_PATH         cookie and redirect prefix. Defaults to /staging when SIM_STAGING=1.
+STAGING_PROXY_ENABLED default 0. Only ``1`` forwards /staging. Off answers 502 and
+                      does not open an upstream connection. Caddy is the way in.
 """
 import asyncio, hashlib, hmac, html, os, re, time
 from urllib.parse import parse_qs, unquote, urlencode
@@ -66,6 +68,10 @@ DOWN_HTML = _static_page('Test copy', [
     _esc("The test copy isn't running right now."),
     _esc('Try again in a few minutes, or ') + _main_link('use the main site.'),
 ])
+# Public address only. No container name, address, or token.
+CLOSED_HTML = _static_page('Staging', [
+    _esc('Staging is only available at https://esp32lab.duckdns.org/staging/.'),
+])
 _HOP = {
     'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'proxy-connection',
     'te', 'trailer', 'trailers', 'transfer-encoding', 'upgrade',
@@ -90,6 +96,7 @@ _BASE_RE = re.compile(r'^/[A-Za-z0-9][A-Za-z0-9._/-]{0,80}$')
 
 STAGING = False
 ACCESS = ''
+PROXY_ENABLED = False
 UPSTREAM = None  # ('host', port) or None. Off never proxies.
 # Tests only. Production leaves this None, so the env var is the only switch.
 TEST_UPSTREAM = None
@@ -172,10 +179,11 @@ def _base_path(raw, staging):
 
 def apply_env(env=None):
     """Read the flags. Called at process start and by tests."""
-    global STAGING, ACCESS, UPSTREAM, BASE_PATH, COOKIE_PATH
+    global STAGING, ACCESS, UPSTREAM, BASE_PATH, COOKIE_PATH, PROXY_ENABLED
     env = os.environ if env is None else env
     STAGING = env.get('SIM_STAGING', '0') == '1'
     ACCESS = env.get('SIM_ACCESS_TOKEN', '') or ''
+    PROXY_ENABLED = str(env.get('STAGING_PROXY_ENABLED', '0')).strip() == '1'
     parsed = parse_upstream(env.get('SIM_STAGING_UPSTREAM', ''))
     # The test seam wins so a unit test can point at 127.0.0.1 without the env var.
     UPSTREAM = TEST_UPSTREAM if TEST_UPSTREAM is not None else parsed
@@ -278,6 +286,19 @@ def _too_large():
 def _not_found():
     from starlette.responses import PlainTextResponse
     return seal(PlainTextResponse('not found', status_code=404))
+
+
+def _proxy_closed(method):
+    """502 with the public staging URL. HEAD sends that status and no body.
+
+    Nothing here is an upstream call. The body names only the public https URL.
+    """
+    if (method or 'GET').upper() == 'HEAD':
+        from starlette.responses import Response
+        return seal(Response(content=b'', status_code=502, media_type='text/html', headers={
+            'cache-control': 'no-store',
+        }))
+    return _html(CLOSED_HTML, 502)
 
 
 def _staging_kind(path):
@@ -441,16 +462,20 @@ def _ms(t0):
 
 
 async def maybe_proxy(request):
-    """Proxy /staging/*, redirect /staging, or 404 when the upstream flag is off.
+    """Proxy /staging when STAGING_PROXY_ENABLED is 1. Otherwise 502, with no upstream call.
 
-    Returns None when the path is not a staging path.
+    Returns None when the path is not a staging path. With the proxy flag on and
+    no upstream, the answer is 404, which is the previous behavior.
     """
     path = request.url.path
     raw = request.scope.get('raw_path') or b''
+    kind = _staging_kind(path)
+    if (kind or climbs_out(path, raw)) and not PROXY_ENABLED:
+        _log('staging_proxy status=502 reason=proxy_disabled')
+        return _proxy_closed(request.method)
     if climbs_out(path, raw):
         _log('staging_proxy status=404 reason=bad_path')
         return _not_found()
-    kind = _staging_kind(path)
     if not kind:
         return None
     if UPSTREAM is None:
@@ -722,6 +747,10 @@ class StagingMiddleware:
             return
         path = scope.get('path') or ''
         if path == '/staging' or path.startswith('/staging/'):
+            if not PROXY_ENABLED:
+                _log('staging_proxy status=502 reason=proxy_disabled')
+                await _ws_http(send, 502, CLOSED_HTML.encode('utf-8'))
+                return
             if climbs_out(path, scope.get('raw_path') or b''):
                 _log('staging_proxy status=404 reason=bad_path')
                 await _ws_http(send, 404, b'not found', b'text/plain; charset=utf-8')

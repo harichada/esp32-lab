@@ -2,7 +2,7 @@
 
 Flags default off. Nothing here contacts the live host. Host names in these
 tests are headers sent to 127.0.0.1. The documented proxy address is
-172.18.0.250. This process does not terminate TLS.
+172.30.0.250. This process does not terminate TLS.
 """
 import asyncio, base64, http.client, json, os, re, socket, ssl, sys, unittest, urllib.parse
 from pathlib import Path
@@ -15,8 +15,9 @@ import server
 import staging
 
 HOST = 'esp32lab.duckdns.org'
-PROXY = '172.18.0.250'
-NEIGHBOR = '172.18.0.5'
+PROXY = '172.30.0.250'
+NEIGHBOR = '172.30.0.5'
+OLD_NET = '172.18.0.5'
 
 
 def _on(env):
@@ -434,7 +435,7 @@ class HttpsUnitTest(unittest.TestCase):
             'headers': [
                 (b'host', b'evil.example'),
                 (b'x-forwarded-proto', b'https'),
-                (b'x-forwarded-for', b'172.18.0.250'),
+                (b'x-forwarded-for', b'172.30.0.250'),
             ],
         }
 
@@ -501,7 +502,7 @@ class HttpsUnitTest(unittest.TestCase):
             'HSTS_ENABLED': '1', 'HSTS_SECONDS': '300',
         })
         target = b'https://%s/some/path?x=1' % HOST.encode()
-        for peer in (NEIGHBOR, '127.0.0.1'):
+        for peer in (NEIGHBOR, OLD_NET, '127.0.0.1'):
             sent, seen = self._invoke(self._scope(peer, extra=[(b'x-forwarded-for', PROXY.encode())]))
             self.assertEqual(sent[0]['status'], 301, peer)
             self.assertEqual(self._location(sent), target, peer)
