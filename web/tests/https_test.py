@@ -3,7 +3,7 @@
 Flags default off. Nothing here contacts the live host. Host names in these
 tests are headers sent to 127.0.0.1.
 """
-import asyncio, http.client, json, os, re, socket, ssl, subprocess, sys, tempfile, unittest
+import asyncio, base64, http.client, json, os, re, socket, ssl, subprocess, sys, tempfile, unittest, urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -55,6 +55,97 @@ def request(port, method, path, host='127.0.0.1', body=None, headers=None, tls=F
     return resp.status, pairs, payload
 
 
+def _b64url(raw):
+    return base64.urlsafe_b64encode(raw).decode('ascii').rstrip('=')
+
+
+def urllib_body(payload):
+    return urllib.parse.urlencode({'payload': payload}).encode()
+
+
+def _assert_move_page(body, csp, form_action):
+    text = body.decode('utf-8')
+    end = text.index('</script>')
+    first = text[:end]
+    assert 'history.replaceState' in first
+    assert 'location.hash' in first
+    assert 'clMigrate' not in first
+    assert end < text.index('clMigrate')
+    assert '<script src' not in text
+    assert '<link ' not in text
+    assert '<img ' not in text
+    assert "default-src 'none'" in csp
+    assert "script-src 'nonce-" in csp
+    assert 'unsafe-inline' not in csp
+    assert 'unsafe-eval' not in csp
+    assert "style-src 'none'" in csp
+    assert "img-src 'none'" in csp
+    assert "connect-src 'none'" in csp
+    assert 'form-action %s' % form_action in csp
+    assert 'upgrade-insecure-requests' not in csp
+
+
+def _chunked_post(port, host, cafile, piece, total):
+    ctx = ssl.create_default_context(cafile=cafile)
+    raw = socket.create_connection(('127.0.0.1', port), 30)
+    sock = ctx.wrap_socket(raw, server_hostname='127.0.0.1')
+    try:
+        sock.settimeout(30)
+        sock.sendall((
+            'POST /migrate HTTP/1.1\r\nHost: %s\r\n'
+            'Content-Type: application/x-www-form-urlencoded\r\n'
+            'Transfer-Encoding: chunked\r\n\r\n' % host
+        ).encode())
+        sent = 0
+        while sent < total:
+            blob = piece[:min(len(piece), total - sent)]
+            sock.sendall(b'%x\r\n%s\r\n' % (len(blob), blob))
+            sent += len(blob)
+        sock.sendall(b'0\r\n\r\n')
+        data = b''
+        while b'\r\n\r\n' not in data:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        head, _, rest = data.partition(b'\r\n\r\n')
+        status = int(head.split(b' ', 2)[1])
+        pairs = []
+        for line in head.split(b'\r\n')[1:]:
+            if b':' in line:
+                name, value = line.split(b':', 1)
+                pairs.append((name.decode().lower(), value.decode().strip()))
+        length = _header(pairs, 'content-length')
+        body = rest
+        if length is not None:
+            need = int(length) - len(body)
+            while need > 0:
+                chunk = sock.recv(need)
+                if not chunk:
+                    break
+                body += chunk
+                need -= len(chunk)
+        return status, pairs, body
+    finally:
+        sock.close()
+
+
+def _raw_request(port, text):
+    sock = socket.create_connection(('127.0.0.1', port), 5)
+    try:
+        sock.settimeout(5)
+        sock.sendall(text.encode())
+        data = b''
+        while b'\r\n\r\n' not in data:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        return data
+    finally:
+        sock.close()
+
+
 def ws_status(port, host, path='/nowhere'):
     sock = socket.create_connection(('127.0.0.1', port), 5)
     try:
@@ -83,6 +174,7 @@ def _make_cert(directory, days=40):
         '-days', str(days), '-nodes', '-subj', '/CN=127.0.0.1',
         '-addext', 'subjectAltName=IP:127.0.0.1',
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    os.chmod(key, 0o600)
     return cert, key
 
 
@@ -93,28 +185,33 @@ class HttpsUnitTest(unittest.TestCase):
         https.set_logger(https._default_log)
 
     def test_token_alphabet_and_length(self):
-        self.assertIsNotNone(https.TOKEN_RE.fullmatch('abcXYZ_09-'))
+        self.assertEqual(https.TOKEN_RE.pattern, r'^[A-Za-z0-9_-]{20,128}$')
+        self.assertIsNotNone(https.TOKEN_RE.fullmatch('abcXYZ_09-abcdefghij'))
+        self.assertIsNotNone(https.TOKEN_RE.fullmatch('a' * 20))
         self.assertIsNotNone(https.TOKEN_RE.fullmatch('a' * 128))
-        for bad in ('', 'a' * 129, '.', '..', '../etc/passwd', 'a/b', 'a.b', 'a b', 'a\\b', 'a%2e', '%2e%2e'):
+        for bad in ('', 'a' * 19, 'a' * 129, '.', '..', '../etc/passwd', 'a/b', 'a.b', 'a b', 'a\\b', 'a%2e', '%2e%2e', '%2f', '%5c'):
             self.assertIsNone(https.TOKEN_RE.fullmatch(bad), bad)
 
     def test_challenge_file_layout_and_traversal(self):
         with tempfile.TemporaryDirectory() as tmp:
             challenge = Path(tmp) / '.well-known' / 'acme-challenge'
             challenge.mkdir(parents=True)
-            (challenge / 'good').write_bytes(b'challenge-body')
-            (Path(tmp) / 'good').write_bytes(b'wrong-place')
-            (challenge / 'escape').symlink_to('/etc/passwd')
+            token = 'a' * 20
+            (challenge / token).write_bytes(b'challenge-body')
+            (challenge / ('b' * 19)).write_bytes(b'too-short')
+            (Path(tmp) / token).write_bytes(b'wrong-place')
+            (challenge / ('c' * 20)).symlink_to('/etc/passwd')
+            (challenge / ('d' * 20)).symlink_to(challenge / token)
             (challenge / 'subdir').mkdir()
-            self.assertEqual(https.load_challenge(tmp, 'good'), b'challenge-body')
-            self.assertIsNone(https.load_challenge(tmp, 'escape'))
-            self.assertIsNone(https.load_challenge(tmp, 'missing'))
+            self.assertEqual(https.load_challenge(tmp, token), b'challenge-body')
+            self.assertIsNone(https.load_challenge(tmp, 'b' * 19))
+            self.assertIsNone(https.load_challenge(tmp, 'c' * 20))
+            self.assertIsNone(https.load_challenge(tmp, 'd' * 20))
+            self.assertIsNone(https.load_challenge(tmp, 'missingtoken1234567890'))
             self.assertIsNone(https.load_challenge(tmp, '..'))
             self.assertIsNone(https.load_challenge(tmp, 'subdir'))
-            self.assertIsNone(https.load_challenge('', 'good'))
+            self.assertIsNone(https.load_challenge('', token))
             self.assertIsNone(https.load_challenge(tmp, 'a/b'))
-            escaped = https.load_challenge(tmp, 'escape')
-            self.assertIsNone(escaped)
 
     def test_redirect_status_and_location_ignore_host(self):
         self.assertEqual(https.redirect_status('GET'), 301)
@@ -188,7 +285,17 @@ class HttpsUnitTest(unittest.TestCase):
                 self.assertIsInstance(first['days_left'], int)
                 https.set_listener(False, '')
                 off = https.tls_status(now=2000)
-                self.assertEqual(off, {'enabled': False, 'cert_not_after': None, 'days_left': None})
+                self.assertEqual(off, {'enabled': False, 'cert_not_after': None, 'days_left': None, 'warning': False, 'reason': None})
+                https._load_expiry = lambda path: ('2026-12-01T00:00:00Z', 13)
+                https.set_listener(True, cert)
+                soon = https.tls_status(now=3000)
+                self.assertTrue(soon['warning'])
+                self.assertEqual(soon['reason'], 'certificate has 13 days left')
+                https._load_expiry = lambda path: ('2026-12-01T00:00:00Z', 14)
+                https.set_listener(True, cert)
+                later = https.tls_status(now=4000)
+                self.assertFalse(later['warning'])
+                self.assertIsNone(later['reason'])
                 self.assertEqual(calls['n'], 2)
             finally:
                 https._load_expiry = real
@@ -254,6 +361,48 @@ class HttpsUnitTest(unittest.TestCase):
         self.assertIn('docker restart esp32lab', hook)
         self.assertNotIn('-p 8765', hook)
         self.assertNotIn('8765:8765', hook)
+        renew = (root.parents[0] / 'docker' / 'letsencrypt' / 'esp32lab-certbot-renew.sh').read_text()
+        self.assertIn('set -eu', renew)
+        self.assertLess(renew.index('certbot renew --dry-run'), renew.index('certbot renew\n'))
+        timer = (root.parents[0] / 'docker' / 'letsencrypt' / 'esp32lab-certbot.timer').read_text()
+        self.assertIn('OnCalendar=weekly', timer)
+        self.assertIn('Persistent=true', timer)
+        unit = (root.parents[0] / 'docker' / 'letsencrypt' / 'esp32lab-certbot.service').read_text()
+        self.assertIn('Type=oneshot', unit)
+        self.assertIn('esp32lab-certbot-renew', unit)
+
+    def test_each_project_is_checked_before_a_merge_would_run(self):
+        big = 'x' * (https.PROJECT_CAP + 1)
+        record = {
+            'v': 1, 'origin': 'http://127.0.0.1', 'exportedAt': 1, 'path': '/', 'query': '',
+            'items': [{'k': 'esp32lab.projects.v1', 'v': json.dumps({'p1': {
+                'id': 'p1', 'name': 'Lamp', 'updated': 1,
+                'proj': {'id': 'p1', 'name': 'Lamp', 'parts': [], 'wires': [], 'blob': big},
+            }})}],
+        }
+        self.assertEqual(https.validate_bundle(record), 'bad project')
+        record['items'][0]['v'] = json.dumps({'p1': {
+            'id': 'p1', 'name': 'Lamp', 'updated': 1,
+            'proj': {'id': 'p1', 'name': 'Lamp', 'parts': [], 'wires': []},
+        }})
+        self.assertEqual(https.validate_bundle(record), '')
+
+    def test_streamed_body_over_the_cap_is_discarded(self):
+        chunks = [
+            {'type': 'http.request', 'body': b'abcd', 'more_body': True},
+            {'type': 'http.request', 'body': b'e', 'more_body': False},
+        ]
+
+        async def pull():
+            return chunks.pop(0)
+
+        self.assertIs(asyncio.run(https._read_capped(pull, 4)), False)
+        self.assertEqual(chunks, [])
+
+        async def exact():
+            return {'type': 'http.request', 'body': b'abcd', 'more_body': False}
+
+        self.assertEqual(asyncio.run(https._read_capped(exact, 4)), b'abcd')
 
 
 class HttpsServerTest(unittest.TestCase):
@@ -266,7 +415,9 @@ class HttpsServerTest(unittest.TestCase):
         cls.webroot = Path(cls.tmp.name) / 'acme'
         challenge = cls.webroot / '.well-known' / 'acme-challenge'
         challenge.mkdir(parents=True)
-        (challenge / 'goodtoken').write_text('challenge-body', encoding='ascii')
+        cls.token = 'goodtoken0123456789abcd'
+        (challenge / cls.token).write_text('challenge-body', encoding='ascii')
+        (challenge / 'short').write_text('too-short', encoding='ascii')
         (challenge / 'escape').symlink_to('/etc/passwd')
         https.apply_env({
             'TLS_CERT_FILE': cls.cert,
@@ -327,9 +478,23 @@ class HttpsServerTest(unittest.TestCase):
             _header(pairs, 'location'),
             'https://129-158-200-25.sslip.io/some/path?x=1&y=a%20b',
         )
-        root, pairs, _ = request(self.http, 'GET', '/', host=IP_HOST)
+        root, pairs, page = request(self.http, 'GET', '/', host=IP_HOST)
+        self.assertEqual(root, 200)
+        self.assertIsNone(_header(pairs, 'location'))
+        self.assertIn(b'clMigrate.handoff', page)
+        self.assertIn(b'nonce=', page)
+        self.assertNotIn(b'upgrade-insecure-requests', page)
+        _assert_move_page(page, _header(pairs, 'content-security-policy'), 'https://%s' % HOST)
+        self.assertEqual(_header(pairs, 'cache-control'), 'no-store')
+        asset, pairs, _ = request(self.http, 'GET', '/js/app.js?v=80', host=IP_HOST)
+        self.assertEqual(asset, 301)
+        self.assertEqual(_header(pairs, 'location'), 'https://%s/js/app.js?v=80' % HOST)
+        posted, pairs, _ = request(self.http, 'POST', '/', host=IP_HOST, body=b'a=1')
+        self.assertEqual(posted, 308)
         self.assertEqual(_header(pairs, 'location'), 'https://%s/' % HOST)
-        self.assertNotEqual(_header(pairs, 'location'), 'https://%s' % HOST)
+        notices, _, notice = request(self.http, 'GET', '/notices.html', host=HOST)
+        self.assertEqual(notices, 200)
+        self.assertIn(b'clMigrate.handoff', notice)
         # Redirect off: the same bookmark is not sent anywhere.
         https.apply_env({'HTTPS_REDIRECT': '0', 'HTTPS_HOST': HOST})
         status, pairs, _ = request(self.http, 'GET', '/some/path?x=1', host=IP_HOST)
@@ -345,14 +510,14 @@ class HttpsServerTest(unittest.TestCase):
         status, pairs, _ = request(self.http, 'POST', '/api/health', host=HOST, body=b'{}')
         self.assertNotIn(status, (301, 308))
         self.assertIsNone(_header(pairs, 'location'))
-        status, pairs, body = request(self.http, 'GET', '/.well-known/acme-challenge/goodtoken', host=IP_HOST)
+        status, pairs, body = request(self.http, 'GET', '/.well-known/acme-challenge/' + self.token, host=IP_HOST)
         self.assertEqual(status, 200, body)
         self.assertEqual(_header(pairs, 'content-type'), 'text/plain')
         self.assertEqual(body, b'challenge-body')
         self.assertIsNone(_header(pairs, 'location'))
         status, _, body = request(self.http, 'GET', '/.well-known/acme-challenge/', host=IP_HOST)
         self.assertEqual(status, 404)
-        self.assertNotIn(b'goodtoken', body)
+        self.assertNotIn(self.token.encode(), body)
         raw = ws_status(self.http, IP_HOST)
         self.assertTrue(raw.startswith(b'HTTP/1.1 403'), raw)
         self.assertIn(b'Use wss://', raw)
@@ -360,7 +525,7 @@ class HttpsServerTest(unittest.TestCase):
     def test_acme_rejects_traversal_even_when_redirect_is_on(self):
         https.apply_env({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST, 'ACME_WEBROOT': str(self.webroot)})
         server.TOKEN = 'secret'
-        status, _, body = request(self.http, 'GET', '/.well-known/acme-challenge/goodtoken')
+        status, _, body = request(self.http, 'GET', '/.well-known/acme-challenge/' + self.token)
         self.assertEqual(status, 200)
         self.assertEqual(body, b'challenge-body')
         status, _, _ = request(self.http, 'GET', '/api/health')
@@ -370,10 +535,16 @@ class HttpsServerTest(unittest.TestCase):
             '/.well-known/acme-challenge/..',
             '/.well-known/acme-challenge/%2e%2e',
             '/.well-known/acme-challenge/%2e%2e/%2e%2e/etc/passwd',
-            '/.well-known/acme-challenge/goodtoken/../../etc/passwd',
+            '/.well-known/acme-challenge/' + self.token + '/../../etc/passwd',
             '/.well-known/acme-challenge/a.b',
             '/.well-known/acme-challenge/' + ('a' * 129),
             '/.well-known/acme-challenge/%2fetc%2fpasswd',
+            '/.well-known/acme-challenge/%5cetc%5cpasswd',
+            '/.well-known/acme-challenge/%252e%252e',
+            '/.well-known/acme-challenge/%252fetc',
+            '/.well-known/acme-challenge/%255cetc',
+            '/.well-known/acme-challenge/short',
+            '/.well-known/acme-challenge/' + ('a' * 19),
         ):
             status, pairs, body = request(self.http, 'GET', path, host=IP_HOST)
             self.assertNotIn(status, (301, 308), path)
@@ -449,7 +620,7 @@ class HttpsServerTest(unittest.TestCase):
         self.assertEqual(status, 200)
         data = json.loads(body)
         self.assertEqual(data['ok'], _qemu_ok())
-        self.assertEqual(set(data['tls']), {'enabled', 'cert_not_after', 'days_left'})
+        self.assertEqual(set(data['tls']), {'enabled', 'cert_not_after', 'days_left', 'warning', 'reason'})
         iso, left = https._load_expiry(self.cert)
         self.assertEqual(data['tls']['enabled'], True)
         self.assertEqual(data['tls']['cert_not_after'], iso)
@@ -489,6 +660,198 @@ class HttpsServerTest(unittest.TestCase):
             self.assertTrue(match.group(0).startswith(NS_HTTP), match.group(0))
         self.assertIn('http://www.w3.org/2000/svg', text)
 
+    def test_redirect_stays_off_for_the_ip_while_tls_is_down(self):
+        logs = []
+        https.set_logger(lambda msg: logs.append(str(msg)))
+        https.set_listener(False, '')
+        https.apply_env({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': IP_HOST})
+        status, pairs, _ = request(self.http, 'GET', '/some/path?x=1', host=IP_HOST)
+        self.assertNotIn(status, (301, 308))
+        self.assertIsNone(_header(pairs, 'location'))
+        self.assertTrue(any('IP host' in line and 'TLS is down' in line for line in logs), logs)
+        https.set_listener(True, self.cert)
+        https.apply_env({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST})
+        status, pairs, _ = request(self.http, 'GET', '/some/path?x=1', host=IP_HOST)
+        self.assertEqual(status, 301)
+        self.assertEqual(_header(pairs, 'location'), 'https://%s/some/path?x=1' % HOST)
+
+    def test_forged_host_is_not_a_redirect_target(self):
+        https.apply_env({
+            'ALLOWED_HOSTS': '%s,%s' % (IP_HOST, HOST),
+            'HTTPS_REDIRECT': '1',
+            'HTTPS_HOST': HOST,
+        })
+        for host in (HOST + ':443', HOST + '.', HOST.upper(), IP_HOST + ':80'):
+            status, pairs, _ = request(self.http, 'GET', '/some/path?x=1', host=host)
+            self.assertEqual(status, 301, host)
+            self.assertEqual(_header(pairs, 'location'), 'https://%s/some/path?x=1' % HOST, host)
+        for host in ('evil.example', 'evil.example:443', 'evil.example.'):
+            status, pairs, body = request(self.http, 'GET', '/some/path?x=1', host=host)
+            self.assertEqual(status, 400, host)
+            self.assertIn(b'unknown host', body)
+            self.assertIsNone(_header(pairs, 'location'), host)
+        raw = _raw_request(
+            self.http,
+            'GET http://evil.example/some/path?x=1 HTTP/1.1\r\nHost: %s\r\n\r\n' % HOST,
+        )
+        self.assertIn(b' 301 ', raw)
+        folded = raw.lower()
+        self.assertIn(b'location: https://%s/some/path?x=1' % HOST.encode(), folded)
+        self.assertNotIn(b'evil.example', folded.split(b'\r\n\r\n', 1)[0].replace(b'host: ' + HOST.encode(), b''))
+        denied = _raw_request(
+            self.http,
+            'GET http://evil.example/some/path?x=1 HTTP/1.1\r\nHost: evil.example\r\n\r\n',
+        )
+        self.assertTrue(denied.startswith(b'HTTP/1.1 400'), denied)
+        self.assertNotIn(b'location:', denied.lower())
+
+    def test_move_post_is_validated_and_not_stored(self):
+        https.apply_env({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST})
+        record = {
+            'v': 1,
+            'origin': 'http://127.0.0.1',
+            'exportedAt': 1,
+            'path': '/some/path',
+            'query': 'x=1',
+            'items': [{
+                'k': 'esp32lab.projects.v1',
+                'v': json.dumps({'p1': {
+                    'id': 'p1', 'name': 'Lamp </script>', 'updated': 5,
+                    'proj': {'id': 'p1', 'name': 'Lamp </script>', 'parts': [], 'wires': []},
+                }}),
+            }],
+        }
+        packed = '0.' + _b64url(json.dumps(record).encode())
+        status, _, body = request(
+            self.tls, 'POST', '/migrate', host=HOST, tls=True, cafile=self.cert,
+            headers={'Content-Type': 'application/x-www-form-urlencoded'},
+            body=urllib_body(packed),
+        )
+        self.assertEqual(status, 200, body[:200])
+        self.assertIn(b'clMigrate.receive', body)
+        self.assertNotIn(b'Lamp </script>', body)
+        self.assertIn(b'Lamp \\u003c/script>', body)
+        bad = request(
+            self.tls, 'POST', '/migrate', host=HOST, tls=True, cafile=self.cert,
+            headers={'Content-Type': 'application/x-www-form-urlencoded'},
+            body=urllib_body('0.' + _b64url(b'{"v":2}')),
+        )
+        self.assertEqual(bad[0], 400)
+        self.assertEqual(_header(bad[1], 'cache-control'), 'no-store')
+        self.assertIn(b'could not be moved', bad[2])
+        self.assertNotIn(b'clMigrate.receive', bad[2])
+        self.assertIn("default-src 'none'", _header(bad[1], 'content-security-policy'))
+
+    def test_migrate_page_clears_the_fragment_first_and_locks_the_csp(self):
+        https.apply_env({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST})
+        status, pairs, body = request(self.tls, 'GET', '/migrate', host=HOST, tls=True, cafile=self.cert)
+        self.assertEqual(status, 200, body[:180])
+        self.assertIn(b'clMigrate.receive', body)
+        _assert_move_page(body, _header(pairs, 'content-security-policy'), "'none'")
+        self.assertEqual(_header(pairs, 'cache-control'), 'no-store')
+        self.assertEqual(_header(pairs, 'referrer-policy'), 'no-referrer')
+        self.assertNotIn(b'upgrade-insecure-requests', body)
+        self.assertNotIn(b'upgrade-insecure-requests', _header(pairs, 'content-security-policy').encode())
+
+    def test_post_cap_content_type_and_no_body_in_logs(self):
+        import logging
+        https.apply_env({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST})
+        logs = []
+        https.set_logger(lambda msg: logs.append(str(msg)))
+        grabbed = []
+
+        class Grab(logging.Handler):
+            def emit(self, record):
+                grabbed.append(record.getMessage())
+                if record.exc_info and record.exc_info[1] is not None:
+                    grabbed.append(str(record.exc_info[1]))
+                if record.exc_text:
+                    grabbed.append(record.exc_text)
+
+        handler = Grab()
+        loggers = [logging.getLogger(name) for name in ('', 'uvicorn', 'uvicorn.error', 'uvicorn.access')]
+        for lg in loggers:
+            lg.addHandler(handler)
+        marker = 'MOVESECRET-not-stored-991'
+        try:
+            over = request(
+                self.tls, 'POST', '/migrate', host=HOST, tls=True, cafile=self.cert,
+                headers={
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Content-Length': str(https.MIGRATE_CAP + 1),
+                },
+                body=('payload=' + marker).encode(),
+            )
+            self.assertEqual(over[0], 413, over[2][:200])
+            self.assertEqual(_header(over[1], 'cache-control'), 'no-store')
+            self.assertIn(b'request too large', over[2])
+            self.assertNotIn(marker.encode(), over[2])
+
+            missing = request(
+                self.tls, 'POST', '/migrate', host=HOST, tls=True, cafile=self.cert,
+                body=('payload=' + marker).encode(),
+            )
+            self.assertEqual(missing[0], 415)
+            self.assertEqual(_header(missing[1], 'cache-control'), 'no-store')
+            self.assertIn(b'unsupported media type', missing[2])
+            self.assertNotIn(marker.encode(), missing[2])
+
+            for media in ('text/plain', 'application/json', 'application/x-www-form-urlencoded; charset=utf-8'):
+                sent = request(
+                    self.tls, 'POST', '/migrate', host=HOST, tls=True, cafile=self.cert,
+                    headers={'Content-Type': media},
+                    body=('payload=' + marker).encode(),
+                )
+                if media.startswith('application/x-www-form-urlencoded'):
+                    self.assertEqual(sent[0], 400, media)
+                    self.assertIn(b'could not be moved', sent[2])
+                else:
+                    self.assertEqual(sent[0], 415, media)
+                    self.assertIn(b'unsupported media type', sent[2])
+                self.assertEqual(_header(sent[1], 'cache-control'), 'no-store', media)
+                self.assertNotIn(marker.encode(), sent[2])
+
+            malformed = request(
+                self.tls, 'POST', '/migrate', host=HOST, tls=True, cafile=self.cert,
+                headers={'Content-Type': 'application/x-www-form-urlencoded'},
+                body=urllib_body('0.' + _b64url(('{"v":2,"note":"%s"}' % marker).encode())),
+            )
+            self.assertEqual(malformed[0], 400)
+            self.assertEqual(_header(malformed[1], 'cache-control'), 'no-store')
+            self.assertIn(b'could not be moved', malformed[2])
+            self.assertNotIn(marker.encode(), malformed[2])
+            self.assertNotIn(b'clMigrate.receive', malformed[2])
+
+            original = https.unpack_payload
+            def boom(_text):
+                raise RuntimeError('TRACE-MARKER-991')
+            https.unpack_payload = boom
+            try:
+                traced = request(
+                    self.tls, 'POST', '/migrate', host=HOST, tls=True, cafile=self.cert,
+                    headers={'Content-Type': 'application/x-www-form-urlencoded'},
+                    body=urllib_body('0.' + _b64url(b'{"v":1}')),
+                )
+            finally:
+                https.unpack_payload = original
+            self.assertEqual(traced[0], 400)
+            self.assertNotIn(b'TRACE-MARKER-991', traced[2])
+            self.assertNotIn(b'clMigrate.receive', traced[2])
+
+            chunked = _chunked_post(self.tls, HOST, self.cert, marker.encode() * 64, https.MIGRATE_CAP + 1)
+            self.assertEqual(chunked[0], 413, chunked[2][:200])
+            self.assertEqual(_header(chunked[1], 'cache-control'), 'no-store')
+            self.assertIn(b'request too large', chunked[2])
+            self.assertNotIn(marker.encode(), chunked[2])
+            self.assertLess(len(chunked[2]), 400)
+        finally:
+            for lg in loggers:
+                lg.removeHandler(handler)
+            https.set_logger(https._default_log)
+        joined = '\n'.join(logs + grabbed)
+        self.assertNotIn(marker, joined)
+        self.assertNotIn('TRACE-MARKER-991', joined)
+
 
 class HttpsFailSafeTest(unittest.TestCase):
     def tearDown(self):
@@ -513,13 +876,16 @@ class HttpsFailSafeTest(unittest.TestCase):
             self.assertEqual(status, 200)
             data = json.loads(body)
             self.assertEqual(data['ok'], _qemu_ok())
-            self.assertEqual(data['tls'], {'enabled': False, 'cert_not_after': None, 'days_left': None})
+            self.assertEqual(data['tls']['enabled'], False)
+            self.assertEqual(data['tls']['warning'], False)
+            self.assertEqual(data['ok'], _qemu_ok())
         finally:
             bg.stop()
-        text = '\n'.join(logs)
-        self.assertIn('missing or unreadable', text)
-        self.assertIn('serving HTTP only', text)
-        self.assertIn('TLS_CERT_FILE=/tmp/esp32lab-no-such-fullchain.pem', text)
+        warnings = [line for line in logs if line.startswith('tls key warning')]
+        self.assertEqual(len(warnings), 1, logs)
+        self.assertIn('reason=missing', warnings[0])
+        self.assertIn('serving=http', warnings[0])
+        self.assertIn('path=/tmp/esp32lab-no-such-privkey.pem', warnings[0])
 
     def test_bad_pem_and_busy_port_keep_http(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -527,6 +893,7 @@ class HttpsFailSafeTest(unittest.TestCase):
             key = os.path.join(tmp, 'key.pem')
             Path(cert).write_text('not a certificate\n', encoding='ascii')
             Path(key).write_text('not a key\n', encoding='ascii')
+            os.chmod(key, 0o600)
             logs = []
             https.set_logger(lambda msg: logs.append(str(msg)))
             https.apply_env({'TLS_CERT_FILE': cert, 'TLS_KEY_FILE': key})
@@ -539,7 +906,11 @@ class HttpsFailSafeTest(unittest.TestCase):
                 self.assertEqual(json.loads(body)['ok'], _qemu_ok())
             finally:
                 bg.stop()
-            self.assertTrue(any('did not load' in line and 'serving HTTP only' in line for line in logs), logs)
+            warnings = [line for line in logs if line.startswith('tls key warning')]
+            self.assertEqual(len(warnings), 1, logs)
+            self.assertIn('reason=invalid', warnings[0])
+            self.assertIn('serving=http', warnings[0])
+            self.assertIn('mode=600', warnings[0])
 
             good, good_key = _make_cert(tmp)
             blocker = socket.socket()
@@ -559,6 +930,39 @@ class HttpsFailSafeTest(unittest.TestCase):
                 bg.stop()
                 blocker.close()
             self.assertTrue(any('cannot bind' in line and 'serving HTTP only' in line for line in logs), logs)
+
+    def test_unreadable_key_keeps_http(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cert, key = _make_cert(tmp)
+            os.chmod(key, 0o000)
+            logs = []
+            https.set_logger(lambda msg: logs.append(str(msg)))
+            https.apply_env({'TLS_CERT_FILE': cert, 'TLS_KEY_FILE': key, 'HTTPS_HOST': HOST, 'HTTPS_REDIRECT': '1'})
+            bg = https.Background(server.app, tls_port=0).start()
+            try:
+                self.assertIsNone(bg.tls_port)
+                status, pairs, body = request(bg.http_port, 'GET', '/api/health')
+                self.assertEqual(status, 200)
+                data = json.loads(body)
+                self.assertEqual(data['ok'], _qemu_ok())
+                self.assertFalse(data['tls']['enabled'])
+                page, page_pairs, _ = request(bg.http_port, 'GET', '/')
+                self.assertNotIn(page, (301, 308))
+                self.assertIsNone(_header(page_pairs, 'location'))
+                posture = https.key_posture(key)
+                self.assertEqual(posture['mode'], '000')
+                self.assertFalse(posture['readable'])
+                self.assertIn('root', https.key_posture.__doc__)
+                self.assertIn('600', https.key_posture.__doc__)
+                self.assertIn('read-only', https.key_posture.__doc__)
+            finally:
+                os.chmod(key, 0o600)
+                bg.stop()
+            warnings = [line for line in logs if line.startswith('tls key warning')]
+            self.assertEqual(len(warnings), 1, logs)
+            self.assertIn('reason=unreadable', warnings[0])
+            self.assertIn('mode=000', warnings[0])
+            self.assertIn('serving=http', warnings[0])
 
 
 if __name__ == '__main__':

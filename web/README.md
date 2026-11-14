@@ -183,16 +183,20 @@ Plain HTTP is unchanged until the flags below are set. Uvicorn terminates TLS on
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ACME_WEBROOT` | empty | Certbot `-w` directory, mounted read-only. `GET /.well-known/acme-challenge/<token>` reads `<dir>/.well-known/acme-challenge/<token>` as `text/plain`. The token is one `[A-Za-z0-9_-]{1,128}` segment. This path is never redirected. |
-| `TLS_CERT_FILE` | empty | PEM full chain. With `TLS_KEY_FILE`, both must be readable or the process logs the problem and stays on HTTP. |
-| `TLS_KEY_FILE` | empty | PEM private key. Pair with `TLS_CERT_FILE`. |
+| `ACME_WEBROOT` | empty | Certbot `-w` directory, mounted read-only. `GET /.well-known/acme-challenge/<token>` reads `<dir>/.well-known/acme-challenge/<token>` as `text/plain`. The token matches `^[A-Za-z0-9_-]{20,128}$`. No directory listing. This path is never redirected. |
+| `TLS_CERT_FILE` | empty | PEM full chain. With `TLS_KEY_FILE`, both must be readable or the process logs one warning and stays on HTTP. |
+| `TLS_KEY_FILE` | empty | PEM private key. The live file is a read-only bind mount, owned by root, mode 600. A missing, unreadable, or invalid key logs one `tls key warning` line and the process stays on HTTP. |
 | `TLS_PORT` | `8443` | TLS port inside the container. |
 | `HTTPS_HOST` | empty | The only redirect target, for example `129-158-200-25.sslip.io`. The Host header is never used. |
-| `HTTPS_REDIRECT` | `0` | `1` sends GET and HEAD a 301, and every other method a 308, to `https://HTTPS_HOST` with the path and query kept. `/api/health` and `/.well-known/acme-challenge/` stay on HTTP. A WebSocket upgrade on HTTP is 403. Leave this off until HTTPS has been verified on the live host. |
+| `HTTPS_REDIRECT` | `0` | Only the string `1` turns it on. Assets and API calls: GET and HEAD 301, every other method 308, to `https://HTTPS_HOST` with the path and query kept. A top-level HTML GET gets a same-page handoff that moves this browser's saved projects. `/api/health` and `/.well-known/acme-challenge/` stay on HTTP. A WebSocket upgrade on HTTP is 403. The redirect stays off when `HTTPS_HOST` is empty, invalid, or the IP address while TLS is down. Leave this off until HTTPS has been verified on the live host. |
 | `HSTS_SECONDS` | `0` | On HTTPS responses only, `Strict-Transport-Security: max-age=<n>` with no `includeSubDomains` and no `preload`. Roll out 300, then 86400, then 31536000, each only after it is verified. `0` sends nothing. |
 | `ALLOWED_HOSTS` | unset (accept all) | Comma-separated hosts, for example `129.158.200.25,129-158-200-25.sslip.io`. Any other Host is 400. |
 
-`/api/health` always includes `tls` (`enabled`, `cert_not_after`, `days_left`). `enabled` is true only while the TLS listener is up. `ok` does not depend on it. The certificate file is re-read at most every 60 seconds. HTTPS responses also send `Content-Security-Policy: upgrade-insecure-requests` (appended to a CSP that is already there). HTTP responses do not.
+`/api/health` always includes `tls` (`enabled`, `cert_not_after`, `days_left`, `warning`, `reason`). `enabled` is true only while the TLS listener is up. `warning` is true, with a `reason`, once fewer than 14 days remain. `ok` does not depend on TLS. The certificate file is re-read at most every 60 seconds. Ordinary HTTPS responses also send `Content-Security-Policy: upgrade-insecure-requests` (appended to a CSP that is already there). HTTP responses do not. The handoff page and `/migrate` do not: their policy is `default-src 'none'` plus the nonce those pages need, and they load no third-party resources.
+
+With the redirect on, a browser that has saved projects on the plain HTTP origin is shown a page from this server. That page reads the saved keys and navigates to `https://HTTPS_HOST/migrate#…`, or, above about 1.5 MB, posts the same record. The fragment is removed with `history.replaceState` before any other script runs. The HTTPS page merges without replacing a project that is already there; a conflict is kept as “(moved copy)”. The HTTP copy is never deleted. `cl_migrated_to_https` is set on the HTTP origin only after the HTTPS page confirms the merge. A POST larger than 2 MB is 413 and is not written to disk or to the log.
+
+Renewal is `docker/letsencrypt/esp32lab-certbot.timer` (weekly). Its service runs `certbot renew --dry-run` and then `certbot renew`. A failed dry-run stops the script, so the live certificate stays in place and the container is not restarted. Install on the host with `cp docker/letsencrypt/esp32lab-certbot-renew.sh /usr/local/sbin/esp32lab-certbot-renew && chmod 755 /usr/local/sbin/esp32lab-certbot-renew`, copy the `.service` and `.timer` to `/etc/systemd/system/`, then `systemctl daemon-reload && systemctl disable --now certbot.timer certbot-renew.timer && systemctl enable --now esp32lab-certbot.timer`.
 
 ## Tests
 - `node --test tests/*.test.js`: solver, JS-sketch runner, remote logic and the network log.

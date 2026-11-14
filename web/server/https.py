@@ -6,28 +6,49 @@ stays on the host. No new runtime dependency.
 
 ACME_WEBROOT     default empty. Certbot ``--webroot -w`` directory. Files are
                  read from ``<dir>/.well-known/acme-challenge/<token>``.
+                 Token ``^[A-Za-z0-9_-]{20,128}$``. No directory listing. Read-only.
 TLS_CERT_FILE    default empty. PEM certificate (fullchain). Both this and
                  TLS_KEY_FILE must be set and readable before port 8443 opens.
-TLS_KEY_FILE     default empty. PEM private key.
+TLS_KEY_FILE     default empty. PEM private key. Live mount: read-only bind,
+                 owned by root, mode 600. A bad key logs once and HTTP stays up.
 TLS_PORT         default 8443. Port inside the container. Published as 443.
-HTTPS_REDIRECT   default 0. ``1`` redirects plain HTTP to https://HTTPS_HOST.
+HTTPS_REDIRECT   default 0. ``1`` redirects assets and API calls to
+                 https://HTTPS_HOST. A top-level HTML GET gets a same-page
+                 handoff instead. The move POST is capped at 2 MB.
 HTTPS_HOST       default empty. The only redirect target. Never the Host header.
 HSTS_SECONDS     default 0 (off). A positive value sends Strict-Transport-Security
                  on HTTPS responses only. No includeSubDomains, no preload.
                  Values above 63072000 (2 years) are rejected and HSTS stays off.
 ALLOWED_HOSTS    default unset (accept every Host). Comma-separated hostnames.
 """
-import math, os, re, socket, ssl, threading, time
+import base64, json, math, os, re, secrets, socket, ssl, stat, threading, time, zlib
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
-TOKEN_RE = re.compile(r'[A-Za-z0-9_-]{1,128}')
+TOKEN_RE = re.compile(r'^[A-Za-z0-9_-]{20,128}$')
 ACME_PREFIX = '/.well-known/acme-challenge/'
 ACME_MARK = 'acme-challenge'
 MAX_CHALLENGE = 65536
 HSTS_CAP = 63072000
 TLS_PORT_DEFAULT = 8443
+WARN_DAYS = 14
+MIGRATE_CAP = 2 * 1024 * 1024
+PROJECT_CAP = 1024 * 1024
+FRAGMENT_BUDGET = int(1.5 * 1024 * 1024)
+# First script on every move page. It copies the fragment into memory and
+# replaces the history entry before any later script or subresource runs.
+_CLEAR_HASH = (
+    "(function(){var h='';try{h=location.hash||'';}catch(e){h='';}"
+    "if(h.charAt(0)==='#')h=h.slice(1);window.__clMove=h;"
+    "try{history.replaceState(null,'',location.pathname+location.search);}catch(e){}})();"
+)
+_MOVE_CSP = (
+    "default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; "
+    "font-src 'none'; connect-src 'none'; object-src 'none'; frame-src 'none'; "
+    "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+)
+_REDIRECT_BASE = ''
 _HOST_RE = re.compile(
     r'(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)'
     r'(?:\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*$'
@@ -145,6 +166,8 @@ def apply_env(env=None):
     WEBROOT = str(env.get('ACME_WEBROOT', '') or '').strip()
     CERT_FILE = str(env.get('TLS_CERT_FILE', '') or '').strip()
     KEY_FILE = str(env.get('TLS_KEY_FILE', '') or '').strip()
+    global _REDIRECT_BASE
+    _REDIRECT_BASE = ''
     _warned.clear()
     with _lock:
         _cache['mono'] = 0.0
@@ -170,30 +193,132 @@ def _readable(path):
         return False
 
 
+def set_redirect_base(value):
+    """Loopback origin for tests. Production leaves this empty and uses https://HTTPS_HOST."""
+    global _REDIRECT_BASE
+    if not _loopback_origin(value):
+        raise ValueError('redirect base must be a loopback origin')
+    _REDIRECT_BASE = value.rstrip('/')
+
+
+def _loopback_origin(value):
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return False
+    if parsed.scheme not in ('http', 'https') or parsed.username or parsed.password:
+        return False
+    if parsed.path not in ('', '/') or parsed.query or parsed.fragment:
+        return False
+    if parsed.hostname not in ('localhost', '127.0.0.1'):
+        return False
+    if parsed.port is not None and not (1 <= parsed.port <= 65535):
+        return False
+    return True
+
+
+def public_origin():
+    """Where a redirected browser is sent. The Host header is not consulted."""
+    if _REDIRECT_BASE:
+        return _REDIRECT_BASE
+    if not valid_https_host(HTTPS_HOST):
+        return ''
+    return 'https://' + HTTPS_HOST
+
+
+def key_posture(path):
+    """How the private key is mounted.
+
+    The live container bind-mounts ``/etc/letsencrypt`` read-only. The key
+    file (``live/.../privkey.pem``, a symlink into ``archive/``) is owned by
+    root and mode 600. This reports that shape. It does not log and does not raise.
+    """
+    info = {
+        'path': path or '', 'exists': False, 'readable': False, 'regular': False,
+        'mode': '', 'uid': None, 'root_owned': False, 'ro_mount': False,
+    }
+    if not path:
+        return info
+    try:
+        st = os.stat(path)
+    except OSError:
+        return info
+    info['exists'] = True
+    info['regular'] = stat.S_ISREG(st.st_mode)
+    info['mode'] = '%03o' % (st.st_mode & 0o777)
+    info['uid'] = st.st_uid
+    info['root_owned'] = st.st_uid == 0
+    info['readable'] = os.access(path, os.R_OK)
+    info['ro_mount'] = _ro_mount(path)
+    return info
+
+
+def _ro_mount(path):
+    try:
+        real = os.path.realpath(path)
+    except OSError:
+        return False
+    best = ''
+    ro = False
+    try:
+        lines = open('/proc/self/mountinfo', encoding='utf-8', errors='replace')
+    except OSError:
+        return False
+    with lines:
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 6:
+                continue
+            point = parts[4].replace('\\040', ' ')
+            if real == point or real.startswith(point.rstrip('/') + '/'):
+                if len(point) >= len(best):
+                    best = point
+                    ro = 'ro' in parts[5].split(',')
+    return ro
+
+
+def _key_warning(reason, path):
+    posture = key_posture(path)
+    _log(
+        'tls key warning reason=%s path=%s mode=%s uid=%s root_owned=%s ro_mount=%s serving=http'
+        % (reason, path or '', posture['mode'] or '-', posture['uid'] if posture['uid'] is not None else '-',
+           'true' if posture['root_owned'] else 'false', 'true' if posture['ro_mount'] else 'false')
+    )
+
+
 def tls_material():
     """``(cert, key)`` when both files load, else None. Never raises.
 
-    Unset means HTTP only and is not an error. Set but missing, unreadable,
-    or not a matching pair is logged and HTTP only continues.
+    Unset means HTTP only and is not an error. A missing, unreadable, mode
+    other than 600, or invalid key logs one structured warning and HTTP continues.
     """
     cert, key = CERT_FILE, KEY_FILE
     if not cert and not key:
         return None
-    if not cert or not key:
-        _log('TLS disabled: set both TLS_CERT_FILE and TLS_KEY_FILE, or neither; serving HTTP only')
+    if not key:
+        _key_warning('missing', key)
         return None
-    bad = False
-    for label, path in (('TLS_CERT_FILE', cert), ('TLS_KEY_FILE', key)):
-        if not _readable(path):
-            _log('TLS disabled: %s=%s is missing or unreadable; serving HTTP only' % (label, path))
-            bad = True
-    if bad:
+    if not os.path.exists(key):
+        _key_warning('missing', key)
+        return None
+    posture = key_posture(key)
+    if not posture['regular']:
+        _key_warning('not-a-file', key)
+        return None
+    if not posture['readable']:
+        _key_warning('unreadable', key)
+        return None
+    if posture['mode'] != '600':
+        _key_warning('mode', key)
+        return None
+    if not cert or not _readable(cert):
+        _key_warning('cert-unreadable', key)
         return None
     try:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(certfile=cert, keyfile=key)
-    except Exception as exc:
-        _log('TLS disabled: certificate and key did not load (%s); serving HTTP only' % exc)
+    except Exception:
+        _key_warning('invalid', key)
         return None
     return cert, key
 
@@ -322,20 +447,30 @@ def load_challenge(webroot, token):
     if not challenge_r.is_dir():
         return None
     candidate = challenge_r / token
+    # One file, read-only, and only when its real name is the token. A symlink,
+    # a directory, or a file outside this folder is not served, and the folder
+    # itself is never listed.
+    if candidate.is_symlink():
+        return None
+    flags = os.O_RDONLY | getattr(os, 'O_CLOEXEC', 0) | getattr(os, 'O_NOFOLLOW', 0)
     try:
-        # A symlink may point at another name in this directory. It may not leave it.
-        if candidate.is_symlink() or candidate.exists():
-            target = candidate.resolve(strict=True)
-        else:
+        fd = os.open(str(candidate), flags)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_CHALLENGE:
             return None
-    except OSError:
-        return None
-    if target.parent != challenge_r or target.name != token or not target.is_file():
-        return None
-    try:
-        data = target.read_bytes()
-    except OSError:
-        return None
+        try:
+            real = Path(os.path.realpath(candidate)).resolve()
+            real.relative_to(challenge_r)
+        except (OSError, ValueError):
+            return None
+        if real.name != token or real.parent != challenge_r:
+            return None
+        data = os.read(fd, MAX_CHALLENGE + 1)
+    finally:
+        os.close(fd)
     if len(data) > MAX_CHALLENGE:
         return None
     return data
@@ -385,14 +520,20 @@ def security_headers(scheme):
     return headers
 
 
-def _merge_response_headers(headers, scheme):
-    """Drop any HSTS we did not decide to send. Add the HTTPS-only headers."""
+def _merge_response_headers(headers, scheme, upgrade=True):
+    """Drop any HSTS we did not decide to send. Add the HTTPS-only headers.
+
+    ``upgrade`` is off for the project-move pages. Those pages navigate back to
+    the plain-HTTP origin on purpose, and upgrade-insecure-requests would send
+    that navigation to the wrong origin.
+    """
     cleaned = [list(item) for item in headers if item[0].lower() != b'strict-transport-security']
     if not _tls_scheme(scheme):
         return cleaned
     for name, value in security_headers(scheme):
         if name == b'content-security-policy':
-            cleaned = _add_upgrade(cleaned)
+            if upgrade:
+                cleaned = _add_upgrade(cleaned)
         else:
             cleaned.append([name, value])
     return cleaned
@@ -438,20 +579,32 @@ def _load_expiry(path):
     return when.strftime('%Y-%m-%dT%H:%M:%SZ'), days_left(when, now)
 
 
+def _tls_body(enabled, iso, left):
+    warning = bool(enabled and isinstance(left, int) and left < WARN_DAYS)
+    return {
+        'enabled': bool(enabled),
+        'cert_not_after': iso,
+        'days_left': left,
+        'warning': warning,
+        'reason': ('certificate has %d days left' % left) if warning else None,
+    }
+
+
 def tls_status(now=None):
     """Health ``tls`` object. The certificate file is re-read at most every 60 seconds.
 
     ``enabled`` follows the live listener, not the mere presence of the env vars.
     ``ok`` on ``/api/health`` is computed by the caller and does not use this.
+    ``warning`` is true once fewer than 14 days remain.
     """
     clock = time.monotonic() if now is None else now
     with _lock:
         if not LISTENER_ON or not ACTIVE_CERT:
-            return {'enabled': False, 'cert_not_after': None, 'days_left': None}
+            return _tls_body(False, None, None)
         path = ACTIVE_CERT
         cached = _cache['payload']
         if cached is not None and _cache['path'] == path and clock - _cache['mono'] < 60:
-            return {'enabled': True, 'cert_not_after': cached[0], 'days_left': cached[1]}
+            return _tls_body(True, cached[0], cached[1])
         try:
             iso, left = _load_expiry(path)
         except Exception as exc:
@@ -460,14 +613,14 @@ def tls_status(now=None):
         _cache['mono'] = clock
         _cache['path'] = path
         _cache['payload'] = (iso, left)
-        return {'enabled': True, 'cert_not_after': iso, 'days_left': left}
+        return _tls_body(True, iso, left)
 
 
 def _pairs(items):
     return [[name, value] for name, value in items]
 
 
-async def _http_reply(send, status, body, extra, scheme):
+async def _http_reply(send, status, body, extra, scheme, upgrade=True):
     if isinstance(body, str):
         body = body.encode('utf-8')
     headers = [
@@ -475,7 +628,7 @@ async def _http_reply(send, status, body, extra, scheme):
         [b'content-length', str(len(body)).encode('ascii')],
     ]
     headers.extend(_pairs(extra))
-    headers = _merge_response_headers(headers, scheme)
+    headers = _merge_response_headers(headers, scheme, upgrade=upgrade)
     await send({'type': 'http.response.start', 'status': status, 'headers': headers})
     await send({'type': 'http.response.body', 'body': body})
 
@@ -492,6 +645,29 @@ async def _ws_reply(send, status, body, scheme):
     await send({'type': 'websocket.http.response.body', 'body': body})
 
 
+async def _read_capped(receive, limit):
+    """Request body, or False when it is over ``limit``. None if the client left.
+
+    Bytes over the limit are discarded and never logged.
+    """
+    chunks = []
+    size = 0
+    too_big = False
+    while True:
+        message = await receive()
+        if message.get('type') == 'http.disconnect':
+            return None
+        body = message.get('body') or b''
+        size += len(body)
+        if size > limit:
+            too_big = True
+            chunks = []
+        elif not too_big:
+            chunks.append(body)
+        if message.get('type') == 'http.request' and not message.get('more_body', False):
+            return False if too_big else b''.join(chunks)
+
+
 async def _drain(receive):
     """Read the request body so a redirect does not stall the client. False if it went away."""
     while True:
@@ -500,6 +676,317 @@ async def _drain(receive):
             return False
         if message.get('type') == 'http.request' and not message.get('more_body', False):
             return True
+
+
+def request_origin(scope):
+    """scheme://host[:port] from the socket scheme and the Host header."""
+    scheme = scope.get('scheme') or 'http'
+    if scheme == 'ws':
+        scheme = 'http'
+    elif scheme == 'wss':
+        scheme = 'https'
+    raw = (_host_header(scope) or '').strip()
+    host = normalize_host(raw)
+    port = ''
+    if raw.count(':') == 1 and raw.rsplit(':', 1)[1].isdigit():
+        port = raw.rsplit(':', 1)[1]
+    if scheme == 'http' and port in ('', '80'):
+        return 'http://' + host
+    if scheme == 'https' and port in ('', '443'):
+        return 'https://' + host
+    if port:
+        return '%s://%s:%s' % (scheme, host, port)
+    return '%s://%s' % (scheme, host)
+
+
+def redirect_suppressed(scope):
+    """True when this request must stay on plain HTTP.
+
+    Logs once when the flag is on but the target is empty, invalid, or is the
+    IP host while the TLS listener is down. A target that is this same origin
+    is also skipped, so a redirect cannot loop.
+    """
+    if not REDIRECT:
+        return True
+    if not valid_https_host(HTTPS_HOST):
+        _warn_once('redirect-host', 'HTTPS_REDIRECT is on but HTTPS_HOST is empty or invalid; redirect stays off')
+        return True
+    if _IPV4_RE.fullmatch(HTTPS_HOST) and not LISTENER_ON:
+        _warn_once('redirect-ip', 'HTTPS_REDIRECT stays off: HTTPS_HOST is the IP host and TLS is down')
+        return True
+    if (scope.get('scheme') or '') in ('http', 'ws') and request_origin(scope) == public_origin():
+        return True
+    return False
+
+
+def _request_path_query(scope):
+    host = HTTPS_HOST if valid_https_host(HTTPS_HOST) else 'localhost'
+    loc = redirect_location(scope, host)
+    if not loc:
+        return None
+    prefix = 'https://' + host
+    rest = loc[len(prefix):]
+    if '?' in rest:
+        path, query = rest.split('?', 1)
+        return (path or '/'), query
+    return (rest or '/'), ''
+
+
+def redirect_url(scope):
+    """Absolute URL on the configured origin, or None when the path is not safe."""
+    parts = _request_path_query(scope)
+    origin = public_origin()
+    if not parts or not origin:
+        return None
+    path, query = parts
+    url = origin + path
+    if query:
+        url += '?' + query
+    return url
+
+
+def _html_get(scope):
+    if (scope.get('method') or 'GET').upper() != 'GET':
+        return False
+    path = scope.get('path') or '/'
+    if path in ('/', '/index.html'):
+        return True
+    if not path.endswith('.html'):
+        return False
+    decoded = unquote(path)
+    if not path.startswith('/') or path.startswith('//') or '\\' in path or '..' in decoded:
+        return False
+    return True
+
+
+def _esc(text):
+    return (text or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+
+
+def _js(obj):
+    return (json.dumps(obj, separators=(',', ':'))
+            .replace('<', '\\u003c').replace('\u2028', '\\u2028').replace('\u2029', '\\u2029'))
+
+
+_SCRIPT_CACHE = {'text': None}
+
+
+def _client_scripts():
+    if _SCRIPT_CACHE['text'] is None:
+        root = Path(__file__).resolve().parents[1] / 'js'
+        _SCRIPT_CACHE['text'] = (
+            (root / 'storage.js').read_text(encoding='utf-8')
+            + '\n' + (root / 'migrate.js').read_text(encoding='utf-8')
+        )
+    return _SCRIPT_CACHE['text']
+
+
+def _owned_spec():
+    text = (Path(__file__).resolve().parents[1] / 'js' / 'storage.js').read_text(encoding='utf-8')
+    block = text.split('const KEYS = {', 1)[1].split('};', 1)[0]
+    keys = tuple(re.findall(r"'([^']+)'", block))
+    pref = text.split('const OWNED_PREFIXES = [', 1)[1].split('];', 1)[0]
+    prefixes = tuple(re.findall(r"'([^']+)'", pref))
+    return keys, prefixes
+
+
+def _owned_key(name):
+    keys, prefixes = _owned_spec()
+    if name in keys:
+        return True
+    for pfx in prefixes:
+        if name.startswith(pfx) and re.fullmatch(r'[A-Za-z0-9._-]{1,40}', name[len(pfx):] or ''):
+            return True
+    return False
+
+
+def _safe_http_origin(origin):
+    if not origin or not origin.startswith('http://'):
+        return False
+    try:
+        parsed = urlparse(origin)
+    except ValueError:
+        return False
+    if parsed.scheme != 'http' or parsed.username or parsed.password:
+        return False
+    if parsed.path not in ('', '/') or parsed.query or parsed.fragment:
+        return False
+    host = parsed.hostname or ''
+    if host in ('localhost', '127.0.0.1'):
+        return True
+    if _IPV4_RE.fullmatch(host) and all(0 <= int(part) <= 255 for part in host.split('.')):
+        return True
+    if ALLOWED is not None and normalize_host(host) in ALLOWED:
+        return True
+    return bool(valid_https_host(host) and host == HTTPS_HOST)
+
+
+def _project_ok(pid, entry):
+    if not isinstance(entry, dict):
+        return False
+    if entry.get('id') != pid or not isinstance(pid, str) or re.fullmatch(r'[A-Za-z0-9_-]{1,80}', pid) is None:
+        return False
+    name = entry.get('name')
+    if not isinstance(name, str) or len(name) > 80:
+        return False
+    updated = entry.get('updated')
+    if isinstance(updated, bool) or not isinstance(updated, (int, float)):
+        return False
+    proj = entry.get('proj')
+    if not isinstance(proj, dict):
+        return False
+    if 'parts' in proj and not isinstance(proj.get('parts'), list):
+        return False
+    if 'wires' in proj and not isinstance(proj.get('wires'), list):
+        return False
+    try:
+        encoded = json.dumps(entry, separators=(',', ':'), ensure_ascii=False)
+    except (TypeError, ValueError):
+        return False
+    return len(encoded) <= PROJECT_CAP
+
+
+def validate_bundle(obj):
+    """Empty string when the move record is acceptable. The browser checks again."""
+    if not isinstance(obj, dict):
+        return 'not a move record'
+    if set(obj) - {'v', 'origin', 'exportedAt', 'path', 'query', 'items'}:
+        return 'unexpected field'
+    if obj.get('v') != 1:
+        return 'unsupported version'
+    origin = obj.get('origin')
+    if not isinstance(origin, str) or len(origin) > 200 or re.fullmatch(r'https?://[A-Za-z0-9.-]+(?::\d{1,5})?', origin) is None:
+        return 'bad origin'
+    exported = obj.get('exportedAt')
+    if isinstance(exported, bool) or not isinstance(exported, (int, float)):
+        return 'bad time'
+    path = obj.get('path') or '/'
+    if not isinstance(path, str) or len(path) > 512 or not path.startswith('/') or path.startswith('//') or '\\' in path or '..' in path:
+        return 'bad path'
+    if any(ord(c) < 32 or ord(c) == 127 for c in path):
+        return 'bad path'
+    query = obj.get('query') or ''
+    if not isinstance(query, str) or len(query) > 4096 or query.startswith('?') or any(ord(c) < 32 or ord(c) == 127 for c in query):
+        return 'bad query'
+    items = obj.get('items')
+    if not isinstance(items, list) or len(items) > 64:
+        return 'bad items'
+    seen = set()
+    projects_key = next((key for key in _owned_spec()[0] if key.endswith('projects.v1')), '')
+    for item in items:
+        if not isinstance(item, dict) or set(item) != {'k', 'v'}:
+            return 'bad item'
+        key = item.get('k')
+        value = item.get('v')
+        if not isinstance(key, str) or not _owned_key(key):
+            return 'unknown key'
+        if not isinstance(value, str) or len(value) > MIGRATE_CAP:
+            return 'value too large'
+        if key in seen:
+            return 'duplicate key'
+        seen.add(key)
+        if key == projects_key:
+            try:
+                parsed = json.loads(value)
+            except ValueError:
+                return 'projects are not json'
+            if not isinstance(parsed, dict):
+                return 'projects are not a list'
+            for pid, entry in parsed.items():
+                if pid in ('__proto__', 'constructor', 'prototype') or not _project_ok(pid, entry):
+                    return 'bad project'
+    return ''
+
+
+def unpack_payload(text):
+    """Decode a move body. Oversized or corrupt input is a miss, never a log line."""
+    if not isinstance(text, str) or not (text.startswith('0.') or text.startswith('1.')):
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(text[2:] + '=' * (-len(text[2:]) % 4))
+        if len(raw) > MIGRATE_CAP:
+            return None
+        if text.startswith('1.'):
+            raw = zlib.decompress(raw, max_length=MIGRATE_CAP)
+        if len(raw) > MIGRATE_CAP:
+            return None
+        return json.loads(raw.decode('utf-8'))
+    except Exception:
+        return None
+
+
+def _safe_back(value):
+    origin = public_origin()
+    if not origin:
+        return '/'
+    if not value or not (value == origin or value.startswith(origin + '/') or value.startswith(origin + '?')):
+        return origin + '/'
+    rest = value[len(origin):]
+    if rest.startswith('//') or '\\' in rest or any(ord(c) < 32 or ord(c) == 127 for c in rest):
+        return origin + '/'
+    return value
+
+
+def _page(title, boot, form_action, embedded=None, note='', extra=''):
+    """Move page. The hash-clearing script is the first script and the page has no subresources."""
+    nonce = secrets.token_urlsafe(18)
+    csp = (
+        "default-src 'none'; script-src 'nonce-%s'; style-src 'none'; img-src 'none'; "
+        "font-src 'none'; connect-src 'none'; object-src 'none'; frame-src 'none'; "
+        "base-uri 'none'; form-action %s; frame-ancestors 'none'"
+    ) % (nonce, form_action)
+    blob = ''
+    if embedded is not None:
+        blob = '<script type="application/json" id="cl-migrate-payload" nonce="%s">%s</script>' % (nonce, _js(embedded))
+    html = (
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<script nonce="%s">%s</script>'
+        '<meta name="referrer" content="no-referrer"><title>%s</title></head><body>'
+        '<p>%s</p>%s%s<script nonce="%s">%s\n%s</script></body></html>'
+    ) % (nonce, _CLEAR_HASH, _esc(title), _esc(note or title), extra, blob, nonce, _client_scripts(), boot)
+    return html, csp
+
+
+def _fail_html(origin):
+    link = ''
+    if _safe_http_origin(origin):
+        link = '<p><a href="%s/">Back to the original address</a></p>' % _esc(origin)
+    return (
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="referrer" content="no-referrer"><title>Projects were not moved</title></head>'
+        '<body><p>These projects could not be moved. Open the original address and export them from My Projects.</p>%s</body></html>'
+    ) % link
+
+
+def _one_header(scope, name):
+    found = None
+    for key, value in scope.get('headers') or ():
+        if key.lower() != name:
+            continue
+        if found is not None:
+            return None
+        found = value
+    return found
+
+
+def _content_length(scope):
+    raw = _one_header(scope, b'content-length')
+    if raw is None:
+        return None
+    text = raw.decode('latin1', 'replace').strip()
+    if not text.isdigit():
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def _media_type(scope):
+    raw = _one_header(scope, b'content-type')
+    if not raw:
+        return ''
+    return raw.decode('latin1', 'replace').split(';', 1)[0].strip().lower()
 
 
 class HttpsMiddleware:
@@ -523,7 +1010,7 @@ class HttpsMiddleware:
         if kind == 'websocket':
             # Uvicorn reports the socket scheme as ws or wss. Anything but wss
             # is plain HTTP, and a 301 would not stop the upgrade.
-            if REDIRECT and scheme != 'wss':
+            if not redirect_suppressed(scope) and scheme != 'wss':
                 await _ws_reply(
                     send, 403,
                     'WebSocket over plain HTTP is refused while HTTPS redirect is on. Use wss://.',
@@ -535,7 +1022,11 @@ class HttpsMiddleware:
         if acme_attempt(scope):
             await self._acme(scope, receive, send, scheme)
             return
-        if scheme == 'http' and REDIRECT and not _is_health(scope):
+        path = scope.get('path') or '/'
+        if REDIRECT and path in ('/migrate', '/migrate-done'):
+            await self._migrate(scope, receive, send, scheme)
+            return
+        if not redirect_suppressed(scope) and scheme == 'http' and not _is_health(scope):
             if _ws_upgrade(scope):
                 await _http_reply(
                     send, 403,
@@ -543,26 +1034,151 @@ class HttpsMiddleware:
                     (), scheme,
                 )
                 return
-            if not HTTPS_HOST:
-                _warn_once('redirect-host', 'HTTPS_REDIRECT is on but HTTPS_HOST is empty; redirect stays off')
-            else:
-                location = redirect_location(scope, HTTPS_HOST)
-                if not await _drain(receive):
-                    return
-                if location is None:
-                    await _http_reply(send, 400, 'bad request', (), scheme)
-                    return
-                await _http_reply(
-                    send, redirect_status(scope.get('method')), '',
-                    ((b'location', location.encode('latin1')),), scheme,
-                )
+            if _html_get(scope):
+                await self._handoff(scope, send, scheme)
                 return
+            location = redirect_url(scope)
+            if not await _drain(receive):
+                return
+            if location is None:
+                await _http_reply(send, 400, 'bad request', (), scheme)
+                return
+            await _http_reply(
+                send, redirect_status(scope.get('method')), '',
+                ((b'location', location.encode('latin1')),), scheme,
+            )
+            return
         async def send_wrap(message):
             if message.get('type') == 'http.response.start':
                 message = dict(message)
                 message['headers'] = _merge_response_headers(message.get('headers') or [], scheme)
             await send(message)
         await self.app(scope, receive, send_wrap)
+
+    async def _send_html(self, send, html, csp, scheme, status=200):
+        body = html.encode('utf-8')
+        headers = [
+            [b'content-type', b'text/html; charset=utf-8'],
+            [b'content-length', str(len(body)).encode('ascii')],
+            [b'cache-control', b'no-store'],
+            [b'referrer-policy', b'no-referrer'],
+            [b'x-content-type-options', b'nosniff'],
+            [b'content-security-policy', csp.encode('ascii')],
+        ]
+        headers = _merge_response_headers(headers, scheme, upgrade=False)
+        await send({'type': 'http.response.start', 'status': status, 'headers': headers})
+        await send({'type': 'http.response.body', 'body': body})
+
+    async def _plain(self, send, status, body, scheme):
+        await _http_reply(
+            send, status, body,
+            ((b'cache-control', b'no-store'), (b'referrer-policy', b'no-referrer')),
+            scheme, upgrade=False,
+        )
+
+    async def _handoff(self, scope, send, scheme):
+        parts = _request_path_query(scope)
+        path, query = parts if parts else ('/', '')
+        origin = public_origin()
+        note = 'Opening the secure site…'
+        link = ''
+        if origin:
+            href = origin + path + (('?' + query) if query else '')
+            link = '<p><a href="%s">Continue</a></p>' % _esc(href)
+        html, csp = _page(
+            'Opening the secure site',
+            'clMigrate.handoff(%s);' % _js({'target': origin, 'path': path, 'query': query}),
+            origin or "'none'",
+            note=note,
+            extra=link,
+        )
+        await self._send_html(send, html, csp, scheme)
+
+    async def _migrate(self, scope, receive, send, scheme):
+        path = scope.get('path') or ''
+        method = (scope.get('method') or 'GET').upper()
+        origin = public_origin()
+        on_target = bool(origin) and request_origin(scope) == origin
+        if path == '/migrate-done' and method == 'GET':
+            params = parse_qs((scope.get('query_string') or b'').decode('latin1', 'replace'), max_num_fields=4)
+            back = _safe_back((params.get('back') or [''])[0])
+            flag = (params.get('migrated') or [''])[0] == '1'
+            html, csp = _page(
+                'Finishing the move',
+                'clMigrate.finish(%s);' % _js({'back': back, 'flag': flag, 'target': origin or '/'}),
+                "'none'",
+                note='Finishing the move…',
+            )
+            await self._send_html(send, html, csp, scheme)
+            return
+        if path == '/migrate' and method == 'GET' and on_target:
+            html, csp = _page(
+                'Moving your projects',
+                'clMigrate.receive(%s);' % _js({'target': origin, 'confirm': HSTS_SECONDS == 0}),
+                "'none'",
+                note='Moving your projects…',
+            )
+            await self._send_html(send, html, csp, scheme)
+            return
+        if path == '/migrate' and method == 'POST' and on_target:
+            await self._migrate_post(scope, receive, send, scheme, origin)
+            return
+        if not origin:
+            await _http_reply(send, 400, 'bad request', (), scheme)
+            return
+        location = origin + path
+        if not await _drain(receive):
+            return
+        await _http_reply(
+            send, redirect_status(method), '',
+            ((b'location', location.encode('ascii')),), scheme,
+        )
+
+    async def _migrate_post(self, scope, receive, send, scheme, origin):
+        """Accept one form body. It is not logged, not written to disk, and not kept past this call.
+
+        Content-Length above 2 MB is refused before the body is retained. A body
+        that grows past 2 MB while streaming is refused the same way. A missing
+        or unexpected content type is 415. Parse failures stay off the log,
+        including uvicorn's access line, which records only the request line.
+        """
+        declared = _content_length(scope)
+        if declared is not None and declared > MIGRATE_CAP:
+            await self._plain(send, 413, b'request too large', scheme)
+            return
+        if _media_type(scope) != 'application/x-www-form-urlencoded':
+            await self._plain(send, 415, b'unsupported media type', scheme)
+            return
+        payload = await _read_capped(receive, MIGRATE_CAP)
+        if payload is None:
+            return
+        if payload is False:
+            await self._plain(send, 413, b'request too large', scheme)
+            return
+        try:
+            text = payload.decode('utf-8')
+            form = parse_qs(text, keep_blank_values=False, max_num_fields=2, separator='&')
+            values = form.get('payload') or []
+            obj = None
+            error = 'bad payload'
+            if len(form) == 1 and len(values) == 1 and isinstance(values[0], str):
+                obj = unpack_payload(values[0])
+                error = validate_bundle(obj) if obj is not None else 'bad payload'
+            if error:
+                html = _fail_html(obj.get('origin') if isinstance(obj, dict) else '')
+                await self._send_html(send, html, _MOVE_CSP, scheme, status=400)
+                return
+            html, csp = _page(
+                'Moving your projects',
+                'clMigrate.receive(%s);' % _js({'target': origin, 'confirm': HSTS_SECONDS == 0}),
+                "'none'",
+                embedded=obj,
+                note='Moving your projects…',
+            )
+            await self._send_html(send, html, csp, scheme)
+        except Exception:
+            html = _fail_html('')
+            await self._send_html(send, html, _MOVE_CSP, scheme, status=400)
 
     async def _acme(self, scope, receive, send, scheme):
         method = (scope.get('method') or 'GET').upper()

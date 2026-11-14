@@ -1,7 +1,8 @@
 /* User projects ("My Projects"): examples stay pristine; editing one makes a copy that is saved here.
  * Storage: localStorage (always) + optional server copy (/api/projects, token-gated) when enabled. Pure logic, no DOM. */
 (function (root) {
-  const KEY = 'esp32lab.projects.v1', CUR = 'esp32lab.current.v1', SRV = 'esp32lab.serverSync';
+  if (typeof module !== 'undefined' && module.exports && !root.clStorage) require('./storage.js');
+  const KEY = root.clStorage.KEYS.projects, CUR = root.clStorage.KEYS.current, SRV = root.clStorage.KEYS.serverSync;
   const clone = (o) => JSON.parse(JSON.stringify(o));
   const newId = () => 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   class ProjectStore {
