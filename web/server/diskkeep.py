@@ -707,7 +707,8 @@ def compile_busy_message(queued: int) -> str:
 def compile_timeout_message(seconds: float) -> str:
     """Body of the 429 returned when a queued compile waits too long.
 
-    429, not 503: the page retries 502–504 as if the gateway had dropped the POST.
+    429, not 503: the page retries 502 and 503 as if the gateway had dropped the POST.
+    504 is a compile that ran past its own deadline and is shown immediately, not retried.
     """
     seconds = max(0.0, float(seconds))
     shown = str(int(round(seconds))) if seconds >= 10 else f'{seconds:.1f}'

@@ -507,7 +507,7 @@ test('the busy Run button is grey, keeps its spinner, and theme.css is cache-bus
   const mv = html.match(/mobile\.css\?v=(\d+)/);
   assert.equal(mv && mv[1], '68');
   const av = html.match(/app\.js\?v=(\d+)/);
-  assert.equal(av && av[1], '77');
+  assert.equal(av && av[1], '82');
   const mj = html.match(/mobile\.js\?v=(\d+)/);
   assert.equal(mj && mj[1], '69');
   const ev = html.match(/editor\.js\?v=(\d+)/);
@@ -530,4 +530,102 @@ test('the busy Run button is grey, keeps its spinner, and theme.css is cache-bus
   const editor = fs.readFileSync(path.join(__dirname, '../js/editor.js'), 'utf8');
   assert.match(editor, /svg\.focus\(\{ preventScroll: true \}\)/);
   assert.doesNotMatch(editor, /svg\.focus\(\)/);
+});
+
+const TIMEOUT_TEXT = "Your sketch took too long to build. It's saved. Try Run again, and if it keeps happening, make the sketch smaller.";
+
+function restored(where) {
+  assert.equal(label.textContent, 'Run', where);
+  assert.equal(bRun.disabled, false, where);
+  assert.equal(bRun.classList.contains('spinning'), false, where);
+  assert.notEqual(label.textContent, 'Building…', where);
+  assert.equal(app.compilePhase, 'idle', where);
+  assert.equal(app.run, null, where);
+}
+
+test('a 504 compile timeout restores Run and shows the saved-sketch sentence', async () => {
+  assert.equal(app.COMPILE_TIMEOUT_TEXT, TIMEOUT_TEXT);
+  try {
+    const pending = gate();
+    compileReply = pending.promise;
+    narrowPhone = false;
+    const flight = app.startRun();
+    busy();
+    phoneCompiling();
+    pending.resolve({
+      status: 504,
+      json: async () => ({ ok: false, reason: 'timeout', log: TIMEOUT_TEXT }),
+    });
+    await flight;
+    restored('desktop');
+    phoneRun();
+    assert.equal(ids.stText.textContent, TIMEOUT_TEXT);
+    assert.equal(ids.stLive.textContent, TIMEOUT_TEXT);
+    assert.equal(ids.status.getAttribute('title'), TIMEOUT_TEXT);
+    assert.equal(ids.compileStrip.textContent, TIMEOUT_TEXT);
+    assert.equal(ids.compileStrip.hidden, false);
+    assert.equal(ids.mCompileToast.hidden, true);
+    assert.equal(ids.buildLog.textContent, TIMEOUT_TEXT + '\n');
+
+    narrowPhone = true;
+    const phonePending = gate();
+    compileReply = phonePending.promise;
+    const phoneFlight = app.startRun();
+    assert.equal(bRun.disabled, true);
+    assert.equal(label.textContent, 'Building…');
+    assert.equal(ids.mCompileToast.textContent, app.BUILDING_TEXT);
+    assert.equal(ids.mCompileToast.hidden, false);
+    assert.equal(ids.stText.textContent, 'Building…');
+    phonePending.resolve({
+      status: 504,
+      json: async () => ({ ok: false, reason: 'timeout', log: TIMEOUT_TEXT }),
+    });
+    await phoneFlight;
+    restored('phone');
+    phoneRun();
+    assert.equal(ids.stText.textContent, TIMEOUT_TEXT);
+    assert.equal(ids.stLive.textContent, TIMEOUT_TEXT);
+    assert.equal(ids.status.getAttribute('title'), TIMEOUT_TEXT);
+    assert.equal(ids.mCompileToast.textContent, TIMEOUT_TEXT);
+    assert.equal(ids.mCompileToast.hidden, false);
+    assert.equal(ids.compileStrip.hidden, true);
+  } finally {
+    narrowPhone = false;
+  }
+});
+
+test('an aborted or timed-out compile fetch leaves Building immediately', async () => {
+  const origFetch = global.fetch;
+  async function giveUp(name) {
+    let compileCalls = 0;
+    global.fetch = (url, opts) => {
+      const u = String(url);
+      if (u.includes('api/compile') && !u.includes('progress')) {
+        compileCalls += 1;
+        const err = new Error(name);
+        err.name = name;
+        return Promise.reject(err);
+      }
+      return origFetch(url, opts);
+    };
+    const started = Date.now();
+    const flight = app.startRun();
+    busy();
+    phoneCompiling();
+    await flight;
+    assert.ok(Date.now() - started < 800, name + ' does not wait out gateway retries');
+    assert.equal(compileCalls, 1, name);
+    restored(name);
+    phoneRun();
+    assert.equal(ids.stText.textContent, TIMEOUT_TEXT);
+    assert.equal(ids.stLive.textContent, TIMEOUT_TEXT);
+    assert.notEqual(label.textContent, 'Building…');
+  }
+  try {
+    await giveUp('AbortError');
+    await giveUp('TimeoutError');
+  } finally {
+    global.fetch = origFetch;
+    narrowPhone = false;
+  }
 });
