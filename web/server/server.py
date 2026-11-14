@@ -18,7 +18,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
 import secrets
 from fastapi.responses import PlainTextResponse
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
@@ -1388,6 +1388,38 @@ def proj_del(pid: str):
     i = _pid(pid)
     if i and (PROJ_DIR / f'{i}.json').exists(): (PROJ_DIR / f'{i}.json').unlink()
     return {'ok': True}
+
+_NOT_FOUND_PAGE = (
+    '<!doctype html>\n'
+    '<html lang="en"><head><meta charset="utf-8">'
+    '<meta name="viewport" content="width=device-width, initial-scale=1">'
+    '<title>Page not found — Circuit Lab</title>'
+    '<style>html,body{margin:0;background:#08090b;color:#e6e8eb;'
+    "font-family:system-ui,-apple-system,'Segoe UI',sans-serif}"
+    'main{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;'
+    'text-align:center;padding:24px;box-sizing:border-box}'
+    'h1{font-size:22px;font-weight:650;margin:0 0 8px}'
+    'p{margin:0 0 18px;line-height:1.45}'
+    'a{display:inline-block;box-sizing:border-box;min-height:36px;line-height:36px;padding:0 16px;'
+    'border-radius:8px;background:#22d3ee;color:#04161a;font-weight:650;text-decoration:none}'
+    'a:focus-visible{outline:2px solid #fff4d4;outline-offset:3px}'
+    '</style></head><body><main>'
+    '<h1>Page not found</h1>'
+    "<p>That page isn't part of Circuit Lab.</p>"
+    '<a href="/">Go to Circuit Lab</a>'
+    '</main></body></html>\n'
+)
+_NOT_FOUND_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'"
+
+@app.exception_handler(404)
+async def page_not_found(request: Request, exc):
+    path = request.url.path or '/'
+    if path == '/api' or path.startswith('/api/'):
+        return JSONResponse({'error': 'not found'}, status_code=404)
+    resp = HTMLResponse(_NOT_FOUND_PAGE, status_code=404)
+    resp.headers['Content-Security-Policy'] = _NOT_FOUND_CSP
+    resp.headers['X-Content-Type-Options'] = 'nosniff'
+    return resp
 
 @app.get('/robots.txt')
 def robots_txt():

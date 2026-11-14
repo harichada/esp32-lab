@@ -556,6 +556,62 @@ async function renameProject(page: Page, name: string) {
   await page.locator('#projDlg tr.cur [data-a=ren]').click();
 }
 
+test('connection dot stays inside the header from 320 to 2560', async () => {
+  const overlayBrowser = await chromium.launch({ channel: 'chrome', headless: true });
+  const classicBrowser = await chromium.launch({
+    channel: 'chrome',
+    headless: false,
+    args: ['--disable-features=OverlayScrollbar'],
+  });
+  const failures: string[] = [];
+  try {
+    for (const bar of [0, 15] as const) {
+      const browser = bar ? classicBrowser : overlayBrowser;
+      const context = await browser.newContext({
+        viewport: { width: 821, height: 780 },
+        deviceScaleFactor: 1,
+        baseURL: 'http://127.0.0.1:4173',
+      });
+      const page = await context.newPage();
+      await install(page);
+      await ready(page);
+      await scrollbar(page, bar);
+      for (const state of ['building', 'queued'] as const) {
+        await applyState(page, state, DEFAULT_TITLE);
+        for (let width = 320; width <= 2560; width += 1) {
+          await page.setViewportSize({ width, height: 780 });
+          const hit = await page.evaluate(() => {
+            const app = (window as unknown as { app?: { syncHeaderFit?: () => void } }).app;
+            if (app && app.syncHeaderFit) app.syncHeaderFit();
+            const top = document.getElementById('top');
+            const dot = document.getElementById('connDot');
+            if (!top || !dot) return 'missing';
+            const client = document.documentElement.clientWidth;
+            if (document.documentElement.scrollWidth > client + 1) return 'page scroll ' + document.documentElement.scrollWidth;
+            const cs = getComputedStyle(dot);
+            if (cs.display === 'none' || cs.visibility === 'hidden') return '';
+            const dr = dot.getBoundingClientRect();
+            if (dr.width < 1) return '';
+            const tr = top.getBoundingClientRect();
+            const mark = dot.querySelector('i');
+            const glow = mark ? mark.getBoundingClientRect().right + 6 : dr.right;
+            const past = Math.max(dr.right, glow) - tr.right;
+            const pastClient = Math.max(dr.right, glow) - client;
+            if (past > 0.5 || pastClient > 0.5) return 'past ' + past.toFixed(1) + ' client ' + pastClient.toFixed(1);
+            return '';
+          });
+          if (hit) failures.push(bar + 'px ' + state + ' @' + width + ' ' + hit);
+        }
+      }
+      await context.close();
+    }
+  } finally {
+    await overlayBrowser.close();
+    await classicBrowser.close();
+  }
+  expect(failures, failures.slice(0, 12).join('\n')).toEqual([]);
+});
+
 test('header name stays together after copy and rename', async () => {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   const context = await browser.newContext({ viewport: { width: 1280, height: 780 } });

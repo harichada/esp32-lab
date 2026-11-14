@@ -83,7 +83,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const L = store.list();
     d.innerHTML = `<div class="modal-box"><div class="row"><h3 style="flex:1;margin:0">My Projects</h3><button data-a="close">✕</button></div>
       <div class="row"><button data-a="new">＋ New blank</button><label class="btn">⤒ Import JSON / diagram.json<input type="file" id="projImp" accept=".json,application/json" hidden></label>
-      <label title="Also keep a copy of each project on the simulator server"><input type="checkbox" id="cbSrv" ${store.serverSync ? 'checked' : ''}> server copy</label><button data-a="srv">From server…</button></div>
+      <label title="Also keep a copy of each project on the simulator server"><input type="checkbox" id="cbSrv" ${store.serverSync ? 'checked' : ''}> server copy</label><button type="button" data-a="srv" id="bFromServer">From server…</button></div>
       <table class="projs">${L.map((e) => `<tr data-id="${e.id}" class="${app.proj && app.proj.id === e.id ? 'cur' : ''}"><td class="pn">${P.esc(e.name)}<br><small class="muted">${new Date(e.updated).toLocaleString()}${e.from ? ' · from ' + P.esc(e.from) : ''}</small></td>
         <td><button data-a="open">Open</button><button data-a="ren">Rename</button><button data-a="dup">Duplicate</button><button data-a="exp">Export</button><button data-a="del">Delete</button></td></tr>`).join('') || '<tr><td class="muted">No projects yet. Open an example and press “Make a copy” (or just start editing it).</td></tr>'}</table><div id="srvList"></div></div>`;
     d.hidden = false;
@@ -232,8 +232,10 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   // ---------------- runtimes ----------------
   function sendRun(m) { if (app.run && app.run.ws && app.run.ws.readyState === 1) app.run.ws.send(JSON.stringify(m)); }
   function espPart() { return app.proj.parts.find((q) => q.type === 'esp32'); }
+  const OFFLINE = "Can't reach the simulator right now. Your work is saved on this device. Try again in a moment.";
   function statusFace(kind, text) {
     const t = String(text || '').trim();
+    if (t === OFFLINE || /can't reach the simulator/i.test(t)) return { short: 'Offline', full: OFFLINE };
     if (kind === 'run' || /^running\b/i.test(t)) return { short: 'Running', full: t || 'Running' };
     if (kind === 'busy') {
       const queued = app.compilePhase === 'queued' || /\bqueued\b|ahead of yours|position \d|waiting for another build/i.test(t);
@@ -250,6 +252,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (word === 'Running') return 'Run';
     if (word === 'Idle') return 'Idle';
     if (word === 'Run error') return 'Error';
+    if (word === 'Offline') return 'Offline';
     const one = String(word || '').split(/\s+/)[0] || 'Status';
     return one.length > 8 ? one.slice(0, 8) : one;
   }
@@ -581,7 +584,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       res = await r.json();
       run.settled = true;
       holdBuilding = !!(res && res.ok && app.run === run);
-    } catch (e) { clearInterval(run.poll); run.poll = null; setCompilePhase('idle'); setStatus('err', 'backend unreachable'); serialAppend('\n[backend] cannot reach /api/compile — start server/server.py (see README) or switch to JS sketch mode.\n'); app.run = null; return; }
+    } catch (e) { clearInterval(run.poll); run.poll = null; setCompilePhase('idle'); setStatus('err', OFFLINE); serialAppend('\n' + OFFLINE + '\n'); app.run = null; return; }
     finally { if (!holdBuilding || app.run !== run) setCompilePhase('idle'); }
     if (app.run !== run) return;
     $('#buildLog').textContent = res.cached ? cachedCompileLog(res.log) : (res.log || ''); if (app.codeview) app.codeview.setLog(res.ok ? '' : (res.log || ''));
@@ -1252,6 +1255,23 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (!top || top.clientWidth < 1) return false;
     return top.scrollWidth > top.clientWidth + 0.5;
   }
+  // The connection dot, including its glow, stays inside the header. A tighter
+  // gap is applied only when the measured edge would cross the bar or the viewport.
+  function pinConnDot(reset) {
+    const top = document.getElementById && document.getElementById('top');
+    const dot = document.getElementById && document.getElementById('connDot');
+    if (!top || !dot || !top.classList || typeof getComputedStyle !== 'function') return;
+    if (reset) top.classList.remove('hdr-tight');
+    const cs = getComputedStyle(dot);
+    if (cs.display === 'none' || cs.visibility === 'hidden') return;
+    const dr = dot.getBoundingClientRect();
+    if (dr.width < 1) return;
+    const tr = top.getBoundingClientRect();
+    const mark = dot.querySelector && dot.querySelector('i');
+    const glow = mark ? mark.getBoundingClientRect().right + 6 : dr.right;
+    const edge = Math.min(tr.right, document.documentElement.clientWidth);
+    if (Math.max(dr.right, glow) - edge > 0.5) top.classList.add('hdr-tight');
+  }
   function syncHeaderFit() {
     placeProj();
     syncProjTitle();
@@ -1284,6 +1304,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     }
     if ((headerOverflows() || titleNeedsRoom()) && tier < 1) { applyStatusTier(1); tier = 1; }
     if ((headerOverflows() || titleNeedsRoom()) && tier < 2) { applyStatusTier(2); tier = 2; }
+    pinConnDot(key !== headerFitKey);
     headerFitKey = key;
     syncDocTitle();
   }
@@ -1553,6 +1574,11 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const el = $('#view3dLoad');
     if (el) { el.hidden = !on; el.setAttribute('aria-busy', on ? 'true' : 'false'); }
     document.body.classList.toggle('view3d-busy', !!on);
+    const live = document.getElementById('stLive');
+    const st = document.getElementById('status');
+    if (!live) return;
+    if (on) live.textContent = 'Loading 3D view…';
+    else if (live.textContent === 'Loading 3D view…') live.textContent = (st && st.getAttribute('title')) || statusWord || 'Idle';
   }
   function paintFrame() { return new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res))); }
   function applyViewChrome() {

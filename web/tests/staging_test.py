@@ -78,6 +78,11 @@ def _http_app(record):
                     + payload)
                 await writer.drain()
                 return
+            if target.startswith('/partial'):
+                writer.write(b'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n')
+                await writer.drain()
+                writer.close()
+                return
             if target.startswith('/hang'):
                 await asyncio.sleep(30)
                 return
@@ -117,6 +122,14 @@ class StagingTests(unittest.TestCase):
             if path.endswith('/bye'):
                 await ws.send('bye')
                 await ws.close(4002)
+                return
+            if path.endswith('/drop'):
+                await ws.send('up')
+                transport = getattr(ws, 'transport', None)
+                if transport is not None:
+                    transport.abort()
+                else:
+                    await ws.close()
                 return
             async for message in ws:
                 await ws.send(message)
@@ -257,7 +270,8 @@ class StagingTests(unittest.TestCase):
         self.assertIn('<html lang="en">', text)
         self.assertRegex(text, r'<title>[^<]+</title>')
         self.assertNotIn('<script', low)
-        self.assertIn('<link rel="icon" href="data:,">', text)
+        self.assertIn('<link rel="icon" href="/favicon.ico">', text)
+        self.assertNotIn('data:,', text)
         self.assertEqual(low.count('<link'), 1)
         self.assertNotIn('stylesheet', low)
         self.assertNotIn('@import', low)
@@ -275,13 +289,13 @@ class StagingTests(unittest.TestCase):
     def _assert_private(self, body):
         self._assert_static(
             body, PRIVATE,
-            'Looking for Circuit Lab? <a href="/">Go to the main site</a>.',
+            'Looking for Circuit Lab? <a href="/">Go to the main site.</a>',
         )
 
     def _assert_down(self, body):
         self._assert_static(
             body, DOWN,
-            'Try again in a few minutes, or <a href="/">use the main site</a>.',
+            'Try again in a few minutes, or <a href="/">use the main site.</a>',
         )
 
     def test_flags_off_do_not_change_headers(self):
@@ -543,6 +557,11 @@ class StagingTests(unittest.TestCase):
         self.assertEqual(code, 401)
         self._assert_private(body)
         self.assertTrue(any(line == 'stage_auth=denied' for line in self.logs))
+        icon_code, icon_headers, icon = self.fetch('/favicon.ico')
+        self.assertEqual(icon_code, 200)
+        self.assertIn('image/', icon_headers['content-type'])
+        self.assertEqual(icon, (Path(__file__).resolve().parents[1] / 'favicon.ico').read_bytes())
+        self.assertNotIn(b'private test copy', icon.lower())
         self.assertFalse(any(TOKEN in line for line in self.logs))
         self.logs.clear()
         code, _, body = self.fetch('/?t=wrong')
@@ -994,7 +1013,7 @@ class StagingTests(unittest.TestCase):
             ])
             self.assertEqual(status, 401, method)
             self.assertEqual(headers.get('cache-control'), 'no-store')
-            self.assertEqual(headers.get('content-security-policy'), "default-src 'none'; style-src 'unsafe-inline'")
+            self.assertEqual(headers.get('content-security-policy'), "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'")
             self.assertIn('text/html', headers.get('content-type', ''))
             if method != 'HEAD':
                 self._assert_private(body)
@@ -1134,7 +1153,7 @@ class StagingTests(unittest.TestCase):
             self.assertIn('min-height:30px', page)
             self.assertIn('a:focus-visible{', page)
             self.assertIn('a:hover{', page)
-        self.assertEqual(staging.PAGE_CSP, "default-src 'none'; style-src 'unsafe-inline'")
+        self.assertEqual(staging.PAGE_CSP, "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'")
         marker = 'zz-secret-path-9f3'
         header = 'zz-header-9f3'
         upstream = '127.0.0.1:%d' % self.http_port
@@ -1169,12 +1188,74 @@ class StagingTests(unittest.TestCase):
 
     def _assert_guard_page(self, headers, body, path, header, upstream):
         self.assertEqual(headers['Cache-Control'], 'no-store')
-        self.assertEqual(headers['Content-Security-Policy'], "default-src 'none'; style-src 'unsafe-inline'")
+        self.assertEqual(headers['Content-Security-Policy'], "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'")
         self.assertNotIn(path.encode(), body)
         self.assertNotIn(header.encode(), body)
         self.assertNotIn(upstream.encode(), body)
         self.assertNotIn(b'http://', body)
         self.assertNotIn(b'https://', body)
+
+    def test_partial_upstream_headers_are_502_and_logged(self):
+        self._env(upstream='http://127.0.0.1:%d' % self.http_port)
+        status, headers, body = self.fetch('/staging/partial')
+        self.assertIn(status, (500, 502))
+        self.assertNotEqual(status, 200)
+        self.assertIn(b"isn't running", body)
+        self.assertTrue(any('status=%d' % status in line or 'status=502' in line for line in self.logs))
+        self.assertTrue(any(line.startswith('staging_proxy status=') for line in self.logs))
+        self.assertNotIn(b'upstream-ok', body)
+        self.assertEqual(headers['Content-Security-Policy'], staging.PAGE_CSP)
+
+    def test_websocket_close_on_upstream_drop_can_reconnect(self):
+        self._env(upstream='http://127.0.0.1:%d' % self.ws_port)
+
+        async def dropped():
+            url = 'ws://127.0.0.1:%d/staging/api/run/drop' % self.port
+            async with websockets.connect(url, open_timeout=3, proxy=None) as ws:
+                self.assertEqual(await ws.recv(), 'up')
+                try:
+                    await asyncio.wait_for(ws.recv(), 3)
+                except ConnectionClosed as exc:
+                    rcvd = getattr(exc, 'rcvd', None)
+                    return (
+                        getattr(rcvd, 'code', None),
+                        getattr(rcvd, 'reason', '') or '',
+                    )
+            return None, ''
+
+        code, reason = asyncio.run(dropped())
+        self.assertEqual(code, 1012)
+        self.assertIn('upstream restart', reason)
+
+        async def again():
+            url = 'ws://127.0.0.1:%d/staging/api/run/abc' % self.port
+            async with websockets.connect(url, open_timeout=3, proxy=None) as ws:
+                await ws.send('back')
+                return await asyncio.wait_for(ws.recv(), 3)
+
+        self.assertEqual(asyncio.run(again()), 'back')
+
+    def test_unknown_page_is_html_and_api_stays_json(self):
+        status, headers, body = self.fetch('/no-such-lab-page')
+        self.assertEqual(status, 404)
+        text = body.decode()
+        self.assertIn('<html lang="en">', text)
+        self.assertRegex(text, r'<title>[^<]+</title>')
+        self.assertIn('<h1>Page not found</h1>', text)
+        self.assertIn("That page isn't part of Circuit Lab.", text)
+        self.assertIn('<a href="/">Go to Circuit Lab</a>', text)
+        self.assertNotIn('<script', text.lower())
+        self.assertIn('text/html', headers['Content-Type'])
+        self.assertIn("style-src 'unsafe-inline'", headers['Content-Security-Policy'])
+        self.assertNotIn('data:,', text)
+        api_status, api_headers, api_body = self.fetch('/api/does-not-exist')
+        self.assertEqual(api_status, 404)
+        self.assertIn('application/json', api_headers['Content-Type'])
+        self.assertEqual(json.loads(api_body), {'error': 'not found'})
+        proj_status, proj_headers, proj_body = self.fetch('/api/projects/missingid')
+        self.assertEqual(proj_status, 404)
+        self.assertIn('json', proj_headers['Content-Type'])
+        self.assertEqual(json.loads(proj_body), {'error': 'not found'})
 
 
 def _contrast(fg, bg):
