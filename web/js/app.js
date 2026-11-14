@@ -348,6 +348,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
   let compileBusy = false;
   const BUILDING_TEXT = 'Building your code… the first build takes longer.';
+  const SIMULATOR_STATUS = "The simulator couldn't start. Try again in a minute. Your sketch is fine and saved.";
   const QUEUE_FALLBACK = 'Waiting for another build to finish…';
   // One phase for the Run button and the status line: idle, queued, building, running.
   // A 429, a compile error, and a dropped socket return to idle.
@@ -508,6 +509,17 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       return id;
     } catch (e) { return ''; }
   }
+  const NET_NOTICE = 'Your sketch uses the network. It can reach the simulated devices in Circuit Lab, but not the internet, which is blocked for safety. Requests to real websites will fail even if your code is fine.';
+  function showNetNotice(on) {
+    const el = $('#netNotice');
+    if (!el) return;
+    el.textContent = on ? NET_NOTICE : '';
+  }
+  function progressHeaders(compileId) {
+    const headers = { 'X-Client-Id': tabClientId() };
+    if (compileId) headers['X-Compile-Id'] = compileId;
+    return headers;
+  }
   function retryAfterSeconds(r) {
     const h = r && r.headers && r.headers.get && r.headers.get('Retry-After');
     const n = parseInt(h, 10);
@@ -528,19 +540,20 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       try { await sk.start(); } catch (e) { return; }
       return;
     }
-    const run = app.run = { kind: 'qemu', t0: performance.now() };
+    const run = app.run = { kind: 'qemu', t0: performance.now(), compileId: '' };
     app.netlog.add({ k: 'info', msg: `—— run: ${app.proj.name || 'sketch'} ——` });
     setCompilePhase('building');
     setStatus('busy', BUILDING_TEXT); $('#buildLog').textContent = '';
+    showNetNotice(false);
     let res;
-    const clientHeaders = { 'X-Client-Id': tabClientId() };
     let shownWait = '';
     let holdBuilding = false;
     try {
       const bl = $('#buildLog'); bl.textContent = BUILDING_TEXT + '\n';
       const poll = async () => {
         try {
-          const q = await (await fetch('api/compile/progress', { headers: clientHeaders })).json();
+          const id = run.compileId;
+          const q = await (await fetch('api/compile/progress' + (id ? ('?id=' + encodeURIComponent(id)) : ''), { headers: progressHeaders(id) })).json();
           if (app.run !== run || !run.poll || run.settled) return;
           const waiting = q.wait && (q.wait.message || q.wait.position != null || q.wait.reason);
           if (waiting) {
@@ -561,7 +574,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       };
       run.poll = setInterval(poll, 400);
       poll();
-      const r = await fetchRetry('api/compile', { method: 'POST', headers: { 'content-type': 'application/json', ...clientHeaders }, body: JSON.stringify({ sketch: app.proj.code, files: app.proj.files, defines: app.proj.defines }) });
+      const r = await fetchRetry('api/compile', { method: 'POST', headers: { 'content-type': 'application/json', ...progressHeaders('') }, body: JSON.stringify({ sketch: app.proj.code, files: app.proj.files, defines: app.proj.defines }) });
       clearInterval(run.poll); run.poll = null;
       if (r.status === 429) {
         let body = {};
@@ -579,15 +592,107 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
         return;
       }
       res = await r.json();
+      run.compileId = res && res.compile_id ? String(res.compile_id) : '';
       run.settled = true;
       holdBuilding = !!(res && res.ok && app.run === run);
+      if (run.compileId) {
+        try { await fetch('api/compile/progress?id=' + encodeURIComponent(run.compileId), { headers: progressHeaders(run.compileId) }); } catch (e) { /* the POST body is the log */ }
+      }
     } catch (e) { clearInterval(run.poll); run.poll = null; setCompilePhase('idle'); setStatus('err', 'backend unreachable'); serialAppend('\n[backend] cannot reach /api/compile — start server/server.py (see README) or switch to JS sketch mode.\n'); app.run = null; return; }
     finally { if (!holdBuilding || app.run !== run) setCompilePhase('idle'); }
     if (app.run !== run) return;
-    $('#buildLog').textContent = res.cached ? cachedCompileLog(res.log) : (res.log || ''); if (app.codeview) app.codeview.setLog(res.ok ? '' : (res.log || ''));
-    if (!res.ok) { setCompilePhase('idle'); setStatus('err', 'compile error'); $('#buildDet').open = true; document.querySelector('[data-tab=build]').click(); if (app.codeview) app.codeview.setLog(res.log || ''); serialAppend('\n[compile failed — see build log in Code tab]\n'); app.run = null; return; }
+    const failure = compileFailureLog(res);
+    $('#buildLog').textContent = res.ok ? (res.cached ? cachedCompileLog(res.log) : (res.log || '')) : failure; if (app.codeview) app.codeview.setLog(res.ok ? '' : failure);
+    if (!res.ok) {
+      setCompilePhase('idle');
+      const sentence = failureStatus(res) || SIMULATOR_STATUS;
+      showFailureSurfaces(sentence);
+      $('#buildDet').open = true; document.querySelector('[data-tab=build]').click(); if (app.codeview) app.codeview.setLog(failure); serialAppend('\n[compile failed — see build log in Code tab]\n'); app.run = null; return;
+    }
+    showNetNotice(!!res.net_blocked_notice);
     serialAppend(`\n[compiled ${res.cached ? '(cached)' : ''}${res.netShim ? ' + QemuNet shim' : ''}; starting QEMU]\n`);
     run.bid = res.id; run.lastN = 0; run.tries = 0; connectRun(run);
+  }
+  function sketchToken(raw) {
+    // Anything copied out of the sketch is plain text, at most 80 characters,
+    // and never a host path or a sandbox path.
+    let text = String(raw || '').replace(/[\u0000-\u001f]/g, '');
+    if (text.length > 80) text = text.slice(0, 80);
+    if (!text || text.charAt(0) === '/' || text.charAt(0) === '\\' || text.indexOf('..') >= 0) return 'that file';
+    if (/\/proc\/|\/etc\/|bwrap|sandbox/i.test(text)) return 'that file';
+    return text;
+  }
+  function headerSuggestion(header) {
+    const low = String(header || '').replace(/\\/g, '/').toLowerCase();
+    const base = low.split('/').pop();
+    if (base === 'socket.h' || base === 'netdb.h' || base === 'in.h' || base === 'inet.h' || base === 'un.h' || base === 'winsock.h' || base === 'winsock2.h') {
+      return 'Remove it and use WiFi.h instead.';
+    }
+    if (base === 'stdio.h' || base === 'fstream' || base === 'fstream.h' || base === 'fcntl.h' || base === 'unistd.h' || base === 'dirent.h') {
+      return 'Remove it and keep data in your sketch instead.';
+    }
+    return 'Remove it and use a library such as WiFi.h, or a file in your sketch.';
+  }
+  function includeStatus(code) {
+    const lines = String(code || '').split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const inc = line.match(/^\s*#\s*include\s*([<"])([^>"]*)[>"]/);
+      if (inc) {
+        const header = sketchToken(inc[2]);
+        return 'Line ' + (i + 1) + ": Circuit Lab can't use <" + header + '>. ' + headerSuggestion(inc[2]);
+      }
+      if (/\.\s*inc\s*bin|\.\s*include/i.test(line)) {
+        return 'Line ' + (i + 1) + ": Circuit Lab can't use an assembler include. Remove the .incbin or .include.";
+      }
+    }
+    return "Circuit Lab can't use that include. Remove it and use a library such as WiFi.h, or a file in your sketch.";
+  }
+  function firstCompilerLine(log) {
+    const lines = String(log || '').split('\n');
+    let hit = '';
+    for (let i = 0; i < lines.length; i++) {
+      if (/error:/i.test(lines[i])) { hit = lines[i]; break; }
+    }
+    if (!hit) hit = lines.filter((ln) => ln.trim())[0] || '';
+    let text = hit.replace(/[\u0000-\u001f]/g, ' ');
+    text = text.replace(/(?:\/|[A-Za-z]:\\)[^\s:]*[\\/]/g, '');
+    text = text.replace(/\b(?:bwrap|\/proc\/\S*|\/etc\/\S*)/gi, '');
+    text = text.replace(/\s+/g, ' ').trim();
+    if (text.length > 80) text = text.slice(0, 80);
+    return text || 'Check the build log.';
+  }
+  function failureStatus(res) {
+    if (!res || res.ok) return '';
+    if (res.reason === 'infra') return SIMULATOR_STATUS;
+    const log = String(res.log || '');
+    if (res.reason === 'outside' || res.reason === 'asm' || res.reason === 'unsupported' || res.reason === 'unknown_library'
+      || /outside the project|assembler include|can't check|doesn't have a library/.test(log)) {
+      return includeStatus(app.proj && app.proj.code);
+    }
+    return firstCompilerLine(log);
+  }
+  function showFailureSurfaces(sentence) {
+    // Phone toast and desktop strip both show the same plain sentence.
+    const narrow = !!(window.matchMedia && window.matchMedia('(max-width: 640px)').matches);
+    const strip = document.getElementById && document.getElementById('compileStrip');
+    const toast = document.getElementById && document.getElementById('mCompileToast');
+    if (strip) {
+      strip.textContent = sentence;
+      strip.hidden = !!narrow;
+      strip.setAttribute('aria-hidden', narrow ? 'true' : 'false');
+    }
+    if (toast) {
+      toast.textContent = sentence;
+      toast.hidden = !narrow;
+      toast.setAttribute('aria-hidden', narrow ? 'false' : 'true');
+    }
+    setStatus('err', sentence);
+  }
+  function compileFailureLog(res) {
+    // reason=infra is the build server. The learner sentence is fixed; the include-lines hint is only for their sketch.
+    if (res && res.reason === 'infra') return SIMULATOR_STATUS;
+    return (res && res.log) || '';
   }
   app.startRun = startRun;
   // Resumable run websocket: the server keeps QEMU alive for a grace period when the socket drops (ngrok heartbeat
@@ -665,7 +770,12 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       case 'netlog': app.netlog.add(m); break;
       case 'invack': onInvAck(); break;
       case 'status': serialAppend(`[qemu] ${m.msg}\n`); break;
-      case 'error': app.netlog.add({ k: 'info', msg: 'error: ' + m.msg, ok: false }); serialAppend(`[error] ${m.msg}\n`); setStatus('err', 'error'); break;
+      case 'error': {
+        const shown = (m.reason === 'unknown' || m.msg === 'unknown build id')
+          ? 'This build has expired. Press Run to build it again.'
+          : (m.msg || 'error');
+        app.netlog.add({ k: 'info', msg: 'error: ' + shown, ok: false }); serialAppend(`[error] ${shown}\n`); setStatus('err', shown); break;
+      }
       case 'exit': serialAppend(`[qemu exited ${m.code}]\n`); break;
     }
   }
