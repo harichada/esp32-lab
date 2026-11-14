@@ -14,7 +14,7 @@ SIM_BASE_PATH         cookie and redirect prefix. Defaults to /staging when SIM_
 STAGING_PROXY_ENABLED default 0. Only ``1`` forwards /staging. Off answers 502 and
                       does not open an upstream connection. Caddy is the way in.
 """
-import asyncio, hashlib, hmac, html, os, re, time
+import asyncio, hashlib, hmac, html, inspect, os, re, time
 from urllib.parse import parse_qs, unquote, urlencode
 
 PROXY_TIMEOUT = 30.0
@@ -759,6 +759,29 @@ def _sim_ok(scope):
         return False
 
 
+def _ws_connector(url, headers):
+    """Open an upstream WebSocket without kwargs this install forwards to the loop.
+
+    websockets 10 accepts proxy and additional_headers only as **kwargs and
+    passes them to loop.create_connection. uvloop rejects proxy, so those
+    names are sent only when connect() declares them.
+    """
+    import websockets
+    params = inspect.signature(websockets.connect).parameters
+    explicit = {
+        name for name, param in params.items()
+        if param.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+    }
+    kwargs = dict(open_timeout=PROXY_TIMEOUT, max_size=None, ping_interval=None, compression=None)
+    if 'additional_headers' in explicit:
+        kwargs['additional_headers'] = headers
+    else:
+        kwargs['extra_headers'] = headers
+    if 'proxy' in explicit:
+        kwargs['proxy'] = None
+    return websockets.connect(url, **kwargs)
+
+
 async def _ws_http(send, status, body, content_type=b'text/html; charset=utf-8'):
     headers = [
         [b'content-type', content_type],
@@ -852,16 +875,11 @@ async def _proxy_ws(scope, receive, send):
     if peer:
         headers.append(('x-forwarded-for', peer))
     try:
-        import websockets
+        connector = _ws_connector(url, headers)
     except ImportError:
         _log('staging_proxy status=502 ms=%d' % _ms(t0))
         await _ws_http(send, 502, DOWN_HTML.encode('utf-8'))
         return
-    kwargs = dict(additional_headers=headers, open_timeout=PROXY_TIMEOUT, max_size=None, ping_interval=None, compression=None)
-    try:
-        connector = websockets.connect(url, proxy=None, **kwargs)
-    except TypeError:
-        connector = websockets.connect(url, **kwargs)
     try:
         remote = await asyncio.wait_for(connector.__aenter__(), PROXY_TIMEOUT)
     except Exception as exc:

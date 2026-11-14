@@ -15,7 +15,57 @@ import server
 import staging
 import uvicorn
 import websockets
-from websockets.exceptions import ConnectionClosed, InvalidStatus
+from websockets.exceptions import ConnectionClosed, InvalidStatus, InvalidStatusCode
+
+_WS_CONNECT = websockets.connect
+_STATUS_ERRORS = (InvalidStatus, InvalidStatusCode)
+
+
+def _explicit_params(fn):
+    params = inspect.signature(fn).parameters
+    return {
+        name for name, param in params.items()
+        if param.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+    }
+
+
+def _ws_connect(url, **kwargs):
+    """Call websockets.connect without kwargs this install forwards to the loop.
+
+    websockets 10 passes unknown keywords, including proxy, through to
+    loop.create_connection. uvloop rejects proxy. A newer client names proxy
+    and additional_headers itself and does not forward them.
+    """
+    headers = kwargs.pop('additional_headers', None)
+    explicit = _explicit_params(_WS_CONNECT)
+    if headers is not None:
+        if 'additional_headers' in explicit:
+            kwargs['additional_headers'] = headers
+        else:
+            kwargs['extra_headers'] = headers
+    if 'proxy' in explicit:
+        kwargs.setdefault('proxy', None)
+    else:
+        kwargs.pop('proxy', None)
+    return websockets.connect(url, **kwargs)
+
+
+def _status_of(exc):
+    response = getattr(exc, 'response', None)
+    if response is not None:
+        return response.status_code, getattr(response, 'body', b'') or b''
+    return exc.status_code, b''
+
+
+def _supported_kwargs(fn, kwargs):
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        kwargs.pop('proxy', None)
+        return kwargs
+    if any(param.kind is inspect.Parameter.VAR_KEYWORD for param in params.values()):
+        return kwargs
+    return {key: value for key, value in kwargs.items() if key in params}
 
 def _loopback_target(value):
     """Exact http://127.0.0.1:<port>, or None. Tests use this as the seam, not the env var."""
@@ -116,8 +166,14 @@ class StagingTests(unittest.TestCase):
         cls.http_port = cls.http_server.sockets[0].getsockname()[1]
 
         async def ws_handler(ws):
-            path = ws.request.path
-            headers = {k.lower(): v for k, v in ws.request.headers.items()}
+            req = getattr(ws, 'request', None)
+            if req is not None and getattr(req, 'path', None):
+                path = req.path
+                raw_headers = req.headers
+            else:
+                path = ws.path
+                raw_headers = ws.request_headers
+            headers = {k.lower(): v for k, v in raw_headers.items()}
             cls.ws_log.append({'path': path, 'headers': headers})
             if path.endswith('/bye'):
                 await ws.send('bye')
@@ -486,7 +542,9 @@ class StagingTests(unittest.TestCase):
                     host, port = '127.0.0.1', action[1]
                 else:
                     host = action[1]
-            return await real_cc(self, protocol_factory, host, port, **kwargs)
+            return await real_cc(
+                self, protocol_factory, host, port, **_supported_kwargs(real_cc, kwargs)
+            )
 
         if loop_cls is not None:
             loop_cls.create_connection = create_connection
@@ -507,15 +565,14 @@ class StagingTests(unittest.TestCase):
 
             async def ws_status():
                 try:
-                    async with websockets.connect(
+                    async with _ws_connect(
                         'ws://127.0.0.1:%d/staging/api/run/abc' % self.port,
                         open_timeout=3, proxy=None,
                     ) as ws:
                         await ws.recv()
                     return 101, b''
-                except InvalidStatus as exc:
-                    raw = getattr(exc.response, 'body', b'') or b''
-                    return exc.response.status_code, raw
+                except _STATUS_ERRORS as exc:
+                    return _status_of(exc)
 
             status, ws_body = asyncio.run(ws_status())
             self.assertEqual(status, 502, action)
@@ -650,17 +707,17 @@ class StagingTests(unittest.TestCase):
         self._env(token=TOKEN)
         async def denied():
             try:
-                async with websockets.connect('ws://127.0.0.1:%d/api/run/abc' % self.port, open_timeout=3, proxy=None) as ws:
+                async with _ws_connect('ws://127.0.0.1:%d/api/run/abc' % self.port, open_timeout=3, proxy=None) as ws:
                     await ws.recv()
                 return 101
-            except InvalidStatus as exc:
-                return exc.response.status_code
+            except _STATUS_ERRORS as exc:
+                return _status_of(exc)[0]
         self.assertEqual(asyncio.run(denied()), 401)
 
         self._env(upstream='http://127.0.0.1:%d' % self.ws_port)
         async def echo():
             url = 'ws://127.0.0.1:%d/staging/api/run/abc' % self.port
-            async with websockets.connect(
+            async with _ws_connect(
                 url, open_timeout=3, proxy=None,
                 additional_headers={
                     'X-Forwarded-For': '9.9.9.9', 'X-Real-IP': '203.0.113.8',
@@ -688,7 +745,7 @@ class StagingTests(unittest.TestCase):
 
         async def bye():
             url = 'ws://127.0.0.1:%d/staging/api/run/bye' % self.port
-            async with websockets.connect(url, open_timeout=3, proxy=None) as ws:
+            async with _ws_connect(url, open_timeout=3, proxy=None) as ws:
                 self.assertEqual(await ws.recv(), 'bye')
                 try:
                     await ws.recv()
@@ -1123,16 +1180,15 @@ class StagingTests(unittest.TestCase):
         try:
             async def denied():
                 try:
-                    async with websockets.connect(
+                    async with _ws_connect(
                         'ws://127.0.0.1:%d/staging/api/run/abc' % self.port,
                         open_timeout=3, proxy=None,
                         additional_headers={'X-Trace': 'zz-ws-header'},
                     ) as ws:
                         await ws.recv()
                     return 101, b''
-                except InvalidStatus as exc:
-                    body = getattr(exc.response, 'body', b'') or b''
-                    return exc.response.status_code, body
+                except _STATUS_ERRORS as exc:
+                    return _status_of(exc)
             status, body = asyncio.run(denied())
         finally:
             websockets.connect = real
