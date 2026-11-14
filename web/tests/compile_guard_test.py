@@ -30,6 +30,49 @@ import server
 
 CANARY = 'CANARY_SECRET_CONTENT_XYZ'
 HOSTILE = '/etc/hostname'
+# bwrap_argv mounts these before any bind. A program that lives here is hidden
+# unless the test adds a later read-only bind. /etc is one of them and stays unbound.
+_BWRAP_TMPFS_ROOTS = ('/tmp', '/home', '/etc', '/root', '/opt')
+# The test may re-bind an interpreter that lives under these. It does not change bwrap_argv.
+_INTERPRETER_BIND_ROOTS = ('/home', '/tmp', '/root', '/opt')
+# Directories bwrap_argv already mounts read-only, so a binary here needs no extra bind.
+_SANDBOX_SYSTEM_ROOTS = ('/usr', '/usr/local', '/lib', '/lib64', '/bin', '/sbin')
+
+
+def _path_under(path, root):
+    return path == root or path.startswith(root + os.sep)
+
+
+def _interpreter_for_bwrap(test):
+    """Executable execvp can see inside bwrap_argv, plus any extra read-only binds.
+
+    sys.executable is often a venv symlink under /home. The sandbox mounts a
+    tmpfs there, so the test runs os.path.realpath(sys.executable) instead.
+    A real binary that itself sits under /home, /tmp, /root, or /opt is bound
+    by adding its directory and sys.base_prefix to read_only. Anything else
+    the sandbox does not already mount is skipped.
+    """
+    exe = os.path.realpath(sys.executable)
+    if not os.path.isfile(exe) or not os.access(exe, os.X_OK):
+        test.skipTest(
+            'no usable interpreter: realpath of sys.executable is not an executable file (%s)' % exe)
+    if any(_path_under(exe, root) for root in _SANDBOX_SYSTEM_ROOTS):
+        return exe, []
+    if any(_path_under(exe, root) for root in _INTERPRETER_BIND_ROOTS):
+        directory = Path(exe).parent
+        base = Path(getattr(sys, 'base_prefix', '') or sys.prefix)
+        if not directory.is_dir() or not base.is_dir():
+            test.skipTest(
+                'no usable interpreter: %s is under a sandbox tmpfs and its directory '
+                'or sys.base_prefix cannot be bound read-only' % exe)
+        extra = [directory]
+        if base != directory:
+            extra.append(base)
+        return exe, extra
+    hidden = next((root for root in _BWRAP_TMPFS_ROOTS if _path_under(exe, root)), None)
+    if hidden:
+        test.skipTest('no usable interpreter: %s is under the sandbox tmpfs %s' % (exe, hidden))
+    test.skipTest('no usable interpreter: %s is outside the directories the sandbox mounts' % exe)
 
 
 def _rejected_log(test, resp):
@@ -503,9 +546,15 @@ class SandboxTests(unittest.TestCase):
         self.assertLess(argv.index('--tmpfs'), argv.index(str(work)))
 
     def test_readonly_under_tmp_stays_visible(self):
-        """A read-only tree under the temp dir is bound after --tmpfs /tmp."""
+        """A read-only tree under the temp dir is bound after --tmpfs /tmp.
+
+        The interpreter is os.path.realpath(sys.executable). A venv symlink
+        under /home is not what this runs: bwrap's tmpfs would hide it
+        (``bwrap: execvp /home/.../python: No such file or directory``).
+        """
         if not shutil.which('bwrap'):
             self.skipTest('bwrap is not on PATH')
+        exe, extra = _interpreter_for_bwrap(self)
         root = Path(tempfile.mkdtemp(prefix='esp32ro-'))
         marker = root / 'marker.txt'
         marker.write_text('ro-visible\n')
@@ -513,8 +562,22 @@ class SandboxTests(unittest.TestCase):
         try:
             code = 'print(open(%r).read().strip())' % str(marker)
             argv = compileguard.bwrap_argv(
-                [sys.executable, '-c', code], work=work, read_only=[root], read_write=[work])
+                [exe, '-c', code], work=work,
+                read_only=[root, *extra], read_write=[work])
+            self.assertEqual(argv[argv.index('--') + 1], exe)
             self.assertLess(argv.index('--tmpfs'), argv.index(str(root)))
+            # The real binary has to be visible after the tmpfs mounts.
+            visible = False
+            saw_tmpfs = False
+            for index, token in enumerate(argv):
+                if token == '--tmpfs':
+                    saw_tmpfs = True
+                if not saw_tmpfs or token != '--ro-bind' or index + 1 >= len(argv):
+                    continue
+                bound = argv[index + 1]
+                if exe == bound or exe.startswith(bound + os.sep):
+                    visible = True
+            self.assertTrue(visible, 'interpreter %s is not bound after --tmpfs' % exe)
             proc = subprocess.run(
                 argv, capture_output=True, text=True, timeout=20,
                 env=compileguard.host_sandbox_env())
@@ -523,6 +586,28 @@ class SandboxTests(unittest.TestCase):
         finally:
             shutil.rmtree(root, ignore_errors=True)
             shutil.rmtree(work, ignore_errors=True)
+
+    def test_container_python_is_outside_tmpfs_roots(self):
+        """The image starts Debian python3, which lives under /usr.
+
+        bwrap_argv mounts a tmpfs on /tmp, /home, /etc, /root, and /opt, then
+        bind-mounts /usr read-only. The container command must not name an
+        interpreter under one of those tmpfs roots. This does not change the mounts.
+        """
+        repo = Path(__file__).resolve().parents[2]
+        for name in ('amd64', 'arm64'):
+            text = (repo / 'docker' / name / 'Dockerfile').read_text()
+            cmd_lines = [line.strip() for line in text.splitlines() if line.startswith('CMD ')]
+            self.assertEqual(len(cmd_lines), 1, name)
+            cmd = json.loads(cmd_lines[0][len('CMD '):])
+            program = cmd[0]
+            if os.path.isabs(program):
+                for root in _BWRAP_TMPFS_ROOTS:
+                    self.assertFalse(
+                        _path_under(program, root),
+                        '%s CMD interpreter %s is under tmpfs root %s' % (name, program, root))
+            else:
+                self.assertEqual(program, 'python3', name)
 
     def test_startup_probe_is_the_compile_argv(self):
         built = compileguard._probe_argv()
