@@ -291,6 +291,9 @@ body.m .exit3d{top:72px;right:auto;left:50%;transform:translateX(-50%);height:44
 body.m.view3d #mParts{opacity:.3;pointer-events:none}
 body.m.view3d .hint{display:none}
 body.m.viewsch .hint{display:block;left:12px;right:12px;bottom:calc(176px + env(safe-area-inset-bottom));max-width:none!important;height:auto;white-space:normal!important;overflow:visible!important;text-overflow:clip;line-height:1.35}
+/* Thumb reach, clear of the hub and the canvas tools, and clear of the drawing (fit treats #schLayout as chrome). */
+body.m .sch-layout{top:auto;right:auto;left:50%;bottom:calc(168px + env(safe-area-inset-bottom));transform:translateX(-50%);max-width:calc(100% - 24px)}
+body.m .sch-layout .sch-lay{min-width:44px;min-height:44px;padding:0 12px;font-size:13px}
 body.m.viewsch #mSel [data-a=rot],body.m.viewsch #mSel [data-a=del]{display:none!important}
 body.m .view-toggle .seg{padding:0 10px}
 /* oscilloscope HUD sheet (full-screen) */
