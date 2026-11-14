@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -671,13 +672,11 @@ class SandboxTests(unittest.TestCase):
         os.environ['SIM_PROC_CANARY'] = 'CANARY_ENV_PROC_991'
         try:
             got = compileguard.host_sandbox_env()
-            self.assertEqual(set(got), {'PATH', 'LANG', 'LD_LIBRARY_PATH'})
+            self.assertEqual(set(got), {'PATH', 'LANG'})
             self.assertEqual(got['PATH'], os.environ['PATH'])
             self.assertEqual(got['LANG'], 'C')
-            self.assertEqual(got['LD_LIBRARY_PATH'], '/evil')
-            lib = compileguard.dynconfig_library_dir()
-            if lib:
-                self.assertNotIn(lib, got['LD_LIBRARY_PATH'])
+            self.assertNotIn('LD_LIBRARY_PATH', got)
+            self.assertNotIn('LD_PRELOAD', got)
             blob = '\n'.join(f'{key}={value}' for key, value in got.items())
             self.assertNotIn('token-secret-value', blob)
             self.assertNotIn('access-secret-value', blob)
@@ -732,11 +731,10 @@ class SandboxTests(unittest.TestCase):
                     continue
                 key, value = item.split(b'=', 1)
                 pairs[key.decode()] = value.decode()
-            self.assertEqual(set(pairs), {'PATH', 'LANG', 'LD_LIBRARY_PATH'})
-            self.assertEqual(pairs['LD_LIBRARY_PATH'], '/evil')
+            self.assertEqual(set(pairs), {'PATH', 'LANG'})
+            self.assertNotIn('LD_LIBRARY_PATH', pairs)
+            self.assertNotIn('/evil', text)
             lib = compileguard.dynconfig_library_dir()
-            if lib:
-                self.assertNotIn(lib, pairs['LD_LIBRARY_PATH'])
             inside = ''
             deadline = time.time() + 1.5
             while time.time() < deadline and not marker.is_file():
@@ -1423,10 +1421,10 @@ class BuildIdTests(unittest.TestCase):
                 self.assertEqual(env.get('ARDUINO_BUILD_CACHE_PATH'), '/cache-from-pass-env')
                 lib = compileguard.dynconfig_library_dir()
                 if lib:
-                    self.assertTrue(env['LD_LIBRARY_PATH'].startswith(lib + os.pathsep))
-                    self.assertIn('/evil', env['LD_LIBRARY_PATH'].split(os.pathsep))
+                    self.assertEqual(env.get('LD_LIBRARY_PATH'), lib)
                 else:
-                    self.assertEqual(env['LD_LIBRARY_PATH'], '/evil')
+                    self.assertNotIn('LD_LIBRARY_PATH', env)
+                self.assertNotIn('/evil', env.get('LD_LIBRARY_PATH', ''))
             os.environ['SIM_COMPILE_SANDBOX'] = '1'
             os.environ['SIM_SANDBOX'] = 'off'
             self.assertEqual(compileguard.sandbox_choice(), 'on')
@@ -1543,7 +1541,8 @@ class QemuRunTests(unittest.TestCase):
             self.assertIn('HOME', env)
             self.assertEqual(env['HOME'], os.environ['HOME'])
             self.assertIn('PATH', env)
-            self.assertEqual(env['LD_LIBRARY_PATH'], '/opt/qemu-host-libs')
+            self.assertNotIn('/opt/qemu-host-libs', env.get('LD_LIBRARY_PATH', ''))
+            self.assertNotIn('LD_PRELOAD', env)
             self.assertEqual(env['QEMU_ROM_DIR'], str(rom))
             self.assertNotIn('LD_PRELOAD', env)
             self.assertNotIn('LD_AUDIT', env)
@@ -1633,7 +1632,7 @@ class QemuRunTests(unittest.TestCase):
             lib_line = next(line for line in dumped.splitlines() if line.startswith('LD_LIBRARY_PATH='))
             parts = lib_line.split('=', 1)[1].split(os.pathsep)
             self.assertIn(str(lib), parts)
-            self.assertLess(parts.index(str(lib)), parts.index('/opt/qemu-host-libs'))
+            self.assertNotIn('/opt/qemu-host-libs', parts)
             self.assertNotIn('LD_PRELOAD=', dumped)
             self.assertNotIn('SIM_QEMU_LIB_DIRS=', dumped)
             sandbox_env = compileguard.host_sandbox_env()
@@ -1744,8 +1743,7 @@ class QemuRunTests(unittest.TestCase):
             self.assertIn('reason=missing path=%r' % str(missing), logged)
             parts = spawn['LD_LIBRARY_PATH'].split(os.pathsep)
             self.assertIn(str(accepted.resolve()), parts)
-            self.assertIn('/opt/qemu-host-libs', parts)
-            self.assertLess(parts.index(str(accepted.resolve())), parts.index('/opt/qemu-host-libs'))
+            self.assertNotIn('/opt/qemu-host-libs', parts)
             self.assertNotIn('rel/libs', parts)
             self.assertNotIn(str(missing), parts)
             self.assertNotIn('LD_PRELOAD', spawn)
@@ -1959,7 +1957,8 @@ class QemuLibDirPolicyTests(unittest.TestCase):
         self.assertEqual(logged, '')
         parts = spawn['LD_LIBRARY_PATH'].split(os.pathsep)
         self.assertIn('/usr/lib', parts)
-        self.assertEqual(parts[-1], '/opt/qemu-host-libs')
+        self.assertNotIn('/opt/qemu-host-libs', parts)
+        self.assertEqual(parts[-1], '/usr/lib')
         private = [part for part in parts if part not in {'/usr/lib', '/opt/qemu-host-libs'}]
         if private:
             self.assertLess(parts.index(private[0]), parts.index('/usr/lib'))
@@ -2150,6 +2149,270 @@ print("PTRACE", rc, ctypes.get_errno())
             'net': 'shim',
         })
         self.assertEqual(wifi['netmode'], 'lwip')
+
+
+class SandboxHardeningTests(unittest.TestCase):
+    def test_health_follows_a_broken_sandbox(self):
+        saved_sec = compileguard._seccomp_override
+        saved_works = compileguard._works_override
+        saved_bwrap = compileguard._bwrap_ok
+        saved_at = compileguard._bwrap_checked_at
+        compileguard._works_override = None
+        compileguard._bwrap_ok = True
+        compileguard._bwrap_checked_at = time.monotonic()
+        compileguard._seccomp_override = False
+        try:
+            body = server.health()
+            self.assertIs(body['sandbox_ok'], False)
+            self.assertIs(body['compile_ok'], False)
+            self.assertIs(body['qemu_ok'], False)
+            self.assertIs(body['ok'], False)
+        finally:
+            compileguard._seccomp_override = saved_sec
+            compileguard._works_override = saved_works
+            compileguard._bwrap_ok = saved_bwrap
+            compileguard._bwrap_checked_at = saved_at
+
+    def test_failed_probe_blocks_a_build_and_stays_failed(self):
+        saved = (
+            compileguard._bwrap_ok, compileguard._bwrap_checked_at, compileguard._bwrap_reason,
+            compileguard._seccomp_ok, compileguard._seccomp_checked_at,
+            compileguard._works_override, compileguard._seccomp_override,
+        )
+        compileguard._works_override = None
+        compileguard._seccomp_override = None
+        compileguard._bwrap_ok = False
+        compileguard._bwrap_reason = 'probe failed'
+        compileguard._bwrap_checked_at = time.monotonic()
+        compileguard._seccomp_ok = True
+        compileguard._seccomp_checked_at = time.monotonic()
+        work = Path(tempfile.mkdtemp(prefix='esp32fail-'))
+        bdir = Path(tempfile.mkdtemp(prefix='esp32fw-'))
+        try:
+            self.assertFalse(compileguard.bwrap_works())
+            self.assertFalse(compileguard.sandbox_ok())
+            self.assertEqual(compileguard.sandbox_refusal(), compileguard.SANDBOX_MSG)
+            self.assertFalse(compileguard.sandbox_ok())
+            resp = asyncio.run(server._compile_in(
+                work, bdir, 'abc123def4567890',
+                'void setup(){}\nvoid loop(){}\n', {}, [], False, None, []))
+            body = json.loads(resp.body.decode()) if not isinstance(resp, dict) else resp
+            self.assertFalse(body.get('ok', True))
+            self.assertEqual(body.get('reason'), 'infra')
+            self.assertEqual(body.get('log'), compileguard.SANDBOX_MSG)
+            self.assertFalse(compileguard.bwrap_works())
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+            shutil.rmtree(bdir, ignore_errors=True)
+            (compileguard._bwrap_ok, compileguard._bwrap_checked_at, compileguard._bwrap_reason,
+             compileguard._seccomp_ok, compileguard._seccomp_checked_at,
+             compileguard._works_override, compileguard._seccomp_override) = saved
+
+    def test_tmp_library_path_never_reaches_the_child(self):
+        refused = '/tmp/esp32-not-a-lib'
+        saved = {key: os.environ.get(key) for key in ('LD_LIBRARY_PATH', 'LD_PRELOAD', 'LD_AUDIT')}
+        os.environ['LD_LIBRARY_PATH'] = refused
+        os.environ['LD_PRELOAD'] = refused + '/preload.so'
+        os.environ['LD_AUDIT'] = refused + '/audit.so'
+        try:
+            host = compileguard.host_sandbox_env()
+            self.assertNotIn('LD_LIBRARY_PATH', host)
+            self.assertNotIn('LD_PRELOAD', host)
+            self.assertNotIn(refused, '\n'.join(host.values()))
+            spawn = server.qemu_run_env(romdir='/usr', qemu_bin='/usr/bin/true')
+            blob = '\n'.join('%s=%s' % item for item in spawn.items())
+            self.assertNotIn(refused, blob)
+            self.assertNotIn('LD_PRELOAD', spawn)
+            self.assertNotIn('LD_AUDIT', spawn)
+            if not shutil.which('bwrap'):
+                return
+            rundir = Path(tempfile.mkdtemp(prefix='esp32ld-'))
+            python = '/usr/bin/python3' if Path('/usr/bin/python3').is_file() else sys.executable
+            fds = []
+            try:
+                launched, fds = server.qemu_sandbox_argv(
+                    [python, '-c',
+                     'import os\n'
+                     'print("LIB=" + os.environ.get("LD_LIBRARY_PATH", ""))\n'
+                     'print("PRE=" + os.environ.get("LD_PRELOAD", ""))\n'
+                     'print("AUD=" + os.environ.get("LD_AUDIT", ""))'],
+                    spawn, rundir)
+                self.assertIsNotNone(launched)
+                self.assertFalse(any(refused in part for part in launched))
+                proc = subprocess.run(
+                    launched, pass_fds=fds, capture_output=True, text=True, timeout=20,
+                    env=host)
+            finally:
+                compileguard.close_fds(fds)
+                shutil.rmtree(rundir, ignore_errors=True)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertNotIn(refused, proc.stdout)
+            self.assertIn('PRE=\n', proc.stdout)
+            self.assertIn('AUD=\n', proc.stdout)
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_shared_cache_write_fails_and_the_next_build_is_unchanged(self):
+        if not shutil.which('bwrap'):
+            self.skipTest('bwrap is not on PATH')
+        cache = Path(tempfile.mkdtemp(prefix='esp32cache-'))
+        (cache / 'marker.txt').write_text('original\n')
+        names = ('ARDUINO_BUILD_CACHE_PATH', 'SIM_BUILD_CACHE_DIR', 'SIM_ARDUINO_CONFIG_FILE')
+        saved = {key: os.environ.get(key) for key in names}
+        os.environ['ARDUINO_BUILD_CACHE_PATH'] = str(cache)
+        os.environ['SIM_BUILD_CACHE_DIR'] = str(cache)
+        os.environ.pop('SIM_ARDUINO_CONFIG_FILE', None)
+        work = Path(tempfile.mkdtemp(prefix='esp32work-'))
+        second = Path(tempfile.mkdtemp(prefix='esp32work-'))
+        try:
+            scratch = compileguard.begin_build_scratch(work)
+            self.assertTrue(scratch.is_dir())
+            self.assertEqual((scratch / 'marker.txt').read_text(), 'original\n')
+            script = "echo poisoned > %s/marker.txt" % shlex_quote(str(cache))
+            argv = compileguard.bwrap_argv(
+                ['/bin/sh', '-c', script], work=work,
+                read_only=compileguard._ro_for(work), read_write=compileguard._rw_for(work))
+            joined = argv
+            ro = [joined[i + 1] for i, token in enumerate(joined) if token == '--ro-bind']
+            rw = [joined[i + 1] for i, token in enumerate(joined) if token == '--bind']
+            self.assertIn(str(cache), ro)
+            self.assertNotIn(str(cache), rw)
+            proc = subprocess.run(
+                argv, capture_output=True, text=True, timeout=20, env=compileguard.host_sandbox_env())
+            self.assertNotEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual((cache / 'marker.txt').read_text(), 'original\n')
+            compileguard.end_build_scratch(scratch)
+            self.assertFalse(scratch.exists())
+            self.assertEqual((cache / 'marker.txt').read_text(), 'original\n')
+            again = compileguard.begin_build_scratch(second)
+            read = compileguard.bwrap_argv(
+                ['/bin/cat', str(cache / 'marker.txt')], work=second,
+                read_only=compileguard._ro_for(second), read_write=compileguard._rw_for(second))
+            proc = subprocess.run(
+                read, capture_output=True, text=True, timeout=20, env=compileguard.host_sandbox_env())
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(proc.stdout, 'original\n')
+            self.assertEqual((cache / 'marker.txt').read_text(), 'original\n')
+            compileguard.end_build_scratch(again)
+        finally:
+            compileguard.end_build_scratch()
+            shutil.rmtree(cache, ignore_errors=True)
+            shutil.rmtree(work, ignore_errors=True)
+            shutil.rmtree(second, ignore_errors=True)
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_job_limits_and_output_cap(self):
+        limits = compileguard.job_limits({})
+        self.assertEqual(limits['wall_s'], 300)
+        self.assertEqual(limits['nproc'], 64)
+        self.assertEqual(limits['as_bytes'], 4 * 1024 ** 3)
+        custom = compileguard.job_limits({
+            'SIM_SANDBOX_WALL_S': '12',
+            'SIM_SANDBOX_NPROC': '3',
+            'SIM_SANDBOX_AS_BYTES': 'nope',
+            'SIM_SANDBOX_OUTPUT_BYTES': '8',
+        })
+        self.assertEqual(custom['wall_s'], 12)
+        self.assertEqual(custom['nproc'], 3)
+        self.assertEqual(custom['as_bytes'], 4 * 1024 ** 3)
+        self.assertEqual(compileguard.compile_wall_s({'SIM_SANDBOX_WALL_S': '300', 'SIM_COMPILE_TIMEOUT': '40'}), 40)
+        self.assertEqual(compileguard.run_wall_s({}), 1800)
+        cap = compileguard.OutputCap(8)
+        cap.add('abcdefghij')
+        self.assertTrue(cap.truncated)
+        self.assertIn('Output truncated:', cap.text())
+        self.assertLessEqual(len(cap.text().encode()) - len('Output truncated: the sandbox stopped capturing after 8 bytes.\n'), 8)
+        argv = compileguard.limit_argv(
+            ['bwrap', '--die-with-parent', '--', '/bin/true'], {'SIM_SANDBOX_NPROC': '9'})
+        self.assertIn('--nproc=9', argv)
+        self.assertLess(argv.index('--'), argv.index('--nproc=9'))
+        root = Path(tempfile.mkdtemp(prefix='esp32cg-'))
+        try:
+            (root / 'cgroup.controllers').write_text('cpuset pids\n')
+            made = compileguard.prepare_pids_cgroup(7, root)
+            self.assertIsNotNone(made)
+            self.assertEqual((made / 'pids.max').read_text().strip(), '7')
+            compileguard.release_pids_cgroup(made)
+            self.assertFalse(made.exists())
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_seccomp_kills_a_non_native_arch(self):
+        blob = compileguard.seccomp_filter_bytes()
+        self.assertIsNotNone(blob)
+        code, jt, jf, k = struct.unpack_from('=HBBI', blob, 0)
+        self.assertEqual(k, 4)
+        self.assertEqual(jt, 0)
+        _code, jt, jf, arch = struct.unpack_from('=HBBI', blob, 8)
+        self.assertEqual(jt, 1)
+        self.assertEqual(jf, 0)
+        self.assertEqual(arch, compileguard._AUDIT_ARCH[compileguard.seccomp_arch()])
+        _code, _jt, _jf, action = struct.unpack_from('=HBBI', blob, 16)
+        self.assertEqual(action, compileguard._SECCOMP_RET_KILL)
+        denied = compileguard._SECCOMP_DENY[compileguard.seccomp_arch()]
+        for name in (
+            'ptrace', 'process_vm_readv', 'process_vm_writev', 'bpf',
+            'perf_event_open', 'userfaultfd', 'keyctl', 'add_key', 'request_key',
+        ):
+            self.assertIn(name, denied)
+        if os.uname().machine != 'x86_64' or not shutil.which('bwrap'):
+            return
+        # int 0x80 ptrace (i386 number 26) and an x32 ptrace. The filter kills
+        # both before the native number check, so neither call returns.
+        stubs = {
+            'i386': bytes.fromhex('31c0b01a31db31c931d231f6cd80c3'),
+            'x32': bytes.fromhex('48c7c0650000404831ff4831f64831d24831c90f05c3'),
+        }
+        child = (
+            'import ctypes, mmap, sys\n'
+            'blob = bytes.fromhex(sys.argv[1])\n'
+            'buf = mmap.mmap(-1, 4096, prot=mmap.PROT_READ|mmap.PROT_WRITE|mmap.PROT_EXEC)\n'
+            'buf.write(blob)\n'
+            'fn = ctypes.CFUNCTYPE(ctypes.c_int)(ctypes.addressof(ctypes.c_char.from_buffer(buf)))\n'
+            'print("RAN", fn())\n'
+        )
+        python = '/usr/bin/python3' if Path('/usr/bin/python3').is_file() else sys.executable
+        rundir = Path(tempfile.mkdtemp(prefix='esp32arch-'))
+        try:
+            for name, stub in stubs.items():
+                launched, fds = server.qemu_sandbox_argv(
+                    [python, '-c', child, stub.hex()], {'PATH': '/usr/bin:/bin'}, rundir)
+                self.assertIsNotNone(launched)
+                try:
+                    proc = subprocess.run(
+                        launched, pass_fds=fds, capture_output=True, text=True, timeout=20,
+                        env=compileguard.host_sandbox_env())
+                finally:
+                    compileguard.close_fds(fds)
+                self.assertNotIn('RAN', proc.stdout, name)
+                # bwrap reports a killed child as 128+signal. SIGSYS is 31, so 159.
+                self.assertIn(proc.returncode, (-31, 159), '%s rc=%s %s' % (name, proc.returncode, proc.stderr))
+        finally:
+            shutil.rmtree(rundir, ignore_errors=True)
+
+    def test_container_profile_keeps_clone3_enosys(self):
+        profile = json.loads((Path(__file__).resolve().parents[2] / 'deploy' / 'seccomp-bwrap.json').read_text())
+        clone3 = [group for group in profile['syscalls'] if group.get('names') == ['clone3']]
+        self.assertEqual(len(clone3), 1)
+        self.assertEqual(clone3[0]['action'], 'SCMP_ACT_ERRNO')
+        self.assertEqual(clone3[0]['errnoRet'], 38)
+        allow = [group for group in profile['syscalls'] if group.get('names') == [
+            'unshare', 'mount', 'umount2', 'setns', 'pivot_root']]
+        self.assertEqual(len(allow), 1)
+        self.assertEqual(allow[0]['action'], 'SCMP_ACT_ALLOW')
+        self.assertNotIn('args', allow[0])
+
+
+def shlex_quote(text: str) -> str:
+    return "'" + text.replace("'", "'\\''") + "'"
 
 
 if __name__ == '__main__':

@@ -15,7 +15,14 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       appended after QEMU's own lib dirs on LD_LIBRARY_PATH only; each entry
       must resolve to a root-owned directory with no group/world-writable
       component, and must not be under /tmp, /var/tmp, /dev/shm, the projects
-      directory, or the build directory),
+      directory, or the build directory). An inherited LD_LIBRARY_PATH, and
+      every other LD_* loader variable, is not given to QEMU or to bwrap.
+      SIM_SANDBOX_WALL_S (compile wall clock, default 300), SIM_RUN_WALL_S
+      (QEMU session wall clock, default 1800), SIM_SANDBOX_AS_BYTES (RLIMIT_AS,
+      default 4 GiB), SIM_SANDBOX_FSIZE_BYTES (RLIMIT_FSIZE, default 256 MiB),
+      SIM_SANDBOX_OUTPUT_BYTES (captured stdout/stderr, default 1 MiB),
+      SIM_SANDBOX_NPROC (RLIMIT_NPROC and pids.max when a pids cgroup can be
+      created, default 64).
       SIM_NET_NOTICE (default 1; 0 omits net_blocked_notice on the compile response),
       SIM_ORPHAN_MAX_AGE_S and the matching *_MAX_AGE_S knobs.
       Staging (off unless set): SIM_STAGING, SIM_ACCESS_TOKEN, SIM_STAGING_UPSTREAM, SIM_BASE_PATH.
@@ -264,6 +271,10 @@ def health():
     qemu_ok = qemu_ready()
     sandbox_ok = compileguard.sandbox_ok()
     compile_ok = bool(ok_c)
+    # A broken sandbox means the lab cannot compile or run. Both flags follow it.
+    if not sandbox_ok:
+        compile_ok = False
+        qemu_ok = False
     ready = bool(ok_q and compile_ok and qemu_ok and sandbox_ok)
     body = {'ok': ready, 'qemu': QEMU if ok_q else None, 'qemu_ok': qemu_ok,
             'sandbox_ok': sandbox_ok, 'compile_ok': compile_ok,
@@ -1049,7 +1060,7 @@ def _netstack_cached(defines) -> bool:
     return diskkeep.find_netstack(root, diskkeep.netstack_key(**ident)) is not None
 
 def _seed_libraries_cache(sketch_dir: Path, payload: bytes) -> None:
-    folder = diskkeep.arduino_build_cache_dir() / 'sketches' / diskkeep.request_sketch_hash(sketch_dir)
+    folder = compileguard.active_cache_dir() / 'sketches' / diskkeep.request_sketch_hash(sketch_dir)
     folder.mkdir(parents=True, exist_ok=True)
     (folder / 'libraries.cache').write_bytes(payload)
 
@@ -1077,7 +1088,7 @@ def _harvest_netstack(sketch_dir: Path, defines):
     tc = _toolchain()
     if not ident or not tc:
         return None
-    build = diskkeep.arduino_build_cache_dir() / 'sketches' / diskkeep.request_sketch_hash(sketch_dir)
+    build = compileguard.active_cache_dir() / 'sketches' / diskkeep.request_sketch_hash(sketch_dir)
     libs = build / 'libraries'
     cache_file = build / 'libraries.cache'
     if not libs.is_dir() or not cache_file.is_file():
@@ -1206,6 +1217,16 @@ async def _compile_in(work, bdir, key, sketch, files, defines, net, netmode, sim
         return _reject(scanned)
     # --build-path is intentionally not set. On arduino-cli 1.x it disables the core cache and
     # rebuilds the ESP32 core on every sketch (minutes, not the ~8 s warm Blink).
+    # The shared cache is read-only in the sandbox. This build writes a private scratch.
+    scratch = compileguard.begin_build_scratch(work)
+    try:
+        return await _compile_sandboxed(
+            work, bdir, key, sketch, files, defines, net, netmode, simlibs, sk, out, scratch)
+    finally:
+        compileguard.end_build_scratch(scratch)
+
+async def _compile_sandboxed(work, bdir, key, sketch, files, defines, net, netmode, simlibs, sk, out, scratch):
+    """Compile with ``scratch`` as the only writable Arduino cache."""
     _begin_progress()
     use_stack = False
     objs = []
@@ -1264,11 +1285,9 @@ async def _compile_in(work, bdir, key, sketch, files, defines, net, netmode, sim
     cmd.append(str(sk))
     t0 = (_progress_current() or {}).get('t0') or time.time()
     cmd[2:2] = ['-v', '--no-color']
-    config_file = (os.environ.get('SIM_ARDUINO_CONFIG_FILE') or '').strip()
-    if config_file:
-        # Global flags belong before the compile subcommand. A fresh cache path
-        # lives in that file's build_cache.path; arduino-cli 1.6 has no cache flag.
-        cmd[1:1] = ['--config-file', config_file]
+    # The scratch config keeps directories.data from the operator file and
+    # points build_cache.path at this build only. arduino-cli 1.6 has no cache flag.
+    cmd[1:1] = ['--config-file', str(compileguard.write_scratch_config(scratch, work))]
     wrapped, wrap_err = compileguard.wrap_command(
         cmd, work=work, read_only=compileguard._ro_for(work), read_write=compileguard._rw_for(work))
     if wrap_err:
@@ -1285,44 +1304,67 @@ async def _compile_in(work, bdir, key, sketch, files, defines, net, netmode, sim
     if cmd is None:
         compileguard.close_fds(seccomp_fds)
         return _reject(compileguard.SANDBOX_MSG)
+    cmd = compileguard.limit_argv(cmd)
+    limits = compileguard.job_limits()
+    cgroup = compileguard.prepare_pids_cgroup(limits['nproc']) if Path(cmd[0]).name == 'bwrap' else None
     enforced = _compile_timeout_enforced()
     timeout = _compile_timeout_s()
     grace = _compile_kill_grace_s()
     # A new session makes this process the leader of its own group, so a timeout
     # can signal bwrap (or an unsandboxed compiler) and the children it spawned.
     # The flag defaults on. ``0`` keeps the compiler in this process's session
-    # and does not arm a deadline. bwrap --unshare-all puts the compilers in a
-    # pid namespace that ends when bwrap does.
+    # and does not arm the 504 deadline. The sandbox wall clock still applies.
+    # bwrap --unshare-all puts the compilers in a pid namespace that ends when bwrap does.
     try:
         p = await asyncio.create_subprocess_exec(
             *cmd, env=spawn_env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
             pass_fds=seccomp_fds, start_new_session=enforced)
+        pid = getattr(p, 'pid', None)
+        if pid:
+            compileguard.assign_pids_cgroup(cgroup, pid)
+    except Exception:
+        compileguard.release_pids_cgroup(cgroup)
+        raise
     finally:
         compileguard.close_fds(seccomp_fds)
     if enforced:
         _compile_worker_begin(timeout)
-    buf = []
+    captured = compileguard.OutputCap(limits['output_bytes'])
     async def _pump():
         async for ln in p.stdout:
-            t = ln.decode(errors='replace'); buf.append(t)
+            t = ln.decode(errors='replace')
+            captured.add(t)
             _note_compiler_line(t)
-            _compiler_log(sanitize(''.join(buf[-200:]).replace(str(sk) + '/', '')))
+            _compiler_log(sanitize(captured.text()[-4000:]).replace(str(sk) + '/', ''))
         await p.wait()
+    wall = compileguard.compile_wall_s()
+    # Enforcement on: the 504 deadline and the sandbox wall, whichever is sooner.
+    # Enforcement off: only the sandbox wall. That wait is not an HTTP 504.
+    wait_s = min(timeout, wall) if enforced else wall
     timed_out = False
     try:
-        if enforced:
-            await asyncio.wait_for(_pump(), timeout)
-        else:
-            await _pump()
+        await asyncio.wait_for(_pump(), wait_s)
     except (asyncio.TimeoutError, TimeoutError):
         timed_out = True
-        _note_compile_timeout()
+        if enforced:
+            _note_compile_timeout()
     finally:
-        if enforced and p.returncode is None:
-            await _kill_compile_group(p, grace)
+        if p.returncode is None:
+            if enforced:
+                await _kill_compile_group(p, grace)
+            else:
+                p.kill()
+                try:
+                    await p.wait()
+                except Exception:
+                    pass
+        compileguard.release_pids_cgroup(cgroup)
     if timed_out:
-        return _compile_timeout_response()
-    body = ''.join(buf[-300:]) if len(buf) > 300 else ''.join(buf).replace(str(sk) + '/', '')
+        if enforced:
+            return _compile_timeout_response()
+        stages = (_progress_current() or {}).get('stages') or ''
+        return JSONResponse({'ok': False, 'log': stages + sanitize(captured.text()) + f'\ncompile timed out ({wait_s:.0f}s) - the first build after a restart compiles the ESP32 core; press Run again.'})
+    body = captured.text().replace(str(sk) + '/', '')
     stages = (_progress_current() or {}).get('stages') or ''
     log = stages + sanitize(body)
     if netmode == 'lwip' and use_stack:
@@ -1657,13 +1699,13 @@ def _qemu_extra_lib_dirs(env) -> list[str]:
 def qemu_run_env(env=None, romdir=None, qemu_bin=None) -> dict[str, str]:
     """Environment for the QEMU process inside the sandbox.
 
-    The bwrap process itself uses ``host_sandbox_env()`` (``PATH``, ``LANG``,
-    and an already-set ``LD_LIBRARY_PATH``). QEMU's environment is passed with
-    ``--setenv`` and is only the keys copied here. ``LD_PRELOAD``, ``LD_AUDIT``,
-    and every other ``LD_*`` except the constructed ``LD_LIBRARY_PATH`` are
-    left out. That path is QEMU's own library directories, then the accepted
-    ``SIM_QEMU_LIB_DIRS`` entries, then an inherited ``LD_LIBRARY_PATH``. The
-    xtensa toolchain lib is not added. ``SIM_TOKEN`` is not copied.
+    The bwrap process itself uses ``host_sandbox_env()`` (``PATH`` and
+    ``LANG`` only). QEMU's environment is passed with ``--setenv`` and is
+    only the keys copied here. ``LD_PRELOAD``, ``LD_AUDIT``, ``LD_LIBRARY_PATH``
+    inherited from the server, and every other ``LD_*`` loader variable are
+    left out. The library path is QEMU's own library directories, then the
+    accepted ``SIM_QEMU_LIB_DIRS`` entries. The xtensa toolchain lib is not
+    added. ``SIM_TOKEN`` is not copied.
     """
     src = os.environ if env is None else env
     out: dict[str, str] = {}
@@ -1685,11 +1727,6 @@ def qemu_run_env(env=None, romdir=None, qemu_bin=None) -> dict[str, str]:
     for directory in _qemu_extra_lib_dirs(src):
         if directory not in lib_parts:
             lib_parts.append(directory)
-    inherited = src.get('LD_LIBRARY_PATH')
-    if inherited:
-        for part in inherited.split(os.pathsep):
-            if part and part not in lib_parts:
-                lib_parts.append(part)
     if lib_parts:
         out['LD_LIBRARY_PATH'] = os.pathsep.join(lib_parts)
     rom = str(romdir).strip() if romdir else ''
@@ -1878,7 +1915,10 @@ def qemu_sandbox_argv(cmd: list[str], env: dict, rundir) -> tuple[list[str] | No
             continue
         argv += ['--setenv', key, str(value)]
     argv += ['--', *list(cmd)]
-    return compileguard.attach_seccomp(argv)
+    launched, fds = compileguard.attach_seccomp(argv)
+    if launched is not None:
+        launched = compileguard.limit_argv(launched)
+    return launched, fds
 
 
 class _QemuProc:
@@ -1992,6 +2032,7 @@ async def _session_main(ws, bid, img):
             try: await proc.wait()
             except Exception: pass
         runs.pop(id(ws), None)
+        compileguard.release_pids_cgroup(hold.get('cgroup'))
         for srv in (hold.get('gsrv'), hold.get('ssrv')):
             if srv is not None:
                 try: srv.close()
@@ -2146,9 +2187,13 @@ async def _qemu_session(ws, bid, img, tmp, hold):
         print('run rejected reason=infra sandbox seccomp')
         await ws.send_json({'t': 'error', 'msg': compileguard.SANDBOX_MSG, 'reason': 'infra'})
         return
+    run_limits = compileguard.job_limits()
+    run_cgroup = compileguard.prepare_pids_cgroup(run_limits['nproc'])
+    hold['cgroup'] = run_cgroup
     try:
         popen = await asyncio.to_thread(
             _popen_qemu, launched, compileguard.host_sandbox_env(), seccomp_fds)
+        compileguard.assign_pids_cgroup(run_cgroup, popen.pid)
     except OSError as exc:
         try:
             log_path.write_text('qemu spawn failed: %s\n' % exc)
@@ -2166,12 +2211,23 @@ async def _qemu_session(ws, bid, img, tmp, hold):
         # Open the log before the chardev handshake. A QEMU that rejects
         # ``-icount`` or cannot load a library exits before those sockets
         # exist; waiting for them used to leave this file missing.
+        # Captured stdout is capped. The process is still drained so a full
+        # pipe cannot stall it.
+        limit = run_limits['output_bytes']
+        note = ('\nOutput truncated: the sandbox stopped capturing after %d bytes.\n' % limit).encode()
+        written = 0
         with open(log_path, 'wb') as f:
             while True:
                 d = await proc.stdout.read(4096)
                 if not d:
                     break
-                f.write(d); f.flush()
+                if written < limit:
+                    room = limit - written
+                    f.write(d[:room])
+                    written += min(len(d), room)
+                    if written >= limit:
+                        f.write(note)
+                    f.flush()
         await proc.wait()
 
     pump_task = asyncio.create_task(pump_qemu())
@@ -2215,8 +2271,11 @@ async def _qemu_session(ws, bid, img, tmp, hold):
             g_ = CLOSED_GRACE if link.soft else RESUME_GRACE
             if g_ and link.ws is None and time.monotonic() - link.detached_at > g_:
                 print(f'run {link.sid}: no browser for {g_:.0f}s ({"tab closed" if link.soft else "resume grace"}), stopping QEMU'); return
-            if RUN_CAP and time.monotonic() - t0 > RUN_CAP:
-                await ws.send_json({'t': 'error', 'msg': f'session time cap reached ({RUN_CAP:.0f}s, SIM_RUN_CAP)'}); return
+            wall = compileguard.run_wall_s()
+            cap = RUN_CAP if RUN_CAP and 0 < RUN_CAP < wall else wall
+            if cap and time.monotonic() - t0 > cap:
+                which = 'SIM_RUN_CAP' if RUN_CAP and 0 < RUN_CAP <= wall else 'SIM_RUN_WALL_S'
+                await ws.send_json({'t': 'error', 'msg': f'session time cap reached ({cap:.0f}s, {which})'}); return
     async def pump_gpio():
         spib = []   # coalesced SPI write-only bytes (TFT pixel streams): one ws message per burst
         i2cb = []   # coalesced I2C write bytes (fast path only)

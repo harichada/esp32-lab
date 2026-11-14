@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Show that deploy/seccomp-bwrap.json is Docker 29.9.3's profile plus seven syscalls.
+"""Show that deploy/seccomp-bwrap.json is Docker 29.9.3's profile plus the bwrap allows.
 
 Docker 29.9.3 vendors github.com/moby/profiles/seccomp v0.2.4
 (commit 245180c51918481c0525424b3ee025d2b435d46c). Fetch that
@@ -9,11 +9,15 @@ The only differences are:
 
 - clone: both SCMP_CMP_MASKED_EQ rules change value 2114060288 to 0, so a
   clone that sets namespace flags is allowed. The mask previously required
-  those flags to be clear.
-- clone3: the SCMP_ACT_ERRNO / errnoRet 38 (ENOSYS) rule that applied without
-  CAP_SYS_ADMIN is replaced by SCMP_ACT_ALLOW.
+  those flags to be clear. No finer argument filter is added: the server is
+  not root, the container gets no extra capabilities, and it is started with
+  no-new-privileges.
+- clone3: left as upstream, SCMP_ACT_ERRNO / errnoRet 38 (ENOSYS) without
+  CAP_SYS_ADMIN, so glibc falls back to clone.
 - unshare, mount, umount2, setns, pivot_root: one new unconditional
-  SCMP_ACT_ALLOW group. pivot_root is absent from the upstream profile.
+  SCMP_ACT_ALLOW group, with no argument filters. pivot_root is absent from
+  the upstream profile. bwrap needs these after it has entered its user
+  namespace, and Docker cannot express that without also blocking bwrap.
 """
 
 from __future__ import annotations
@@ -33,7 +37,7 @@ UPSTREAM_URL = f'https://raw.githubusercontent.com/moby/profiles/{COMMIT}/seccom
 OURS = Path(__file__).resolve().parent / 'seccomp-bwrap.json'
 CLONE_MASK = 2114060288
 ADDED_ALLOW = ['unshare', 'mount', 'umount2', 'setns', 'pivot_root']
-SEVEN = ['clone', 'clone3', *ADDED_ALLOW]
+CHANGED = ['clone', *ADDED_ALLOW]
 
 
 def fetch(url: str) -> dict:
@@ -42,23 +46,20 @@ def fetch(url: str) -> dict:
 
 
 def expected(upstream: dict) -> dict:
-    """Upstream profile plus the seven syscall changes."""
+    """Upstream profile, clone flags widened, clone3 left as ENOSYS, plus the allow group."""
     out = copy.deepcopy(upstream)
-    replaced = False
+    kept = False
     widened = 0
     for group in out['syscalls']:
         names = group.get('names') or []
         if names == ['clone3'] and group.get('action') == 'SCMP_ACT_ERRNO' and group.get('errnoRet') == 38:
-            group.clear()
-            group['names'] = ['clone3']
-            group['action'] = 'SCMP_ACT_ALLOW'
-            replaced = True
+            kept = True
         if names == ['clone']:
             for arg in group.get('args') or []:
                 if arg.get('op') == 'SCMP_CMP_MASKED_EQ' and arg.get('value') == CLONE_MASK:
                     arg['value'] = 0
                     widened += 1
-    if not replaced:
+    if not kept:
         raise SystemExit('upstream clone3 ENOSYS rule was not found')
     if widened != 2:
         raise SystemExit(f'expected to widen 2 clone rules, widened {widened}')
@@ -81,10 +82,10 @@ def explain(upstream: dict, ours: dict) -> list[str]:
         f'upstream {UPSTREAM_URL}',
         'clone: SCMP_CMP_MASKED_EQ value 2114060288 -> 0 on both rules '
         '(namespace flags no longer forced clear)',
-        'clone3: SCMP_ACT_ERRNO errnoRet 38 -> SCMP_ACT_ALLOW '
-        '(removed the ENOSYS rule that applied without CAP_SYS_ADMIN)',
-        'added SCMP_ACT_ALLOW: ' + ', '.join(ADDED_ALLOW),
-        'syscalls whose rules differ from upstream: ' + ', '.join(SEVEN),
+        'clone3: stays SCMP_ACT_ERRNO errnoRet 38 (ENOSYS) without CAP_SYS_ADMIN, '
+        'so glibc falls back to clone',
+        'added SCMP_ACT_ALLOW with no argument filters: ' + ', '.join(ADDED_ALLOW),
+        'syscalls whose rules differ from upstream: ' + ', '.join(CHANGED),
     ]
     extra = sorted(_syscall_names(ours) - _syscall_names(upstream))
     if extra != ['pivot_root']:
