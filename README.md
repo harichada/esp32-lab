@@ -26,6 +26,10 @@ docker run -d --name esp32lab -p 80:8765 -p 8765:8765 --restart unless-stopped \
 A test copy is a second process on `127.0.0.1`, reached at `http://<live>/staging/` through the live server. Leave `SIM_STAGING_UPSTREAM` unset until that process is running: empty means `/staging/` is 404 and the live site is unchanged. Do not publish the test copy on port 8080. See `web/README.md` for `SIM_STAGING`, `SIM_ACCESS_TOKEN`, `SIM_BASE_PATH`, the cookie, and the two-process local start.
 Large binaries (QEMU build, arduino cores/toolchains, caches) are not committed — the sub-READMEs explain how to fetch/build them.
 
+## Uptime
+
+UptimeRobot is the primary monitor. `.github/workflows/uptime.yml` is a free fallback: every five minutes it GETs the public homepage and `/api/health` (DuckDNS and the IP), one URL at a time, and opens an `uptime` issue only when a check fails and the previous scheduled run failed too. GitHub may delay or skip that schedule. Set the repository variable `UPTIME_CHECK_ENABLED` to `0` to turn the job off, or delete the workflow. Details: [docs/ops.md](docs/ops.md).
+
 ## Android APK
 ```
 cd android/app-project

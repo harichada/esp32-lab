@@ -1,0 +1,511 @@
+# Fallback uptime check. UptimeRobot is the primary monitor.
+# GitHub may delay or skip this schedule. See docs/ops.md.
+#
+# Kill switch: repository variable UPTIME_CHECK_ENABLED.
+# The job runs unless that variable is exactly 0.
+# It is a variable, not a secret. Unset leaves the check on.
+#
+# Homepage marker (UPTIME_HOME_MARKER) is the <title> in web/index.html:
+# ESP32 Circuit Lab — real-firmware ESP32 + electronics simulator
+#
+# UPTIME_TARGETS below is the only target list. GET only, one URL at a time.
+# The job does not call the compiler. It reads no repository secret.
+
+name: Uptime
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+# One list, at the top, so the URLs are easy to change.
+env:
+  UPTIME_TARGETS: |
+    https://esp32lab.duckdns.org/api/health
+    https://esp32lab.duckdns.org/
+    http://129.158.200.25/api/health
+    http://129.158.200.25/
+  UPTIME_HOME_MARKER: "ESP32 Circuit Lab — real-firmware ESP32 + electronics simulator"
+
+# One run at a time. A second run waits, so the single-core server never sees
+# two checks at once. A cancelled wait is not a site failure.
+concurrency:
+  group: uptime
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Probe
+    if: "${{ vars.UPTIME_CHECK_ENABLED != '0' }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Probe and alert
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          GH_PROMPT_DISABLED: "1"
+          GH_PAGER: cat
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 - << 'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+          import tempfile
+          import urllib.error
+          import urllib.request
+          from datetime import datetime, timedelta, timezone
+          from urllib.parse import urlsplit
+
+          # State, with no store outside this repo:
+          #   every target ok, no open `uptime` issue -> nothing
+          #   every target ok, issue open -> comment Recovered and close it
+          #   a target failed, no issue, previous scheduled run did not fail -> hold
+          #   a target failed, no issue, previous scheduled run failed -> open
+          #   a target failed, issue open -> comment at most once per hour
+          # The job exits 1 when a target failed, or when alerting itself failed.
+          # The job token is contents:read and issues:write only. The runs query
+          # uses `gh api` and, on 401/403, the same public GET with no token.
+          # If that query cannot be read, no issue is opened.
+
+          REAL_CONCLUSIONS = {'success', 'failure', 'timed_out'}
+          FAILED_CONCLUSIONS = {'failure', 'timed_out'}
+
+
+          def targets():
+              found = []
+              for line in os.environ.get('UPTIME_TARGETS', '').splitlines():
+                  line = line.strip()
+                  if not line or line.startswith('#'):
+                      continue
+                  found.extend(part for part in line.split() if part)
+              return found
+
+
+          def kind_of(url):
+              path = urlsplit(url).path or '/'
+              if path.rstrip('/') == '/api/health':
+                  return 'health'
+              return 'home'
+
+
+          def clip(text, limit):
+              text = ' '.join(text.split())
+              if len(text) <= limit:
+                  return text
+              return text[:limit - 3] + '...'
+
+
+          def health_ok(body):
+              try:
+                  data = json.loads(body.decode('utf-8-sig'))
+              except Exception:
+                  return False, 'health body is not JSON'
+              if isinstance(data, dict) and data.get('ok') is True:
+                  return True, 'ok'
+              if isinstance(data, dict):
+                  shown = repr(data.get('ok'))
+              else:
+                  shown = type(data).__name__
+              return False, 'health ok is not true (' + clip(shown, 40) + ')'
+
+
+          def home_ok(body, marker):
+              if not marker:
+                  return False, 'UPTIME_HOME_MARKER is empty'
+              text = body.decode('utf-8', errors='replace')
+              if marker in text:
+                  return True, 'ok'
+              return False, 'homepage marker missing'
+
+
+          def probe(url, marker):
+              kind = kind_of(url)
+              fd, path = tempfile.mkstemp(prefix='uptime-body-')
+              os.close(fd)
+              cmd = [
+                  'curl',
+                  '--silent',
+                  '--show-error',
+                  '--request', 'GET',
+                  '--connect-timeout', '10',
+                  '--max-time', '20',
+                  '--retry', '2',
+                  '--retry-connrefused',
+                  '--output', path,
+                  '--write-out', '%{http_code} %{time_total} %{time_connect} %{time_starttransfer}',
+                  '--user-agent', 'esp32-lab-uptime',
+                  url,
+              ]
+              row = {
+                  'url': url,
+                  'kind': kind,
+                  'http_code': '000',
+                  'time_total': '',
+                  'time_connect': '',
+                  'time_starttransfer': '',
+                  'ok': False,
+                  'detail': '',
+              }
+              try:
+                  try:
+                      proc = subprocess.run(cmd, capture_output=True, text=True, timeout=75)
+                  except subprocess.TimeoutExpired:
+                      row['detail'] = 'curl timed out'
+                      return row
+                  parts = (proc.stdout or '').split()
+                  if parts:
+                      row['http_code'] = parts[0]
+                  if len(parts) > 1:
+                      row['time_total'] = parts[1]
+                  if len(parts) > 2:
+                      row['time_connect'] = parts[2]
+                  if len(parts) > 3:
+                      row['time_starttransfer'] = parts[3]
+                  if proc.returncode != 0:
+                      err = (proc.stderr or '').strip().splitlines()
+                      row['detail'] = clip(err[-1], 180) if err else 'curl exit %s' % proc.returncode
+                      return row
+                  if row['http_code'] != '200':
+                      row['detail'] = 'HTTP %s' % row['http_code']
+                      return row
+                  try:
+                      with open(path, 'rb') as fh:
+                          body = fh.read()
+                  except OSError as exc:
+                      row['detail'] = 'could not read body (%s)' % exc
+                      return row
+                  if kind == 'health':
+                      ok, detail = health_ok(body)
+                  else:
+                      ok, detail = home_ok(body, marker)
+                  row['ok'] = ok
+                  row['detail'] = detail
+                  return row
+              finally:
+                  try:
+                      os.remove(path)
+                  except OSError:
+                      pass
+
+
+          def render_table(rows):
+              lines = [
+                  '| Target | HTTP | Connect (s) | Start (s) | Total (s) | Detail |',
+                  '| --- | --- | --- | --- | --- | --- |',
+              ]
+              for row in rows:
+                  cells = [
+                      row['url'],
+                      row['http_code'],
+                      row['time_connect'],
+                      row['time_starttransfer'],
+                      row['time_total'],
+                      row['detail'],
+                  ]
+                  lines.append('| ' + ' | '.join(cell.replace('|', '\\|') for cell in cells) + ' |')
+              return '\n'.join(lines)
+
+
+          def write_summary(rows):
+              path = os.environ.get('GITHUB_STEP_SUMMARY')
+              if not path:
+                  return
+              with open(path, 'a', encoding='utf-8') as fh:
+                  fh.write('## Uptime\n\n')
+                  fh.write(render_table(rows))
+                  fh.write('\n')
+
+
+          def gh(args, timeout=30):
+              proc = subprocess.run(['gh', *args], capture_output=True, text=True, timeout=timeout)
+              if proc.returncode != 0:
+                  detail = clip((proc.stderr or proc.stdout or '').strip(), 500)
+                  raise RuntimeError('gh %s failed (%s): %s' % (' '.join(args), proc.returncode, detail))
+              return proc.stdout
+
+
+          def write_text(text):
+              fd, path = tempfile.mkstemp(prefix='uptime-md-')
+              with os.fdopen(fd, 'w', encoding='utf-8') as fh:
+                  fh.write(text)
+              return path
+
+
+          def open_issues():
+              raw = gh([
+                  'issue', 'list',
+                  '--label', 'uptime',
+                  '--state', 'open',
+                  '--limit', '20',
+                  '--json', 'number,title,createdAt,url',
+              ])
+              data = json.loads(raw or '[]')
+              if not isinstance(data, list):
+                  raise RuntimeError('issue list was not a JSON array')
+              return data
+
+
+          def issue_view(number):
+              raw = gh(['issue', 'view', str(number), '--json', 'comments,createdAt'])
+              data = json.loads(raw)
+              if not isinstance(data, dict):
+                  raise RuntimeError('issue view was not a JSON object')
+              return data
+
+
+          def parse_time(value):
+              if not isinstance(value, str) or not value:
+                  return None
+              try:
+                  return datetime.fromisoformat(value.replace('Z', '+00:00'))
+              except ValueError:
+                  return None
+
+
+          def last_touch(view):
+              comments = view.get('comments')
+              if not isinstance(comments, list):
+                  return None
+              stamps = [parse_time(view.get('createdAt'))]
+              for comment in comments:
+                  if isinstance(comment, dict):
+                      stamps.append(parse_time(comment.get('createdAt')))
+              stamps = [stamp for stamp in stamps if stamp is not None]
+              return max(stamps) if stamps else None
+
+
+          def within_hour(when):
+              if when is None:
+                  return False
+              return datetime.now(timezone.utc) - when < timedelta(hours=1)
+
+
+          def fetch_runs_public(repo):
+              url = (
+                  'https://api.github.com/repos/%s/actions/workflows/uptime.yml/runs'
+                  '?event=schedule&status=completed&per_page=20' % repo
+              )
+              req = urllib.request.Request(url, headers={
+                  'Accept': 'application/vnd.github+json',
+                  'User-Agent': 'esp32-lab-uptime',
+                  'X-GitHub-Api-Version': '2022-11-28',
+              })
+              try:
+                  with urllib.request.urlopen(req, timeout=20) as resp:
+                      return json.loads(resp.read().decode('utf-8'))
+              except urllib.error.HTTPError as exc:
+                  detail = clip(exc.read().decode('utf-8', errors='replace'), 300)
+                  raise RuntimeError('public workflow runs API HTTP %s: %s' % (exc.code, detail)) from exc
+
+
+          def fetch_runs():
+              repo = os.environ['GH_REPO']
+              endpoint = (
+                  'repos/{owner}/{repo}/actions/workflows/uptime.yml/runs'
+                  '?event=schedule&status=completed&per_page=20'
+              )
+              proc = subprocess.run(
+                  [
+                      'gh', 'api', '--method', 'GET', endpoint,
+                      '-H', 'Accept: application/vnd.github+json',
+                      '-H', 'X-GitHub-Api-Version: 2022-11-28',
+                  ],
+                  capture_output=True, text=True, timeout=30,
+              )
+              blob = ((proc.stderr or '') + '\n' + (proc.stdout or '')).strip()
+              if proc.returncode == 0 and (proc.stdout or '').strip():
+                  return json.loads(proc.stdout)
+              denied = proc.returncode != 0 and (
+                  '401' in blob or '403' in blob or 'Resource not accessible' in blob
+              )
+              if denied:
+                  print('workflow runs API denied the job token; retrying without it', file=sys.stderr)
+                  return fetch_runs_public(repo)
+              raise RuntimeError(clip(blob, 500) or 'gh api exit %s' % proc.returncode)
+
+
+          def earlier_scheduled_failure():
+              try:
+                  payload = fetch_runs()
+              except Exception as exc:
+                  print('::warning::workflow runs API unavailable; not opening an issue (%s)' % exc, file=sys.stderr)
+                  return None
+              runs = payload.get('workflow_runs') if isinstance(payload, dict) else None
+              if not isinstance(runs, list):
+                  print('::warning::workflow runs API returned no list; not opening an issue', file=sys.stderr)
+                  return None
+              current = int(os.environ['RUN_ID'])
+              prev = None
+              for run in runs:
+                  if not isinstance(run, dict):
+                      continue
+                  if run.get('id') == current:
+                      continue
+                  if run.get('event') not in (None, 'schedule'):
+                      continue
+                  if run.get('status') not in (None, 'completed'):
+                      continue
+                  if run.get('conclusion') not in REAL_CONCLUSIONS:
+                      continue
+                  prev = run
+                  break
+              if prev is None:
+                  print('no earlier scheduled run has finished; not opening an issue')
+                  return None
+              conclusion = prev.get('conclusion')
+              print('previous scheduled run %s conclusion=%s' % (prev.get('id'), conclusion))
+              if conclusion in FAILED_CONCLUSIONS:
+                  return prev
+              return None
+
+
+          def failing_lines(rows):
+              urls = [row['url'] for row in rows if not row['ok']]
+              return ['Failing targets:'] + ['- %s' % url for url in urls]
+
+
+          def open_body(rows, prev):
+              prev_url = prev.get('html_url') or ''
+              lines = [
+                  'Two checks in a row failed.',
+                  '',
+                  *failing_lines(rows),
+                  '',
+                  render_table(rows),
+                  '',
+                  'Run: %s' % os.environ.get('RUN_URL', ''),
+                  'Previous scheduled run: %s (%s)' % (prev_url, prev.get('conclusion')),
+                  '',
+                  'UptimeRobot is the primary monitor. This issue is the GitHub Actions fallback.',
+                  '',
+              ]
+              return '\n'.join(lines)
+
+
+          def still_down_body(rows):
+              lines = [
+                  'Still down.',
+                  '',
+                  *failing_lines(rows),
+                  '',
+                  render_table(rows),
+                  '',
+                  'Run: %s' % os.environ.get('RUN_URL', ''),
+                  '',
+              ]
+              return '\n'.join(lines)
+
+
+          def recover(number):
+              gh(['issue', 'close', str(number), '--reason', 'completed', '--comment', 'Recovered'])
+
+
+          def comment(number, body):
+              path = write_text(body)
+              try:
+                  gh(['issue', 'comment', str(number), '--body-file', path])
+              finally:
+                  try:
+                      os.remove(path)
+                  except OSError:
+                      pass
+
+
+          def create_issue(title, body):
+              gh([
+                  'label', 'create', 'uptime',
+                  '--color', 'B60205',
+                  '--description', 'Opened by the uptime fallback when the site fails twice',
+                  '--force',
+              ])
+              path = write_text(body)
+              try:
+                  out = gh([
+                      'issue', 'create',
+                      '--title', title,
+                      '--label', 'uptime',
+                      '--body-file', path,
+                  ])
+              finally:
+                  try:
+                      os.remove(path)
+                  except OSError:
+                      pass
+              print(out.strip())
+
+
+          def alert(rows):
+              failed = [row for row in rows if not row['ok']]
+              issues = open_issues()
+              if not failed:
+                  if not issues:
+                      print('state=ok action=none')
+                      return
+                  for issue in issues:
+                      number = issue['number']
+                      print('state=ok action=recover issue=%s' % number)
+                      recover(number)
+                  return
+              if issues:
+                  body = still_down_body(rows)
+                  for issue in issues:
+                      number = issue['number']
+                      view = issue_view(number)
+                      touched = last_touch(view)
+                      if touched is None:
+                          print('::warning::issue #%s has no comment timestamps; skipping comment' % number, file=sys.stderr)
+                          continue
+                      if within_hour(touched):
+                          print('state=failure action=skip-comment issue=%s' % number)
+                          continue
+                      print('state=failure action=comment issue=%s' % number)
+                      comment(number, body)
+                  return
+              prev = earlier_scheduled_failure()
+              if not prev:
+                  print('state=failure action=hold')
+                  return
+              first = failed[0]['url']
+              print('state=failure action=open previous=%s' % prev.get('id'))
+              create_issue('Site down: %s' % first, open_body(rows, prev))
+
+
+          def main():
+              marker = os.environ.get('UPTIME_HOME_MARKER', '')
+              urls = targets()
+              if not urls:
+                  print('::error::UPTIME_TARGETS is empty', file=sys.stderr)
+                  sys.exit(1)
+              rows = []
+              for url in urls:
+                  print('GET %s' % url, flush=True)
+                  row = probe(url, marker)
+                  rows.append(row)
+                  print(
+                      'result %s http=%s ok=%s total=%s %s' % (
+                          row['url'], row['http_code'], row['ok'], row['time_total'], row['detail']
+                      ),
+                      flush=True,
+                  )
+              write_summary(rows)
+              try:
+                  alert(rows)
+              except Exception as exc:
+                  print('::error::alert step failed: %s' % exc, file=sys.stderr)
+                  sys.exit(1)
+              if any(not row['ok'] for row in rows):
+                  sys.exit(1)
+
+
+          if __name__ == '__main__':
+              main()
+          PY
