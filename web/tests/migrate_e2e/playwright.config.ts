@@ -21,7 +21,7 @@ export default defineConfig({
     video: 'off',
   },
   webServer: {
-    command: 'python3 tests/migrate_e2e/move_server.py',
+    command: `${process.env.PYTHON || 'python3'} tests/migrate_e2e/move_server.py`,
     cwd: web,
     url: `http://127.0.0.1:${port}/api/health`,
     reuseExistingServer: false,

@@ -341,33 +341,154 @@ def redirect_status(method):
     return 308
 
 
+def _request_target(scope):
+    """The raw request-target, before either HTTP parser rewrites it.
+
+    h11 leaves ``http://host/path`` in ``raw_path``. httptools keeps only the
+    path unless the protocol stashes the original bytes on ``cl_request_target``.
+    """
+    stamped = scope.get('cl_request_target')
+    if isinstance(stamped, bytes) and stamped:
+        return stamped.decode('latin1')
+    if isinstance(stamped, str) and stamped:
+        return stamped
+    raw = scope.get('raw_path') or b''
+    if isinstance(raw, str):
+        text = raw
+    elif raw:
+        text = raw.decode('latin1')
+    else:
+        text = scope.get('path') or '/'
+    query = scope.get('query_string') or b''
+    if isinstance(query, bytes):
+        query = query.decode('latin1')
+    else:
+        query = str(query or '')
+    if query and '?' not in text:
+        return text + '?' + query
+    return text
+
+
+def normalize_authority(scheme, netloc):
+    """Lowercase host, no trailing dot, and no default port. Empty when unusable.
+
+    Only ``http`` (port 80) and ``https`` (port 443) are accepted. A user, a
+    non-default port, or a bad port stays out of the allow-list comparison by
+    coming back empty or with the port still attached.
+    """
+    if not netloc or '@' in netloc or any(c in netloc for c in ' \t/?#\\'):
+        return ''
+    if (scheme or '').lower() not in ('http', 'https'):
+        return ''
+    text = netloc.strip().lower()
+    if text.startswith('['):
+        end = text.find(']')
+        if end < 0:
+            return ''
+        host = text[:end + 1]
+        rest = text[end + 1:]
+        if rest.startswith(':'):
+            port = rest[1:]
+        elif rest:
+            return ''
+        else:
+            port = ''
+    else:
+        if text.count(':') > 1:
+            return ''
+        host, sep, port = text.partition(':')
+        if not sep:
+            port = ''
+        host = host.rstrip('.')
+    if not host or any(c in host for c in '/\\@?#%'):
+        return ''
+    default = '443' if scheme.lower() == 'https' else '80'
+    if not port or port == default:
+        return host
+    if not port.isdigit():
+        return ''
+    return host + ':' + port
+
+
+def _parse_request_target(target):
+    """Origin-form or absolute-form, parsed here. None when the target is empty.
+
+    Absolute-form is split here, not by h11 or httptools. The allow-list
+    decision and the redirect path are ours.
+    """
+    if isinstance(target, bytes):
+        target = target.decode('latin1')
+    if not isinstance(target, str) or not target:
+        return None
+    if target.startswith('/'):
+        path, _, query = target.partition('?')
+        return {'absolute': False, 'authority': None, 'path': path, 'query': query}
+    scheme, sep, rest = target.partition('://')
+    if not sep or '/' in scheme or '?' in scheme or not scheme:
+        path, _, query = target.partition('?')
+        return {'absolute': False, 'authority': None, 'path': path, 'query': query}
+    if any(ord(c) < 33 or ord(c) == 127 for c in scheme) or not scheme[:1].isalpha():
+        return None
+    authority, sep, tail = rest.partition('/')
+    if '?' in authority and not sep:
+        authority, _, query = authority.partition('?')
+        path, tail = '/', ''
+    else:
+        path = '/' + tail
+        path, _, query = path.partition('?')
+    if '@' in authority:
+        return {'absolute': True, 'authority': '', 'path': path or '/', 'query': query}
+    return {
+        'absolute': True,
+        'authority': normalize_authority(scheme, authority),
+        'path': path or '/',
+        'query': query,
+    }
+
+
+def _authority_allowed(name):
+    if not name:
+        return False
+    if ALLOWED is None:
+        return True
+    return name in ALLOWED
+
+
+def _origin_scope(scope):
+    """Drop an absolute-form authority out of the path. None when it is not allowed.
+
+    The copy carries only the path and query, so a later Location is
+    ``https://HTTPS_HOST`` plus that path. The request authority is not copied.
+    """
+    parsed = _parse_request_target(_request_target(scope))
+    if not parsed or not parsed['absolute']:
+        return scope
+    if not _authority_allowed(parsed['authority']):
+        return None
+    scope = dict(scope)
+    scope['path'] = parsed['path']
+    scope['raw_path'] = parsed['path'].encode('latin1', 'replace')
+    scope['query_string'] = parsed['query'].encode('latin1', 'replace')
+    scope.pop('cl_request_target', None)
+    return scope
+
+
 def redirect_location(scope, host):
     """https://<configured host><path>?<query>. None when the path is not safe to echo.
 
-    ``host`` is the configured HTTPS_HOST. The request Host header is not read.
+    ``host`` is the configured HTTPS_HOST. The request Host header and, for an
+    absolute-form target, the request authority are not used.
     """
     if not valid_https_host(host):
         return None
-    raw = scope.get('raw_path') or b''
-    if isinstance(raw, str):
-        path = raw
-    elif raw:
-        path = raw.decode('latin1')
-    else:
-        path = scope.get('path') or '/'
-    path = path.split('?', 1)[0] or '/'
+    parsed = _parse_request_target(_request_target(scope))
+    if not parsed:
+        return None
+    path = parsed['path'] or '/'
+    qtext = parsed['query']
     if not path.startswith('/') or path.startswith('//') or '\\' in path:
         return None
-    if any(ord(c) < 32 or ord(c) == 127 for c in path):
-        return None
-    query = scope.get('query_string') or b''
-    if isinstance(query, str):
-        query = query.encode('latin1', 'replace')
-    try:
-        qtext = query.decode('ascii')
-    except UnicodeDecodeError:
-        return None
-    if any(ord(c) < 32 or ord(c) == 127 for c in qtext):
+    if any(ord(c) < 32 or ord(c) == 127 for c in path) or any(ord(c) < 32 or ord(c) == 127 or ord(c) > 127 for c in qtext):
         return None
     loc = 'https://' + host + path
     if qtext:
@@ -1001,6 +1122,13 @@ class HttpsMiddleware:
             await self.app(scope, receive, send)
             return
         scheme = scope.get('scheme') or ''
+        scope = _origin_scope(scope)
+        if scope is None:
+            if kind == 'websocket':
+                await _ws_reply(send, 400, 'unknown host', scheme)
+            else:
+                await _http_reply(send, 400, 'unknown host', (), scheme)
+            return
         if not host_allowed(scope):
             if kind == 'websocket':
                 await _ws_reply(send, 400, 'unknown host', scheme)
@@ -1224,15 +1352,74 @@ def _quiet_server(config):
     return server
 
 
+def _note_request_target(scope, target):
+    if isinstance(scope, dict) and target and 'cl_request_target' not in scope:
+        scope['cl_request_target'] = target if isinstance(target, bytes) else str(target).encode('latin1', 'replace')
+
+
+def _install_target_capture():
+    """Keep the raw request-target on the scope for both HTTP parsers.
+
+    Done once. httptools would otherwise discard the authority before the app
+    runs, and the redirect would only see the path.
+    """
+    if getattr(_install_target_capture, 'done', False):
+        return
+    _install_target_capture.done = True
+    try:
+        from uvicorn.protocols.http import h11_impl
+    except Exception:
+        h11_impl = None
+    try:
+        from uvicorn.protocols.http import httptools_impl
+    except Exception:
+        httptools_impl = None
+
+    def _wrap_cycle(cls):
+        orig = cls.__init__
+
+        def __init__(self, scope, *args, **kwargs):
+            if isinstance(scope, dict) and 'cl_request_target' not in scope:
+                raw = scope.get('raw_path') or b''
+                query = scope.get('query_string') or b''
+                if isinstance(raw, str):
+                    raw = raw.encode('latin1', 'replace')
+                if isinstance(query, str):
+                    query = query.encode('latin1', 'replace')
+                _note_request_target(scope, raw + (b'?' + query if query else b''))
+            return orig(self, scope, *args, **kwargs)
+
+        cls.__init__ = __init__
+
+    if h11_impl is not None:
+        _wrap_cycle(h11_impl.RequestResponseCycle)
+    if httptools_impl is not None:
+        _wrap_cycle(httptools_impl.RequestResponseCycle)
+        orig = httptools_impl.HttpToolsProtocol.on_headers_complete
+
+        def on_headers_complete(self):
+            target = bytes(getattr(self, 'url', b'') or b'')
+            result = orig(self)
+            scope = getattr(self, 'scope', None)
+            if isinstance(scope, dict) and target:
+                scope['cl_request_target'] = target
+            return result
+
+        httptools_impl.HttpToolsProtocol.on_headers_complete = on_headers_complete
+
+
 def _uvicorn_config(app, host, port, *, certfile=None, keyfile=None, lifespan='on',
                     log_level='warning', access_log=True):
     import uvicorn
+    _install_target_capture()
+    parser = (os.environ.get('UVICORN_HTTP') or 'auto').strip() or 'auto'
     # proxy_headers stays False on both listeners. The scheme is the socket,
     # never X-Forwarded-Proto. Staging tests look for this exact argument pair.
     return uvicorn.Config(
         app, host=host, port=port, log_level=log_level, access_log=access_log,
         proxy_headers=False, forwarded_allow_ips='',
         ssl_certfile=certfile, ssl_keyfile=keyfile, lifespan=lifespan,
+        http=parser,
     )
 
 

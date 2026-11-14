@@ -130,6 +130,32 @@ def _chunked_post(port, host, cafile, piece, total):
         sock.close()
 
 
+def _response_headers(raw):
+    head = raw.split(b'\r\n\r\n', 1)[0]
+    lines = head.split(b'\r\n')
+    status = int(lines[0].split(b' ', 2)[1])
+    found = {}
+    for line in lines[1:]:
+        if b':' not in line:
+            continue
+        name, value = line.split(b':', 1)
+        found.setdefault(name.lower(), []).append(value.strip())
+    return status, found, head
+
+
+def _assert_absolute_form(testcase, raw, forged, location):
+    """400, or a 301 whose Location is exactly ``location``. The authority is not a header."""
+    status, headers, head = _response_headers(raw)
+    folded = head.lower()
+    for name in forged:
+        testcase.assertNotIn(name.lower(), folded)
+    if status == 400:
+        testcase.assertNotIn(b'location', headers, raw[:300])
+        return
+    testcase.assertEqual(status, 301, raw[:300])
+    testcase.assertEqual(headers.get(b'location'), [location])
+
+
 def _raw_request(port, text):
     sock = socket.create_connection(('127.0.0.1', port), 5)
     try:
@@ -234,6 +260,31 @@ class HttpsUnitTest(unittest.TestCase):
         self.assertIsNone(https.redirect_location(
             {'path': '//evil.com', 'raw_path': b'//evil.com', 'query_string': b'x=1'}, HOST,
         ))
+        https.apply_env({
+            'ALLOWED_HOSTS': '%s,%s' % (IP_HOST, HOST),
+            'HTTPS_REDIRECT': '1',
+            'HTTPS_HOST': HOST,
+        })
+        self.assertEqual(https.normalize_authority('http', HOST.upper() + '.:80'), HOST)
+        self.assertEqual(https.normalize_authority('https', IP_HOST + ':443'), IP_HOST)
+        self.assertEqual(https.normalize_authority('http', 'evil.example:444'), 'evil.example:444')
+        self.assertEqual(https.normalize_authority('http', 'user@' + HOST), '')
+        evil = {
+            'path': '/some/path', 'raw_path': b'/some/path', 'query_string': b'x=1',
+            'headers': [(b'host', HOST.encode())],
+            'cl_request_target': b'http://evil.example/some/path?x=1',
+        }
+        self.assertIsNone(https._origin_scope(evil))
+        built = https.redirect_location(evil, HOST)
+        self.assertEqual(built, 'https://%s/some/path?x=1' % HOST)
+        self.assertNotIn('evil.example', built)
+        dotted = dict(evil)
+        dotted['cl_request_target'] = ('http://%s.:80/some/path?x=1' % HOST.upper()).encode()
+        origin = https._origin_scope(dotted)
+        self.assertEqual(origin['path'], '/some/path')
+        self.assertEqual(origin['query_string'], b'x=1')
+        self.assertNotIn(b'://', origin['raw_path'])
+        self.assertEqual(https.redirect_location(origin, HOST), 'https://%s/some/path?x=1' % HOST)
 
     def test_hsts_parse_and_host_list(self):
         logs = []
@@ -690,20 +741,37 @@ class HttpsServerTest(unittest.TestCase):
             self.assertEqual(status, 400, host)
             self.assertIn(b'unknown host', body)
             self.assertIsNone(_header(pairs, 'location'), host)
+        wanted = b'https://%s/some/path?x=1' % HOST.encode()
         raw = _raw_request(
             self.http,
             'GET http://evil.example/some/path?x=1 HTTP/1.1\r\nHost: %s\r\n\r\n' % HOST,
         )
-        self.assertIn(b' 301 ', raw)
-        folded = raw.lower()
-        self.assertIn(b'location: https://%s/some/path?x=1' % HOST.encode(), folded)
-        self.assertNotIn(b'evil.example', folded.split(b'\r\n\r\n', 1)[0].replace(b'host: ' + HOST.encode(), b''))
+        _assert_absolute_form(self, raw, (b'evil.example',), wanted)
+        both = _raw_request(
+            self.http,
+            'GET http://evil.example/some/path?x=1 HTTP/1.1\r\nHost: forged.example\r\n\r\n',
+        )
+        status, headers, head = _response_headers(both)
+        self.assertEqual(status, 400, both[:240])
+        self.assertNotIn(b'location', headers)
+        self.assertNotIn(b'evil.example', head.lower())
+        self.assertNotIn(b'forged.example', head.lower())
         denied = _raw_request(
             self.http,
             'GET http://evil.example/some/path?x=1 HTTP/1.1\r\nHost: evil.example\r\n\r\n',
         )
-        self.assertTrue(denied.startswith(b'HTTP/1.1 400'), denied)
+        self.assertTrue(denied.startswith(b'HTTP/1.1 400'), denied[:240])
         self.assertNotIn(b'location:', denied.lower())
+        self.assertNotIn(b'evil.example', denied.split(b'\r\n\r\n', 1)[0].lower())
+        allowed = _raw_request(
+            self.http,
+            'GET http://%s.:80/some/path?x=1 HTTP/1.1\r\nHost: %s\r\n\r\n' % (HOST.upper(), HOST),
+        )
+        status, headers, head = _response_headers(allowed)
+        self.assertEqual(status, 301, allowed[:240])
+        self.assertEqual(headers.get(b'location'), [wanted])
+        self.assertNotIn(HOST.upper().encode(), head)
+        self.assertNotIn(b':80', head.lower())
 
     def test_move_post_is_validated_and_not_stored(self):
         https.apply_env({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST})
