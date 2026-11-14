@@ -14,6 +14,14 @@ function mem() {
 function proj(extra) {
   return Object.assign({ name: 'Blink', parts: [{ id: 'ESP1', type: 'esp32', x: 0, y: 0 }], wires: [] }, extra || {});
 }
+function modeOf(raw) {
+  if (raw === 'board' || raw === 'tidy') return raw;
+  try {
+    const o = JSON.parse(raw);
+    if (o && (o.mode === 'board' || o.mode === 'tidy')) return o.mode;
+  } catch (e) { /* plain */ }
+  return '';
+}
 
 test('Duplicate carries an explicit layout choice and leaves a missing choice unset', () => {
   const ls = mem();
@@ -103,7 +111,10 @@ test('a Breadboard choice on one draft does not leak, and it survives the first 
   assert.equal(S.layoutModeOf(b, ls), 'tidy');
   assert.equal(ls.getItem(keyB), null);
   const copied = store.copy(a);
-  assert.equal(ls.getItem(keyA), 'board');
+  const stamped = JSON.parse(ls.getItem(keyA));
+  assert.equal(stamped.mode, 'board');
+  assert.equal(typeof stamped.lastSeen, 'number');
+  assert.equal(stamped.seen, undefined);
   assert.equal(ls.getItem('esp32lab.schLayout.' + copied.id), 'board');
   assert.equal(a.draftId != null && String(a.draftId) !== '', true);
   const id = store.save(a);
@@ -119,34 +130,56 @@ test('a Breadboard choice on one draft does not leak, and it survives the first 
   assert.equal(S.layoutModeOf({ id: b.id }, ls), 'tidy');
 });
 
-test('stale draft keys are removed without touching project or example keys', () => {
+test('a sweep keeps another tab\'s draft and drops only owned discards and 24h orphans', () => {
   const ls = mem();
-  const keep = {};
-  const gone = {};
-  S.writeLayout(keep, 'tidy', ls);
-  S.writeLayout(gone, 'board', ls);
+  const mine = {};
+  const other = {};
+  S.writeLayout(mine, 'tidy', ls);
+  S.writeLayout(other, 'board', ls);
   ls.setItem('esp32lab.schLayout.p1', 'board');
   ls.setItem('esp32lab.schLayout.ex.blink', 'board');
   ls.setItem('esp32lab.schLayout.unsaved', 'board');
-  ls.setItem('esp32lab.schLayout.draft.p1', 'tidy');
-  const index = JSON.parse(ls.getItem('esp32lab.schLayout.draftIndex'));
-  index.push('p1', '../nope', '');
-  ls.setItem('esp32lab.schLayout.draftIndex', JSON.stringify(index));
+  const now = Date.now();
   const removed = [];
   const orig = ls.removeItem;
   ls.removeItem = (k) => { removed.push(k); orig(k); };
-  S.sweepDrafts(ls, [keep.draftId]);
-  assert.equal(ls.getItem(S.layoutStoreKey(keep)), 'tidy');
-  assert.equal(ls.getItem(S.layoutStoreKey(gone)), null);
+  S.sweepDrafts(ls, { own: [mine.draftId], now: now });
+  assert.equal(modeOf(ls.getItem(S.layoutStoreKey(mine))), 'tidy');
+  assert.equal(modeOf(ls.getItem(S.layoutStoreKey(other))), 'board');
   assert.equal(ls.getItem('esp32lab.schLayout.p1'), 'board');
   assert.equal(ls.getItem('esp32lab.schLayout.ex.blink'), 'board');
   assert.equal(ls.getItem('esp32lab.schLayout.unsaved'), null);
-  assert.equal(ls.getItem('esp32lab.schLayout.draft.p1'), null);
-  assert.deepEqual(JSON.parse(ls.getItem('esp32lab.schLayout.draftIndex')), [keep.draftId]);
   assert.equal(removed.includes('esp32lab.schLayout.p1'), false);
   assert.equal(removed.includes('esp32lab.schLayout.ex.blink'), false);
   assert.ok(removed.includes('esp32lab.schLayout.unsaved'));
   assert.ok(removed.every((k) => k === 'esp32lab.schLayout.unsaved' || k.startsWith('esp32lab.schLayout.draft.')));
+
+  const orphan = {};
+  S.writeLayout(orphan, 'board', ls);
+  ls.setItem(S.layoutStoreKey(orphan), JSON.stringify({ mode: 'board', lastSeen: now - S.DRAFT_TTL_MS - 1 }));
+  ls.setItem(S.layoutStoreKey(mine), JSON.stringify({ mode: 'tidy', lastSeen: now - S.DRAFT_TTL_MS - 1 }));
+  ls.setItem('esp32lab.schLayout.draft.plain1', 'board');
+  const index = JSON.parse(ls.getItem('esp32lab.schLayout.draftIndex'));
+  index.push('plain1', '../nope', '');
+  ls.setItem('esp32lab.schLayout.draftIndex', JSON.stringify(index));
+  S.sweepDrafts(ls, { own: [mine.draftId], now: now });
+  assert.equal(ls.getItem(S.layoutStoreKey(orphan)), null);
+  assert.equal(modeOf(ls.getItem(S.layoutStoreKey(mine))), 'tidy');
+  assert.equal(ls.getItem('esp32lab.schLayout.draft.plain1'), 'board');
+  assert.equal(modeOf(ls.getItem(S.layoutStoreKey(other))), 'board');
+  assert.equal(ls.getItem('esp32lab.schLayout.p1'), 'board');
+  assert.equal(ls.getItem('esp32lab.schLayout.ex.blink'), 'board');
+  const left = JSON.parse(ls.getItem('esp32lab.schLayout.draftIndex'));
+  assert.equal(left.includes(orphan.draftId), false);
+  assert.equal(left.includes('../nope'), false);
+  assert.ok(left.includes(mine.draftId));
+  assert.ok(left.includes(other.draftId));
+  assert.ok(left.includes('plain1'));
+
+  S.sweepDrafts(ls, { own: [mine.draftId], drop: [mine.draftId], now: now });
+  assert.equal(ls.getItem(S.layoutStoreKey(mine)), null);
+  assert.equal(modeOf(ls.getItem(S.layoutStoreKey(other))), 'board');
+  assert.equal(S.DRAFT_TTL_MS, 24 * 60 * 60 * 1000);
 });
 
 test('a draft key that cannot be deleted stays in the index', () => {
@@ -154,17 +187,68 @@ test('a draft key that cannot be deleted stays in the index', () => {
   const d = {};
   S.writeLayout(d, 'board', ls);
   const key = S.layoutStoreKey(d);
+  ls.setItem(key, JSON.stringify({ mode: 'board', lastSeen: Date.now() - S.DRAFT_TTL_MS - 1000 }));
   const orig = ls.removeItem;
   ls.removeItem = (k) => { if (k === key) throw new Error('busy'); orig(k); };
-  S.sweepDrafts(ls, []);
-  assert.equal(ls.getItem(key), 'board');
+  S.sweepDrafts(ls, {});
+  assert.equal(modeOf(ls.getItem(key)), 'board');
   assert.deepEqual(JSON.parse(ls.getItem('esp32lab.schLayout.draftIndex')), [d.draftId]);
   ls.setItem('esp32lab.schLayout.draftIndex', '{');
   ls.setItem('esp32lab.schLayout.p9', 'tidy');
   S.sweepDrafts(ls, []);
   assert.equal(ls.getItem('esp32lab.schLayout.p9'), 'tidy');
-  assert.equal(ls.getItem(key), 'board');
+  assert.equal(modeOf(ls.getItem(key)), 'board');
   assert.deepEqual(JSON.parse(ls.getItem('esp32lab.schLayout.draftIndex')), []);
+});
+
+test('a draft heartbeat refreshes at most once a minute', () => {
+  const ls = mem();
+  const session = mem();
+  const d = {};
+  S.writeLayout(d, 'board', ls);
+  const key = S.layoutStoreKey(d);
+  const seen = JSON.parse(ls.getItem(key)).lastSeen;
+  session.setItem('esp32lab.schLayout.tabDrafts', JSON.stringify([d.draftId]));
+  S.touchOwned(seen + 1000, ls, session);
+  assert.equal(JSON.parse(ls.getItem(key)).lastSeen, seen);
+  S.touchOwned(seen + S.DRAFT_HEARTBEAT_MS, ls, session);
+  assert.equal(JSON.parse(ls.getItem(key)).lastSeen, seen + S.DRAFT_HEARTBEAT_MS);
+  assert.equal(JSON.parse(ls.getItem(key)).mode, 'board');
+  assert.equal(S.DRAFT_HEARTBEAT_MS, 60 * 1000);
+});
+
+test('Download carries schLayout the same way Export does, and Import restores it', () => {
+  const ls = mem();
+  const session = mem();
+  const store = new ProjectStore(ls, null);
+  const saved = store.copy(proj({ example: 'blink' }));
+  ls.setItem('esp32lab.schLayout.' + saved.id, 'board');
+  const exported = JSON.parse(store.exportJson(saved.id));
+  const downloaded = JSON.parse(store.downloadJson(store.get(saved.id)));
+  assert.equal(exported.schLayout, 'board');
+  assert.equal(downloaded.schLayout, 'board');
+  assert.deepEqual(downloaded.parts, exported.parts);
+  assert.equal(downloaded.draftId, undefined);
+  const back = store.importJson(store.downloadJson(store.get(saved.id)));
+  assert.notEqual(back.id, saved.id);
+  assert.equal(ls.getItem('esp32lab.schLayout.' + back.id), 'board');
+  assert.equal(store.get(back.id).schLayout, undefined);
+  assert.equal(ls.getItem('esp32lab.schLayout.' + saved.id), 'board');
+  const draft = proj({ name: 'Draft' });
+  S.writeLayout(draft, 'tidy', ls);
+  const file = JSON.parse(store.downloadJson(draft));
+  assert.equal(file.schLayout, 'tidy');
+  assert.equal(file.draftId, undefined);
+  const imported = store.importJson(JSON.stringify(file));
+  assert.equal(ls.getItem('esp32lab.schLayout.' + imported.id), 'tidy');
+  const ex = proj({ example: 'simon' });
+  S.writeLayout(ex, 'board', session);
+  const fromTab = JSON.parse(store.downloadJson(ex, S.storedLayout(ex, session)));
+  assert.equal(fromTab.schLayout, 'board');
+  const restored = store.importJson(JSON.stringify(fromTab));
+  assert.equal(ls.getItem('esp32lab.schLayout.' + restored.id), 'board');
+  const plain = JSON.parse(store.downloadJson(proj({ name: 'Plain' })));
+  assert.equal(plain.schLayout, undefined);
 });
 
 test('leaving an unsaved draft drops its key and leaves the other draft', () => {
@@ -177,6 +261,6 @@ test('leaving an unsaved draft drops its key and leaves the other draft', () => 
   S.releaseDraft(a, ls);
   assert.equal(a.draftId, undefined);
   assert.equal(ls.getItem(keyA), null);
-  assert.equal(ls.getItem(S.layoutStoreKey(b)), 'tidy');
+  assert.equal(modeOf(ls.getItem(S.layoutStoreKey(b))), 'tidy');
   assert.equal(S.layoutModeOf(b, ls), 'tidy');
 });

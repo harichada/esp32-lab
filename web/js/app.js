@@ -171,7 +171,13 @@ async function fetchRetry(u, o, n = 4) {
   }
   app.newBlankDialog = newBlankDialog;
   app.makeCopy = makeCopy; app.openProject = openProject;
-  function download() { syncCode(); const b = new Blob([JSON.stringify(app.proj, null, 1)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = (app.proj.name || 'project').replace(/[^\w.-]+/g, '_') + '.json'; a.click(); }
+  function download() {
+    syncCode();
+    let mode = '';
+    try { if (window.Schematic && Schematic.storedLayout) mode = Schematic.storedLayout(app.proj) || ''; } catch (e) { mode = ''; }
+    const text = store.downloadJson(app.proj, mode);
+    const b = new Blob([text], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = (app.proj.name || 'project').replace(/[^\w.-]+/g, '_') + '.json'; a.click();
+  }
   function openFile(f) {
     const rd = new FileReader();
     rd.onload = () => { try { const o = JSON.parse(rd.result); const p = store.importJson(o.connections && o.parts && !o.wires ? importWokwi(o) : o); openProject(p.id); toast('Loaded ' + f.name + ' into My Projects'); } catch (e) { toast('Could not load: ' + e.message, true); } };

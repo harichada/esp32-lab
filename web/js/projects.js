@@ -49,12 +49,20 @@
       return Object.values(this._all()).filter((e) => e && e.id && e.proj).map((e) => ({ id: e.id, name: e.name || '', updated: e.updated || 0, proj: e.proj }));
     }
     get(id) { const e = this._all()[id]; return e ? clone(e.proj) : null; }
-    // An explicit board or tidy choice. Missing and anything else stay unset, so the sheet opens Tidy.
+    // Plain "board"/"tidy", or {"mode","lastSeen"} on a draft. Anything else is unset.
+    _layoutMode(raw) {
+      if (raw === 'board' || raw === 'tidy') return raw;
+      try {
+        const o = JSON.parse(raw);
+        if (o && (o.mode === 'board' || o.mode === 'tidy')) return o.mode;
+      } catch (e) { /* plain text */ }
+      return '';
+    }
     _layoutOf(id) {
       if (id == null || String(id) === '') return '';
       let v = '';
       try { v = this.ls.getItem('esp32lab.schLayout.' + String(id)) || ''; } catch (e) { v = ''; }
-      return v === 'board' || v === 'tidy' ? v : '';
+      return this._layoutMode(v);
     }
     _setLayout(id, mode) {
       if (id == null || String(id) === '' || (mode !== 'board' && mode !== 'tidy')) return;
@@ -69,7 +77,8 @@
       if (proj.draftId && /^[A-Za-z0-9_-]{1,40}$/.test(String(proj.draftId))) {
         let v = '';
         try { v = this.ls.getItem('esp32lab.schLayout.draft.' + proj.draftId) || ''; } catch (e) { v = ''; }
-        if (v === 'board' || v === 'tidy') return v;
+        const mode = this._layoutMode(v);
+        if (mode) return mode;
       }
       return proj.schLayout === 'board' || proj.schLayout === 'tidy' ? proj.schLayout : '';
     }
@@ -105,6 +114,18 @@
       const p = this.get(id); if (!p) return null;
       const mode = this._layoutOf(id);
       if (mode) p.schLayout = mode;
+      return JSON.stringify(p, null, 1);
+    }
+    // Same schLayout field as Export, for the open project (Download). The field is
+    // only on this JSON copy. Pass mode when the choice lives in another store.
+    downloadJson(proj, mode) {
+      if (!proj) return null;
+      const p = clone(proj);
+      delete p.readOnly;
+      delete p.draftId;
+      const chosen = mode === 'board' || mode === 'tidy' ? mode : this._readLayout(proj);
+      if (chosen) p.schLayout = chosen;
+      else delete p.schLayout;
       return JSON.stringify(p, null, 1);
     }
     importJson(text) {

@@ -778,3 +778,85 @@ test('the 320 schematic toolbar wraps on purpose and stays usable', async ({ pag
     expect(box.text, box.name + ' text clipped').toBe(false);
   }
 });
+
+async function asDraft(page: Page, mode: 'board' | 'tidy') {
+  await install(page);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/?ex=blink&resume=0');
+  await page.waitForFunction(() => {
+    const app = (window as unknown as { app?: { proj?: { parts?: unknown[] }; schematic?: unknown } }).app;
+    return !!(app && app.proj && app.proj.parts && app.proj.parts.length && app.schematic);
+  });
+  await page.locator('#bViewSch').click();
+  await page.waitForFunction(() => document.body.classList.contains('viewsch') && !!document.querySelector('#schLayBoard'));
+  await page.evaluate(() => {
+    const app = (window as unknown as { app: { proj: { id?: string; example?: string }; readOnly: boolean; schematic: { setProject: (p: unknown) => void } } }).app;
+    delete app.proj.id;
+    delete app.proj.example;
+    app.readOnly = false;
+    app.schematic.setProject(app.proj);
+  });
+  const button = mode === 'board' ? '#schLayBoard' : '#schLayTidy';
+  await page.locator(button).click();
+  await expect(page.locator(button)).toHaveAttribute('aria-pressed', 'true');
+  return page.evaluate(() => {
+    const ids = JSON.parse(sessionStorage.getItem('esp32lab.schLayout.tabDrafts') || '[]') as string[];
+    const id = ids[ids.length - 1];
+    const raw = localStorage.getItem('esp32lab.schLayout.draft.' + id) || '';
+    let parsed: { mode?: string; lastSeen?: number } = {};
+    try { parsed = JSON.parse(raw); } catch (e) { parsed = {}; }
+    return { id, mode: parsed.mode || '', lastSeen: parsed.lastSeen || 0, raw };
+  });
+}
+
+test('a draft stays Breadboard across another tab, a reload, and a later tab', async ({ page }) => {
+  const a = await asDraft(page, 'board');
+  expect(a.mode).toBe('board');
+  expect(a.lastSeen).toBeGreaterThan(0);
+  const bPage = await page.context().newPage();
+  const b = await asDraft(bPage, 'tidy');
+  expect(b.id).not.toBe(a.id);
+  expect(b.mode).toBe('tidy');
+  const during = await page.evaluate((id) => {
+    const raw = localStorage.getItem('esp32lab.schLayout.draft.' + id) || '';
+    try { return JSON.parse(raw).mode as string; } catch (e) { return raw; }
+  }, a.id);
+  expect(during).toBe('board');
+
+  await page.reload();
+  await page.waitForFunction(() => {
+    const app = (window as unknown as { app?: { proj?: { parts?: unknown[] }; schematic?: unknown } }).app;
+    return !!(app && app.proj && app.proj.parts && app.proj.parts.length && app.schematic);
+  });
+  const afterReload = await page.evaluate((id) => {
+    const raw = localStorage.getItem('esp32lab.schLayout.draft.' + id) || '';
+    let mode = '';
+    try { mode = JSON.parse(raw).mode; } catch (e) { mode = raw; }
+    const app = (window as unknown as { app: { proj: { id?: string; example?: string; draftId?: string }; readOnly: boolean; schematic: { setProject: (p: unknown) => void } } }).app;
+    delete app.proj.id;
+    delete app.proj.example;
+    app.proj.draftId = id;
+    app.readOnly = false;
+    app.schematic.setProject(app.proj);
+    return mode;
+  }, a.id);
+  expect(afterReload).toBe('board');
+  await page.locator('#bViewSch').click();
+  await expect(page.locator('#schLayBoard')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('#schLayTidy')).toHaveAttribute('aria-pressed', 'false');
+
+  const cPage = await page.context().newPage();
+  const c = await asDraft(cPage, 'tidy');
+  expect(c.id).not.toBe(a.id);
+  expect(c.id).not.toBe(b.id);
+  expect(c.mode).toBe('tidy');
+  const still = await page.evaluate((ids) => ({
+    a: (() => { try { return JSON.parse(localStorage.getItem('esp32lab.schLayout.draft.' + ids.a) || '').mode; } catch (e) { return ''; } })(),
+    b: (() => { try { return JSON.parse(localStorage.getItem('esp32lab.schLayout.draft.' + ids.b) || '').mode; } catch (e) { return ''; } })(),
+  }), { a: a.id, b: b.id });
+  expect(still.a).toBe('board');
+  expect(still.b).toBe('tidy');
+  await expect(page.locator('#schLayBoard')).toHaveAttribute('aria-pressed', 'true');
+  await bPage.close();
+  await cPage.close();
+});
