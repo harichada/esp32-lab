@@ -46,27 +46,73 @@
     _put(all) { this.ls.setItem(KEY, JSON.stringify(all)); }
     list() { return Object.values(this._all()).map((e) => ({ id: e.id, name: e.name, updated: e.updated, from: e.from || '' })).sort((a, b) => b.updated - a.updated); }
     get(id) { const e = this._all()[id]; return e ? clone(e.proj) : null; }
+    // An explicit board or tidy choice. Missing and anything else stay unset, so the sheet opens Tidy.
+    _layoutOf(id) {
+      if (id == null || String(id) === '') return '';
+      let v = '';
+      try { v = this.ls.getItem('esp32lab.schLayout.' + String(id)) || ''; } catch (e) { v = ''; }
+      return v === 'board' || v === 'tidy' ? v : '';
+    }
+    _setLayout(id, mode) {
+      if (id == null || String(id) === '' || (mode !== 'board' && mode !== 'tidy')) return;
+      try { this.ls.setItem('esp32lab.schLayout.' + String(id), mode); } catch (e) { /* storage off */ }
+    }
+    _readLayout(proj) {
+      if (!proj) return '';
+      if (proj.id != null && String(proj.id) !== '') {
+        const saved = this._layoutOf(proj.id);
+        if (saved) return saved;
+      }
+      if (proj.draftId && /^[A-Za-z0-9_-]{1,40}$/.test(String(proj.draftId))) {
+        let v = '';
+        try { v = this.ls.getItem('esp32lab.schLayout.draft.' + proj.draftId) || ''; } catch (e) { v = ''; }
+        if (v === 'board' || v === 'tidy') return v;
+      }
+      return proj.schLayout === 'board' || proj.schLayout === 'tidy' ? proj.schLayout : '';
+    }
     // strip runtime-only fields; returns the stored project id
     save(proj) {
+      const draftId = proj && proj.draftId;
       if (!proj.id) proj.id = newId();
-      const all = this._all(); const p = clone(proj); delete p.readOnly;
+      const all = this._all(); const p = clone(proj); delete p.readOnly; delete p.draftId; delete p.schLayout;
       all[p.id] = { id: p.id, name: p.name || 'Untitled', updated: Date.now(), from: p.copiedFrom || '', proj: p }; this._put(all);
-      this.ls.setItem(CUR, p.id); if (this.serverSync) this.pushServer(p).catch(() => {});
+      this.ls.setItem(CUR, p.id);
+      if (draftId && root.Schematic && root.Schematic.migrateDraftLayout) {
+        try { root.Schematic.migrateDraftLayout(proj, this.ls); } catch (e) { /* the draft key stays until the next save */ }
+      }
+      if (this.serverSync) this.pushServer(p).catch(() => {});
       return p.id;
     }
     // copy any project (example or user project) into a new user project
     copy(proj, name) {
-      const p = clone(proj); p.id = newId(); p.copiedFrom = proj.example || proj.copiedFrom || proj.id || ''; delete p.example; delete p.readOnly;
+      const mode = this._readLayout(proj);
+      const p = clone(proj); p.id = newId(); p.copiedFrom = proj.example || proj.copiedFrom || proj.id || '';
+      delete p.example; delete p.readOnly; delete p.draftId; delete p.schLayout;
       const base = name || ((proj.name || 'Project').replace(/\s*\(copy( \d+)?\)$/, '') + ' (copy)');
       const names = new Set(this.list().map((e) => e.name)); let n = base, i = 2; while (names.has(n)) n = base.replace(/\)$/, ` ${i++})`);
-      p.name = n; this.save(p); return p;
+      p.name = n; this.save(p);
+      if (mode) this._setLayout(p.id, mode);
+      return p;
     }
     duplicate(id) { const p = this.get(id); return p ? this.copy(p) : null; }
     rename(id, name) { const all = this._all(); if (!all[id] || !name) return false; all[id].name = all[id].proj.name = String(name).slice(0, 80); all[id].updated = Date.now(); this._put(all); if (this.serverSync) this.pushServer(all[id].proj).catch(() => {}); return true; }
     remove(id) { const all = this._all(); delete all[id]; this._put(all); if (this.ls.getItem(CUR) === id) this.ls.removeItem(CUR); if (this.serverSync && this.fetch) this._ask('api/projects/' + encodeURIComponent(id), { method: 'DELETE' }).catch(() => {}); }
     current() { return this.ls.getItem(CUR); }
-    exportJson(id) { const p = this.get(id); return p ? JSON.stringify(p, null, 1) : null; }
-    importJson(text) { const o = typeof text === 'string' ? JSON.parse(text) : text; if (!o || !Array.isArray(o.parts)) throw new Error('not a project JSON (no parts)'); delete o.example; o.id = newId(); o.name = o.name || 'Imported project'; this.save(o); return o; }
+    exportJson(id) {
+      const p = this.get(id); if (!p) return null;
+      const mode = this._layoutOf(id);
+      if (mode) p.schLayout = mode;
+      return JSON.stringify(p, null, 1);
+    }
+    importJson(text) {
+      const o = typeof text === 'string' ? JSON.parse(text) : text;
+      if (!o || !Array.isArray(o.parts)) throw new Error('not a project JSON (no parts)');
+      const mode = o.schLayout === 'board' || o.schLayout === 'tidy' ? o.schLayout : '';
+      delete o.example; delete o.draftId; delete o.schLayout;
+      o.id = newId(); o.name = o.name || 'Imported project'; this.save(o);
+      if (mode) this._setLayout(o.id, mode);
+      return o;
+    }
     get serverSync() { return this.ls.getItem(SRV) === '1'; }
     set serverSync(v) { this.ls.setItem(SRV, v ? '1' : '0'); }
     async pushServer(p) { if (!this.fetch) return false; const r = await this._ask('api/projects/' + encodeURIComponent(p.id), { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(p) }); return r.ok; }

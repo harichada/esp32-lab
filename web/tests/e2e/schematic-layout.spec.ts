@@ -515,10 +515,10 @@ test('Like breadboard is opt-in and a read-only example keeps it for this tab', 
   await expect(page.locator('#schLayBoard')).toHaveAttribute('aria-pressed', 'true');
   const stored = await page.evaluate(() => ({
     session: sessionStorage.getItem('esp32lab.schLayout.ex.blink'),
-    local: localStorage.getItem('esp32lab.schLayout.unsaved'),
+    local: [...Array(localStorage.length)].map((_, i) => localStorage.key(i)).filter((k) => !!k && k.indexOf('esp32lab.schLayout') === 0),
   }));
   expect(stored.session).toBe('board');
-  expect(stored.local).toBe(null);
+  expect(stored.local).toEqual([]);
   await page.goto('/?ex=simon&resume=0');
   await page.waitForFunction(() => {
     const app = (window as unknown as { app?: { proj?: { example?: string; parts?: unknown[] }; schematic?: unknown } }).app;
@@ -547,10 +547,10 @@ for (const width of [390, 1280]) {
     await expect(page.locator('#schLayTidy')).toHaveAttribute('aria-pressed', 'true');
     await expect(page.locator('#schLayBoard')).toHaveAttribute('aria-pressed', 'false');
     const stored = await page.evaluate(() => ({
-      local: localStorage.getItem('esp32lab.schLayout.unsaved'),
+      local: [...Array(localStorage.length)].map((_, i) => localStorage.key(i)).filter((k) => !!k && k.indexOf('esp32lab.schLayout') === 0),
       session: sessionStorage.getItem('esp32lab.schLayout.ex.blink'),
     }));
-    expect(stored.local).toBe(null);
+    expect(stored.local).toEqual([]);
     expect(stored.session).toBe(null);
   });
 }
@@ -665,4 +665,116 @@ test('a pinch on the schematic brings Fit all back', async ({ page }) => {
     fire('touchend', []);
   });
   await expect(page.locator('#schFitAll')).toBeVisible();
+});
+
+test('Duplicate keeps a Breadboard choice on the new project and the source', async ({ page }) => {
+  await install(page);
+  await openExample(page, 'blink', 1280);
+  await page.locator('#bCopy').click();
+  await page.waitForFunction(() => {
+    const app = (window as unknown as { app?: { proj?: { id?: string; example?: string } } }).app;
+    return !!(app && app.proj && app.proj.id && !app.proj.example);
+  });
+  await page.locator('#schLayBoard').click();
+  await expect(page.locator('#schLayBoard')).toHaveAttribute('aria-pressed', 'true');
+  const source = await page.evaluate(() => (window as unknown as { app: { proj: { id: string } } }).app.proj.id);
+  await page.locator('#bProjects').click();
+  await page.locator('#projDlg tr.cur [data-a="dup"]').click();
+  await expect(page.locator('#projDlg tr')).toHaveCount(2);
+  await page.locator('#projDlg tr:not(.cur) [data-a="open"]').click();
+  await expect(page.locator('#projDlg')).toBeHidden();
+  await page.waitForFunction((id) => {
+    const app = (window as unknown as { app?: { proj?: { id?: string } } }).app;
+    return !!(app && app.proj && app.proj.id && app.proj.id !== id);
+  }, source);
+  await expect(page.locator('#schLayBoard')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('#schLayTidy')).toHaveAttribute('aria-pressed', 'false');
+  const keys = await page.evaluate((id) => {
+    const open = (window as unknown as { app: { proj: { id: string } } }).app.proj.id;
+    return {
+      source: localStorage.getItem('esp32lab.schLayout.' + id),
+      open: localStorage.getItem('esp32lab.schLayout.' + open),
+    };
+  }, source);
+  expect(keys.source).toBe('board');
+  expect(keys.open).toBe('board');
+});
+
+test('the 320 schematic toolbar wraps on purpose and stays usable', async ({ page }) => {
+  await install(page);
+  await openExample(page, 'blink', 320);
+  await expect(page.locator('#schLayTidy')).toHaveAttribute('aria-pressed', 'true');
+  const report = await page.evaluate(() => {
+    const visible = (el: Element) => {
+      if ((el as HTMLElement).hidden) return false;
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    };
+    const bars = [...document.querySelectorAll('.canvas-tools, .zoom-tools')] as HTMLElement[];
+    const controls = bars.flatMap((bar) => [...bar.querySelectorAll('button, #zoomPct')].filter(visible));
+    const boxes = controls.map((el) => {
+      const r = el.getBoundingClientRect();
+      let clip = '';
+      let node: HTMLElement | null = el.parentElement;
+      while (node && node !== document.body) {
+        const cs = getComputedStyle(node);
+        if (cs.overflowX !== 'visible' || cs.overflowY !== 'visible') {
+          const b = node.getBoundingClientRect();
+          if (r.left < b.left - 0.5 || r.top < b.top - 0.5 || r.right > b.right + 0.5 || r.bottom > b.bottom + 0.5) {
+            clip = (node.id || node.className || 'box').toString().slice(0, 40);
+            break;
+          }
+        }
+        node = node.parentElement;
+      }
+      const host = el as HTMLElement;
+      return {
+        name: (el.id || el.getAttribute('aria-label') || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 32),
+        x: r.left, y: r.top, w: r.width, h: r.height,
+        off: r.left < -0.5 || r.top < -0.5 || r.right > window.innerWidth + 0.5 || r.bottom > window.innerHeight + 0.5,
+        clip,
+        text: host.scrollWidth > host.clientWidth + 1 || host.scrollHeight > host.clientHeight + 1,
+      };
+    });
+    const overlaps: string[] = [];
+    for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i], b = boxes[j];
+        const iw = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+        const ih = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+        if (iw > 0.5 && ih > 0.5) overlaps.push(a.name + ' / ' + b.name);
+      }
+    }
+    const board = document.getElementById('schLayBoard')!.getBoundingClientRect();
+    const tidy = document.getElementById('schLayTidy')!.getBoundingClientRect();
+    const sch = document.getElementById('bViewSch')!.getBoundingClientRect();
+    const tools = document.querySelector('.canvas-tools') as HTMLElement;
+    const zoom = document.querySelector('.zoom-tools') as HTMLElement;
+    return {
+      wrap: getComputedStyle(tools).flexWrap,
+      pairApart: Math.abs(board.top - sch.top) > 8,
+      pairTogether: Math.abs(board.top - tidy.top) < 2,
+      bars: [tools, zoom].map((el) => ({
+        name: el.className,
+        scroll: el.scrollWidth - el.clientWidth,
+      })),
+      boxes,
+      overlaps,
+    };
+  });
+  expect(report.wrap, '320 wrap').toBe('wrap');
+  expect(report.pairApart, 'Breadboard row').toBe(true);
+  expect(report.pairTogether, 'Breadboard and Tidy share a row').toBe(true);
+  expect(report.overlaps, 'overlap').toEqual([]);
+  for (const bar of report.bars) expect(bar.scroll, bar.name + ' scroll').toBeLessThanOrEqual(1);
+  expect(report.boxes.length).toBeGreaterThan(4);
+  for (const box of report.boxes) {
+    expect(box.w, box.name + ' width').toBeGreaterThanOrEqual(44);
+    expect(box.h, box.name + ' height').toBeGreaterThanOrEqual(44);
+    expect(box.off, box.name + ' off-screen').toBe(false);
+    expect(box.clip, box.name + ' clipped').toBe('');
+    expect(box.text, box.name + ' text clipped').toBe(false);
+  }
 });

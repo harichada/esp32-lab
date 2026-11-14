@@ -13,6 +13,10 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     return p;
   }
   function setProject(p, opts) {
+    const prev = app.proj;
+    if (prev && prev !== p && !prev.id && prev.draftId && window.Schematic && Schematic.releaseDraft) {
+      try { Schematic.releaseDraft(prev); } catch (e) { /* the draft key stays until the next sweep */ }
+    }
     stopRun(); app.readOnly = !!(opts && opts.readOnly);
     if (window.Netlist) { try { Netlist.migrate(p); } catch (e) { /* open the board even if its netlist cannot be built */ } }
     app.proj = normalize(p); app.sim = new Sim(app.proj); app.file = 'sketch'; app.world = new Devices.MockWorld(); app.world.onchange = () => (app.devDirty = true); app.world.onlog = (e) => app.netlog.add({ k: 'dev', msg: `${e.proto}: ${e.summary}`, ok: !(e.code < 0 || e.code >= 400) });
@@ -47,8 +51,17 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   function setUrl(o) { const u = new URL(location.href); u.searchParams.delete('ex'); u.searchParams.delete('p'); u.searchParams.delete('t'); for (const k in o) u.searchParams.set(k, o[k]); history.replaceState(null, '', u); }
   function makeCopy(auto) {
     syncDefines(); syncCode(); const was = app.proj.name;
+    let carried = '';
+    try { if (window.Schematic && Schematic.storedLayout) carried = Schematic.storedLayout(app.proj) || ''; } catch (e) { carried = ''; }
     const c = store.copy(app.proj); Object.assign(app.proj, { id: c.id, name: c.name, copiedFrom: c.copiedFrom }); delete app.proj.example;
-    app.readOnly = false; store.save(app.proj); setUrl({ p: app.proj.id }); renderBanner();
+    if (app.proj.draftId && window.Schematic && Schematic.releaseDraft) {
+      try { Schematic.releaseDraft(app.proj); } catch (e) { delete app.proj.draftId; }
+    }
+    app.readOnly = false; store.save(app.proj);
+    if (carried && window.Schematic && Schematic.writeLayout) {
+      try { Schematic.writeLayout(app.proj, carried); } catch (e) { /* the copy still opens on Tidy */ }
+    }
+    setUrl({ p: app.proj.id }); renderBanner();
     toast(auto ? `Examples are read-only — your change is in a copy: “${app.proj.name}” (My Projects)` : `Copied “${was}” to My Projects as “${app.proj.name}”`);
     return app.proj;
   }
