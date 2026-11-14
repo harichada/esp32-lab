@@ -752,6 +752,11 @@
     const r = worldRect(view, stage, clear, pad);
     return esp.x >= r.x - 2 && esp.y >= r.y - 2 && esp.x + esp.w <= r.x2 + 2 && esp.y + esp.h <= r.y2 + 2;
   }
+  function symbolsHeld(view, model, stage, clear, pad) {
+    const syms = (model && model.symbols) || [];
+    for (let i = 0; i < syms.length; i++) if (!espHeld(view, syms[i], stage, clear, pad)) return false;
+    return true;
+  }
   function sheetInside(bounds, view, stage, clear, pad) {
     if (!bounds || !view || !clear) return false;
     const r = worldRect(view, stage, clear, pad);
@@ -2119,7 +2124,14 @@
     for (const pl of model.polys) {
       if (!pl.pts || pl.pts.length < 2) continue;
       const d = 'M' + pl.pts.map((p) => p.x + ' ' + p.y).join(' L');
-      s += `<path d="${d}" class="sch-hitnet" data-net="${pl.net}" data-name="${esc(pl.name || '')}"/><path d="${d}" class="sch-wire"/>`;
+      s += `<path d="${d}" class="sch-hitnet" data-net="${pl.net}" data-name="${esc(pl.name || '')}"/>`;
+      // One element per segment, so a label can avoid the stroke's box
+      // without treating the whole net as one rectangle.
+      for (let i = 1; i < pl.pts.length; i++) {
+        const a = pl.pts[i - 1], b = pl.pts[i];
+        if (Math.abs(a.x - b.x) + Math.abs(a.y - b.y) < 0.5) continue;
+        s += `<path d="M${a.x} ${a.y} L${b.x} ${b.y}" class="sch-wire"/>`;
+      }
     }
     for (const d of model.dots) s += `<circle class="sch-dot" cx="${d.x}" cy="${d.y}" r="3.3"/>`;
     for (const r of model.rails) s += drawRail(r);
@@ -2157,8 +2169,8 @@
     const r = sym.refPos || { x: sym.x + sym.w / 2, y: sym.y - 8, anchor: 'middle' };
     const v = sym.valPos;
     const n = sym.notePos;
-    return `<text class="sch-ref" x="${r.x}" y="${r.y}" style="text-anchor:${r.anchor || 'middle'}">${esc(sym.ref)}</text>` +
-      (v && sym.value ? `<text class="sch-val" x="${v.x}" y="${v.y}" style="text-anchor:${v.anchor || 'middle'}">${esc(sym.value)}</text>` : '') +
+    return `<text class="sch-ref" data-kind="ref" data-natural="12" data-full="${esc(sym.ref)}" x="${r.x}" y="${r.y}" style="text-anchor:${r.anchor || 'middle'}">${esc(sym.ref)}</text>` +
+      (v && sym.value ? `<text class="sch-val" data-kind="val" data-natural="11" data-full="${esc(sym.value)}" x="${v.x}" y="${v.y}" style="text-anchor:${v.anchor || 'middle'}">${esc(sym.value)}</text>` : '') +
       (n ? `<text class="sch-note" x="${n.x}" y="${n.y}" style="text-anchor:${n.anchor || 'middle'}">${esc(n.text)}</text>` : '');
   }
   function hit(sym) {
@@ -2369,7 +2381,7 @@
     let d = `M${plus.x} ${plus.y} H${cx + (plus.dir === 'r' ? 14 : -14)} M${cx - 14} ${cy} a14 14 0 1 0 28 0 a14 14 0 1 0 -28 0`;
     const minus = sym.terms.find((t) => t !== plus);
     if (minus) d += ' ' + stub(minus, cx, cy + (minus.dir === 'b' ? 14 : minus.dir === 't' ? -14 : 0));
-    return `<path d="${d}" class="sch-stroke"/><text class="sch-title" x="${cx}" y="${cy + 4}">${esc(sym.value || sym.title)}</text>`;
+    return `<path d="${d}" class="sch-stroke"/><text class="sch-title" data-kind="title" data-natural="11" data-full="${esc(sym.value || sym.title)}" x="${cx}" y="${cy + 4}">${esc(sym.value || sym.title)}</text>`;
   }
   function drawMeter(sym) {
     const cy = axisY(sym), cx = sym.x + sym.w / 2;
@@ -2377,7 +2389,7 @@
     const pins = sym.terms.slice().sort((a, b) => a.x - b.x);
     let d = `M${cx - 16} ${cy} a16 16 0 1 0 32 0 a16 16 0 1 0 -32 0`;
     pins.forEach((t, i) => { d += ' ' + stub(t, i === 0 ? cx - 16 : cx + 16, cy); });
-    return `<path d="${d}" class="sch-stroke"/><text class="sch-title" x="${cx}" y="${cy + 4}">${esc(mode)}</text>`;
+    return `<path d="${d}" class="sch-stroke"/><text class="sch-title" data-kind="title" data-natural="11" data-full="${esc(mode)}" x="${cx}" y="${cy + 4}">${esc(mode)}</text>`;
   }
   function drawXtal(sym) {
     const [a, b] = horizPins(sym);
@@ -2390,14 +2402,245 @@
     const letter = sym.kind === 'MOT' ? 'M' : sym.kind === 'LAMP' ? '✕' : '';
     let extra = '';
     if (sym.kind === 'SPK') extra = `<path d="M${cx + 6} ${cy - 10} q10 10 0 20 M${cx + 10} ${cy - 14} q14 14 0 28" class="sch-stroke"/>`;
-    return `<path d="M${a.x} ${a.y} H${cx - 14} M${b.x} ${b.y} H${cx + 14} M${cx - 14} ${cy} a14 14 0 1 0 28 0 a14 14 0 1 0 -28 0" class="sch-stroke"/>${letter ? `<text class="sch-title" x="${cx}" y="${cy + 4}">${letter}</text>` : ''}${extra}`;
+    return `<path d="M${a.x} ${a.y} H${cx - 14} M${b.x} ${b.y} H${cx + 14} M${cx - 14} ${cy} a14 14 0 1 0 28 0 a14 14 0 1 0 -28 0" class="sch-stroke"/>${letter ? `<text class="sch-title" data-kind="title" data-natural="11" data-full="${esc(letter)}" x="${cx}" y="${cy + 4}">${letter}</text>` : ''}${extra}`;
   }
   function drawBox(sym) {
     const notch = sym.kind === 'DIP' ? `<circle class="sch-dot" cx="${sym.x + 8}" cy="${sym.y + 8}" r="2.4"/>` : '';
     const title = sym.titlePos || { x: sym.x + sym.w / 2, y: sym.y + 13, text: sym.kind === 'ESP' ? 'ESP32' : sym.title };
-    return `<rect class="sch-body" x="${sym.x}" y="${sym.y}" width="${sym.w}" height="${sym.h}" rx="3"/>${notch}<text class="sch-title" x="${title.x}" y="${title.y}">${esc(title.text || (sym.kind === 'ESP' ? 'ESP32' : sym.title))}</text>`;
+    const titleText = title.text || (sym.kind === 'ESP' ? 'ESP32' : sym.title);
+    return `<rect class="sch-body" x="${sym.x}" y="${sym.y}" width="${sym.w}" height="${sym.h}" rx="3"/>${notch}<text class="sch-title" data-kind="title" data-natural="11" data-full="${esc(titleText)}" x="${title.x}" y="${title.y}">${esc(titleText)}</text>`;
   }
 
+
+  // On-screen size of a part name or value. Counter-scale when a fit would
+  // draw it under 11px. Zooming in does not grow it past the natural size.
+  function labelScreenTarget(natural, zoom) {
+    const n = natural > 0 && isFinite(natural) ? natural : READABLE_PX;
+    const z = zoom > 0 && isFinite(zoom) ? zoom : 1;
+    const grown = n * z;
+    if (z >= 1) return Math.max(READABLE_PX, Math.min(n, grown));
+    return Math.max(READABLE_PX, grown);
+  }
+  // 'R1 220Ω' instead of a long name, when the full labels would collide.
+  function shortPartLabel(ref, value, title) {
+    const r = String(ref || '').trim();
+    const v = String(value || '').trim();
+    if (r && v) return r + ' ' + v;
+    return r || v || String(title || '').trim();
+  }
+  function labelScaleOf(svg, fallback) {
+    try {
+      const m = svg && svg.getScreenCTM && svg.getScreenCTM();
+      if (m) {
+        const s = Math.hypot(m.a, m.b);
+        if (s > 0.02 && isFinite(s)) return s;
+      }
+    } catch (e) { /* use the view zoom */ }
+    return fallback > 0.02 && isFinite(fallback) ? fallback : 1;
+  }
+  function screenBox(el, pad) {
+    if (!el || !el.getBoundingClientRect) return null;
+    if (el.style && el.style.display === 'none') return null;
+    const r = el.getBoundingClientRect();
+    const p = pad > 0 ? pad / 2 : 0;
+    const x = r.left - p, y = r.top - p, x2 = r.right + p, y2 = r.bottom + p;
+    if (x2 - x < 0.5 || y2 - y < 0.5) return null;
+    return { x: x, y: y, x2: x2, y2: y2 };
+  }
+  // Estimated glyph box. A stroked wire's getBoundingClientRect is flat, so the
+  // search cannot measure it on every nudge without laying the sheet out again.
+  function textScreenBox(el, ctm, scale) {
+    if (!el || (el.style && el.style.display === 'none')) return null;
+    const text = el.textContent || '';
+    if (!String(text).trim() || !ctm) return null;
+    const font = parseFloat(el.style.fontSize) || 12;
+    const x = +el.getAttribute('x') || 0;
+    const y = +el.getAttribute('y') || 0;
+    const px = ctm.a * x + ctm.c * y + ctm.e;
+    const py = ctm.b * x + ctm.d * y + ctm.f;
+    const chars = Array.from(text).length;
+    const sw = font * scale * (0.7 * chars + 0.8);
+    const left = px - sw / 2 - 1;
+    const top = py - font * scale * 1.1 - 1;
+    return { x: left, y: top, x2: left + sw + 2, y2: top + font * scale * 1.35 + 2 };
+  }
+  function boxesOverlap(a, b) {
+    return !!a && !!b && Math.min(a.x2, b.x2) - Math.max(a.x, b.x) > 0.5 && Math.min(a.y2, b.y2) - Math.max(a.y, b.y) > 0.5;
+  }
+  function hitsAny(box, list) {
+    if (!box) return false;
+    for (let i = 0; i < list.length; i++) if (boxesOverlap(box, list[i])) return true;
+    return false;
+  }
+  function partLabelNodes(sym) {
+    return [...sym.querySelectorAll('.sch-ref, .sch-val, .sch-title')];
+  }
+  function preparePartLabel(el, scale) {
+    const natural = +el.dataset.natural || (el.classList.contains('sch-ref') ? 12 : 11);
+    if (!el.dataset.full) el.dataset.full = el.textContent || '';
+    if (!el.dataset.ax) el.dataset.ax = el.getAttribute('x') || '0';
+    if (!el.dataset.ay) el.dataset.ay = el.getAttribute('y') || '0';
+    el.style.display = '';
+    el.textContent = el.dataset.full;
+    el.setAttribute('x', el.dataset.ax);
+    el.setAttribute('y', el.dataset.ay);
+    // A hair over the floor so font × CTM does not round down to 10.999.
+    const screen = Math.max(labelScreenTarget(natural, scale), 11.25);
+    el.style.fontSize = (screen / scale) + 'px';
+  }
+  function rememberLabel(el) {
+    el.dataset.restText = el.textContent || '';
+    el.dataset.restDisplay = el.style.display || '';
+    el.dataset.restX = el.getAttribute('x') || '';
+    el.dataset.restY = el.getAttribute('y') || '';
+  }
+  // Part names and values stay at least 11 screen px. Where the full wording
+  // would cover another label, a pin, or a wire, use the short form. If that
+  // still does not fit, hide it; hover, focus, and tap bring the full text back.
+  function settlePartLabels(svg, fallbackZoom) {
+    if (!svg || !svg.querySelectorAll || typeof document === 'undefined') return;
+    const host = svg.getBoundingClientRect ? svg.getBoundingClientRect() : null;
+    if (host && host.width < 2) return;
+    const scale = labelScaleOf(svg, fallbackZoom);
+    const labels = [...svg.querySelectorAll('.sch-ref, .sch-val, .sch-title')];
+    if (!labels.length) return;
+    for (const el of labels) preparePartLabel(el, scale);
+    const ctm = svg.getScreenCTM ? svg.getScreenCTM() : null;
+    const thick = Math.max(1.55 * scale, 1);
+    const obstacles = [];
+    svg.querySelectorAll('.sch-pin').forEach((el) => {
+      const b = screenBox(el, 0);
+      if (b) obstacles.push(b);
+    });
+    svg.querySelectorAll('.sch-wire').forEach((el) => {
+      const b = screenBox(el, thick);
+      if (b) obstacles.push(b);
+    });
+    const placed = [];
+    const syms = [...svg.querySelectorAll('.sch-sym')].sort((a, b) => String(a.dataset.pid || '').localeCompare(String(b.dataset.pid || '')));
+    const shifts = [[0, 0]];
+    for (const ring of [16, 32, 48]) {
+      for (let k = 0; k < 8; k++) {
+        const a = k * Math.PI / 4;
+        shifts.push([Math.round(Math.cos(a) * ring), Math.round(Math.sin(a) * ring)]);
+      }
+    }
+    function boxesOf(list) {
+      return list.map((el) => textScreenBox(el, ctm, scale));
+    }
+    function blocked(list) {
+      const boxes = boxesOf(list);
+      if (boxes.some((b) => !b || hitsAny(b, obstacles) || hitsAny(b, placed))) return true;
+      for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
+        if (boxesOverlap(boxes[i], boxes[j])) return true;
+      }
+      return false;
+    }
+    function shiftEl(el, dx, dy) {
+      el.setAttribute('x', String(Math.round((+el.dataset.ax + dx / scale) * 10) / 10));
+      el.setAttribute('y', String(Math.round((+el.dataset.ay + dy / scale) * 10) / 10));
+    }
+    for (const sym of syms) {
+      const mine = partLabelNodes(sym);
+      const ref = sym.querySelector('.sch-ref');
+      const val = sym.querySelector('.sch-val');
+      const title = sym.querySelector('.sch-title');
+      const full = [ref, val, title].map((el) => el && el.dataset.full).filter(Boolean);
+      const name = [];
+      for (const t of full) if (name.indexOf(t) < 0) name.push(t);
+      sym.setAttribute('role', 'group');
+      sym.setAttribute('aria-label', name.join(' ') || sym.dataset.pid || 'part');
+      let hidden = false;
+      let mode = 'full';
+      if (mine.length && blocked(mine)) {
+        const hostEl = ref || title || val;
+        const others = mine.filter((el) => el !== hostEl);
+        for (const el of others) el.style.display = 'none';
+        if (hostEl) {
+          hostEl.style.display = '';
+          hostEl.textContent = shortPartLabel(ref && ref.dataset.full, val && val.dataset.full, title && title.dataset.full);
+          let fitted = false;
+          for (const [dx, dy] of shifts) {
+            shiftEl(hostEl, dx, dy);
+            if (!blocked([hostEl])) { fitted = true; break; }
+          }
+          if (!fitted) {
+            hostEl.style.display = 'none';
+            hidden = true;
+            mode = 'hide';
+          } else mode = 'short';
+        } else hidden = true;
+      }
+      // The search uses an inflated estimate. Measure once, and hide anything
+      // that still sits on a pin, a wire, or a label already placed.
+      const kept = [];
+      for (const el of mine) {
+        if (el.style.display === 'none') continue;
+        const b = screenBox(el, 0);
+        if (!b || hitsAny(b, obstacles) || hitsAny(b, placed) || hitsAny(b, kept)) el.style.display = 'none';
+        else kept.push(b);
+      }
+      const anyVisible = mine.some((el) => el.style.display !== 'none');
+      const concealed = mine.some((el) => el.style.display === 'none');
+      if (mine.length && !anyVisible) { hidden = true; mode = 'hide'; }
+      else if (concealed && mode === 'full') mode = 'short';
+      sym.dataset.labHidden = hidden ? '1' : '0';
+      sym.dataset.labShort = mode === 'short' ? '1' : '0';
+      sym.tabIndex = hidden ? 0 : -1;
+      for (const el of mine) rememberLabel(el);
+      for (const el of mine) {
+        const b = screenBox(el, 0);
+        if (b) placed.push(b);
+      }
+    }
+  }
+  // The framing fit can leave a symbol on the hint or the toolbar when that
+  // control is not a full-width bar. Slide the sheet, same zoom, until every
+  // part is on the open canvas.
+  function seatOffChrome(view, model, svg) {
+    if (!view || !model || !svg || typeof document === 'undefined' || !svg.getBoundingClientRect) return view;
+    const host = svg.getBoundingClientRect();
+    if (host.width < 2) return view;
+    const blocks = [];
+    for (const sel of ['header#top', '.projbanner', '.hint', '.canvas-tools', '.zoom-tools']) {
+      const el = document.querySelector(sel);
+      if (!el) continue;
+      let cs; try { cs = root.getComputedStyle(el); } catch (e) { continue; }
+      if (!cs || cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 8 || r.height < 8) continue;
+      blocks.push({ x: r.left, y: r.top, x2: r.right, y2: r.bottom });
+    }
+    if (!blocks.length) return view;
+    const syms = model.symbols || [];
+    const vw = root.innerWidth || host.right;
+    const vh = root.innerHeight || host.bottom;
+    const bad = (x, y) => {
+      const s = view.s;
+      for (let i = 0; i < syms.length; i++) {
+        const sym = syms[i];
+        const x1 = host.left + (sym.x - x) * s;
+        const y1 = host.top + (sym.y - y) * s;
+        const body = { x: x1, y: y1, x2: x1 + sym.w * s, y2: y1 + sym.h * s };
+        if (body.x < -1 || body.y < -1 || body.x2 > vw + 1 || body.y2 > vh + 1) return true;
+        for (let k = 0; k < blocks.length; k++) {
+          const b = blocks[k];
+          if (Math.min(body.x2, b.x2) - Math.max(body.x, b.x) > 1 && Math.min(body.y2, b.y2) - Math.max(body.y, b.y) > 1) return true;
+        }
+      }
+      return false;
+    };
+    if (!bad(view.x, view.y)) return view;
+    const dirs = [[0, -1], [0, 1], [-1, 0], [1, 0], [-1, -1], [1, -1], [-1, 1], [1, 1]];
+    for (let dist = 4; dist <= 80; dist += 4) {
+      for (let d = 0; d < dirs.length; d++) {
+        const x = view.x - (dirs[d][0] * dist) / view.s;
+        const y = view.y - (dirs[d][1] * dist) / view.s;
+        if (!bad(x, y)) return { s: view.s, x: x, y: y };
+      }
+    }
+    return view;
+  }
 
   class SchematicView {
     constructor(host, hooks) {
@@ -2548,11 +2791,12 @@
         b.id = 'schFitAll';
         b.className = 'sch-fitall';
         b.textContent = 'Fit all';
-        const tools = document.querySelector('.canvas-tools');
-        const lay = document.getElementById('schLayout');
-        if (lay) lay.insertAdjacentElement('afterend', b);
-        else if (tools) tools.appendChild(b);
-        else if (this.host) this.host.appendChild(b);
+      }
+      const zoom = document.querySelector('.zoom-tools');
+      if (zoom && b.parentElement !== zoom) {
+        const anchor = document.getElementById('bZoomIn');
+        if (anchor && anchor.parentElement === zoom) anchor.insertAdjacentElement('afterend', b);
+        else zoom.appendChild(b);
       }
       if (!b._schBound) {
         b._schBound = true;
@@ -2585,6 +2829,7 @@
     paint() {
       if (!this.model) return;
       this.svg.innerHTML = `<g id="schRoot">${toSvg(this.model, this.sel)}</g>`;
+      this._labelZoom = 0;
       this.apply();
     }
     apply() {
@@ -2593,6 +2838,28 @@
       this.svg.setAttribute('viewBox', `${this.view.x} ${this.view.y} ${w / this.view.s} ${h / this.view.s}`);
       const z = document.getElementById('zoomPct');
       if (z && this.active) z.textContent = Math.round(this.view.s * 100) + '%';
+      // Pan keeps label spacing. Only a new zoom (or a fresh paint) refits them.
+      const scale = labelScaleOf(this.svg, this.view.s);
+      if (this._labelZoom !== scale) {
+        this._labelZoom = scale;
+        settlePartLabels(this.svg, this.view.s);
+      }
+    }
+    _reveal(sym, on) {
+      if (!sym) return;
+      sym.querySelectorAll('.sch-ref, .sch-val, .sch-title').forEach((el) => {
+        if (on) {
+          el.style.display = '';
+          el.textContent = el.dataset.full || el.textContent;
+          if (el.dataset.ax) el.setAttribute('x', el.dataset.ax);
+          if (el.dataset.ay) el.setAttribute('y', el.dataset.ay);
+        } else {
+          el.style.display = el.dataset.restDisplay || '';
+          if (el.dataset.restText != null) el.textContent = el.dataset.restText;
+          if (el.dataset.restX) el.setAttribute('x', el.dataset.restX);
+          if (el.dataset.restY) el.setAttribute('y', el.dataset.restY);
+        }
+      });
     }
     fit(attempt) {
       if (!this.model) return;
@@ -2636,12 +2903,13 @@
           // The 11px zoom can sit a symbol on the arrangement control. Step down
           // toward the framing fit until the chip stays in the clear rect and the
           // control is clear. The framing fit is the last step, and it always fits.
-          if (coversToggle(view, this.model) || (framing.esp && !espHeld(view, framing.esp, frame.stage, clear, pad))) {
+          const partsHeld = (trial) => symbolsHeld(trial, this.model, frame.stage, clear, pad);
+          if (coversToggle(view, this.model) || !partsHeld(view) || (framing.esp && !espHeld(view, framing.esp, frame.stage, clear, pad))) {
             let lo = fitted.s, hi = choice.s, best = fitted, bestView = fitted;
             for (let i = 0; i < 12; i++) {
               const mid = (lo + hi) / 2;
               const trial = placed(mid);
-              const ok = !coversToggle(trial, this.model) && (!framing.esp || espHeld(trial, framing.esp, frame.stage, clear, pad));
+              const ok = !coversToggle(trial, this.model) && partsHeld(trial) && (!framing.esp || espHeld(trial, framing.esp, frame.stage, clear, pad));
               if (ok) { best = mid; bestView = trial; lo = mid; }
               else hi = mid;
             }
@@ -2649,6 +2917,7 @@
             zoomed = best > fitted.s + 0.02;
           }
         }
+        view = seatOffChrome(view, this.model, this.svg);
         const covered = sheetInside(b, view, frame.stage, clear, pad);
         this._wantFitAll = zoomed || !covered;
         this.view.s = view.s; this.view.x = view.x; this.view.y = view.y;
@@ -2720,6 +2989,21 @@
       });
       svg.addEventListener('pointermove', (e) => this._tip(e));
       svg.addEventListener('pointerleave', () => { const tip = document.getElementById('tip'); if (tip) tip.hidden = true; });
+      const symOf = (e) => e.target && e.target.closest && e.target.closest('.sch-sym');
+      svg.addEventListener('pointerover', (e) => { const sym = symOf(e); if (sym && (sym.dataset.labHidden === '1' || sym.dataset.labShort === '1')) this._reveal(sym, true); });
+      svg.addEventListener('pointerout', (e) => {
+        const sym = symOf(e);
+        const next = e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest('.sch-sym');
+        if (sym && sym !== next && sym.dataset.labHold !== '1') this._reveal(sym, false);
+      });
+      svg.addEventListener('focusin', (e) => { const sym = symOf(e); if (sym) this._reveal(sym, true); });
+      svg.addEventListener('focusout', (e) => { const sym = symOf(e); if (sym && sym.dataset.labHold !== '1') this._reveal(sym, false); });
+      svg.addEventListener('pointerup', (e) => {
+        const sym = symOf(e);
+        if (!sym || sym.dataset.labHidden !== '1') return;
+        sym.dataset.labHold = sym.dataset.labHold === '1' ? '0' : '1';
+        this._reveal(sym, sym.dataset.labHold === '1');
+      });
       svg.addEventListener('wheel', (e) => {
         if (!this.active) return;
         e.preventDefault();
@@ -2804,7 +3088,7 @@
 
   const api = {
     layout, toSvg, SchematicView, signature, pinNets: pinNetMap,
-    separateSymbols, wireJoints, layoutStoreKey, layoutModeOf, screenLabelPx, labelScreenPx, openScale, chooseOpen, openFrame, READABLE_PX, MIN_LABEL_FONT,
+    separateSymbols, wireJoints, layoutStoreKey, layoutModeOf, screenLabelPx, labelScreenPx, openScale, chooseOpen, openFrame, labelScreenTarget, shortPartLabel, settlePartLabels, READABLE_PX, MIN_LABEL_FONT,
     configureMatch,
   };
   Object.defineProperty(api, 'SCHEMATIC_MATCH_LAYOUT', {

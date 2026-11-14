@@ -33,8 +33,9 @@ async function openExample(page: Page, id: string, width: number) {
   await expect(page.locator('.toast')).not.toHaveCount(0);
   await page.waitForFunction(() => document.body.classList.contains('viewsch') && !!document.querySelector('#stageSch.on .sch-hit'));
   await expect.poll(async () => page.evaluate(() => {
-    const hit = document.querySelector('#stageSch .sch-hit');
-    return hit ? hit.getBoundingClientRect().width : 0;
+    let w = 0;
+    document.querySelectorAll('#stageSch .sch-hit').forEach((el) => { w = Math.max(w, el.getBoundingClientRect().width); });
+    return w;
   })).toBeGreaterThan(8);
   await page.evaluate(() => new Promise((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(() => resolve(null)));
@@ -121,9 +122,14 @@ async function drawing(page: Page) {
     const open = { left: 0, top, right: window.innerWidth, bottom };
     const wired = new Set((window as unknown as { Schematic: { openFrame: (m: unknown) => { ids: string[] } } }).Schematic.openFrame(model).ids);
     const outside: string[] = [];
+    const partsOutside: string[] = [];
+    const clipped: string[] = [];
     for (const body of screenBodies) {
-      if (!wired.has(body.id)) continue;
-      if (body.x < open.left - 1 || body.y < open.top - 1 || body.x2 > open.right + 1 || body.y2 > open.bottom + 1) outside.push(body.id);
+      const inside = body.x >= open.left - 1 && body.y >= open.top - 1 && body.x2 <= open.right + 1 && body.y2 <= open.bottom + 1;
+      const meets = body.x2 > open.left && body.x < open.right && body.y2 > open.top && body.y < open.bottom;
+      if (!inside) partsOutside.push(body.id);
+      if (meets && !inside) clipped.push(body.id);
+      if (wired.has(body.id) && !inside) outside.push(body.id);
     }
     return {
       bodies: bodies,
@@ -134,6 +140,8 @@ async function drawing(page: Page) {
       screenPx: (isFinite(font) ? font : 11) * zoom * css,
       zoomPct: zoom * 100,
       wiredOutside: outside,
+      partsOutside: partsOutside,
+      clipped: clipped,
       openTop: open.top,
       openBottom: open.bottom,
       covers: covers,
@@ -167,8 +175,110 @@ async function chromeClear(page: Page, where: string) {
   for (const symbol of boxes.symbols) expect(overlaps(boxes.toggle, symbol), where + ' symbol ' + JSON.stringify(symbol)).toBe(false);
 }
 
+async function visibleParts(page: Page) {
+  return page.evaluate(() => {
+    const hit = (a: { x: number; y: number; x2: number; y2: number }, b: { x: number; y: number; x2: number; y2: number }) =>
+      Math.min(a.x2, b.x2) - Math.max(a.x, b.x) > 1 && Math.min(a.y2, b.y2) - Math.max(a.y, b.y) > 1;
+    const chrome = ['header#top', '.projbanner', '.hint', '.canvas-tools', '.zoom-tools'].map((sel) => {
+      const el = document.querySelector(sel);
+      if (!el) return null;
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) return null;
+      const r = el.getBoundingClientRect();
+      if (r.width < 8 || r.height < 8) return null;
+      return { sel, x: r.left, y: r.top, x2: r.right, y2: r.bottom };
+    }).filter((c): c is { sel: string; x: number; y: number; x2: number; y2: number } => !!c);
+    const bad: string[] = [];
+    document.querySelectorAll('#stageSch .sch-hit').forEach((el) => {
+      const r = el.getBoundingClientRect();
+      const id = ((el.closest('.sch-sym') as HTMLElement | null)?.dataset.pid) || '?';
+      if (r.left < -1 || r.top < -1 || r.right > window.innerWidth + 1 || r.bottom > window.innerHeight + 1) bad.push(id + ' off');
+      for (const c of chrome) if (hit({ x: r.left, y: r.top, x2: r.right, y2: r.bottom }, c)) bad.push(id + ' ' + c.sel);
+    });
+    return bad;
+  });
+}
+
 function overlaps(a: Box, b: Box) {
   return Math.min(a.x2, b.x2) - Math.max(a.x, b.x) > 1 && Math.min(a.y2, b.y2) - Math.max(a.y, b.y) > 1;
+}
+
+async function labelAudit(page: Page) {
+  return page.evaluate(() => {
+    const hit = (a: { x: number; y: number; x2: number; y2: number }, b: { x: number; y: number; x2: number; y2: number }) =>
+      Math.min(a.x2, b.x2) - Math.max(a.x, b.x) > 0.5 && Math.min(a.y2, b.y2) - Math.max(a.y, b.y) > 0.5;
+    const box = (el: Element) => {
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden') return null;
+      const r = el.getBoundingClientRect();
+      if (r.width < 0.5 || r.height < 0.5) return null;
+      return { x: r.left, y: r.top, x2: r.right, y2: r.bottom };
+    };
+    const svg = document.getElementById('stageSch') as SVGSVGElement | null;
+    const ctm = svg && svg.getScreenCTM();
+    const scale = ctm ? Math.hypot(ctm.a, ctm.b) : 1;
+    const labels = [...document.querySelectorAll('#stageSch .sch-ref, #stageSch .sch-val, #stageSch .sch-title')].map((el) => {
+      const b = box(el);
+      const font = parseFloat(getComputedStyle(el).fontSize) || 0;
+      return {
+        text: (el.textContent || '').trim(),
+        kind: (el as HTMLElement).dataset.kind || '',
+        fontPx: font * scale,
+        glyph: b ? b.y2 - b.y : 0,
+        box: b,
+        aria: ((el.closest('.sch-sym') as HTMLElement | null)?.getAttribute('aria-label')) || '',
+      };
+    }).filter((l) => l.box);
+    let minFont = Infinity;
+    let minGlyph = Infinity;
+    const labelHits: string[] = [];
+    for (let i = 0; i < labels.length; i++) {
+      minFont = Math.min(minFont, labels[i].fontPx);
+      minGlyph = Math.min(minGlyph, labels[i].glyph);
+      for (let j = i + 1; j < labels.length; j++) {
+        if (hit(labels[i].box!, labels[j].box!)) labelHits.push(labels[i].text + ' / ' + labels[j].text);
+      }
+    }
+    const pins = [...document.querySelectorAll('#stageSch .sch-pin')].map(box).filter((b): b is NonNullable<typeof b> => !!b);
+    // A straight wire's client rect is flat: the stroke lives outside it.
+    const thick = Math.max(1.55 * scale, 1);
+    const wires = [...document.querySelectorAll('#stageSch .sch-wire')].map((el) => {
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden') return null;
+      const r = el.getBoundingClientRect();
+      return { x: r.left - thick / 2, y: r.top - thick / 2, x2: r.right + thick / 2, y2: r.bottom + thick / 2 };
+    }).filter((b): b is NonNullable<typeof b> => !!b && b.x2 - b.x > 0.5 && b.y2 - b.y > 0.5);
+    const cover: string[] = [];
+    for (const lab of labels) {
+      if (pins.some((p) => hit(lab.box!, p))) cover.push(lab.text + ' pin');
+      if (wires.some((w) => hit(lab.box!, w))) cover.push(lab.text + ' wire');
+    }
+    return {
+      count: labels.length,
+      minFont: isFinite(minFont) ? minFont : 0,
+      minGlyph: isFinite(minGlyph) ? minGlyph : 0,
+      labelHits: labelHits.slice(0, 8),
+      cover: cover.slice(0, 8),
+    };
+  });
+}
+
+async function toolbarTops(page: Page) {
+  return page.evaluate(() => {
+    const buttons = [...document.querySelectorAll('.canvas-tools button, .zoom-tools button')].filter((el) => {
+      const cs = getComputedStyle(el);
+      const r = el.getBoundingClientRect();
+      return cs.display !== 'none' && cs.visibility !== 'hidden' && r.width > 1 && r.height > 1 && !(el as HTMLButtonElement).hidden;
+    });
+    const tops = buttons.map((el) => (el as HTMLElement).offsetTop);
+    const heights = buttons.map((el) => el.getBoundingClientRect().height);
+    return {
+      n: buttons.length,
+      tops,
+      minH: heights.length ? Math.min(...heights) : 0,
+      names: buttons.map((el) => ((el.textContent || el.id || '').trim()).slice(0, 24)),
+    };
+  });
 }
 
 function assertClear(report: Awaited<ReturnType<typeof drawing>>, where: string) {
@@ -207,9 +317,17 @@ for (const example of EXAMPLES) {
       await openExample(page, example.id, width);
       const report = await drawing(page);
       assertClear(report, example.id + '@' + width);
+      const seen = await visibleParts(page);
+      expect(seen, example.id + '@' + width + ' part not fully visible ' + JSON.stringify(seen)).toEqual([]);
       if (example.id === 'blink' || example.id === 'simon') {
         expect(report.wiredOutside, example.id + '@' + width + ' off screen ' + JSON.stringify(report.wiredOutside)).toEqual([]);
       }
+      const labels = await labelAudit(page);
+      expect(labels.count, example.id + '@' + width + ' labels').toBeGreaterThan(0);
+      expect(labels.minFont, example.id + '@' + width + ' label px ' + labels.minFont.toFixed(2)).toBeGreaterThanOrEqual(11);
+      expect(labels.minGlyph, example.id + '@' + width + ' glyph ' + labels.minGlyph.toFixed(2)).toBeGreaterThanOrEqual(11);
+      expect(labels.labelHits, example.id + '@' + width + ' label overlap').toEqual([]);
+      expect(labels.cover, example.id + '@' + width + ' label on pin or wire').toEqual([]);
       if (width === 390 && report.toggle) {
         const mid = (report.toggle.y + report.toggle.y2) / 2;
         expect(mid, 'thumb reach').toBeGreaterThan(report.innerH * 0.55);
@@ -254,13 +372,35 @@ for (const example of EXAMPLES) {
   }
 }
 
-test('remote at 390 keeps labels readable and Fit all shows every part', async ({ page }) => {
+for (const width of [390, 768, 1280]) {
+  test('schematic toolbar is one row at ' + width, async ({ page }) => {
+    await install(page);
+    await openExample(page, 'remote', width);
+    const row = await toolbarTops(page);
+    expect(row.n, width + ' buttons ' + JSON.stringify(row.names)).toBeGreaterThan(3);
+    const top = row.tops[0];
+    for (const t of row.tops) expect(t, width + ' offsetTop ' + JSON.stringify(row)).toBe(top);
+    if (width === 390) expect(row.minH, width + ' touch height').toBeGreaterThanOrEqual(44);
+    const fit = page.locator('#schFitAll');
+    await expect(fit).toBeVisible();
+    const fitBox = await fit.boundingBox();
+    const zoom = await page.locator('.zoom-tools').boundingBox();
+    expect(fitBox && zoom && fitBox.x >= zoom.x - 1 && fitBox.x + fitBox.width <= zoom.x + zoom.width + 1).toBe(true);
+  });
+}
+
+test('remote at 390 keeps labels readable and the whole sheet can be shown', async ({ page }) => {
   await install(page);
   await openExample(page, 'remote', 390);
   const opened = await drawing(page);
-  expect(opened.fitAll).toBe(true);
-  expect(opened.screenPx, 'part labels ' + opened.screenPx.toFixed(2) + 'px at ' + opened.zoomPct.toFixed(0) + '%').toBeGreaterThanOrEqual(11);
+  const labels = await labelAudit(page);
+  expect(labels.minGlyph, 'part labels ' + labels.minGlyph.toFixed(2) + 'px at ' + opened.zoomPct.toFixed(0) + '%').toBeGreaterThanOrEqual(11);
   expect(opened.espInView).toBe(true);
+  expect(await visibleParts(page), 'parts').toEqual([]);
+  if (!opened.fitAll) {
+    expect(opened.covers).toBe(true);
+    return;
+  }
   const fit = page.locator('#schFitAll');
   await expect(fit).toBeVisible();
   const box = await fit.boundingBox();
