@@ -570,7 +570,7 @@ test('connection dot stays inside the header from 320 to 2560', async () => {
       const context = await browser.newContext({
         viewport: { width: 821, height: 780 },
         deviceScaleFactor: 1,
-        baseURL: 'http://127.0.0.1:4173',
+        baseURL: test.info().project.use.baseURL,
       });
       const page = await context.newPage();
       await install(page);
