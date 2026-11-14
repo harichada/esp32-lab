@@ -25,6 +25,7 @@ make -j && make install
 ```
 cp -r ../../web ctx/app && rm -rf ctx/app/dl
 docker build -t esp32-lab ctx
-docker run -d --name esp32lab -p 80:8765 -p 8765:8765 --restart unless-stopped \
+docker run -d --name esp32lab -p 80:8765 --restart unless-stopped \
   -v esp32lab-data:/home/sim/.esp32lab -v esp32lab-cache:/home/sim/.cache/arduino esp32-lab
 ```
+Do not add `-p 8765`. Host port 443 (`-p 443:8443`) is added only after HTTPS is approved. See `web/README.md`.

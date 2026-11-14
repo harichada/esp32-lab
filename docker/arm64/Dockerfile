@@ -15,5 +15,7 @@ RUN mkdir -p /home/sim/.cache/arduino /home/sim/builds /home/sim/.esp32lab/proje
 ENV QEMU_BIN=/home/sim/qemu-gpio/bin/qemu-system-xtensa QEMU_ROM_DIR=/home/sim/qemu-gpio/share/qemu \
     SIM_RUN_CAP=0 SIM_TOKEN= SIM_BUILD_DIR=/home/sim/builds SIM_PROJECT_DIR=/home/sim/.esp32lab/projects
 WORKDIR /app/server
-EXPOSE 8765
+# 8765 is plain HTTP inside the container (publish it as host 80 only).
+# 8443 is HTTPS inside the container (publish it as host 443 only). Never publish 8765.
+EXPOSE 8765 8443
 CMD ["python3", "server.py", "--host", "0.0.0.0", "--port", "8765"]

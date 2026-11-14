@@ -5,7 +5,7 @@ responses. HTTP forwarding uses asyncio streams (stdlib). WebSocket forwarding
 uses the ``websockets`` package already installed with uvicorn. No new dependency.
 
 SIM_STAGING           default 0. 1 adds noindex, robots.txt, and the page flag.
-SIM_ACCESS_TOKEN      default empty (off). Cookie cl_stage, constant-time compare.
+SIM_ACCESS_TOKEN      default empty (off). Cookie cl_stage, Secure only on the TLS listener, constant-time compare.
 SIM_STAGING_UPSTREAM  default empty (off). Only http://esp32lab-staging:8765.
 SIM_BASE_PATH         cookie and redirect prefix. Defaults to /staging when SIM_STAGING=1.
 """
@@ -254,6 +254,8 @@ def access_gate(request):
             resp.set_cookie(
                 'cl_stage', cookie_value(ACCESS),
                 max_age=86400 * 7, httponly=True, samesite='strict', path=COOKIE_PATH,
+                # The socket scheme. proxy_headers is off, so X-Forwarded-Proto cannot set this.
+                secure=(request.url.scheme == 'https'),
             )
             return seal(resp)
         return None

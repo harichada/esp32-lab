@@ -19,9 +19,11 @@ Header fit on every UI change: `npm run test:e2e`
 ## Deploy (ARM or x86)
 ```
 docker build -t esp32-lab <ctx>        # see docker/arm64/README.md or docker/amd64/README.md for context staging
-docker run -d --name esp32lab -p 80:8765 -p 8765:8765 --restart unless-stopped \
+docker run -d --name esp32lab -p 80:8765 --restart unless-stopped \
   -v esp32lab-data:/home/sim/.esp32lab -v esp32lab-cache:/home/sim/.cache/arduino esp32-lab
 ```
+
+Do not publish container port 8765. HTTPS (host 443 to container 8443) stays off until the flags in `web/README.md` are set, and the live host's port 443 stays closed until that rollout is approved.
 
 A test copy is a second process on `127.0.0.1`, reached at `http://<live>/staging/` through the live server. Leave `SIM_STAGING_UPSTREAM` unset until that process is running: empty means `/staging/` is 404 and the live site is unchanged. Do not publish the test copy on port 8080. See `web/README.md` for `SIM_STAGING`, `SIM_ACCESS_TOKEN`, `SIM_BASE_PATH`, the cookie, and the two-process local start.
 Large binaries (QEMU build, arduino cores/toolchains, caches) are not committed — the sub-READMEs explain how to fetch/build them.

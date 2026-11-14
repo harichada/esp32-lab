@@ -579,6 +579,7 @@ class StagingTests(unittest.TestCase):
         self.assertIn('samesite=strict', low)
         self.assertIn('path=/staging/', low)
         self.assertNotIn('domain=', low)
+        self.assertNotIn('secure', low)
         self.assertTrue(any(line == 'stage_auth=ok' for line in self.logs))
         self.assertFalse(any(TOKEN in line for line in self.logs))
         pair = cookie.split(';', 1)[0]
@@ -809,10 +810,11 @@ class StagingTests(unittest.TestCase):
         self.assertFalse(self.uvicorn.config.proxy_headers)
         self.assertEqual(self.uvicorn.config.forwarded_allow_ips, '')
         src = Path(server.__file__).read_text()
-        self.assertIn(
-            "uvicorn.run(app, host=a.host, port=a.port, log_level='warning', proxy_headers=False, forwarded_allow_ips='')",
-            src,
-        )
+        https_src = (Path(server.__file__).resolve().parent / 'https.py').read_text()
+        self.assertIn("proxy_headers=False, forwarded_allow_ips=''", https_src)
+        self.assertNotIn('proxy_headers=True', https_src)
+        self.assertNotIn('proxy_headers=True', src)
+        self.assertIn('https.serve_forever(app, a.host, a.port)', src)
         seen = {}
         orig = server._client_id_from
 

@@ -13,10 +13,14 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       SCHEMATIC_MATCH_LAYOUT (default 1). 0 puts <meta name="schmatch" content="0"> on the lab page
       so every visitor gets the column schematic. Any other value leaves index.html unchanged,
       and ?schmatch= on that page is then free to choose.
+      HTTPS (off unless set): ACME_WEBROOT, TLS_CERT_FILE, TLS_KEY_FILE, TLS_PORT,
+      HTTPS_REDIRECT, HTTPS_HOST, HSTS_SECONDS, ALLOWED_HOSTS. See https.py.
+      The process is started with proxy_headers off, so the scheme is the socket.
 """
 import asyncio, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, argparse
 from email.utils import formatdate
 import diskkeep
+import https
 import staging
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
@@ -24,7 +28,6 @@ import secrets
 from fastapi.responses import PlainTextResponse
 from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
-import uvicorn
 
 HERE = Path(__file__).resolve().parent
 SITE = HERE.parent
@@ -65,6 +68,7 @@ STOP_ON_1001 = os.environ.get('SIM_STOP_ON_1001', '0') == '1'   # old behaviour:
 import builtins as _b, datetime as _dt
 def print(*a, **k): _b.print(_dt.datetime.now().strftime('%F %T'), *a, **{**k, 'flush': True})  # keep QEMU alive this long after the browser websocket drops
 staging.set_logger(print)
+https.set_logger(print)
 RING_BYTES = 48 * 1024 * 1024
 MAX_RUNS = min(MAX_RUNS, int(os.environ.get('SIM_MAX_RUNS_HARD', '6')))
 CLOSED_GRACE = float(os.environ.get('SIM_CLOSED_GRACE', '90'))  # tab closed/reloaded (pagehide): keep QEMU this long for a reload to re-attach
@@ -88,6 +92,7 @@ def _maybe_simtok(request, resp):
     return resp
 staging.configure(max_body=MAX_BODY, sim_authed=_authed)
 staging.apply_env()
+https.apply_env()
 @app.middleware('http')
 async def gate(request: Request, call_next):
     if request.url.path.startswith('/server'):
@@ -152,6 +157,8 @@ def health():
     ok_q = Path(QEMU).exists(); ok_c = Path(CLI).exists() if CLI else False
     body = {'ok': ok_q and ok_c, 'qemu': QEMU if ok_q else None, 'arduino_cli': CLI if ok_c else None, 'fqbn': FQBN, 'runs': len(runs),
             'notes': 'Real Xtensa emulation (Espressif QEMU, patched esp32.gpio/iomux/rtcio). Wi-Fi radio not emulated: network sketches use the QemuNet shim (WiFi/HTTPClient/WiFiUdp -> mock devices).'}
+    # ok stays the qemu/cli check. A missing certificate does not flip it.
+    body['tls'] = https.tls_status()
     if staging.staging_on():
         body['staging'] = True
     return body
@@ -1465,9 +1472,12 @@ def index():
     })
 app.mount('/', StaticFiles(directory=str(SITE)), name='site')
 app.add_middleware(staging.StagingMiddleware)
+app.add_middleware(https.HttpsMiddleware)
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(); ap.add_argument('--port', type=int, default=8765); ap.add_argument('--host', default='127.0.0.1')
     a = ap.parse_args()
     print(f'QEMU={QEMU}\nROMDIR={ROMDIR}\nCLI={CLI}\nFQBN={FQBN}')
-    uvicorn.run(app, host=a.host, port=a.port, log_level='warning', proxy_headers=False, forwarded_allow_ips='')
+    # HTTP on --port (8765 in the container). HTTPS on TLS_PORT (8443) when the cert loads.
+    # proxy_headers=False and forwarded_allow_ips='' are set on both listeners in https.py.
+    https.serve_forever(app, a.host, a.port)
