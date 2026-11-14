@@ -338,12 +338,13 @@ class StagingTests(unittest.TestCase):
         get_code, get_headers, get_body = self.fetch('/staging/')
         self.assertEqual(get_code, 502)
         self.assertIn(b'Staging is only available at', get_body)
-        code, head_headers, body = self.fetch('/staging/', method='HEAD')
-        self.assertEqual(code, 502)
-        self.assertEqual(body, b'')
-        for name in ('Cache-Control', 'Content-Security-Policy', 'Content-Type', 'X-Robots-Tag'):
-            self.assertEqual(head_headers.get(name), get_headers.get(name), name)
-        self.assertEqual(head_headers.get('Content-Security-Policy'), staging.PAGE_CSP)
+        for head_path in ('/staging', '/staging/'):
+            code, head_headers, body = self.fetch(head_path, method='HEAD')
+            self.assertEqual(code, 502, head_path)
+            self.assertEqual(body, b'', head_path)
+            for name in ('Cache-Control', 'Content-Security-Policy', 'Content-Type', 'X-Robots-Tag'):
+                self.assertEqual(head_headers.get(name), get_headers.get(name), head_path + ' ' + name)
+            self.assertEqual(head_headers.get('Content-Security-Policy'), staging.PAGE_CSP, head_path)
         self.assertEqual(self.http_log, [])
         self._env(upstream='http://127.0.0.1:%d' % self.http_port, proxy='1')
         self.assertTrue(staging.PROXY_ENABLED)
