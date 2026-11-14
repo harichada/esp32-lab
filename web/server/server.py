@@ -29,6 +29,12 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       SCHEMATIC_MATCH_LAYOUT (default 1). 0 puts <meta name="schmatch" content="0"> on the lab page
       so every visitor gets the column schematic. Any other value leaves index.html unchanged,
       and ?schmatch= on that page is then free to choose.
+      COMPILE_HINTS_ENABLED (default 0). 1, true, yes, or on puts <meta name="compilehints" content="1">
+      on the lab page so a failed compile shows a plain-language sentence. Unset, 0, or anything else
+      serves the page with no compilehints tag, and the client then behaves as it does today.
+      STATUS_STRIP_ENABLED (default 0). 1, true, yes, or on puts <meta name="statusstrip" content="1">
+      on the lab page. A compile timeout then says "It's saved." only when this visitor has a copy,
+      and a build server that is down shows one line next to Run. Unset or 0 leaves that behaviour off.
 """
 import asyncio, contextvars, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, argparse
 from email.utils import formatdate
@@ -2638,17 +2644,44 @@ def robots_txt():
 # Site-wide schematic switch. Read on each page load so a restart picks it up
 # with no second request. Only "0" turns it off; the file is served unchanged otherwise.
 SCHEMATIC_META = '<meta name="schmatch" content="0">'
+# Compile hints default off. Only an explicit on value injects the meta; the file
+# is otherwise byte-for-byte the one on disk (when the schematic switch is also on).
+COMPILE_HINTS_META = '<meta name="compilehints" content="1">'
+STATUS_STRIP_META = '<meta name="statusstrip" content="1">'
+_COMPILE_HINTS_ON = {'1', 'true', 'yes', 'on'}
 def schematic_match_enabled(env=None):
     env = os.environ if env is None else env
     return str(env.get('SCHEMATIC_MATCH_LAYOUT', '1')).strip() != '0'
+def compile_hints_enabled(env=None):
+    env = os.environ if env is None else env
+    return str(env.get('COMPILE_HINTS_ENABLED', '0')).strip().lower() in _COMPILE_HINTS_ON
+def status_strip_enabled(env=None):
+    env = os.environ if env is None else env
+    return str(env.get('STATUS_STRIP_ENABLED', '0')).strip().lower() in _COMPILE_HINTS_ON
 def lab_page(env=None):
-    """Lab HTML and whether it is the file unchanged. Off injects one meta tag in <head>."""
+    """Lab HTML and whether it is the file unchanged.
+
+    Schematic off injects schmatch=0. Compile hints on injects compilehints=1.
+    The status strip on injects statusstrip=1. The defaults (schematic on, both
+    flags off) return the file bytes unchanged.
+    """
     raw = (SITE / 'index.html').read_bytes()
-    if schematic_match_enabled(env):
+    sch_off = not schematic_match_enabled(env)
+    hints_on = compile_hints_enabled(env)
+    strip_on = status_strip_enabled(env)
+    if not sch_off and not hints_on and not strip_on:
         return raw, True
     text = raw.decode('utf-8')
-    if SCHEMATIC_META not in text and '<head>' in text:
-        text = text.replace('<head>', '<head>\n' + SCHEMATIC_META, 1)
+    inject = []
+    if sch_off and SCHEMATIC_META not in text:
+        inject.append(SCHEMATIC_META)
+    if hints_on and COMPILE_HINTS_META not in text:
+        inject.append(COMPILE_HINTS_META)
+    if strip_on and STATUS_STRIP_META not in text:
+        inject.append(STATUS_STRIP_META)
+    if not inject or '<head>' not in text:
+        return raw, True
+    text = text.replace('<head>', '<head>\n' + '\n'.join(inject), 1)
     return text.encode('utf-8'), False
 @app.get('/')
 @app.get('/index.html')

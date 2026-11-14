@@ -1,0 +1,5 @@
+sketch.ino: In function ‘void setup()’:
+sketch.ino:5:3: error: ‘pinMod’ was not declared in this scope; did you mean ‘pinMode’?
+    5 |   pinMod(LED, OUTPUT);
+      |   ^~~~~~
+      |   pinMode

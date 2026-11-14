@@ -1,0 +1,5 @@
+sketch.ino: In function ‘void setup()’:
+sketch.ino:4:10: error: ‘struct HardwareSerial’ has no member named ‘printl’; did you mean ‘println’?
+    4 |   Serial.printl("hi");
+      |          ^~~~~~
+      |          println

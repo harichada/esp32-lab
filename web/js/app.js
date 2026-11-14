@@ -400,6 +400,7 @@ async function fetchRetry(u, o, n = 4) {
   const stripDown = new Set();
   function setCompilePhase(phase, detail) {
     const next = phase === 'queued' || phase === 'building' || phase === 'running' ? phase : 'idle';
+    if (window.StatusStrip && StatusStrip.clearTimeoutCard) StatusStrip.clearTimeoutCard();
     app.compilePhase = next;
     compileBusy = next === 'queued' || next === 'building';
     const sentence = next === 'queued' ? (detail || QUEUE_FALLBACK) : next === 'building' ? BUILDING_TEXT : '';
@@ -468,7 +469,44 @@ async function fetchRetry(u, o, n = 4) {
         root.style.setProperty('--strip-h', '0px');
         if (root.classList) root.classList.remove('strip-on');
       }
+      syncStatusStrip();
     } catch (e) {}
+  }
+  function syncStatusStrip() {
+    const el = document.getElementById && document.getElementById('statusStrip');
+    const root = document.documentElement;
+    if (!root || !root.classList) return;
+    if (!el || el.hidden) { root.classList.remove('backend-down'); return; }
+    const h = el.getBoundingClientRect ? el.getBoundingClientRect().height : 0;
+    if (root.style && root.style.setProperty) root.style.setProperty('--status-h', (h || 0) + 'px');
+    root.classList.add('backend-down');
+  }
+  function watchBackend() {
+    if (document.body && document.body.classList) document.body.classList.add('strip-flag');
+    const tick = async () => {
+      let down = true;
+      try {
+        const r = await fetch('api/health');
+        const h = await r.json();
+        app.health = h;
+        down = !(h && h.ok);
+        const dot = $('#connDot');
+        if (dot) {
+          dot.className = 'conn ' + (down ? 'bad' : 'ok');
+          dot.title = down ? StatusStrip.LINE : 'Backend connected: arduino-cli + QEMU ready';
+        }
+      } catch (e) {
+        down = true;
+        const dot = $('#connDot');
+        if (dot) { dot.className = 'conn bad'; dot.title = StatusStrip.LINE; }
+      }
+      app.backendDown = down;
+      if (down) StatusStrip.showDown(document);
+      else StatusStrip.hideDown(document);
+      syncStatusStrip();
+    };
+    tick();
+    setInterval(tick, 1500);
   }
   let stripObserver = null;
   function watchStripChrome() {
@@ -583,11 +621,21 @@ async function fetchRetry(u, o, n = 4) {
       try { await sk.start(); } catch (e) { return; }
       return;
     }
+    if (window.StatusStrip && StatusStrip.enabled() && app.backendDown) {
+      setStatus('warn', 'Offline');
+      StatusStrip.repeat(document);
+      syncStatusStrip();
+      return;
+    }
     const run = app.run = { kind: 'qemu', t0: performance.now(), compileId: '' };
     app.netlog.add({ k: 'info', msg: `—— run: ${app.proj.name || 'sketch'} ——` });
     setCompilePhase('building');
     setStatus('busy', BUILDING_TEXT); $('#buildLog').textContent = '';
     showNetNotice(false);
+    if (window.CompileHints && CompileHints.enabled()) {
+      CompileHints.clear();
+      if (app.codeview) app.codeview.setLog('');
+    }
     let res;
     let timeoutText = '';
     let shownWait = '';
@@ -634,12 +682,18 @@ async function fetchRetry(u, o, n = 4) {
         const msg = (reason === 'full' || reason === 'timeout') && body.log
           ? body.log
           : `Please wait ${wait} second${wait === 1 ? '' : 's'} before compiling again`;
-        setCompilePhase('idle');
-        setStatus('warn', msg); toast(msg);
-        $('#buildLog').textContent = msg + '\n';
-        serialAppend('\n[' + msg + ']\n');
-        app.run = null;
-        return;
+        if (reason === 'timeout' && window.StatusStrip && StatusStrip.enabled()) {
+          timeoutText = StatusStrip.timeoutSentence(msg, StatusStrip.hasUserCopy(app.proj, app.readOnly, app.store));
+          setStatus('warn', 'Timed out');
+          app.run = null;
+        } else {
+          setCompilePhase('idle');
+          setStatus('warn', msg); toast(msg);
+          $('#buildLog').textContent = msg + '\n';
+          serialAppend('\n[' + msg + ']\n');
+          app.run = null;
+          return;
+        }
       } else {
         res = await r.json();
         run.compileId = res && res.compile_id ? String(res.compile_id) : '';
@@ -655,21 +709,57 @@ async function fetchRetry(u, o, n = 4) {
       if (gaveUp) {
         app.run = null;
         timeoutText = COMPILE_TIMEOUT_TEXT;
+      } else if (window.StatusStrip && StatusStrip.enabled()) {
+        app.backendDown = true;
+        app.run = null;
+        setStatus('warn', 'Offline');
       } else {
         setCompilePhase('idle'); setStatus('err', OFFLINE); serialAppend('\n' + OFFLINE + '\n'); app.run = null; return;
       }
     }
     finally { if (!holdBuilding || app.run !== run) setCompilePhase('idle'); }
-    if (timeoutText) { showCompileTimeout(timeoutText); return; }
-    if (app.run !== run) return;
+    if (timeoutText) {
+      if (window.StatusStrip && StatusStrip.enabled()) {
+        StatusStrip.showTimeout(document, StatusStrip.timeoutSentence(timeoutText, StatusStrip.hasUserCopy(app.proj, app.readOnly, app.store)));
+        syncStripMetrics();
+        setStatus('warn', 'Timed out');
+        return;
+      }
+      showCompileTimeout(timeoutText);
+      return;
+    }
+    if (window.StatusStrip && StatusStrip.enabled() && app.backendDown && app.run !== run) {
+      document.body.classList.add('strip-flag');
+      StatusStrip.repeat(document);
+      syncStatusStrip();
+      return;
+    }
+    if (app.run !== run || !res) return;
+    const hintsOn = !!(window.CompileHints && CompileHints.enabled());
     const failure = compileFailureLog(res);
-    $('#buildLog').textContent = res.ok ? (res.cached ? cachedCompileLog(res.log) : (res.log || '')) : failure; if (app.codeview) app.codeview.setLog(res.ok ? '' : failure);
+    const fullLog = failure || res.log || '';
+    const buildText = res.ok ? (res.cached ? cachedCompileLog(res.log) : (res.log || '')) : fullLog;
+    $('#buildLog').textContent = hintsOn ? (window.CompileHints.boundLog ? CompileHints.boundLog(buildText) : buildText) : buildText;
     if (!res.ok) {
       setCompilePhase('idle');
+      if (window.StatusStrip && StatusStrip.enabled() && StatusStrip.isCompileTimeout(fullLog)) {
+        StatusStrip.showTimeout(document, StatusStrip.timeoutSentence(StatusStrip.COMPILE_TIMEOUT_BASE, StatusStrip.hasUserCopy(app.proj, app.readOnly, app.store)));
+        syncStripMetrics();
+        setStatus('warn', 'Timed out');
+        app.run = null;
+        return;
+      }
+      if (hintsOn) {
+        CompileHints.showFailure(fullLog, { code: $('#code') ? $('#code').value : '' });
+        serialAppend('\n[compile failed — see the note on the code]\n');
+        app.run = null;
+        return;
+      }
       const sentence = failureStatus(res) || SIMULATOR_STATUS;
       showFailureSurfaces(sentence);
-      $('#buildDet').open = true; document.querySelector('[data-tab=build]').click(); if (app.codeview) app.codeview.setLog(failure); serialAppend('\n[compile failed — see build log in Code tab]\n'); app.run = null; return;
+      $('#buildDet').open = true; document.querySelector('[data-tab=build]').click(); if (app.codeview) app.codeview.setLog(res.log || ''); serialAppend('\n[compile failed — see build log in Code tab]\n'); app.run = null; return;
     }
+    if (hintsOn) CompileHints.clear();
     showNetNotice(!!res.net_blocked_notice);
     serialAppend(`\n[compiled ${res.cached ? '(cached)' : ''}${res.netShim ? ' + QemuNet shim' : ''}; starting QEMU]\n`);
     run.bid = res.id; run.lastN = 0; run.tries = 0; connectRun(run);
@@ -1643,7 +1733,8 @@ async function fetchRetry(u, o, n = 4) {
     else if (q && Examples.EX[q]) loadExample(q);
     else if (store.current() && store.get(store.current())) openProject(store.current());
     else loadExample('blink');
-    fetch('api/health').then((r) => r.json()).then((h) => { app.health = h; $('#connDot').className = 'conn ' + (h.ok ? 'ok' : 'bad'); $('#connDot').title = h.ok ? 'Backend connected: arduino-cli + QEMU ready' : 'Backend missing QEMU/arduino-cli'; if (!h.ok) toast('Backend found but QEMU/arduino-cli missing — JS sketch mode only', true); }).catch(() => { $('#connDot').className = 'conn bad'; toast('No backend: real-firmware mode needs server/server.py (JS sketch mode still works)', true); });
+    if (window.StatusStrip && StatusStrip.enabled()) watchBackend();
+    else fetch('api/health').then((r) => r.json()).then((h) => { app.health = h; $('#connDot').className = 'conn ' + (h.ok ? 'ok' : 'bad'); $('#connDot').title = h.ok ? 'Backend connected: arduino-cli + QEMU ready' : 'Backend missing QEMU/arduino-cli'; if (!h.ok) toast('Backend found but QEMU/arduino-cli missing — JS sketch mode only', true); }).catch(() => { $('#connDot').className = 'conn bad'; toast('No backend: real-firmware mode needs server/server.py (JS sketch mode still works)', true); });
     requestAnimationFrame(tick); if (window.UI) window.UI.init(app);
     if (new URLSearchParams(location.search).get('resume') !== '0') setTimeout(() => app.resumeSavedRun(), 300);
     if (new URLSearchParams(location.search).get('tab')) document.querySelector(`[data-tab=${new URLSearchParams(location.search).get('tab')}]`).click();
