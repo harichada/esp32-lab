@@ -3,6 +3,7 @@
 Default (unset or 1) serves index.html unchanged. 0 adds one meta tag to
 / and /index.html. No extra request.
 """
+import hashlib
 import os
 import sys
 import unittest
@@ -63,6 +64,14 @@ class SchematicMatchEnvTests(unittest.TestCase):
             self.assertEqual(resp.status_code, 200, path)
             self.assertEqual(resp.content.count(META), 1, path)
             self.assertIn('no-cache', resp.headers.get('cache-control', ''))
+            etag = '"' + hashlib.sha256(resp.content).hexdigest() + '"'
+            self.assertEqual(resp.headers.get('etag'), etag, path)
+            self.assertTrue(resp.headers.get('last-modified'), path)
+        again = self.client.get('/')
+        self.assertEqual(again.headers.get('etag'), self.client.get('/index.html').headers.get('etag'))
+        os.environ['SCHEMATIC_MATCH_LAYOUT'] = '1'
+        plain = self.client.get('/')
+        self.assertNotEqual(plain.headers.get('etag'), again.headers.get('etag'))
         os.environ['SCHEMATIC_MATCH_LAYOUT'] = '1'
         again, plain = server.lab_page()
         self.assertTrue(plain)
