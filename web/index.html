@@ -10,8 +10,8 @@
 <title>ESP32 Circuit Lab — real-firmware ESP32 + electronics simulator</title>
 <style>html,body{background:#08090b}html[data-theme=light],html[data-theme=light] body{background:#eef0f3}</style>
 <link rel="stylesheet" href="css/app.css?v=41">
-<link rel="stylesheet" href="css/theme.css?v=67">
-<link rel="stylesheet" href="css/mobile.css?v=71">
+<link rel="stylesheet" href="css/theme.css?v=68">
+<link rel="stylesheet" href="css/mobile.css?v=72">
 <script src="js/storage.js?v=1"></script>
 <script>try{const t=clStorage.local.getItem('esp32lab.theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
 <script>try{clStorage.local.removeItem('esp32lab.view')}catch(e){}</script>
@@ -101,8 +101,8 @@
           <button type="button" id="bView3d" class="seg" title="3D cinematic view (WebGL)"><svg class="ic"><use href="#i-cube"/></svg><span>3D</span></button>
         </div>
         <div id="schLayout" class="sch-layout" role="group" aria-label="Schematic arrangement" hidden>
-          <button type="button" id="schLayBoard" class="sch-lay" data-mode="board" aria-pressed="false">Like breadboard</button>
-          <button type="button" id="schLayTidy" class="sch-lay" data-mode="tidy" aria-pressed="false">Tidy</button>
+          <button type="button" id="schLayBoard" class="sch-lay" data-mode="board" aria-pressed="false" aria-label="Like breadboard" title="Like breadboard">Breadboard</button>
+          <button type="button" id="schLayTidy" class="sch-lay" data-mode="tidy" aria-pressed="false" aria-label="Tidy arrangement" title="Tidy">Tidy</button>
         </div>
       </div>
       <div class="zoom-tools">
@@ -200,7 +200,7 @@
 <script src="js/codeview.js?v=40"></script>
 <script src="js/ui.js?v=63"></script>
 <script src="js/netlist.js?v=51"></script>
-<script src="js/schematic.js?v=63"></script>
+<script src="js/schematic.js?v=64"></script>
 <script src="js/viewchrome.js?v=1"></script>
 <script src="js/app.js?v=77"></script>
 <script src="js/mobile.js?v=69"></script>
