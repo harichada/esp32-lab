@@ -5,7 +5,10 @@ responses. HTTP forwarding uses asyncio streams (stdlib). WebSocket forwarding
 uses the ``websockets`` package already installed with uvicorn. No new dependency.
 
 SIM_STAGING           default 0. 1 adds noindex, robots.txt, and the page flag.
-SIM_ACCESS_TOKEN      default empty (off). Cookie cl_stage, Secure only on the TLS listener, constant-time compare.
+SIM_ACCESS_TOKEN      default empty (off). Cookie cl_stage is HttpOnly and SameSite=Lax.
+                      When SIM_STAGING=1 the cookie is always Secure, because that
+                      process is only reached over https through Caddy. A spoofed
+                      X-Forwarded-Proto does not decide the flag.
 SIM_STAGING_UPSTREAM  default empty (off). Only http://esp32lab-staging:8765.
 SIM_BASE_PATH         cookie and redirect prefix. Defaults to /staging when SIM_STAGING=1.
 STAGING_PROXY_ENABLED default 0. Only ``1`` forwards /staging. Off answers 502 and
@@ -245,10 +248,42 @@ def _html(html, status):
     return seal(resp)
 
 
+def _cookie_secure(request):
+    """Secure on every staging cookie. Otherwise only a real https request.
+
+    Staging is published only through Caddy, so SIM_STAGING=1 always sets
+    Secure. X-Forwarded-Proto is not consulted here. A spoofed proto cannot
+    add or remove the flag. When staging is off, Secure follows the scheme
+    left after untrusted forwarding headers have been ignored.
+    """
+    if STAGING:
+        return True
+    return request.url.scheme == 'https'
+
+
+def _bare_base_redirect(request):
+    """301 from <base> to <base>/ so the slash form is what asks for the cookie.
+
+    The query is kept, including ?t=, so the next request can still sign in.
+    """
+    base = BASE_PATH
+    path = request.url.path or '/'
+    if not base or path != base:
+        return None
+    dest = base + '/'
+    if request.url.query:
+        dest += '?' + request.url.query
+    from starlette.responses import RedirectResponse
+    return seal(RedirectResponse(dest, status_code=301))
+
+
 def access_gate(request):
     """None if the request may proceed. Otherwise a 401 or a redirect that drops ?t=."""
     if not ACCESS:
         return None
+    bare = _bare_base_redirect(request)
+    if bare is not None:
+        return bare
     # The lock-page icon is not secret. A 401 here shows up as a second console error.
     if (request.url.path or '/') == '/favicon.ico':
         return None
@@ -261,9 +296,8 @@ def access_gate(request):
             resp = RedirectResponse(_redirect_target(request), status_code=302)
             resp.set_cookie(
                 'cl_stage', cookie_value(ACCESS),
-                max_age=86400 * 7, httponly=True, samesite='strict', path=COOKIE_PATH,
-                # The socket scheme, unless HTTPS is on and this peer is a trusted proxy.
-                secure=(request.url.scheme == 'https'),
+                max_age=86400 * 7, httponly=True, samesite='lax', path=COOKIE_PATH,
+                secure=_cookie_secure(request),
             )
             return seal(resp)
         return None
@@ -292,13 +326,16 @@ def _proxy_closed(method):
     """502 with the public staging URL. HEAD sends that status and no body.
 
     Nothing here is an upstream call. The body names only the public https URL.
+    HEAD keeps the same security headers as GET, including the page CSP.
     """
-    if (method or 'GET').upper() == 'HEAD':
-        from starlette.responses import Response
-        return seal(Response(content=b'', status_code=502, media_type='text/html', headers={
-            'cache-control': 'no-store',
-        }))
-    return _html(CLOSED_HTML, 502)
+    resp = _html(CLOSED_HTML, 502)
+    if (method or 'GET').upper() != 'HEAD':
+        return resp
+    from starlette.responses import Response
+    body = resp.body if isinstance(getattr(resp, 'body', None), (bytes, bytearray)) else b''
+    headers = [(key, value) for key, value in resp.headers.items() if key.lower() != 'content-length']
+    headers.append(('content-length', str(len(body))))
+    return Response(content=b'', status_code=resp.status_code, headers=dict(headers))
 
 
 def _staging_kind(path):
@@ -486,8 +523,8 @@ async def maybe_proxy(request):
         if request.url.query:
             dest += '?' + request.url.query
         t0 = time.perf_counter()
-        _log('staging_proxy status=302 ms=%d' % _ms(t0))
-        return seal(RedirectResponse(dest, status_code=302))
+        _log('staging_proxy status=301 ms=%d' % _ms(t0))
+        return seal(RedirectResponse(dest, status_code=301))
     body, err = await _read_limited(request)
     if err is not None:
         return err

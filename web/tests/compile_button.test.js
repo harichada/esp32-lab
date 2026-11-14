@@ -464,7 +464,7 @@ test('the busy Run button is grey, keeps its spinner, and theme.css is cache-bus
   assert.match(css, /#bExamples:active\{transform:translateY\(\.5px\)\}/);
   assert.match(css, /#bExamples:disabled,#bExamples\[aria-disabled="true"\]\{opacity:\.45/);
   const vTheme = html.match(/theme\.css\?v=(\d+)/);
-  assert.equal(vTheme && vTheme[1], '69');
+  assert.equal(vTheme && vTheme[1], '75');
   assert.match(css, /html\.strip-on body:not\(\.m\) #palList,html\.strip-on body:not\(\.m\) \.insp-body\{padding-bottom:calc\(var\(--s3\) \+ var\(--strip-h,0px\)\)\}/);
   assert.match(css, /#compileStrip\{[^}]*background:#1b1f24;[^}]*color:#e8eaed;/);
   assert.match(css, /#compileStrip\{[^}]*white-space:normal;[^}]*overflow:visible;[^}]*text-overflow:clip/);
@@ -508,7 +508,7 @@ test('the busy Run button is grey, keeps its spinner, and theme.css is cache-bus
   const mv = html.match(/mobile\.css\?v=(\d+)/);
   assert.equal(mv && mv[1], '73');
   const av = html.match(/app\.js\?v=(\d+)/);
-  assert.equal(av && av[1], '80');
+  assert.equal(av && av[1], '90');
   const mj = html.match(/mobile\.js\?v=(\d+)/);
   assert.equal(mj && mj[1], '69');
   const ev = html.match(/editor\.js\?v=(\d+)/);

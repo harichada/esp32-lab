@@ -7,6 +7,7 @@
   const BODY_CAP = 2 * 1024 * 1024;
   const PROJECT_CAP = 1024 * 1024;
   const MAX_ITEMS = 64;
+  const MAX_PROJECTS = 64;
   const MAX_VALUE = BODY_CAP;
   const MAX_ORIGIN = 200;
   const MAX_QUERY = 4096;
@@ -130,6 +131,7 @@
         try { parsed = JSON.parse(item.v); } catch (e) { return 'projects are not json'; }
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return 'projects are not a list';
         const ids = Object.keys(parsed);
+        if (ids.length > MAX_PROJECTS) return 'too many projects';
         for (let p = 0; p < ids.length; p++) {
           if (ids[p] === '__proto__' || ids[p] === 'constructor' || ids[p] === 'prototype') return 'bad project id';
           if (!projectOk(ids[p], parsed[ids[p]])) return 'bad project';
@@ -233,98 +235,274 @@
     return target + (path || '/') + (q ? '?' + q : '');
   }
 
+  const FAIL_TEXT = 'Your projects are still safe at the original address. Nothing was deleted. To retry, go back and open this site again.';
+
+  function canonical(value) {
+    if (value === null) return 'null';
+    if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
+    if (typeof value === 'object') {
+      const keys = Object.keys(value).sort();
+      return '{' + keys.map((key) => JSON.stringify(key) + ':' + canonical(value[key])).join(',') + '}';
+    }
+    return JSON.stringify(value);
+  }
+
+  function hexBytes(bytes) {
+    let out = '';
+    for (let i = 0; i < bytes.length; i++) out += (bytes[i] + 256).toString(16).slice(1);
+    return out;
+  }
+
+  function rotr(n, x) { return (x >>> n) | (x << (32 - n)); }
+
+  // The handoff page is plain HTTP, which has no crypto.subtle. This is the
+  // same SHA-256 the HTTPS page and the server use.
+  function sha256Bytes(data) {
+    const K = new Uint32Array([
+      0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+      0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+      0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+      0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+      0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+      0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+      0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+      0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+    ]);
+    const bitLen = data.length * 8;
+    const padded = new Uint8Array(((data.length + 9 + 63) >> 6) << 6);
+    padded.set(data);
+    padded[data.length] = 0x80;
+    const view = new DataView(padded.buffer);
+    view.setUint32(padded.length - 8, Math.floor(bitLen / 0x100000000), false);
+    view.setUint32(padded.length - 4, bitLen >>> 0, false);
+    let h0 = 0x6a09e667, h1 = 0xbb67ae85, h2 = 0x3c6ef372, h3 = 0xa54ff53a;
+    let h4 = 0x510e527f, h5 = 0x9b05688c, h6 = 0x1f83d9ab, h7 = 0x5be0cd19;
+    const w = new Uint32Array(64);
+    for (let i = 0; i < padded.length; i += 64) {
+      for (let t = 0; t < 16; t++) w[t] = view.getUint32(i + t * 4, false);
+      for (let t = 16; t < 64; t++) {
+        const s0 = rotr(7, w[t - 15]) ^ rotr(18, w[t - 15]) ^ (w[t - 15] >>> 3);
+        const s1 = rotr(17, w[t - 2]) ^ rotr(19, w[t - 2]) ^ (w[t - 2] >>> 10);
+        w[t] = (w[t - 16] + s0 + w[t - 7] + s1) >>> 0;
+      }
+      let a = h0, b = h1, c = h2, d = h3, e = h4, f = h5, g = h6, hh = h7;
+      for (let t = 0; t < 64; t++) {
+        const s1b = rotr(6, e) ^ rotr(11, e) ^ rotr(25, e);
+        const ch = (e & f) ^ (~e & g);
+        const t1 = (hh + s1b + ch + K[t] + w[t]) >>> 0;
+        const s0b = rotr(2, a) ^ rotr(13, a) ^ rotr(22, a);
+        const maj = (a & b) ^ (a & c) ^ (b & c);
+        const t2 = (s0b + maj) >>> 0;
+        hh = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2) >>> 0;
+      }
+      h0 = (h0 + a) >>> 0; h1 = (h1 + b) >>> 0; h2 = (h2 + c) >>> 0; h3 = (h3 + d) >>> 0;
+      h4 = (h4 + e) >>> 0; h5 = (h5 + f) >>> 0; h6 = (h6 + g) >>> 0; h7 = (h7 + hh) >>> 0;
+    }
+    const out = new Uint8Array(32);
+    const ov = new DataView(out.buffer);
+    [h0, h1, h2, h3, h4, h5, h6, h7].forEach((v, i) => ov.setUint32(i * 4, v, false));
+    return out;
+  }
+
+  async function sha256Hex(text) {
+    const bytes = bytesOf(text);
+    const subtle = root.crypto && root.crypto.subtle;
+    if (subtle && subtle.digest) {
+      try {
+        const buf = await subtle.digest('SHA-256', bytes);
+        return hexBytes(new Uint8Array(buf));
+      } catch (e) { /* plain HTTP has no subtle */ }
+    }
+    return hexBytes(sha256Bytes(bytes));
+  }
+
+  function projectCount(obj) {
+    const items = (obj && obj.items) || [];
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].k !== S.KEYS.projects) continue;
+      try {
+        const parsed = JSON.parse(items[i].v);
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? Object.keys(parsed).length : 0;
+      } catch (e) { return 0; }
+    }
+    return 0;
+  }
+
+  function acceptReceipt(expectedChecksum, expectedCount, msg) {
+    if (!msg || msg.ok !== true) return false;
+    if (typeof msg.checksum !== 'string' || msg.checksum !== expectedChecksum) return false;
+    return Number(msg.count) === expectedCount;
+  }
+
+  function commitReceipt(checksum) {
+    try { S.session.setItem(S.ATTEMPT_FLAG, checksum); } catch (e) { /* a missing session flag does not block a retry */ }
+    try { S.local.setItem(S.MIGRATED_FLAG, String(Date.now())); } catch (e) { /* the http copy stays */ }
+  }
+
   function showFail(origin) {
     const doc = root.document;
     if (!doc || !doc.body) return;
     doc.body.textContent = '';
+    const main = doc.createElement('main');
+    main.className = 'move';
+    const h = doc.createElement('h1');
+    h.textContent = 'Projects were not moved';
     const p = doc.createElement('p');
-    p.textContent = 'These projects could not be moved. Open the original address and export them from My Projects.';
-    doc.body.appendChild(p);
+    p.textContent = FAIL_TEXT;
+    main.appendChild(h);
+    main.appendChild(p);
     if (origin) {
       const a = doc.createElement('a');
+      a.className = 'btn';
       a.href = origin + '/';
       a.textContent = 'Back to the original address';
-      doc.body.appendChild(a);
+      main.appendChild(a);
     }
+    doc.body.appendChild(main);
+  }
+
+  function tellParent(framed, origin, data) {
+    if (!framed || !root.parent || !root.parent.postMessage) return;
+    try { root.parent.postMessage(data, origin || '*'); } catch (e) { /* the parent still has its own timeout */ }
   }
 
   async function handoff(opts) {
+    opts = opts || {};
     const target = opts.target;
     const path = safePath(opts.path || '/') || '/';
     const query = safeQuery(opts.query || '') || '';
     const dest = destOf(target, path, query, null);
+    const here = root.location && root.location.origin;
     let items = [];
     try {
       if (S.local.getItem(S.MIGRATED_FLAG)) {
         root.location.replace(dest);
         return;
       }
-      try {
-        if (S.session.getItem(S.ATTEMPT_FLAG) === '1') {
-          root.location.replace(dest);
-          return;
-        }
-      } catch (e) { /* session storage can be closed in private mode */ }
       items = S.collect();
     } catch (e) {
-      root.location.replace(dest);
+      showFail(here);
       return;
     }
     if (!items.length) {
       root.location.replace(dest);
       return;
     }
-    const record = bundle(items, root.location.origin, path, query, Date.now());
+    const record = bundle(items, here, path, query, Date.now());
     if (validate(record)) {
-      showFail(root.location.origin);
+      showFail(here);
       return;
     }
-    let packed;
-    try { packed = await pack(record); } catch (e) { packed = ''; }
-    if (!packed) {
-      showFail(root.location.origin);
+    const body = canonical(record);
+    if (bytesOf(body).length > BODY_CAP || ('payload=' + encodeURIComponent(body)).length > BODY_CAP) {
+      showFail(here);
       return;
     }
-    try { S.session.setItem(S.ATTEMPT_FLAG, '1'); } catch (e) { /* still try the move */ }
-    if (packed.length <= FRAGMENT_BUDGET) {
-      root.location.replace(target + '/migrate#' + packed);
+    let checksum = '';
+    try { checksum = await sha256Hex(body); } catch (e) {
+      showFail(here);
       return;
     }
-    if (packed.length > BODY_CAP) {
-      showFail(root.location.origin);
+    const count = projectCount(record);
+    const timeout = opts.timeout || 8000;
+
+    function succeed(msg) {
+      if (!acceptReceipt(checksum, count, msg)) {
+        showFail(here);
+        return;
+      }
+      commitReceipt(checksum);
+      root.location.replace(destOf(target, path, query, count));
+    }
+
+    if (typeof opts.post === 'function') {
+      let timer;
+      try {
+        const msg = await Promise.race([
+          Promise.resolve(opts.post(body)),
+          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timeout')), timeout); }),
+        ]);
+        clearTimeout(timer);
+        succeed(msg);
+      } catch (e) {
+        clearTimeout(timer);
+        showFail(here);
+      }
       return;
     }
+
     const doc = root.document;
-    const form = doc.createElement('form');
-    form.method = 'POST';
-    form.action = target + '/migrate';
-    const input = doc.createElement('input');
-    input.type = 'hidden';
-    input.name = 'payload';
-    input.value = packed;
-    form.appendChild(input);
-    doc.body.appendChild(form);
-    form.submit();
+    if (!doc || !doc.body || !doc.createElement) {
+      showFail(here);
+      return;
+    }
+    let settled = false;
+    let timer;
+    function finishMove(msg) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (root.removeEventListener) root.removeEventListener('message', onMsg);
+      if (!msg) showFail(here);
+      else succeed(msg);
+    }
+    function onMsg(ev) {
+      let expected = '';
+      try { expected = new URL(target).origin; } catch (e) { expected = ''; }
+      if (!expected || !ev || ev.origin !== expected) return;
+      const data = ev.data || {};
+      if (data.type !== 'cl-move') return;
+      finishMove(data);
+    }
+    timer = setTimeout(() => finishMove(null), timeout);
+    if (root.addEventListener) root.addEventListener('message', onMsg);
+    try {
+      const frame = doc.createElement('iframe');
+      frame.name = 'cl-move-frame';
+      frame.title = 'Project move';
+      frame.style.cssText = 'position:absolute;width:0;height:0;border:0';
+      const form = doc.createElement('form');
+      form.method = 'POST';
+      form.action = target + '/migrate';
+      form.target = frame.name;
+      form.acceptCharset = 'UTF-8';
+      const input = doc.createElement('input');
+      input.type = 'hidden';
+      input.name = 'payload';
+      input.value = body;
+      form.appendChild(input);
+      doc.body.appendChild(frame);
+      doc.body.appendChild(form);
+      form.submit();
+    } catch (e) {
+      finishMove(null);
+    }
   }
 
   async function receive(opts) {
+    opts = opts || {};
     const doc = root.document;
     let obj = null;
     const embedded = doc && doc.getElementById && doc.getElementById('cl-migrate-payload');
     if (embedded && embedded.textContent) {
       try { obj = JSON.parse(embedded.textContent); } catch (e) { obj = null; }
-    } else if (typeof root.__clMove === 'string' && root.__clMove) {
-      const packed = root.__clMove;
-      root.__clMove = '';
-      try { obj = await unpack(packed); } catch (e) { obj = null; }
     }
-    root.__clMove = '';
     if (root.history && root.history.replaceState && root.location) {
-      try { root.history.replaceState(null, '', root.location.pathname + root.location.search); } catch (e) { /* the first script already cleared the fragment */ }
+      try { root.history.replaceState(null, '', root.location.pathname + root.location.search); } catch (e) { /* the first script already cleared a stray fragment */ }
     }
+    const framed = !!(root.parent && root.parent !== root);
     const failOrigin = obj && typeof obj.origin === 'string' ? obj.origin : '';
     const problem = obj ? validate(obj) : 'not a move record';
     if (problem) {
+      tellParent(framed, failOrigin, { type: 'cl-move', ok: false });
+      showFail(failOrigin);
+      return;
+    }
+    let mine = '';
+    try { mine = await sha256Hex(canonical(obj)); } catch (e) { mine = ''; }
+    const count = projectCount(obj);
+    if ((opts.checksum && opts.checksum !== mine) || (opts.count != null && Number(opts.count) !== count)) {
+      tellParent(framed, failOrigin, { type: 'cl-move', ok: false });
       showFail(failOrigin);
       return;
     }
@@ -332,18 +510,15 @@
     try {
       imported = applyBundle(obj, S.local);
     } catch (e) {
+      tellParent(framed, failOrigin, { type: 'cl-move', ok: false });
       showFail(failOrigin);
       return;
     }
+    tellParent(framed, failOrigin, { type: 'cl-move', ok: true, count: count, checksum: mine });
+    if (framed) return;
     const path = safePath(obj.path || '/') || '/';
     const query = safeQuery(obj.query || '') || '';
-    const next = destOf(opts.target, path, query, imported);
-    if (opts.confirm && obj.origin) {
-      const back = encodeURIComponent(next);
-      root.location.replace(obj.origin + '/migrate-done?migrated=1&back=' + back);
-      return;
-    }
-    root.location.replace(next);
+    root.location.replace(destOf(opts.target, path, query, imported));
   }
 
   function finish(opts) {
@@ -359,6 +534,10 @@
     BODY_CAP: BODY_CAP,
     PROJECT_CAP: PROJECT_CAP,
     bundle: bundle,
+    canonical: canonical,
+    sha256Hex: sha256Hex,
+    projectCount: projectCount,
+    acceptReceipt: acceptReceipt,
     validate: validate,
     mergeProjects: mergeProjects,
     applyBundle: applyBundle,

@@ -21,7 +21,7 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       STAGING_PROXY_ENABLED defaults to 0. /staging on this process is then 502.
 """
 import asyncio, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, argparse
-from email.utils import formatdate
+from email.utils import formatdate, parsedate
 import diskkeep
 import https
 import staging
@@ -124,9 +124,45 @@ async def gate(request: Request, call_next):
     _maybe_simtok(request, resp)
     if staging.staging_on():
         resp = await staging.decorate(request, resp)
+    if request.method == 'GET':
+        fresh = _conditional_get(request, resp)
+        if fresh is not None:
+            resp = fresh
     if request.method == 'HEAD':
         resp = await _blank_head(resp)
     return resp
+def _conditional_get(request, resp):
+    """304 for a static GET whose validator matches. API responses stay 200.
+
+    If-None-Match wins over If-Modified-Since. A spoofed validator on /api/
+    is ignored. The 304 has no body.
+    """
+    if getattr(resp, 'status_code', None) != 200:
+        return None
+    path = request.url.path or '/'
+    if path == '/api' or path.startswith('/api/'):
+        return None
+    inm = request.headers.get('if-none-match')
+    if inm is not None:
+        if inm.strip() != '*':
+            etag = resp.headers.get('etag')
+            if not etag:
+                return None
+            tags = [tag.strip().removeprefix('W/') for tag in inm.split(',')]
+            if etag not in tags:
+                return None
+    else:
+        ims = request.headers.get('if-modified-since')
+        lm = resp.headers.get('last-modified')
+        if not ims or not lm:
+            return None
+        ims_t = parsedate(ims)
+        lm_t = parsedate(lm)
+        if ims_t is None or lm_t is None or ims_t < lm_t:
+            return None
+    keep = ('cache-control', 'etag', 'last-modified', 'expires', 'vary', 'content-location')
+    headers = {key: value for key, value in resp.headers.items() if key.lower() in keep}
+    return Response(status_code=304, headers=headers)
 async def _blank_head(resp):
     """HEAD keeps the headers of the rendered response and sends no body.
 

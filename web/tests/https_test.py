@@ -5,6 +5,8 @@ tests are headers sent to 127.0.0.1. The documented proxy address is
 172.30.0.250. This process does not terminate TLS.
 """
 import asyncio, base64, http.client, json, os, re, socket, ssl, sys, unittest, urllib.parse
+import websockets
+from websockets.exceptions import InvalidStatus
 from pathlib import Path
 
 os.environ['SIM_PREWARM'] = '0'
@@ -80,7 +82,8 @@ def _assert_move_page(body, csp, form_action):
     end = text.index('</script>')
     first = text[:end]
     assert 'history.replaceState' in first
-    assert 'location.hash' in first
+    assert 'location.hash' not in text
+    assert '__clMove' not in text
     assert 'clMigrate' not in first
     assert end < text.index('clMigrate')
     assert '<script src' not in text
@@ -88,9 +91,9 @@ def _assert_move_page(body, csp, form_action):
     assert '<img ' not in text
     assert "default-src 'none'" in csp
     assert "script-src 'nonce-" in csp
-    assert 'unsafe-inline' not in csp
+    assert "script-src 'unsafe-inline'" not in csp
     assert 'unsafe-eval' not in csp
-    assert "style-src 'none'" in csp
+    assert "style-src 'unsafe-inline'" in csp
     assert "img-src 'none'" in csp
     assert "connect-src 'none'" in csp
     assert 'form-action %s' % form_action in csp
@@ -602,9 +605,9 @@ class HttpsServerTest(unittest.TestCase):
         self.assertNotIn(b'upgrade-insecure-requests', page)
         _assert_move_page(page, _header(pairs, 'content-security-policy'), 'https://%s' % HOST)
         self.assertEqual(_header(pairs, 'cache-control'), 'no-store')
-        asset, pairs, _ = request(self.http, 'GET', '/js/app.js?v=80', host=IP_HOST)
+        asset, pairs, _ = request(self.http, 'GET', '/js/app.js?v=90', host=IP_HOST)
         self.assertEqual(asset, 301)
-        self.assertEqual(_header(pairs, 'location'), 'https://%s/js/app.js?v=80' % HOST)
+        self.assertEqual(_header(pairs, 'location'), 'https://%s/js/app.js?v=90' % HOST)
         posted, pairs, _ = request(self.http, 'POST', '/', host=IP_HOST, body=b'a=1')
         self.assertEqual(posted, 308)
         self.assertEqual(_header(pairs, 'location'), 'https://%s/' % HOST)
@@ -690,20 +693,30 @@ class HttpsServerTest(unittest.TestCase):
         _, spoofed, _ = request(self.http, 'GET', '/api/health', headers={'X-Forwarded-Proto': 'https'})
         self.assertIsNone(_header(spoofed, 'strict-transport-security'))
 
-    def test_secure_staging_cookie_follows_a_trusted_proxy(self):
+    def test_staging_cookie_is_always_secure_and_spoofed_proto_is_ignored(self):
         staging.apply_env({
             'SIM_STAGING': '1', 'SIM_ACCESS_TOKEN': 'stage-token',
             'SIM_STAGING_UPSTREAM': '', 'SIM_BASE_PATH': '/',
         })
-        _on({'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': '127.0.0.1'})
-        status, pairs, _ = _via_caddy(self.http, 'GET', '/api/health?t=stage-token')
+        _on({'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': PROXY, 'HSTS_ENABLED': '1', 'HSTS_SECONDS': '300'})
+        status, pairs, _ = request(self.http, 'GET', '/api/health?t=stage-token')
         self.assertEqual(status, 302)
         cookie = _header(pairs, 'set-cookie')
+        low = cookie.lower()
         self.assertIn('cl_stage=', cookie)
         self.assertNotIn('stage-token', cookie)
-        self.assertIn('Secure', cookie)
-        self.assertIn('HttpOnly', cookie)
-        _on({'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': PROXY})
+        self.assertIn('secure', low)
+        self.assertIn('httponly', low)
+        self.assertIn('samesite=lax', low)
+        # An untrusted peer cannot turn the request into https. Staging still
+        # marks the cookie Secure, because that process is only reached over https.
+        status, pairs, _ = request(self.http, 'GET', '/api/health?t=stage-token', headers={
+            'X-Forwarded-Proto': 'http',
+            'X-Forwarded-Host': 'evil.example',
+            'X-Forwarded-For': PROXY,
+        })
+        self.assertEqual(status, 302)
+        self.assertIn('secure', _header(pairs, 'set-cookie').lower())
         status, pairs, _ = request(self.http, 'GET', '/api/health?t=stage-token', headers={
             'X-Forwarded-Proto': 'https',
             'Forwarded': 'proto=https',
@@ -711,9 +724,108 @@ class HttpsServerTest(unittest.TestCase):
             'X-Forwarded-For': PROXY,
         })
         self.assertEqual(status, 302)
-        plain = _header(pairs, 'set-cookie').lower()
-        self.assertIn('cl_stage=', plain)
-        self.assertNotIn('secure', plain)
+        self.assertIn('secure', _header(pairs, 'set-cookie').lower())
+        self.assertIsNone(_header(pairs, 'strict-transport-security'))
+        self.assertNotIn('upgrade-insecure-requests', (_header(pairs, 'content-security-policy') or ''))
+        status, pairs, _ = request(self.http, 'GET', '/some/path?x=1', headers={
+            'X-Forwarded-Proto': 'https', 'X-Forwarded-For': PROXY, 'X-Forwarded-Host': 'evil.example',
+        })
+        self.assertEqual(status, 301)
+        self.assertEqual(_header(pairs, 'location'), 'https://%s/some/path?x=1' % HOST)
+        self.assertIsNone(_header(pairs, 'strict-transport-security'))
+        staging.apply_env({
+            'SIM_STAGING': '0', 'SIM_ACCESS_TOKEN': 'stage-token',
+            'SIM_STAGING_UPSTREAM': '', 'SIM_BASE_PATH': '/',
+        })
+        status, pairs, _ = request(self.http, 'GET', '/api/health?t=stage-token', headers={
+            'X-Forwarded-Proto': 'https', 'X-Forwarded-For': PROXY,
+        })
+        self.assertEqual(status, 302)
+        self.assertNotIn('secure', _header(pairs, 'set-cookie').lower())
+        _on({'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': '127.0.0.1'})
+        status, pairs, _ = _via_caddy(self.http, 'GET', '/api/health?t=stage-token')
+        self.assertEqual(status, 302)
+        trusted = _header(pairs, 'set-cookie')
+        self.assertIn('Secure', trusted)
+        self.assertIn('HttpOnly', trusted)
+        self.assertIn('samesite=lax', trusted.lower())
+
+    def test_conditional_get_is_304_for_files_and_never_for_api(self):
+        _on({'HTTPS_ENABLED': '0'})
+        status, pairs, body = request(self.http, 'GET', '/js/storage.js')
+        self.assertEqual(status, 200)
+        self.assertTrue(body)
+        etag = _header(pairs, 'etag')
+        modified = _header(pairs, 'last-modified')
+        self.assertTrue(etag)
+        self.assertTrue(modified)
+        code, _, empty = request(self.http, 'GET', '/js/storage.js', headers={'If-None-Match': etag})
+        self.assertEqual(code, 304)
+        self.assertEqual(empty, b'')
+        code, _, empty = request(self.http, 'GET', '/js/storage.js', headers={'If-Modified-Since': modified})
+        self.assertEqual(code, 304)
+        self.assertEqual(empty, b'')
+        code, again_pairs, again = request(self.http, 'GET', '/js/storage.js', headers={'If-None-Match': '"nope"'})
+        self.assertEqual(code, 200)
+        self.assertEqual(again, body)
+        page, page_pairs, page_body = request(self.http, 'GET', '/')
+        self.assertEqual(page, 200)
+        page_etag = _header(page_pairs, 'etag')
+        code, _, empty = request(self.http, 'GET', '/', headers={'If-None-Match': page_etag})
+        self.assertEqual(code, 304)
+        self.assertEqual(empty, b'')
+        self.assertNotEqual(page_body, b'')
+        health, _, health_body = request(self.http, 'GET', '/api/health', headers={
+            'If-None-Match': '*', 'If-Modified-Since': modified,
+        })
+        self.assertEqual(health, 200)
+        self.assertIn(b'"ok"', health_body)
+
+    def test_websocket_resume_through_caddy_ignores_spoofed_forwarded_headers(self):
+        link = server.Link('resume-sid')
+        link.n = 2
+        link.ring.append((2, 'status', '{"t":"status","msg":"replayed-marker","_n":2}'))
+        server.SESSIONS['resume-sid'] = link
+        try:
+            _on({'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': '127.0.0.1'})
+
+            async def resume():
+                url = 'ws://127.0.0.1:%d/api/run/abc?sid=resume-sid&since=1' % self.http
+                async with websockets.connect(
+                    url, open_timeout=3, proxy=None,
+                    additional_headers={
+                        'X-Forwarded-Proto': 'https',
+                        'X-Forwarded-For': '203.0.113.9',
+                        'X-Forwarded-Host': 'evil.example',
+                    },
+                ) as ws:
+                    return await asyncio.wait_for(ws.recv(), 3)
+
+            text = asyncio.run(resume())
+            self.assertIn('replayed-marker', text)
+            self.assertEqual(link.resumes, 1)
+            _on({'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': PROXY})
+
+            async def spoofed():
+                url = 'ws://127.0.0.1:%d/api/run/abc?sid=resume-sid&since=1' % self.http
+                try:
+                    async with websockets.connect(
+                        url, open_timeout=3, proxy=None,
+                        additional_headers={
+                            'X-Forwarded-Proto': 'https',
+                            'X-Forwarded-For': PROXY,
+                            'X-Forwarded-Host': HOST,
+                        },
+                    ) as ws:
+                        await ws.recv()
+                    return 101
+                except InvalidStatus as exc:
+                    return exc.response.status_code
+
+            self.assertEqual(asyncio.run(spoofed()), 403)
+            self.assertEqual(link.resumes, 1)
+        finally:
+            server.SESSIONS.pop('resume-sid', None)
 
     def test_allowed_hosts_and_health_tls_fields(self):
         _on({
@@ -910,6 +1022,13 @@ class HttpsServerTest(unittest.TestCase):
         self.assertIn(b'clMigrate.receive', body)
         self.assertNotIn(b'Lamp </script>', body)
         self.assertIn(b'Lamp \\u003c/script>', body)
+        digest = https.payload_checksum(record).encode()
+        self.assertIn(digest, body)
+        self.assertIn(b'"count":1', body)
+        self.assertIsNone(_header(_, 'location'))
+        for href in re.findall(br'href="([^"]*)"', body):
+            self.assertNotIn(b'Lamp', href)
+            self.assertNotIn(digest, href)
         bad = _via_caddy(
             self.http, 'POST', '/migrate', host=HOST,
             headers={'Content-Type': 'application/x-www-form-urlencoded'},
@@ -917,9 +1036,64 @@ class HttpsServerTest(unittest.TestCase):
         )
         self.assertEqual(bad[0], 400)
         self.assertEqual(_header(bad[1], 'cache-control'), 'no-store')
-        self.assertIn(b'could not be moved', bad[2])
+        self.assertIn(b'still safe at the original address', bad[2])
         self.assertNotIn(b'clMigrate.receive', bad[2])
         self.assertIn("default-src 'none'", _header(bad[1], 'content-security-policy'))
+
+    def test_cancel_stays_and_the_receipt_is_not_a_url(self):
+        _on({'HTTPS_HOST': HOST})
+        status, pairs, body = request(self.http, 'GET', '/')
+        self.assertEqual(status, 200, body[:200])
+        self.assertIn(b'>Cancel<', body)
+        self.assertIn(b'clstay=1', body)
+        self.assertIn(b'#08090b', body)
+        self.assertIn(b'#22d3ee', body)
+        self.assertNotIn(b'/migrate#', body)
+        self.assertNotIn(b'__clMove', body)
+        csp = _header(pairs, 'content-security-policy')
+        self.assertIn("style-src 'unsafe-inline'", csp)
+        self.assertIn('frame-src https://%s' % HOST, csp)
+        self.assertNotIn("script-src 'unsafe-inline'", csp)
+        stayed = request(self.http, 'GET', '/?clstay=1')
+        self.assertEqual(stayed[0], 200, stayed[2][:200])
+        self.assertNotIn(b'clMigrate.handoff', stayed[2])
+        self.assertIn(b'schematic.js', stayed[2])
+        projects = {}
+        for i in range(65):
+            pid = 'p%d' % i
+            projects[pid] = {
+                'id': pid, 'name': 'N', 'updated': 1,
+                'proj': {'id': pid, 'name': 'N', 'parts': [], 'wires': []},
+            }
+        packed = '0.' + _b64url(json.dumps({
+            'v': 1, 'origin': 'http://127.0.0.1', 'exportedAt': 1, 'path': '/', 'query': '',
+            'items': [{'k': 'esp32lab.projects.v1', 'v': json.dumps(projects)}],
+        }).encode())
+        _on({'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': '127.0.0.1'})
+        too_many = _via_caddy(
+            self.http, 'POST', '/migrate', host=HOST,
+            headers={'Content-Type': 'application/x-www-form-urlencoded'},
+            body=urllib_body(packed),
+        )
+        self.assertEqual(too_many[0], 400, too_many[2][:200])
+        self.assertIn(b'still safe at the original address', too_many[2])
+        self.assertNotIn(b'"p64"', too_many[2])
+        raw = json.dumps({
+            'v': 1, 'origin': 'http://127.0.0.1', 'exportedAt': 1, 'path': '/', 'query': '',
+            'items': [{'k': 'esp32lab.projects.v1', 'v': json.dumps({
+                'p1': {'id': 'p1', 'name': 'Desk', 'updated': 1, 'proj': {'id': 'p1', 'name': 'Desk', 'parts': [], 'wires': []}},
+            })}],
+        })
+        posted = _via_caddy(
+            self.http, 'POST', '/migrate', host=HOST,
+            headers={'Content-Type': 'application/x-www-form-urlencoded'},
+            body=urllib_body(raw),
+        )
+        self.assertEqual(posted[0], 200, posted[2][:240])
+        obj = json.loads(raw)
+        self.assertIn(https.payload_checksum(obj).encode(), posted[2])
+        self.assertFalse(any('Desk' in value for _, value in posted[1]))
+        self.assertIsNone(_header(posted[1], 'location'))
 
     def test_migrate_page_clears_the_fragment_first_and_locks_the_csp(self):
         _on({'HTTPS_HOST': HOST, 'TRUSTED_PROXY_IPS': '127.0.0.1'})
@@ -983,7 +1157,7 @@ class HttpsServerTest(unittest.TestCase):
                 )
                 if media.startswith('application/x-www-form-urlencoded'):
                     self.assertEqual(sent[0], 400, media)
-                    self.assertIn(b'could not be moved', sent[2])
+                    self.assertIn(b'still safe at the original address', sent[2])
                 else:
                     self.assertEqual(sent[0], 415, media)
                     self.assertIn(b'unsupported media type', sent[2])
@@ -997,7 +1171,7 @@ class HttpsServerTest(unittest.TestCase):
             )
             self.assertEqual(malformed[0], 400)
             self.assertEqual(_header(malformed[1], 'cache-control'), 'no-store')
-            self.assertIn(b'could not be moved', malformed[2])
+            self.assertIn(b'still safe at the original address', malformed[2])
             self.assertNotIn(marker.encode(), malformed[2])
             self.assertNotIn(b'clMigrate.receive', malformed[2])
 
@@ -1022,7 +1196,7 @@ class HttpsServerTest(unittest.TestCase):
             self.assertEqual(_header(chunked[1], 'cache-control'), 'no-store')
             self.assertIn(b'request too large', chunked[2])
             self.assertNotIn(marker.encode(), chunked[2])
-            self.assertLess(len(chunked[2]), 400)
+            self.assertLess(len(chunked[2]), 4000)
         finally:
             for lg in loggers:
                 lg.removeHandler(handler)

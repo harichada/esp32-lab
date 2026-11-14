@@ -22,25 +22,36 @@ TRUSTED_PROXY_IPS  default empty, which trusts nobody. Comma-separated exact
                    documented address is ``172.30.0.250``.
 ALLOWED_HOSTS      default unset (accept every Host). Comma-separated hostnames.
 """
-import base64, ipaddress, json, os, re, secrets, threading, zlib
+import base64, hashlib, ipaddress, json, os, re, secrets, threading, zlib
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 HSTS_CAP = 63072000
 MIGRATE_CAP = 2 * 1024 * 1024
 PROJECT_CAP = 1024 * 1024
+MAX_PROJECTS = 64
 FRAGMENT_BUDGET = int(1.5 * 1024 * 1024)
-# First script on every move page. It copies the fragment into memory and
-# replaces the history entry before any later script or subresource runs.
+# First script on every move page. A stray fragment is dropped before any
+# later script runs. It is not read and it is not the payload.
 _CLEAR_HASH = (
-    "(function(){var h='';try{h=location.hash||'';}catch(e){h='';}"
-    "if(h.charAt(0)==='#')h=h.slice(1);window.__clMove=h;"
-    "try{history.replaceState(null,'',location.pathname+location.search);}catch(e){}})();"
+    "(function(){try{history.replaceState(null,'',location.pathname+location.search);}catch(e){}})();"
 )
-_MOVE_CSP = (
-    "default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; "
-    "font-src 'none'; connect-src 'none'; object-src 'none'; frame-src 'none'; "
-    "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+_MOVE_STYLE = (
+    'html,body{margin:0;min-height:100%;background:#08090b;color:#e6e8eb;'
+    'font:16px/1.45 system-ui,-apple-system,sans-serif}'
+    'html[data-theme=light] body{background:#eef0f3;color:#15181c}'
+    'main.move{min-height:100vh;display:flex;flex-direction:column;align-items:center;'
+    'justify-content:center;text-align:center;padding:24px;box-sizing:border-box}'
+    'main.move h1{font-size:22px;font-weight:650;margin:0 0 8px}'
+    'main.move p{margin:0 0 14px;max-width:36em}'
+    'a.btn{display:inline-block;min-height:36px;line-height:36px;padding:0 16px;border-radius:8px;'
+    'background:#22d3ee;color:#04161a;font-weight:650;text-decoration:none}'
+    'a.btn.ghost{background:transparent;color:#22d3ee;border:1px solid #22d3ee;line-height:34px}'
+    'p.reason{color:#a9afb8;font-size:13px}'
+)
+FAIL_TEXT = (
+    'Your projects are still safe at the original address. Nothing was deleted. '
+    'To retry, go back and open this site again.'
 )
 _REDIRECT_BASE = ''
 _HOST_RE = re.compile(
@@ -820,10 +831,45 @@ def validate_bundle(obj):
                 return 'projects are not json'
             if not isinstance(parsed, dict):
                 return 'projects are not a list'
+            if len(parsed) > MAX_PROJECTS:
+                return 'too many projects'
             for pid, entry in parsed.items():
                 if pid in ('__proto__', 'constructor', 'prototype') or not _project_ok(pid, entry):
                     return 'bad project'
     return ''
+
+
+def canonical_payload(obj):
+    """The JSON both sides hash. Sorted keys, no extra space, UTF-8 characters kept."""
+    return json.dumps(obj, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+
+
+def payload_checksum(obj):
+    return hashlib.sha256(canonical_payload(obj).encode('utf-8')).hexdigest()
+
+
+def project_count(obj):
+    projects_key = next((key for key in _owned_spec()[0] if key.endswith('projects.v1')), '')
+    for item in obj.get('items') or []:
+        if isinstance(item, dict) and item.get('k') == projects_key:
+            try:
+                parsed = json.loads(item.get('v') or '')
+            except ValueError:
+                return 0
+            return len(parsed) if isinstance(parsed, dict) else 0
+    return 0
+
+
+def parse_move_body(text):
+    """A canonical JSON object, or the older packed form. Never logged."""
+    if not isinstance(text, str) or len(text.encode('utf-8')) > MIGRATE_CAP:
+        return None
+    if text[:1] == '{':
+        try:
+            return json.loads(text)
+        except Exception:
+            return None
+    return unpack_payload(text)
 
 
 def unpack_payload(text):
@@ -855,35 +901,77 @@ def _safe_back(value):
     return value
 
 
-def _page(title, boot, form_action, embedded=None, note='', extra=''):
+def _move_csp(nonce, form_action, frame_src="'none'", ancestors="'none'"):
+    return (
+        "default-src 'none'; script-src 'nonce-%s'; style-src 'unsafe-inline'; img-src 'none'; "
+        "font-src 'none'; connect-src 'none'; object-src 'none'; frame-src %s; "
+        "base-uri 'none'; form-action %s; frame-ancestors %s"
+    ) % (nonce, frame_src, form_action, ancestors)
+
+
+def _ancestors(origin):
+    if _safe_http_origin(origin):
+        return origin
+    return '*'
+
+
+def _page(title, boot, form_action, embedded=None, note='', extra='', frame_src="'none'", ancestors="'none'"):
     """Move page. The hash-clearing script is the first script and the page has no subresources."""
     nonce = secrets.token_urlsafe(18)
-    csp = (
-        "default-src 'none'; script-src 'nonce-%s'; style-src 'none'; img-src 'none'; "
-        "font-src 'none'; connect-src 'none'; object-src 'none'; frame-src 'none'; "
-        "base-uri 'none'; form-action %s; frame-ancestors 'none'"
-    ) % (nonce, form_action)
+    csp = _move_csp(nonce, form_action, frame_src, ancestors)
     blob = ''
     if embedded is not None:
         blob = '<script type="application/json" id="cl-migrate-payload" nonce="%s">%s</script>' % (nonce, _js(embedded))
     html = (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
-        '<script nonce="%s">%s</script>'
-        '<meta name="referrer" content="no-referrer"><title>%s</title></head><body>'
-        '<p>%s</p>%s%s<script nonce="%s">%s\n%s</script></body></html>'
-    ) % (nonce, _CLEAR_HASH, _esc(title), _esc(note or title), extra, blob, nonce, _client_scripts(), boot)
+        '<meta name="referrer" content="no-referrer"><title>%s</title>'
+        '<style>%s</style>'
+        '<script nonce="%s">%s</script></head><body>'
+        '<main class="move"><h1>%s</h1><p>%s</p>%s</main>%s'
+        '<script nonce="%s">%s\n%s</script></body></html>'
+    ) % (
+        _esc(title), _MOVE_STYLE, nonce, _CLEAR_HASH, _esc(title), _esc(note or title),
+        extra, blob, nonce, _client_scripts(), boot,
+    )
     return html, csp
 
 
-def _fail_html(origin):
+def _fail_page(origin, reason=''):
+    """The designed failure page. It never includes the payload."""
+    nonce = secrets.token_urlsafe(18)
+    csp = _move_csp(nonce, "'none'", "'none'", _ancestors(origin))
     link = ''
     if _safe_http_origin(origin):
-        link = '<p><a href="%s/">Back to the original address</a></p>' % _esc(origin)
-    return (
+        link = '<a class="btn" href="%s/">Back to the original address</a>' % _esc(origin)
+    reason_html = '<p class="reason">%s</p>' % _esc(reason) if reason else ''
+    script = (
+        '(function(){try{if(parent&&parent!==window)'
+        'parent.postMessage({type:"cl-move",ok:false},"*");}catch(e){}})();'
+    )
+    html = (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
-        '<meta name="referrer" content="no-referrer"><title>Projects were not moved</title></head>'
-        '<body><p>These projects could not be moved. Open the original address and export them from My Projects.</p>%s</body></html>'
-    ) % link
+        '<meta name="referrer" content="no-referrer"><title>Projects were not moved</title>'
+        '<style>%s</style></head><body><main class="move">'
+        '<h1>Projects were not moved</h1><p>%s</p>%s%s</main>'
+        '<script nonce="%s">%s</script></body></html>'
+    ) % (_MOVE_STYLE, FAIL_TEXT, reason_html, link, nonce, script)
+    return html, csp
+
+
+def _stay_requested(scope):
+    raw = scope.get('query_string') or b''
+    if isinstance(raw, str):
+        raw = raw.encode('latin1', 'replace')
+    try:
+        params = parse_qs(raw.decode('latin1', 'replace'), keep_blank_values=True, max_num_fields=20)
+    except ValueError:
+        return False
+    return '1' in (params.get('clstay') or [])
+
+
+def _cancel_href(path, query):
+    joined = (query + '&clstay=1') if query else 'clstay=1'
+    return (path or '/') + '?' + joined
 
 
 def _one_header(scope, name):
@@ -980,20 +1068,21 @@ class HttpsMiddleware:
                     (), scheme,
                 )
                 return
-            if _html_get(scope):
+            if _html_get(scope) and not _stay_requested(scope):
                 await self._handoff(scope, send, scheme)
                 return
-            location = redirect_url(scope)
-            if not await _drain(receive):
+            if not _html_get(scope):
+                location = redirect_url(scope)
+                if not await _drain(receive):
+                    return
+                if location is None:
+                    await _http_reply(send, 400, 'bad request', (), scheme)
+                    return
+                await _http_reply(
+                    send, redirect_status(scope.get('method')), '',
+                    ((b'location', location.encode('latin1')),), scheme,
+                )
                 return
-            if location is None:
-                await _http_reply(send, 400, 'bad request', (), scheme)
-                return
-            await _http_reply(
-                send, redirect_status(scope.get('method')), '',
-                ((b'location', location.encode('latin1')),), scheme,
-            )
-            return
         async def send_wrap(message):
             if message.get('type') == 'http.response.start':
                 message = dict(message)
@@ -1026,17 +1115,16 @@ class HttpsMiddleware:
         parts = _request_path_query(scope)
         path, query = parts if parts else ('/', '')
         origin = public_origin()
-        note = 'Opening the secure site…'
-        link = ''
-        if origin:
-            href = origin + path + (('?' + query) if query else '')
-            link = '<p><a href="%s">Continue</a></p>' % _esc(href)
+        note = 'Moving your projects to the secure site. Cancel leaves them where they are.'
+        cancel = '<p class="actions"><a class="btn ghost" href="%s">Cancel</a></p>' % _esc(_cancel_href(path, query))
+        frame = origin or "'none'"
         html, csp = _page(
             'Opening the secure site',
             'clMigrate.handoff(%s);' % _js({'target': origin, 'path': path, 'query': query}),
-            origin or "'none'",
+            frame,
             note=note,
-            extra=link,
+            extra=cancel,
+            frame_src=frame,
         )
         await self._send_html(send, html, csp, scheme)
 
@@ -1090,16 +1178,19 @@ class HttpsMiddleware:
         """
         declared = _content_length(scope)
         if declared is not None and declared > MIGRATE_CAP:
-            await self._plain(send, 413, b'request too large', scheme)
+            html, csp = _fail_page('', 'request too large')
+            await self._send_html(send, html, csp, scheme, status=413)
             return
         if _media_type(scope) != 'application/x-www-form-urlencoded':
-            await self._plain(send, 415, b'unsupported media type', scheme)
+            html, csp = _fail_page('', 'unsupported media type')
+            await self._send_html(send, html, csp, scheme, status=415)
             return
         payload = await _read_capped(receive, MIGRATE_CAP)
         if payload is None:
             return
         if payload is False:
-            await self._plain(send, 413, b'request too large', scheme)
+            html, csp = _fail_page('', 'request too large')
+            await self._send_html(send, html, csp, scheme, status=413)
             return
         try:
             text = payload.decode('utf-8')
@@ -1108,23 +1199,30 @@ class HttpsMiddleware:
             obj = None
             error = 'bad payload'
             if len(form) == 1 and len(values) == 1 and isinstance(values[0], str):
-                obj = unpack_payload(values[0])
+                obj = parse_move_body(values[0])
                 error = validate_bundle(obj) if obj is not None else 'bad payload'
             if error:
-                html = _fail_html(obj.get('origin') if isinstance(obj, dict) else '')
-                await self._send_html(send, html, _MOVE_CSP, scheme, status=400)
+                html, csp = _fail_page(obj.get('origin') if isinstance(obj, dict) else '')
+                await self._send_html(send, html, csp, scheme, status=400)
                 return
+            receipt = {
+                'target': origin,
+                'confirm': False,
+                'checksum': payload_checksum(obj),
+                'count': project_count(obj),
+            }
             html, csp = _page(
                 'Moving your projects',
-                'clMigrate.receive(%s);' % _js({'target': origin, 'confirm': not (HSTS_ENABLED and HSTS_SECONDS > 0)}),
+                'clMigrate.receive(%s);' % _js(receipt),
                 "'none'",
                 embedded=obj,
                 note='Moving your projects…',
+                ancestors=_ancestors(obj.get('origin')),
             )
             await self._send_html(send, html, csp, scheme)
         except Exception:
-            html = _fail_html('')
-            await self._send_html(send, html, _MOVE_CSP, scheme, status=400)
+            html, csp = _fail_page('')
+            await self._send_html(send, html, csp, scheme, status=400)
 
 def _quiet_server(config):
     """A uvicorn server that does not install signal handlers.

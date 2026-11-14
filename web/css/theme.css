@@ -181,7 +181,7 @@ h4{margin:var(--s3) 0 var(--s1);color:var(--mut);font-size:10.5px;font-weight:60
 .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:6px;padding:32px 12px;color:var(--mut)}.empty p{margin:6px 0 0;color:var(--txt2);font-weight:500}.empty small{max-width:220px}
 canvas{width:100%;background:var(--l0);border:1px solid var(--line);border-radius:var(--r2)}
 /* toasts */
-.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:10px;background:var(--l2);border:1px solid var(--line2);color:var(--txt);padding:10px 14px 10px 12px;border-radius:10px;z-index:90;box-shadow:var(--sh3);font-size:12.5px;max-width:min(640px,90vw);animation:toastIn 200ms cubic-bezier(.2,.8,.3,1)}
+.toast{position:fixed;bottom:46px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:10px;background:var(--l2);border:1px solid var(--line2);color:var(--txt);padding:10px 14px 10px 12px;border-radius:10px;z-index:90;box-shadow:var(--sh3);font-size:12.5px;max-width:min(640px,90vw);animation:toastIn 200ms cubic-bezier(.2,.8,.3,1)}
 .toast::before{content:'';width:8px;height:8px;border-radius:50%;background:var(--acc);box-shadow:0 0 8px var(--acc);flex:none}.toast.err::before{background:var(--err);box-shadow:0 0 8px var(--err)}.toast.err{border-color:rgba(248,113,113,.35)}
 @keyframes toastIn{from{opacity:0;transform:translate(-50%,8px)}}
 /* modals, menus, command palette */
