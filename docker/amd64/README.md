@@ -18,7 +18,7 @@ arduino-cli core update-index && arduino-cli core install esp32:esp32@3.3.12
 docker run -d --name esp32lab -p 80:8765 --restart unless-stopped \
   -v esp32lab-data:/home/sim/.esp32lab -v esp32lab-cache:/home/sim/.cache/arduino esp32-lab:local
 ```
-Do not publish container port 8765. Host 443 (`-p 443:8443`) waits until HTTPS is approved. See `web/README.md`.
+Do not publish container port 8765. Host 443 (`-p 443:8443`) waits until HTTPS is approved. This repository does not open it. See `web/README.md` and `docs/https.md`.
 3. Oracle images ship restrictive iptables; open ports (and persist):
 ```
 sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 80 -j ACCEPT

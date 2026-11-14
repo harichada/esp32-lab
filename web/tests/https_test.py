@@ -3,7 +3,7 @@
 Flags default off. Nothing here contacts the live host. Host names in these
 tests are headers sent to 127.0.0.1.
 """
-import asyncio, base64, http.client, json, os, re, socket, ssl, subprocess, sys, tempfile, unittest, urllib.parse
+import asyncio, base64, http.client, json, os, re, socket, ssl, subprocess, sys, tempfile, time, unittest, urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,7 +14,16 @@ import https
 import server
 import staging
 
-HOST = '129-158-200-25.sslip.io'
+HOST = 'esp32lab.duckdns.org'
+
+
+def _on(env):
+    """Turn the master flag on, then apply ``env``. An explicit 0 in ``env`` wins."""
+    merged = {'HTTPS_ENABLED': '1'}
+    merged.update(env)
+    https.apply_env(merged)
+
+
 IP_HOST = '129.158.200.25'
 NS_HTTP = (
     'http://www.w3.org/2000/svg',
@@ -248,11 +257,11 @@ class HttpsUnitTest(unittest.TestCase):
         scope = {'path': '/some/path', 'raw_path': b'/some/path', 'query_string': b'x=1'}
         self.assertEqual(
             https.redirect_location(scope, HOST),
-            'https://129-158-200-25.sslip.io/some/path?x=1',
+            'https://esp32lab.duckdns.org/some/path?x=1',
         )
         self.assertEqual(
             https.redirect_location({'path': '/some/path', 'raw_path': b'/some/path', 'query_string': b''}, HOST),
-            'https://129-158-200-25.sslip.io/some/path',
+            'https://esp32lab.duckdns.org/some/path',
         )
         self.assertIsNone(https.redirect_location(scope, 'https://' + HOST))
         self.assertIsNone(https.redirect_location(scope, HOST + '/steal'))
@@ -285,6 +294,15 @@ class HttpsUnitTest(unittest.TestCase):
         self.assertEqual(origin['query_string'], b'x=1')
         self.assertNotIn(b'://', origin['raw_path'])
         self.assertEqual(https.redirect_location(origin, HOST), 'https://%s/some/path?x=1' % HOST)
+        https.apply_env({'HTTPS_ENABLED': '1', 'HTTPS_REDIRECT': '1', 'HTTPS_HOST': 'lab.example'})
+        https.set_listener(True, '/tmp/esp32lab-configured-host.pem')
+        configured = {
+            'type': 'http', 'scheme': 'http', 'method': 'GET', 'path': '/some/path',
+            'raw_path': b'/some/path', 'query_string': b'x=1',
+            'headers': [(b'host', b'lab.example')],
+        }
+        self.assertFalse(https.redirect_suppressed(configured))
+        self.assertEqual(https.redirect_url(configured), 'https://lab.example/some/path?x=1')
 
     def test_hsts_parse_and_host_list(self):
         logs = []
@@ -299,6 +317,10 @@ class HttpsUnitTest(unittest.TestCase):
         self.assertEqual(https._parse_hsts('63072001'), 0)
         self.assertTrue(logs)
         https.apply_env({})
+        self.assertFalse(https.ENABLED)
+        self.assertFalse(https.HSTS_ENABLED)
+        self.assertFalse(https.REDIRECT)
+        self.assertEqual(https.HTTPS_HOST, '')
         self.assertIsNone(https.ALLOWED)
         https.apply_env({'ALLOWED_HOSTS': '129.158.200.25, %s' % HOST})
         self.assertEqual(https.ALLOWED, frozenset({IP_HOST, HOST}))
@@ -409,7 +431,10 @@ class HttpsUnitTest(unittest.TestCase):
         for page in (staging.PRIVATE_HTML, staging.DOWN_HTML):
             self.assertNotIn('http://', page)
         hook = (root.parents[0] / 'docker' / 'letsencrypt' / 'esp32lab-deploy-hook.sh').read_text()
-        self.assertIn('docker restart esp32lab', hook)
+        self.assertIn('docker kill -s HUP', hook)
+        self.assertNotIn('docker restart', hook)
+        self.assertNotIn('sslip', hook)
+        self.assertIn('esp32lab.duckdns.org', hook)
         self.assertNotIn('-p 8765', hook)
         self.assertNotIn('8765:8765', hook)
         renew = (root.parents[0] / 'docker' / 'letsencrypt' / 'esp32lab-certbot-renew.sh').read_text()
@@ -455,6 +480,53 @@ class HttpsUnitTest(unittest.TestCase):
 
         self.assertEqual(asyncio.run(https._read_capped(exact, 4)), b'abcd')
 
+    def test_master_flag_off_matches_the_inner_response(self):
+        https.apply_env({
+            'HTTPS_ENABLED': '0',
+            'HTTPS_REDIRECT': '1',
+            'HTTPS_HOST': HOST,
+            'HSTS_ENABLED': '1',
+            'HSTS_SECONDS': '300',
+            'ALLOWED_HOSTS': '127.0.0.1',
+        })
+        https.set_listener(True, '/tmp/esp32lab-unused.pem')
+        headers = [
+            [b'content-type', b'text/plain'],
+            [b'x-parity', b'same'],
+            [b'strict-transport-security', b'max-age=9'],
+        ]
+
+        async def app(scope, receive, send):
+            await send({
+                'type': 'http.response.start', 'status': 204,
+                'headers': [list(item) for item in headers],
+            })
+            await send({'type': 'http.response.body', 'body': b'plain-http'})
+
+        scope = {
+            'type': 'http', 'scheme': 'http', 'method': 'GET', 'path': '/some/path',
+            'raw_path': b'/some/path', 'query_string': b'',
+            'headers': [(b'host', b'evil.example')],
+        }
+
+        async def run(target):
+            sent = []
+
+            async def receive():
+                return {'type': 'http.request', 'body': b'', 'more_body': False}
+
+            async def send(message):
+                sent.append(message)
+
+            await target(scope, receive, send)
+            return sent
+
+        direct = asyncio.run(run(app))
+        wrapped = asyncio.run(run(https.HttpsMiddleware(app)))
+        self.assertEqual(wrapped, direct)
+        self.assertEqual(wrapped[0]['status'], 204)
+        self.assertEqual(wrapped[0]['headers'], headers)
+
 
 class HttpsServerTest(unittest.TestCase):
     @classmethod
@@ -470,7 +542,7 @@ class HttpsServerTest(unittest.TestCase):
         (challenge / cls.token).write_text('challenge-body', encoding='ascii')
         (challenge / 'short').write_text('too-short', encoding='ascii')
         (challenge / 'escape').symlink_to('/etc/passwd')
-        https.apply_env({
+        _on({
             'TLS_CERT_FILE': cls.cert,
             'TLS_KEY_FILE': cls.key,
             'HTTPS_HOST': HOST,
@@ -484,14 +556,14 @@ class HttpsServerTest(unittest.TestCase):
     def tearDownClass(cls):
         cls.bg.stop()
         cls.tmp.cleanup()
-        https.apply_env({})
+        _on({})
         https.set_listener(False, '')
         staging.apply_env({})
         server.TOKEN = ''
         https.set_logger(https._default_log)
 
     def setUp(self):
-        https.apply_env({'HTTPS_HOST': HOST, 'ACME_WEBROOT': str(self.webroot)})
+        _on({'HTTPS_HOST': HOST, 'ACME_WEBROOT': str(self.webroot)})
         https.set_listener(True, self.cert)
         staging.apply_env({'SIM_STAGING': '0', 'SIM_ACCESS_TOKEN': '', 'SIM_STAGING_UPSTREAM': '', 'SIM_BASE_PATH': ''})
         server.TOKEN = ''
@@ -513,9 +585,9 @@ class HttpsServerTest(unittest.TestCase):
         conn.close()
         self.assertIn(b'"ok"', body)
 
-    def test_redirect_matrix_for_ip_and_sslip_hosts(self):
-        https.apply_env({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST, 'ACME_WEBROOT': str(self.webroot)})
-        target = 'https://129-158-200-25.sslip.io/some/path?x=1'
+    def test_redirect_matrix_for_ip_and_configured_host(self):
+        _on({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST, 'ACME_WEBROOT': str(self.webroot)})
+        target = 'https://esp32lab.duckdns.org/some/path?x=1'
         for host in (IP_HOST, HOST, IP_HOST + ':80', 'evil.example'):
             for method, code in (('GET', 301), ('HEAD', 301), ('POST', 308), ('PUT', 308)):
                 status, pairs, _ = request(self.http, method, '/some/path?x=1', host=host, body=b'{}' if method == 'POST' else None)
@@ -527,7 +599,7 @@ class HttpsServerTest(unittest.TestCase):
         self.assertEqual(encoded, 301)
         self.assertEqual(
             _header(pairs, 'location'),
-            'https://129-158-200-25.sslip.io/some/path?x=1&y=a%20b',
+            'https://esp32lab.duckdns.org/some/path?x=1&y=a%20b',
         )
         root, pairs, page = request(self.http, 'GET', '/', host=IP_HOST)
         self.assertEqual(root, 200)
@@ -547,13 +619,13 @@ class HttpsServerTest(unittest.TestCase):
         self.assertEqual(notices, 200)
         self.assertIn(b'clMigrate.handoff', notice)
         # Redirect off: the same bookmark is not sent anywhere.
-        https.apply_env({'HTTPS_REDIRECT': '0', 'HTTPS_HOST': HOST})
+        _on({'HTTPS_REDIRECT': '0', 'HTTPS_HOST': HOST})
         status, pairs, _ = request(self.http, 'GET', '/some/path?x=1', host=IP_HOST)
         self.assertNotIn(status, (301, 308))
         self.assertIsNone(_header(pairs, 'location'))
 
     def test_redirect_exempts_health_and_acme_and_refuses_websocket(self):
-        https.apply_env({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST, 'ACME_WEBROOT': str(self.webroot)})
+        _on({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST, 'ACME_WEBROOT': str(self.webroot)})
         status, pairs, body = request(self.http, 'GET', '/api/health', host=IP_HOST)
         self.assertEqual(status, 200)
         self.assertIsNone(_header(pairs, 'location'))
@@ -574,7 +646,7 @@ class HttpsServerTest(unittest.TestCase):
         self.assertIn(b'Use wss://', raw)
 
     def test_acme_rejects_traversal_even_when_redirect_is_on(self):
-        https.apply_env({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST, 'ACME_WEBROOT': str(self.webroot)})
+        _on({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST, 'ACME_WEBROOT': str(self.webroot)})
         server.TOKEN = 'secret'
         status, _, body = request(self.http, 'GET', '/.well-known/acme-challenge/' + self.token)
         self.assertEqual(status, 200)
@@ -604,7 +676,7 @@ class HttpsServerTest(unittest.TestCase):
             self.assertIsNone(_header(pairs, 'location'), path)
 
     def test_hsts_and_upgrade_insecure_requests_only_on_https(self):
-        https.apply_env({'HSTS_SECONDS': '300', 'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST})
+        _on({'HSTS_ENABLED': '1', 'HSTS_SECONDS': '300', 'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST})
         status, pairs, _ = request(self.tls, 'GET', '/api/health', tls=True, cafile=self.cert)
         self.assertEqual(status, 200)
         self.assertEqual(_header(pairs, 'strict-transport-security'), 'max-age=300')
@@ -615,7 +687,7 @@ class HttpsServerTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIsNone(_header(pairs, 'strict-transport-security'))
         self.assertNotIn('upgrade-insecure-requests', _header(pairs, 'content-security-policy') or '')
-        https.apply_env({'HSTS_SECONDS': '0', 'HTTPS_HOST': HOST})
+        _on({'HSTS_SECONDS': '0', 'HTTPS_HOST': HOST})
         _, pairs, _ = request(self.tls, 'GET', '/api/health', tls=True, cafile=self.cert)
         self.assertIsNone(_header(pairs, 'strict-transport-security'))
         # An existing page CSP gains the directive on HTTPS and keeps it off on HTTP.
@@ -630,7 +702,7 @@ class HttpsServerTest(unittest.TestCase):
         self.assertNotIn('upgrade-insecure-requests', plain)
 
     def test_secure_staging_cookie_follows_the_socket(self):
-        https.apply_env({'HTTPS_REDIRECT': '0', 'HTTPS_HOST': HOST})
+        _on({'HTTPS_REDIRECT': '0', 'HTTPS_HOST': HOST})
         staging.apply_env({
             'SIM_STAGING': '1', 'SIM_ACCESS_TOKEN': 'stage-token',
             'SIM_STAGING_UPSTREAM': '', 'SIM_BASE_PATH': '/',
@@ -653,7 +725,7 @@ class HttpsServerTest(unittest.TestCase):
         self.assertNotIn('secure', plain)
 
     def test_allowed_hosts_and_health_tls_fields(self):
-        https.apply_env({
+        _on({
             'ALLOWED_HOSTS': '129.158.200.25, %s' % HOST,
             'HTTPS_REDIRECT': '1',
             'HTTPS_HOST': HOST,
@@ -681,7 +753,7 @@ class HttpsServerTest(unittest.TestCase):
         self.assertIn(b'unknown host', raw)
 
     def test_wss_is_not_refused_when_redirect_is_on(self):
-        https.apply_env({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST})
+        _on({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST})
         called = {}
 
         async def app(scope, receive, send):
@@ -715,19 +787,25 @@ class HttpsServerTest(unittest.TestCase):
         logs = []
         https.set_logger(lambda msg: logs.append(str(msg)))
         https.set_listener(False, '')
-        https.apply_env({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': IP_HOST})
+        _on({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': IP_HOST})
         status, pairs, _ = request(self.http, 'GET', '/some/path?x=1', host=IP_HOST)
         self.assertNotIn(status, (301, 308))
         self.assertIsNone(_header(pairs, 'location'))
-        self.assertTrue(any('IP host' in line and 'TLS is down' in line for line in logs), logs)
+        self.assertTrue(any('no valid certificate is listening' in line for line in logs), logs)
+        logs.clear()
+        _on({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST})
+        status, pairs, _ = request(self.http, 'GET', '/some/path?x=1', host=HOST)
+        self.assertNotIn(status, (301, 308))
+        self.assertIsNone(_header(pairs, 'location'))
+        self.assertTrue(any('no valid certificate is listening' in line for line in logs), logs)
         https.set_listener(True, self.cert)
-        https.apply_env({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST})
+        _on({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST})
         status, pairs, _ = request(self.http, 'GET', '/some/path?x=1', host=IP_HOST)
         self.assertEqual(status, 301)
         self.assertEqual(_header(pairs, 'location'), 'https://%s/some/path?x=1' % HOST)
 
     def test_forged_host_is_not_a_redirect_target(self):
-        https.apply_env({
+        _on({
             'ALLOWED_HOSTS': '%s,%s' % (IP_HOST, HOST),
             'HTTPS_REDIRECT': '1',
             'HTTPS_HOST': HOST,
@@ -774,7 +852,7 @@ class HttpsServerTest(unittest.TestCase):
         self.assertNotIn(b':80', head.lower())
 
     def test_move_post_is_validated_and_not_stored(self):
-        https.apply_env({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST})
+        _on({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST})
         record = {
             'v': 1,
             'origin': 'http://127.0.0.1',
@@ -811,7 +889,7 @@ class HttpsServerTest(unittest.TestCase):
         self.assertIn("default-src 'none'", _header(bad[1], 'content-security-policy'))
 
     def test_migrate_page_clears_the_fragment_first_and_locks_the_csp(self):
-        https.apply_env({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST})
+        _on({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST})
         status, pairs, body = request(self.tls, 'GET', '/migrate', host=HOST, tls=True, cafile=self.cert)
         self.assertEqual(status, 200, body[:180])
         self.assertIn(b'clMigrate.receive', body)
@@ -823,7 +901,7 @@ class HttpsServerTest(unittest.TestCase):
 
     def test_post_cap_content_type_and_no_body_in_logs(self):
         import logging
-        https.apply_env({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST})
+        _on({'HTTPS_REDIRECT': '1', 'HTTPS_HOST': HOST})
         logs = []
         https.set_logger(lambda msg: logs.append(str(msg)))
         grabbed = []
@@ -920,10 +998,19 @@ class HttpsServerTest(unittest.TestCase):
         self.assertNotIn(marker, joined)
         self.assertNotIn('TRACE-MARKER-991', joined)
 
+    def test_hsts_header_is_absent_by_default(self):
+        _on({'HTTPS_HOST': HOST, 'HSTS_ENABLED': '0', 'HSTS_SECONDS': '31536000'})
+        _, pairs, _ = request(self.tls, 'GET', '/api/health', tls=True, cafile=self.cert)
+        self.assertIsNone(_header(pairs, 'strict-transport-security'))
+        _on({'HTTPS_HOST': HOST})
+        _, pairs, _ = request(self.tls, 'GET', '/api/health', tls=True, cafile=self.cert)
+        self.assertIsNone(_header(pairs, 'strict-transport-security'))
+        self.assertNotIn('strict-transport-security', ' '.join(name for name, _value in pairs))
+
 
 class HttpsFailSafeTest(unittest.TestCase):
     def tearDown(self):
-        https.apply_env({})
+        _on({})
         https.set_listener(False, '')
         https.set_logger(https._default_log)
         server.TOKEN = ''
@@ -931,7 +1018,7 @@ class HttpsFailSafeTest(unittest.TestCase):
     def test_missing_cert_serves_http_and_health_ok_is_unchanged(self):
         logs = []
         https.set_logger(lambda msg: logs.append(str(msg)))
-        https.apply_env({
+        _on({
             'TLS_CERT_FILE': '/tmp/esp32lab-no-such-fullchain.pem',
             'TLS_KEY_FILE': '/tmp/esp32lab-no-such-privkey.pem',
             'HTTPS_HOST': HOST,
@@ -964,7 +1051,7 @@ class HttpsFailSafeTest(unittest.TestCase):
             os.chmod(key, 0o600)
             logs = []
             https.set_logger(lambda msg: logs.append(str(msg)))
-            https.apply_env({'TLS_CERT_FILE': cert, 'TLS_KEY_FILE': key})
+            _on({'TLS_CERT_FILE': cert, 'TLS_KEY_FILE': key})
             bg = https.Background(server.app, tls_port=0).start()
             try:
                 self.assertIsNone(bg.tls_port)
@@ -987,7 +1074,7 @@ class HttpsFailSafeTest(unittest.TestCase):
             blocker.listen(1)
             busy = blocker.getsockname()[1]
             logs.clear()
-            https.apply_env({'TLS_CERT_FILE': good, 'TLS_KEY_FILE': good_key})
+            _on({'TLS_CERT_FILE': good, 'TLS_KEY_FILE': good_key})
             bg = https.Background(server.app, tls_port=busy).start()
             try:
                 self.assertIsNone(bg.tls_port)
@@ -1005,7 +1092,7 @@ class HttpsFailSafeTest(unittest.TestCase):
             os.chmod(key, 0o000)
             logs = []
             https.set_logger(lambda msg: logs.append(str(msg)))
-            https.apply_env({'TLS_CERT_FILE': cert, 'TLS_KEY_FILE': key, 'HTTPS_HOST': HOST, 'HTTPS_REDIRECT': '1'})
+            _on({'TLS_CERT_FILE': cert, 'TLS_KEY_FILE': key, 'HTTPS_HOST': HOST, 'HTTPS_REDIRECT': '1'})
             bg = https.Background(server.app, tls_port=0).start()
             try:
                 self.assertIsNone(bg.tls_port)
@@ -1031,6 +1118,76 @@ class HttpsFailSafeTest(unittest.TestCase):
             self.assertIn('reason=unreadable', warnings[0])
             self.assertIn('mode=000', warnings[0])
             self.assertIn('serving=http', warnings[0])
+            self.assertTrue(any('no valid certificate is listening' in line for line in logs), logs)
+
+    def test_master_flag_off_does_not_listen_or_redirect(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cert, key = _make_cert(tmp)
+            logs = []
+            https.set_logger(lambda msg: logs.append(str(msg)))
+            https.apply_env({
+                'HTTPS_ENABLED': '0',
+                'HTTPS_REDIRECT': '1',
+                'HTTPS_HOST': HOST,
+                'HSTS_ENABLED': '1',
+                'HSTS_SECONDS': '31536000',
+                'TLS_CERT_FILE': cert,
+                'TLS_KEY_FILE': key,
+            })
+            bg = https.Background(server.app, tls_port=0).start()
+            try:
+                self.assertIsNone(bg.tls)
+                self.assertIsNone(bg.tls_port)
+                status, pairs, body = request(bg.http_port, 'GET', '/api/health', host='evil.example')
+                self.assertEqual(status, 200)
+                self.assertIsNone(_header(pairs, 'location'))
+                self.assertIsNone(_header(pairs, 'strict-transport-security'))
+                self.assertFalse(json.loads(body)['tls']['enabled'])
+                page, page_pairs, _ = request(bg.http_port, 'GET', '/js/app.js?v=80')
+                self.assertNotIn(page, (301, 308))
+                self.assertIsNone(_header(page_pairs, 'location'))
+                self.assertIsNone(_header(page_pairs, 'strict-transport-security'))
+            finally:
+                bg.stop()
+            self.assertFalse(any(line.startswith('tls key warning') for line in logs), logs)
+            self.assertTrue(any('HTTPS_ENABLED is off' in line for line in logs), logs)
+
+    def test_bad_reload_keeps_http_and_the_current_certificate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cert, key = _make_cert(tmp)
+            logs = []
+            https.set_logger(lambda msg: logs.append(str(msg)))
+            https.apply_env({
+                'HTTPS_ENABLED': '1',
+                'HTTPS_REDIRECT': '1',
+                'HTTPS_HOST': HOST,
+                'TLS_CERT_FILE': cert,
+                'TLS_KEY_FILE': key,
+            })
+            bg = https.Background(server.app, tls_port=0).start()
+            try:
+                status, pairs, _ = request(bg.http_port, 'GET', '/js/app.js?v=80', host=IP_HOST)
+                self.assertEqual(status, 301)
+                self.assertEqual(_header(pairs, 'location'), 'https://%s/js/app.js?v=80' % HOST)
+                Path(key).write_text('not a key\n', encoding='ascii')
+                os.chmod(key, 0o600)
+                self.assertTrue(https.request_tls_reload())
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and not any('certificate reload failed' in line for line in logs):
+                    time.sleep(0.05)
+                self.assertTrue(
+                    any('certificate reload failed' in line and 'HTTP stays up' in line for line in logs),
+                    logs,
+                )
+                status, pairs, _ = request(bg.http_port, 'GET', '/js/app.js?v=80', host=IP_HOST)
+                self.assertEqual(status, 301)
+                self.assertEqual(_header(pairs, 'location'), 'https://%s/js/app.js?v=80' % HOST)
+                health, health_pairs, body = request(bg.http_port, 'GET', '/api/health')
+                self.assertEqual(health, 200)
+                self.assertIsNone(_header(health_pairs, 'location'))
+                self.assertTrue(json.loads(body)['tls']['enabled'])
+            finally:
+                bg.stop()
 
 
 if __name__ == '__main__':

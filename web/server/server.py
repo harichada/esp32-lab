@@ -13,8 +13,9 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       SCHEMATIC_MATCH_LAYOUT (default 1). 0 puts <meta name="schmatch" content="0"> on the lab page
       so every visitor gets the column schematic. Any other value leaves index.html unchanged,
       and ?schmatch= on that page is then free to choose.
-      HTTPS (off unless set): ACME_WEBROOT, TLS_CERT_FILE, TLS_KEY_FILE, TLS_PORT,
-      HTTPS_REDIRECT, HTTPS_HOST, HSTS_SECONDS, ALLOWED_HOSTS. See https.py.
+      HTTPS (off unless set): HTTPS_ENABLED, ACME_WEBROOT, TLS_CERT_FILE, TLS_KEY_FILE,
+      TLS_PORT, HTTPS_REDIRECT, HTTPS_HOST, HSTS_ENABLED, HSTS_SECONDS, ALLOWED_HOSTS.
+      See https.py. The documented host is esp32lab.duckdns.org; the default is empty.
       The process is started with proxy_headers off, so the scheme is the socket.
 """
 import asyncio, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, argparse

@@ -16,6 +16,7 @@ from pathlib import Path
 PORT = int(os.environ.get('MIGRATE_E2E_PORT', '18931'))
 os.environ['SIM_PREWARM'] = '0'
 os.environ['SIM_NETSTACK_WARM'] = '0'
+os.environ['HTTPS_ENABLED'] = '1'
 os.environ['HTTPS_REDIRECT'] = '1'
 os.environ['HTTPS_HOST'] = 'localhost'
 os.environ['ALLOWED_HOSTS'] = 'localhost,127.0.0.1'
@@ -28,6 +29,7 @@ import server
 import https
 
 https.apply_env({
+    'HTTPS_ENABLED': '1',
     'HTTPS_REDIRECT': '1',
     'HTTPS_HOST': 'localhost',
     'ALLOWED_HOSTS': 'localhost,127.0.0.1',
