@@ -10,15 +10,19 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       SIM_COMPILE_QUEUE, SIM_COMPILE_QUEUE_MAX, SIM_COMPILE_QUEUE_TIMEOUT_S,
       SIM_ORPHAN_MAX_AGE_S and the matching *_MAX_AGE_S knobs.
       Staging (off unless set): SIM_STAGING, SIM_ACCESS_TOKEN, SIM_STAGING_UPSTREAM, SIM_BASE_PATH.
+      SCHEMATIC_MATCH_LAYOUT (default 1). 0 puts <meta name="schmatch" content="0"> on the lab page
+      so every visitor gets the column schematic. Any other value leaves index.html unchanged,
+      and ?schmatch= on that page is then free to choose.
 """
 import asyncio, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, argparse
+from email.utils import formatdate
 import diskkeep
 import staging
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
 import secrets
 from fastapi.responses import PlainTextResponse
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
@@ -1397,8 +1401,35 @@ def robots_txt():
     if found.is_file():
         return FileResponse(found)
     raise HTTPException(status_code=404)
+# Site-wide schematic switch. Read on each page load so a restart picks it up
+# with no second request. Only "0" turns it off; the file is served unchanged otherwise.
+SCHEMATIC_META = '<meta name="schmatch" content="0">'
+def schematic_match_enabled(env=None):
+    env = os.environ if env is None else env
+    return str(env.get('SCHEMATIC_MATCH_LAYOUT', '1')).strip() != '0'
+def lab_page(env=None):
+    """Lab HTML and whether it is the file unchanged. Off injects one meta tag in <head>."""
+    raw = (SITE / 'index.html').read_bytes()
+    if schematic_match_enabled(env):
+        return raw, True
+    text = raw.decode('utf-8')
+    if SCHEMATIC_META not in text and '<head>' in text:
+        text = text.replace('<head>', '<head>\n' + SCHEMATIC_META, 1)
+    return text.encode('utf-8'), False
 @app.get('/')
-def index(): return FileResponse(SITE / 'index.html')
+@app.get('/index.html')
+def index():
+    body, plain = lab_page()
+    if plain:
+        return FileResponse(SITE / 'index.html')
+    # The off page is the file plus one meta tag, so its validators are over that
+    # body. Last-Modified stays the file's mtime; ETag changes with the injection.
+    stat = (SITE / 'index.html').stat()
+    etag = '"' + hashlib.sha256(body).hexdigest() + '"'
+    return HTMLResponse(body, headers={
+        'ETag': etag,
+        'Last-Modified': formatdate(stat.st_mtime, usegmt=True),
+    })
 app.mount('/', StaticFiles(directory=str(SITE)), name='site')
 app.add_middleware(staging.StagingMiddleware)
 
