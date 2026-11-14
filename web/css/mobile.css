@@ -293,8 +293,9 @@ body.m.view3d .hint{display:none}
 body.m.viewsch .hint{display:block;left:12px;right:12px;bottom:calc(236px + env(safe-area-inset-bottom));max-width:none!important;height:auto;white-space:normal!important;overflow:visible!important;text-overflow:clip;line-height:1.35}
 /* The arrangement control is a second row of the view toolbar, still beside 2D/Sch.
    The hint and the toast sit above that row. */
-body.m.viewsch .canvas-tools{flex-wrap:wrap;max-width:calc(100% - 120px)}
-body.m.viewsch .sch-layout{flex:1 0 auto}
+body.m.viewsch .canvas-tools{flex-wrap:nowrap;align-items:flex-start;overflow-x:auto;max-width:calc(100% - 120px);touch-action:pan-x}
+body.m .zoom-tools #schFitAll{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;min-width:44px;min-height:44px;height:44px}
+body.m.viewsch .sch-layout,body.m.viewsch .view-toggle{flex:0 0 auto}
 body.m.viewsch .toast{bottom:calc(300px + env(safe-area-inset-bottom))}
 body.m .sch-layout .sch-lay,body.m .sch-fitall{min-width:44px;min-height:44px;padding:0 12px;font-size:13px}
 body.m.viewsch #mSel [data-a=rot],body.m.viewsch #mSel [data-a=del]{display:none!important}
@@ -318,6 +319,7 @@ body.m .tel-i canvas{width:84px;height:22px}body.m .tel-h{display:none}body.m .t
    #bFit stays hidden here; #bFitPill is the visible fit control next to the %. */
 @media (max-width:430px){
   body.m .zoom-tools{top:88px;bottom:auto;right:max(8px,env(safe-area-inset-right));left:auto;flex-direction:column;gap:6px;padding:4px;z-index:14}
+  body.m.viewsch .zoom-tools{flex-direction:row;flex-wrap:nowrap;align-items:flex-start;overflow-x:auto;width:max-content;max-width:calc(100% - 16px)}
   body.m .zoom-tools #bZoomOut,body.m .zoom-tools #bZoomIn,body.m .zoom-tools #zoomPct,body.m .zoom-tools #bFitPill{display:inline-flex!important;width:44px;min-width:44px;height:44px;min-height:44px;padding:0;align-items:center;justify-content:center;box-sizing:border-box}
   body.m .zoom-tools #bFit{display:none!important}
   body.m.view3d .zoom-tools #zoomPct,body.m.view3d .zoom-tools #bFitPill{display:inline-flex!important}
@@ -343,4 +345,5 @@ html[data-cl-env=staging] body.m .modal{padding-top:calc(54px + var(--stage-offs
 }
 @media (max-width:430px){
   html[data-cl-env=staging] body.m .zoom-tools{top:calc(88px + var(--stage-offset))}
+  html[data-cl-env=staging] body.m.viewsch .zoom-tools{top:calc(88px + var(--stage-offset))}
 }

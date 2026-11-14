@@ -67,10 +67,10 @@ test('the match flag defaults on and ?schmatch=0 is the off switch', () => {
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
   const css = fs.readFileSync(path.join(__dirname, '../css/theme.css'), 'utf8');
   const mobile = fs.readFileSync(path.join(__dirname, '../css/mobile.css'), 'utf8');
-  assert.match(html, /schematic\.js\?v=62/);
+  assert.match(html, /schematic\.js\?v=63/);
   assert.match(html, /pinch\.js\?v=62/);
-  assert.match(html, /theme\.css\?v=66/);
-  assert.match(html, /mobile\.css\?v=70/);
+  assert.match(html, /theme\.css\?v=67/);
+  assert.match(html, /mobile\.css\?v=71/);
   for (const state of [':hover', ':active', ':focus-visible', ':disabled']) {
     assert.match(css, new RegExp('\\.sch-lay' + state));
   }
@@ -122,6 +122,17 @@ function groupInside(model, ids, view, clear) {
   const x1 = view.x + clear.width / s, y1 = view.y + clear.height / s;
   return model.symbols.filter((sym) => ids.includes(sym.id)).every((sym) => sym.x >= x0 - 1 && sym.y >= y0 - 1 && sym.x + sym.w <= x1 + 1 && sym.y + sym.h <= y1 + 1);
 }
+
+test('part labels stay at 11px on screen and shorten instead of shrinking', () => {
+  assert.equal(S.labelScreenTarget(12, 0.61), 11);
+  assert.equal(S.labelScreenTarget(12, 2), 12);
+  assert.equal(S.labelScreenTarget(11, 1), 11);
+  assert.equal(S.labelScreenTarget(8, 0.4), 11);
+  assert.equal(S.labelScreenTarget(8, 3), 11);
+  assert.equal(S.shortPartLabel('R1', '220Ω', 'Resistor'), 'R1 220Ω');
+  assert.equal(S.shortPartLabel('LED1', '', ''), 'LED1');
+  assert.equal(S.shortPartLabel('', '', 'ESP32'), 'ESP32');
+});
 
 test('open zoom frames the wired parts, and only a crowded sheet zooms for part names', () => {
   assert.equal(S.labelScreenPx(9.5, 0.25, 1), 2.375);
