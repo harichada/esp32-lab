@@ -24,6 +24,13 @@ body.m #bStop{display:none}body.m.running #bStop{display:inline-flex;width:40px;
 body.m.running .runctl .run span{display:none}body.m.running .runctl .run{padding:0;width:40px;justify-content:center}
 body.m #mMenu{width:44px;height:44px;border-radius:12px;color:var(--txt)}
 body.m .iconbtn,body.m button{min-height:44px}body.m .iconbtn{min-width:44px}
+body.m .auth-slot{display:none}
+body.m #mAuth button,#mSignIn,#mSignOut{min-height:44px;min-width:44px;width:100%;justify-content:flex-start}
+body.m #mAuth .auth-who{display:flex;align-items:center;min-height:44px;font-size:16px}
+body.m #mAuth button:hover,body.m #mSignIn:hover,body.m #mSignOut:hover{background:var(--l4)}
+body.m #mAuth button:active,body.m #mSignIn:active,body.m #mSignOut:active{transform:translateY(.5px)}
+body.m #mAuth button:focus-visible,body.m #mSignIn:focus-visible,body.m #mSignOut:focus-visible{outline:2px solid #0891b2;outline-offset:2px}
+body.m #mAuth button:disabled,body.m #mAuth button[aria-disabled="true"]{opacity:.45}
 /* ---- canvas ---- */
 body.m #main{position:fixed;left:0;right:0;top:var(--mTop);bottom:var(--mBot);height:auto;display:block}
 body.m #center{position:absolute;inset:0}

@@ -206,9 +206,18 @@ def ws_status(port, host, path='/nowhere'):
         while b'\r\n\r\n' not in data:
             chunk = sock.recv(4096)
             if not chunk:
-                break
+                return data
             data += chunk
-        return data
+        head, body = data.split(b'\r\n\r\n', 1)
+        match = re.search(br'(?i)\r\ncontent-length:\s*(\d+)\r\n', head + b'\r\n')
+        if match:
+            need = int(match.group(1))
+            while len(body) < need:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                body += chunk
+        return head + b'\r\n\r\n' + body
     finally:
         sock.close()
 

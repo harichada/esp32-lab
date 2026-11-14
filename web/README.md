@@ -195,11 +195,39 @@ With `HTTPS_ENABLED=1`, assets and API calls on plain HTTP are GET and HEAD 301,
 
 With the redirect on, a browser that has saved projects on the plain HTTP origin is shown a page from this server. That page posts the record to `https://HTTPS_HOST/migrate` in a hidden frame. The record is the POST body only, never a URL, query string, or fragment. The HTTPS page replies with the project count and the SHA-256 of the canonical JSON. `cl_migrate_attempt` is set on the HTTP origin only after the page checks that reply. An interrupted attempt does not set the flag and does not block a retry from the same tab. The HTTP copy is never deleted. Cancel (`?clstay=1`) leaves the projects where they are. A failure stays on this server's page, which says the projects are still safe at the original address and how to retry. A POST larger than 2 MB is 413, a bad record is 400, and a wrong content type is 415. None of those responses is logged or written to disk. Caddy renews the certificate itself. The check and the rollback are in `docs/https.md`.
 
+## Sign-in
+
+Off unless `AUTH_ENABLED=1`. With the flag unset, `/auth/*` is the same 404 as any other unknown path: no cookie, no new header, and no database file. Google and GitHub each need their own flag and both client values. A missing flag or a missing secret hides that provider. `AUTH_GOOGLE=0` removes the Google button from the header and from the More sheet, and every `/auth/google` and `/auth/google/*` request is 404. GitHub keeps working. Live runs `AUTH_GOOGLE=0` until the Google consent screen is published.
+
+The callback is `AUTH_BASE_URL` plus `/auth/google/callback` or `/auth/github/callback`. Live is `https://esp32lab.duckdns.org/auth/google/callback` and `https://esp32lab.duckdns.org/auth/github/callback`. Staging is `https://esp32lab.duckdns.org/staging/auth/google/callback` and `https://esp32lab.duckdns.org/staging/auth/github/callback`. The Host header is not an input. Google's scope is `openid email profile`. GitHub's scope is `read:user user:email`.
+
+The session cookie is `cl_session`: HttpOnly, Secure, SameSite=Lax, no Domain, path `/` or the path of `AUTH_BASE_URL` (`/staging` on staging). Sign-out is `POST /auth/logout` with the CSRF token. Account data lives in the projects directory the server already mounts (`SIM_PROJECT_DIR`, default `~/.esp32lab/projects`). The database is `<SIM_PROJECT_DIR>/accounts/auth.sqlite`. That directory is created mode `0700` and the database file, including its SQLite `-wal` and `-shm` sidecars, is mode `0600`. Sessions, users, and account-saved projects are rows in that file, so the nightly backup of the projects volume covers them without a new job or a new mount. They are not the shared `/api/projects` JSON folder. `AUTH_DB` may name another file only when the resolved path is inside `SIM_PROJECT_DIR`. A path outside it is ignored.
+
+Secrets come from the environment or `--env-file` (`/home/opc/oauth.env` on live, `/home/opc/oauth-staging.env` on staging). The file is an allow-list. A non-empty process value wins. Values are not logged.
+
+Rollback: set `AUTH_ENABLED=0` and restart. The database file stays where it is and is not read.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `AUTH_ENABLED` | `0` | Only `1` turns sign-in on. |
+| `AUTH_GOOGLE` | `0` | Only `1` offers Google. Live stays `0` until the consent screen is published. |
+| `AUTH_GITHUB` | `0` | Only `1` offers GitHub. |
+| `AUTH_BASE_URL` | empty | Absolute origin, plus `/staging` on staging. Builds the callback. |
+| `AUTH_SESSION_DAYS` | `30` | Session lifetime, from 1 to 365. |
+| `AUTH_RATE_MAX` | `30` | Requests per client per window on `/auth/*`. |
+| `AUTH_RATE_WINDOW_S` | `60` | Window for that limit. |
+| `AUTH_HTTP_TIMEOUT_S` | `10` | Timeout for each provider call. |
+| `SIM_PROJECT_DIR` | `~/.esp32lab/projects` | Existing projects volume. Account data is `<this>/accounts/` (`0700`, files `0600`). |
+| `AUTH_DB` | `<SIM_PROJECT_DIR>/accounts/auth.sqlite` | SQLite file for users, sessions, and account projects. Ignored when it resolves outside `SIM_PROJECT_DIR`. |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | empty | Google web client. |
+| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | empty | GitHub OAuth app. |
+
 ## Tests
 - `node --test tests/*.test.js`: solver, JS-sketch runner, remote logic and the network log.
 - `python3 tests/diskkeep_test.py`: firmware-image reclaim, sketch/core LRU eviction, orphan sweep, the low-disk guard, the network-stack cache (it survives sketch cleanup and the orphan sweep, the size cap evicts the oldest entry, a shim-hash change misses, a firmware-cache hit is only the `[0.0s] cached` line, and the startup warm-up uses the browser's `SIM` define so its key matches a browser compile), and the compile-queue flags.
 - `python3 -m unittest tests/compile_queue_test.py` (from `web/`): two clients compile at once and the second waits, the same tab is still rate-limited, the queue cap and the timeout answer 429, a warm-up wait is logged, `SIM_COMPILE_QUEUE=0` restores the old 429, and a cache hit does not wait.
 - `python3 -m unittest tests/https_test.py` (from `web/`): exact-IP `TRUSTED_PROXY_IPS` (a slash or a bad token trusts nobody), forwarding headers from `172.30.0.5`, `172.18.0.5`, and `127.0.0.1` ignored, only `172.30.0.250` honored, the redirect matrix (301/308, path and query kept, `/staging/` kept, Host ignored), `/api/health` exempt, HSTS only on a trusted-proxy https request, the Secure staging cookie, `HEAD /` matching GET, and flag-off parity.
+- `python3 -m unittest tests/auth_test.py` (from `web/`): Google scope `openid email profile` and GitHub scope `read:user user:email`, `AUTH_GOOGLE=0` hiding Google and returning 404 for `/auth/google/*` while GitHub still starts, both providers, cancel, outage, state mismatch and replay, PKCE, bad Google tokens, open redirects, logout, the local-project import, the rate limit, the account database resolving inside `SIM_PROJECT_DIR/accounts` at `0700`/`0600`, and flag-off parity. The browser check is `npx playwright test --config web/tests/auth_e2e/playwright.config.ts` and `npx playwright test --config web/tests/auth_e2e/playwright.github-only.config.ts` (390 and 1280, with `AUTH_GOOGLE=0` on the second).
 - `python3 -m unittest tests/staging_test.py` (from `web/`): noindex and the page flag only when `SIM_STAGING=1`, the access-token 401 / cookie / redirect, a WebSocket upgrade without the cookie, `/staging` 404 when the upstream is empty, a rejected upstream URL, `http://esp32lab-staging:8765` accepted and a wrong port, a lookalike host, userinfo, `https`, an IP literal, and a path refused, a patched resolver that fails the name, a refused connection, and a blackholed address that times out, each answered with the 502 page (`reason=upstream_unreachable` or `reason=upstream_timeout`), an upstream 302 returned without a second request, prefix stripping, `X-Forwarded-For` / `Forwarded` / `X-Real-IP` / `X-Forwarded-Host` / `X-Forwarded-Proto` / `X-Client-IP` dropped (including mixed case and duplicates) and replaced with one peer `X-Forwarded-For`, a rotating `X-Forwarded-For` that still returns 429, backslash and double-encoded dot paths answered 404 with no upstream request, HEAD and OPTIONS auth plus method forwarding, a chunked body over 200 KiB answered 413, an unauthenticated `/staging` WebSocket refused before the upstream connection, the body limit, a connect failure and a timeout before the first byte both answered 502, and a WebSocket echo (text, binary, close code).
 - `node --test tests/storage.test.js`: the storage prefix is off by default and on in staging, and the app does not touch an unprefixed key in staging mode.
 - `node --test` also covers the project store (`tests/projects.test.js`).

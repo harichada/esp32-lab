@@ -46,6 +46,10 @@
     _all() { try { return JSON.parse(this.ls.getItem(KEY) || '{}') || {}; } catch (e) { return {}; } }
     _put(all) { this.ls.setItem(KEY, JSON.stringify(all)); }
     list() { return Object.values(this._all()).map((e) => ({ id: e.id, name: e.name, updated: e.updated, from: e.from || '' })).sort((a, b) => b.updated - a.updated); }
+    // Bodies kept on this device, for the one-time attach to an account.
+    snapshot() {
+      return Object.values(this._all()).filter((e) => e && e.id && e.proj).map((e) => ({ id: e.id, name: e.name || '', updated: e.updated || 0, proj: e.proj }));
+    }
     get(id) { const e = this._all()[id]; return e ? clone(e.proj) : null; }
     // strip runtime-only fields; returns the stored project id
     save(proj) {

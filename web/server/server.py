@@ -19,12 +19,19 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       Caddy terminates TLS. proxy_headers stays off. Forwarding headers are honored
       only from an address in TRUSTED_PROXY_IPS. The documented address is 172.30.0.250.
       STAGING_PROXY_ENABLED defaults to 0. /staging on this process is then 502.
+      Sign-in (off unless set): AUTH_ENABLED, AUTH_GOOGLE, AUTH_GITHUB, AUTH_BASE_URL.
+      Secrets: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GITHUB_CLIENT_ID,
+      GITHUB_CLIENT_SECRET, from the environment or --env-file. See auth.py.
+      Live keeps AUTH_GOOGLE=0 until the Google consent screen is published.
+      Account data is <SIM_PROJECT_DIR>/accounts/ (directory 0700, files 0600).
+      That is the projects volume this process already uses. No new mount.
 """
 import asyncio, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, argparse
 from email.utils import formatdate, parsedate
 import diskkeep
 import https
 import staging
+import auth
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
 import secrets
@@ -72,6 +79,7 @@ import builtins as _b, datetime as _dt
 def print(*a, **k): _b.print(_dt.datetime.now().strftime('%F %T'), *a, **{**k, 'flush': True})  # keep QEMU alive this long after the browser websocket drops
 staging.set_logger(print)
 https.set_logger(print)
+auth.set_logger(print)
 RING_BYTES = 48 * 1024 * 1024
 MAX_RUNS = min(MAX_RUNS, int(os.environ.get('SIM_MAX_RUNS_HARD', '6')))
 CLOSED_GRACE = float(os.environ.get('SIM_CLOSED_GRACE', '90'))  # tab closed/reloaded (pagehide): keep QEMU this long for a reload to re-attach
@@ -96,6 +104,7 @@ def _maybe_simtok(request, resp):
 staging.configure(max_body=MAX_BODY, sim_authed=_authed)
 staging.apply_env()
 https.apply_env()
+auth.apply_env()
 @app.middleware('http')
 async def gate(request: Request, call_next):
     if request.url.path.startswith('/server'):
@@ -1549,12 +1558,17 @@ def _index_response():
 def index():
     return _index_response()
 app.mount('/', StaticFiles(directory=str(SITE)), name='site')
+app.add_middleware(auth.AuthMiddleware)
 app.add_middleware(staging.StagingMiddleware)
 app.add_middleware(https.HttpsMiddleware)
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(); ap.add_argument('--port', type=int, default=8765); ap.add_argument('--host', default='127.0.0.1')
+    ap.add_argument('--env-file', default='', help='OAuth KEY=VALUE file. Values are not logged.')
     a = ap.parse_args()
+    if a.env_file:
+        auth.load_env_file(a.env_file)
+        auth.apply_env()
     print(f'QEMU={QEMU}\nROMDIR={ROMDIR}\nCLI={CLI}\nFQBN={FQBN}')
     # HTTP on --port (8765 in the container). Caddy terminates TLS.
     # proxy_headers=False and forwarded_allow_ips='' are set in https.py.

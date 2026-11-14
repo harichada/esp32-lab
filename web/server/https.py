@@ -568,6 +568,35 @@ def _peer_ip(scope):
         return ''
 
 
+def client_ip(scope):
+    """Client address for a per-caller limit. This does not decide https.
+
+    The TCP peer is the address. A peer outside ``TRUSTED_PROXY_IPS`` cannot
+    change it by sending ``X-Forwarded-For``. A trusted peer may name the
+    client as the rightmost valid IP in one ``X-Forwarded-For`` header. A
+    missing, repeated, or malformed header keeps the peer.
+    """
+    peer = _peer_ip(scope) or 'unknown'
+    if peer not in PROXY_IPS:
+        return peer
+    values = _forwarded_values(scope, b'x-forwarded-for')
+    if len(values) != 1:
+        return peer
+    text = values[0]
+    if text != text.strip() or not text or any(c in text for c in '\t\r\n'):
+        return peer
+    parts = [part.strip() for part in text.split(',')]
+    if not parts or any(not part for part in parts):
+        return peer
+    last = parts[-1]
+    if last.startswith('[') and last.endswith(']'):
+        last = last[1:-1]
+    try:
+        return str(ipaddress.ip_address(last))
+    except ValueError:
+        return peer
+
+
 def _forwarded_values(scope, name):
     found = []
     for key, value in scope.get('headers') or []:
@@ -1018,7 +1047,14 @@ class HttpsMiddleware:
             return
         # Master flag off: do not inspect the host, do not read forwarding
         # headers, do not redirect, and do not add or remove a header.
+        # /migrate and /migrate-done stay available once a public origin is
+        # configured, so Sign in on the plain HTTP address can move projects
+        # before the redirect itself is turned on.
         if not ENABLED:
+            path = scope.get('path') or '/'
+            if kind == 'http' and path in ('/migrate', '/migrate-done') and public_origin():
+                await self._migrate(scope, receive, send, scope.get('scheme') or '')
+                return
             await self.app(scope, receive, send)
             return
         forwarded = _apply_forwarded(scope)
