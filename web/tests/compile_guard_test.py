@@ -43,6 +43,21 @@ def _path_under(path, root):
     return path == root or path.startswith(root + os.sep)
 
 
+def _dockerfile_installs_bubblewrap(text):
+    """True when an apt-get install block lists the bubblewrap package."""
+    lines = [raw.split('#', 1)[0].rstrip() for raw in text.splitlines()]
+    blob = '\n'.join(lines)
+    for part in blob.split('apt-get install')[1:]:
+        chunk = []
+        for line in part.splitlines():
+            chunk.append(line)
+            if not line.endswith('\\'):
+                break
+        if re.search(r'(^|[\s\\])bubblewrap([\s\\]|$)', '\n'.join(chunk)):
+            return True
+    return False
+
+
 def _interpreter_for_bwrap(test):
     """Executable execvp can see inside bwrap_argv, plus any extra read-only binds.
 
@@ -608,6 +623,22 @@ class SandboxTests(unittest.TestCase):
                         '%s CMD interpreter %s is under tmpfs root %s' % (name, program, root))
             else:
                 self.assertEqual(program, 'python3', name)
+
+    def test_every_dockerfile_installs_bubblewrap(self):
+        """Every Dockerfile installs the bubblewrap package."""
+        repo = Path(__file__).resolve().parents[2]
+        files = sorted(
+            path for path in repo.rglob('*')
+            if path.is_file() and path.name.startswith('Dockerfile') and '.git' not in path.parts)
+        names = {path.relative_to(repo).as_posix() for path in files}
+        self.assertIn('docker/arm64/Dockerfile', names)
+        self.assertIn('docker/amd64/Dockerfile', names)
+        self.assertIn('docker/amd64/Dockerfile.arm64', names)
+        missing = []
+        for path in files:
+            if not _dockerfile_installs_bubblewrap(path.read_text()):
+                missing.append(path.relative_to(repo).as_posix())
+        self.assertEqual(missing, [])
 
     def test_startup_probe_is_the_compile_argv(self):
         built = compileguard._probe_argv()
