@@ -12,12 +12,14 @@ STUB = r'''#!/usr/bin/env python3
 import os, signal, sys, time
 from pathlib import Path
 
-mode = os.environ.get("COMPILE_STUB_MODE", "sleep")
-if mode == "ok":
+root = Path(__file__).resolve().parent
+mode_file = root / 'mode'
+mode = mode_file.read_text().strip() if mode_file.is_file() else os.environ.get('COMPILE_STUB_MODE', 'sleep')
+if mode == 'ok':
     args = sys.argv
-    out = Path(args[args.index("--output-dir") + 1])
+    out = Path(args[args.index('--output-dir') + 1])
     out.mkdir(parents=True, exist_ok=True)
-    (out / "sketch.ino.merged.bin").write_bytes(bytes([0xE9]) + b"\xff" * 32)
+    (out / 'sketch.ino.merged.bin').write_bytes(bytes([0xE9]) + b'\xff' * 32)
     raise SystemExit(0)
 
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
@@ -26,10 +28,7 @@ if child == 0:
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     time.sleep(300)
     os._exit(0)
-pidfile = os.environ.get("COMPILE_STUB_PIDFILE", "")
-if pidfile:
-    Path(pidfile).write_text("%d %d\n" % (os.getpid(), child))
-sys.stdout.write("stub sleeping\n")
+sys.stdout.write('stub sleeping\n')
 sys.stdout.flush()
 time.sleep(300)
 '''
@@ -59,24 +58,19 @@ def _proc_state(pid):
     return fields[0] if fields else None
 
 
-def _group_members(pgid):
+def _pids_with_arg(script: Path):
+    """Process ids whose command line names this compiler stub."""
+    needle = str(script).encode()
     found = []
     for entry in Path('/proc').iterdir():
         if not entry.name.isdigit():
             continue
         try:
-            raw = (entry / 'stat').read_text()
+            cmd = (entry / 'cmdline').read_bytes()
         except OSError:
             continue
-        cut = raw.rfind(')')
-        if cut < 0:
-            continue
-        fields = raw[cut + 2:].split()
-        try:
-            if int(fields[2]) == pgid:
-                found.append(int(entry.name))
-        except (IndexError, ValueError):
-            continue
+        if needle in cmd.split(b'\0'):
+            found.append(int(entry.name))
     return found
 
 
@@ -117,7 +111,8 @@ class CompileTimeoutTests(unittest.TestCase):
         server._netstack_warm_task = None
         server._lock_owner = None
         server._legacy_warm.clear()
-        server.PROGRESS['active'] = False
+        if hasattr(server, 'PROGRESS'):
+            server.PROGRESS['active'] = False
 
     def _run(self, coro):
         async def wrapped():
@@ -159,17 +154,23 @@ class CompileTimeoutTests(unittest.TestCase):
         grace = 0.45
         root = Path(tempfile.mkdtemp(prefix='esp32to-'))
         script = root / 'compiler'
-        pidfile = root / 'pids'
         script.write_text(STUB)
         script.chmod(0o755)
+        (root / 'mode').write_text('sleep')
         server.CLI = str(script)
         os.environ['SIM_COMPILE_TIMEOUT'] = str(timeout)
         os.environ['SIM_COMPILE_KILL_GRACE_S'] = str(grace)
-        os.environ['COMPILE_STUB_MODE'] = 'sleep'
-        os.environ['COMPILE_STUB_PIDFILE'] = str(pidfile)
 
         async def scenario():
             seen = {}
+            real_kill = server._kill_compile_group
+
+            async def observing_kill(proc, kill_grace):
+                # bwrap exits on SIGTERM, so the grace window can close before a
+                # later poll. Health is still degraded here: the deadline is set
+                # and the slot has not been released.
+                seen['mid'] = server.health()
+                return await real_kill(proc, kill_grace)
 
             async def watch():
                 for _ in range(400):
@@ -180,12 +181,11 @@ class CompileTimeoutTests(unittest.TestCase):
                     seen['started'] = False
                     return
                 seen['started'] = True
-                remaining = server._compile_worker_deadline - time.monotonic()
+                deadline = server._compile_worker_deadline
                 seen['early'] = server.health()
-                seen['early_remaining'] = remaining
-                await asyncio.sleep(max(0.0, remaining) + 0.05)
-                seen['mid'] = server.health()
+                seen['early_remaining'] = deadline - time.monotonic()
 
+            server._kill_compile_group = observing_kill
             base = server.health()
             watcher = asyncio.create_task(watch())
             t0 = time.monotonic()
@@ -194,11 +194,12 @@ class CompileTimeoutTests(unittest.TestCase):
                 status, body = _unpack(await asyncio.wait_for(slow, timeout + grace + 2))
             finally:
                 elapsed = time.monotonic() - t0
+                server._kill_compile_group = real_kill
                 await watcher
             after = server.health()
             locked = server._compile_lock.locked()
             granted = server._cqueue.granted
-            os.environ['COMPILE_STUB_MODE'] = 'ok'
+            (root / 'mode').write_text('ok')
             # A fresh sketch so a firmware image left on disk cannot answer as a cache hit.
             status2, body2 = _unpack(await asyncio.wait_for(
                 server._compile_request(_sketch('ok-next-' + uuid.uuid4().hex), client_id='tab-next'), 5))
@@ -235,19 +236,14 @@ class CompileTimeoutTests(unittest.TestCase):
             self.assertEqual(mid[key], base[key], key)
             self.assertIn(key, base)
 
-        self.assertTrue(pidfile.is_file(), 'sleeper did not record its process group')
-        parent_s, child_s = pidfile.read_text().split()
-        parent, child = int(parent_s), int(child_s)
-        self._pids.extend((parent, child))
-        self.assertNotEqual(parent, child)
+        # The compiler directory is read-only inside the sandbox, and the
+        # sandbox does not pass COMPILE_STUB_PIDFILE. No process whose command
+        # is the stub may still be running.
         deadline = time.time() + 1.0
-        running = [parent, child]
-        while time.time() < deadline:
-            running = [pid for pid in (parent, child) if _proc_state(pid) not in (None, 'Z')]
-            running += [pid for pid in _group_members(parent) if _proc_state(pid) not in (None, 'Z')]
-            if not running:
-                break
+        running = _pids_with_arg(script)
+        while time.time() < deadline and running:
             time.sleep(0.02)
+            running = [pid for pid in running if _proc_state(pid) not in (None, 'Z')]
         self.assertEqual(running, [], 'orphan compile processes still running')
 
         after = result['after']
