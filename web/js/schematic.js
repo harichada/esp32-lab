@@ -8,8 +8,13 @@
  * that only feeds discrete branches is drawn as wires, so parallel strings stay visible.
  * GND is a ground symbol, not a long wire.
  * SCHEMATIC_MATCH_LAYOUT (default on) offers a Like breadboard seat. The sheet itself
- * opens on the Tidy column layout unless this project has saved board. The server env
- * of the same name, delivered as <meta name="schmatch" content="0"> or data-schmatch="0",
+ * opens on the Tidy column layout unless this project has saved board.
+ * A saved choice lives at esp32lab.schLayout.<id>. Each unsaved draft has its own
+ * esp32lab.schLayout.draft.<draftId> until the first save moves it onto that id.
+ * A tab records the drafts it owns in sessionStorage and refreshes lastSeen while
+ * it is open. A sweep deletes only this tab's saved or discarded drafts, plus
+ * orphans whose lastSeen is older than 24 hours. Another open tab's key stays.
+ * The server env of the same name, delivered as <meta name="schmatch" content="0"> or data-schmatch="0",
  * hides that choice for every visitor; ?schmatch= applies only when the server allows it.
  * Off, or the Tidy choice, is this column layout exactly.
  * The breadboard body is never a symbol. Its strips are wires between the parts.
@@ -260,30 +265,266 @@
   function matchFlagOn() { return !serverOff && !!matchFlag; }
 
   const LAYOUT_STORE = 'esp32lab.schLayout';
+  const DRAFT_INDEX = LAYOUT_STORE + '.draftIndex';
+  const TAB_DRAFTS = LAYOUT_STORE + '.tabDrafts';
+  // An orphan draft is one no open tab has refreshed within this long.
+  const DRAFT_TTL_MS = 24 * 60 * 60 * 1000;
+  const DRAFT_HEARTBEAT_MS = 60 * 1000;
   const MIN_LABEL_FONT = 9.5;
+  const DRAFT_ID = /^[A-Za-z0-9_-]{1,40}$/;
+  let draftSeq = 0;
+  function newDraftId() {
+    draftSeq += 1;
+    return 'd' + Date.now().toString(36) + draftSeq.toString(36) + Math.random().toString(36).slice(2, 6);
+  }
+  function ensureDraftId(proj) {
+    if (!proj || proj.example) return '';
+    if (proj.id != null && String(proj.id) !== '') return '';
+    if (!DRAFT_ID.test(String(proj.draftId || ''))) proj.draftId = newDraftId();
+    return String(proj.draftId);
+  }
   function layoutStoreKey(proj) {
     if (proj && proj.example) return LAYOUT_STORE + '.ex.' + String(proj.example);
     if (proj && proj.id != null && String(proj.id) !== '') return LAYOUT_STORE + '.' + String(proj.id);
-    return LAYOUT_STORE + '.unsaved';
+    const draft = ensureDraftId(proj);
+    return LAYOUT_STORE + '.draft.' + (draft || 'none');
   }
-  // A saved or unsaved project keeps the choice in localStorage. A read-only
-  // example keeps it in sessionStorage for this tab only, so a new visit and
-  // every other example open on Tidy. Missing or unknown values are Tidy.
-  // Only the exact stored value "board" selects Like breadboard.
+  // A saved project keeps the choice in localStorage at esp32lab.schLayout.<id>
+  // as the plain text "board" or "tidy". Each unsaved draft uses
+  // esp32lab.schLayout.draft.<draftId>. The value is that same plain text, or
+  // {"mode":"board"|"tidy","lastSeen":<ms>}. Plain text still selects the mode.
+  // This tab lists the drafts it owns in sessionStorage esp32lab.schLayout.tabDrafts.
+  // The first save copies the mode onto the project id and drops the draft key.
+  // A read-only example keeps the choice in sessionStorage for this tab only.
+  // Missing or unknown values are Tidy. Only mode "board" selects Like breadboard.
   function layoutStoreOf(proj, store) {
     if (store) return store;
     const box = root.clStorage;
     if (!box) return null;
     return proj && proj.example ? box.session : box.local;
   }
+  function readIndex(store) {
+    let list = [];
+    try { list = JSON.parse(store.getItem(DRAFT_INDEX) || '[]'); } catch (e) { list = []; }
+    if (!Array.isArray(list)) return [];
+    return list.filter((id) => DRAFT_ID.test(String(id || '')));
+  }
+  function writeIndex(store, list) {
+    try {
+      if (!list.length) {
+        const cur = store.getItem(DRAFT_INDEX);
+        if (cur == null || cur === '[]') return;
+      }
+      store.setItem(DRAFT_INDEX, JSON.stringify(list));
+    } catch (e) { /* storage off */ }
+  }
+  function noteDraft(id, store) {
+    if (!store || !DRAFT_ID.test(String(id || ''))) return;
+    const list = readIndex(store);
+    if (list.indexOf(id) < 0) list.push(id);
+    writeIndex(store, list);
+    claimDraft(id);
+  }
+  function decodeLayout(raw) {
+    if (raw === 'board' || raw === 'tidy') return { mode: raw, lastSeen: 0 };
+    if (!raw) return { mode: '', lastSeen: 0 };
+    try {
+      const o = JSON.parse(raw);
+      if (o && (o.mode === 'board' || o.mode === 'tidy')) {
+        const seen = Number(o.lastSeen);
+        return { mode: o.mode, lastSeen: Number.isFinite(seen) && seen > 0 ? seen : 0 };
+      }
+    } catch (e) { /* not JSON */ }
+    return { mode: '', lastSeen: 0 };
+  }
+  function tabSession(session) {
+    if (session) return session;
+    const box = root.clStorage;
+    return box ? box.session : null;
+  }
+  function readOwn(session) {
+    const s = tabSession(session);
+    if (!s || !s.getItem) return [];
+    let list = [];
+    try { list = JSON.parse(s.getItem(TAB_DRAFTS) || '[]'); } catch (e) { list = []; }
+    if (!Array.isArray(list)) return [];
+    return list.filter((id) => DRAFT_ID.test(String(id || '')));
+  }
+  function writeOwn(session, list) {
+    const s = tabSession(session);
+    if (!s || !s.setItem) return;
+    try {
+      if (!list.length) {
+        const cur = s.getItem(TAB_DRAFTS);
+        if (cur == null || cur === '[]') return;
+      }
+      s.setItem(TAB_DRAFTS, JSON.stringify(list));
+    } catch (e) { /* storage off */ }
+  }
+  function claimDraft(id, session) {
+    if (!DRAFT_ID.test(String(id || ''))) return;
+    const list = readOwn(session);
+    if (!tabSession(session)) return;
+    if (list.indexOf(id) < 0) list.push(id);
+    writeOwn(session, list);
+  }
+  function forgetDraft(id, session) {
+    if (!tabSession(session)) return;
+    writeOwn(session, readOwn(session).filter((x) => x !== id));
+  }
   function layoutModeOf(proj, store) {
+    let v = '';
+    try {
+      const s = layoutStoreOf(proj, store);
+      if (proj && !proj.example && !(proj.id != null && String(proj.id) !== '')) noteDraft(ensureDraftId(proj), s);
+      if (s && s.getItem) v = s.getItem(layoutStoreKey(proj)) || '';
+    } catch (e) { v = ''; }
+    return decodeLayout(v).mode === 'board' ? 'board' : 'tidy';
+  }
+  function storedLayout(proj, store) {
     let v = '';
     try {
       const s = layoutStoreOf(proj, store);
       if (s && s.getItem) v = s.getItem(layoutStoreKey(proj)) || '';
     } catch (e) { v = ''; }
-    return v === 'board' ? 'board' : 'tidy';
+    const mode = decodeLayout(v).mode;
+    if (mode === 'board' || mode === 'tidy') return mode;
+    if (proj && (proj.schLayout === 'board' || proj.schLayout === 'tidy')) return proj.schLayout;
+    return '';
   }
+  function writeLayout(proj, mode, store) {
+    if (!proj || (mode !== 'board' && mode !== 'tidy')) return;
+    try {
+      const s = layoutStoreOf(proj, store);
+      if (!s || !s.setItem) return;
+      const draft = !proj.example && !(proj.id != null && String(proj.id) !== '');
+      if (draft) noteDraft(ensureDraftId(proj), s);
+      const value = draft ? JSON.stringify({ mode: mode, lastSeen: Date.now() }) : mode;
+      s.setItem(layoutStoreKey(proj), value);
+    } catch (e) { /* keep the choice in this view */ }
+  }
+  // Refresh this tab's draft heartbeats. Skips a key touched less than a minute ago.
+  function touchOwned(now, local, session) {
+    const t = now || Date.now();
+    const box = root.clStorage;
+    const loc = local || (box && box.local);
+    const ses = session || (box && box.session);
+    if (!loc || !ses) return;
+    for (const id of readOwn(ses)) {
+      const key = LAYOUT_STORE + '.draft.' + id;
+      let raw = '';
+      try { raw = loc.getItem(key) || ''; } catch (e) { continue; }
+      const rec = decodeLayout(raw);
+      if (rec.mode !== 'board' && rec.mode !== 'tidy') continue;
+      if (rec.lastSeen && t - rec.lastSeen < DRAFT_HEARTBEAT_MS) continue;
+      try { loc.setItem(key, JSON.stringify({ mode: rec.mode, lastSeen: t })); } catch (e) { /* storage off */ }
+    }
+  }
+  // Copy an explicit board/tidy choice onto another project. A missing choice
+  // stays missing, so the destination still opens on Tidy. Does not remove the source key.
+  function carryLayout(from, to, opt) {
+    const fromStore = opt && (opt.fromStore || opt.store);
+    const toStore = opt && (opt.toStore || opt.store);
+    const mode = storedLayout(from, fromStore);
+    if (!mode) return '';
+    writeLayout(to, mode, toStore);
+    return mode;
+  }
+  function dropDraftKey(store, id) {
+    if (!store || !DRAFT_ID.test(String(id || ''))) return false;
+    try {
+      if (store.removeItem) store.removeItem(LAYOUT_STORE + '.draft.' + id);
+    } catch (e) { return false; }
+    writeIndex(store, readIndex(store).filter((x) => x !== id));
+    return true;
+  }
+  // First save: the draft key becomes the plain project value, then the draft key goes.
+  function migrateDraftLayout(proj, store) {
+    if (!proj || !proj.draftId || proj.id == null || String(proj.id) === '') return;
+    const s = store || layoutStoreOf(proj);
+    const id = String(proj.draftId);
+    if (!s) { delete proj.draftId; forgetDraft(id); return; }
+    let raw = '';
+    try { raw = s.getItem(LAYOUT_STORE + '.draft.' + id) || ''; } catch (e) { raw = ''; }
+    const mode = decodeLayout(raw).mode;
+    if ((mode === 'board' || mode === 'tidy') && s.setItem) {
+      try { s.setItem(LAYOUT_STORE + '.' + String(proj.id), mode); } catch (e) { /* keep the draft key */ return; }
+    }
+    if (!dropDraftKey(s, id)) return;
+    delete proj.draftId;
+    forgetDraft(id);
+  }
+  function releaseDraft(proj, store) {
+    if (!proj || !proj.draftId) return;
+    const s = store || layoutStoreOf(proj);
+    const id = String(proj.draftId);
+    if (s && !dropDraftKey(s, id)) return;
+    delete proj.draftId;
+    forgetDraft(id);
+  }
+  // This tab drops drafts it saved or discarded, and orphans quiet for DRAFT_TTL_MS.
+  // A key this tab still owns, a key with a fresh lastSeen, and a plain board/tidy
+  // value are kept, so another open tab's draft is never deleted. Project keys and
+  // example keys are not in this loop. The retired esp32lab.schLayout.unsaved key is.
+  function sweepDrafts(store, opt) {
+    if (!store) return;
+    if (Array.isArray(opt)) opt = { own: opt };
+    const now = (opt && opt.now) || Date.now();
+    const own = new Set(((opt && opt.own) || []).filter((id) => DRAFT_ID.test(String(id || ''))));
+    const drop = new Set(((opt && opt.drop) || []).filter((id) => DRAFT_ID.test(String(id || ''))));
+    const left = [];
+    for (const id of readIndex(store)) {
+      const key = LAYOUT_STORE + '.draft.' + id;
+      let remove = false;
+      if (drop.has(id)) remove = true;
+      else if (!own.has(id)) {
+        let raw = '';
+        try { raw = store.getItem(key) || ''; } catch (e) { raw = ''; }
+        const seen = decodeLayout(raw).lastSeen;
+        if (seen > 0 && now - seen > DRAFT_TTL_MS) remove = true;
+      }
+      if (!remove) { left.push(id); continue; }
+      try { if (store.removeItem) store.removeItem(key); }
+      catch (e) { left.push(id); }
+    }
+    writeIndex(store, left);
+    try { if (store.removeItem) store.removeItem(LAYOUT_STORE + '.unsaved'); } catch (e) { /* none */ }
+    try {
+      const ch = root.__schDraftCh;
+      if (ch && ch.postMessage) ch.postMessage({ t: 'ping' });
+    } catch (e) { /* no channel */ }
+  }
+  function pageIsBrowser() {
+    try {
+      const ua = root.navigator && root.navigator.userAgent;
+      if (!ua || /Node\.js/i.test(String(ua))) return false;
+      return !!(root.document && root.location && /^https?:/.test(String(root.location.protocol || '')));
+    } catch (e) { return false; }
+  }
+  function startDraftCare() {
+    if (!pageIsBrowser() || root.__schDraftCare) return;
+    root.__schDraftCare = true;
+    const kick = () => { try { touchOwned(); } catch (e) { /* storage off */ } };
+    try { root.document.addEventListener('visibilitychange', kick); } catch (e) { /* none */ }
+    try { root.addEventListener('pagehide', kick); } catch (e) { /* none */ }
+    try {
+      const timer = root.setInterval(kick, DRAFT_HEARTBEAT_MS);
+      if (timer && timer.unref) timer.unref();
+    } catch (e) { /* none */ }
+    try {
+      if (typeof root.BroadcastChannel === 'function') {
+        const ch = new root.BroadcastChannel('esp32lab.schLayout');
+        ch.onmessage = () => kick();
+        root.__schDraftCh = ch;
+      }
+    } catch (e) { /* no channel */ }
+    try {
+      const own = readOwn();
+      touchOwned();
+      if (root.clStorage && root.clStorage.local) sweepDrafts(root.clStorage.local, { own: own });
+    } catch (e) { /* storage off */ }
+  }
+  try { if (pageIsBrowser()) startDraftCare(); } catch (e) { /* node, or storage off */ }
   function editorDragging() {
     try {
       const ed = root.app && root.app.editor;
@@ -3215,10 +3456,7 @@
       if (mode !== 'board' && mode !== 'tidy') return;
       if (!matchFlagOn()) return;
       this._mode = mode;
-      try {
-        const s = layoutStoreOf(this.proj);
-        if (s) s.setItem(layoutStoreKey(this.proj), mode);
-      } catch (e) { /* keep the choice in this view */ }
+      writeLayout(this.proj, mode);
       this._syncLayout();
       this._sig = '';
       if (this.active) this.rebuild(true);
@@ -3631,7 +3869,7 @@
 
   const api = {
     layout, toSvg, SchematicView, signature, pinNets: pinNetMap,
-    separateSymbols, wireJoints, layoutStoreKey, layoutModeOf, screenLabelPx, labelScreenPx, openScale, chooseOpen, openFrame, labelScreenTarget, shortPartLabel, settlePartLabels, READABLE_PX, MIN_LABEL_FONT,
+    separateSymbols, wireJoints, layoutStoreKey, layoutModeOf, storedLayout, writeLayout, carryLayout, migrateDraftLayout, releaseDraft, sweepDrafts, touchOwned, decodeLayout, DRAFT_TTL_MS, DRAFT_HEARTBEAT_MS, screenLabelPx, labelScreenPx, openScale, chooseOpen, openFrame, labelScreenTarget, shortPartLabel, settlePartLabels, READABLE_PX, MIN_LABEL_FONT,
     configureMatch,
   };
   Object.defineProperty(api, 'SCHEMATIC_MATCH_LAYOUT', {
