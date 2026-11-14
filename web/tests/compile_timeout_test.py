@@ -89,6 +89,7 @@ class CompileTimeoutTests(unittest.TestCase):
         os.environ['SIM_COMPILE_QUEUE'] = '1'
         os.environ['SIM_COMPILE_QUEUE_MAX'] = '4'
         os.environ['SIM_COMPILE_QUEUE_TIMEOUT_S'] = '30'
+        os.environ['SIM_COMPILE_ENFORCE_TIMEOUT'] = '1'
         diskkeep.prepare_for_compile = lambda **_k: None
         diskkeep.forget_sketch_builds_since = lambda *_a, **_k: None
         server._compile_worker_clear()
@@ -143,6 +144,15 @@ class CompileTimeoutTests(unittest.TestCase):
         self.assertEqual(server._compile_kill_grace_s(), 30.0)
         os.environ['SIM_COMPILE_KILL_GRACE_S'] = '-4'
         self.assertEqual(server._compile_kill_grace_s(), 2.0)
+        os.environ.pop('SIM_COMPILE_ENFORCE_TIMEOUT', None)
+        self.assertTrue(server._compile_timeout_enforced())
+        for safe in ('', '1', 'yes', 'true', 'on', '2', 'nope'):
+            os.environ['SIM_COMPILE_ENFORCE_TIMEOUT'] = safe
+            self.assertTrue(server._compile_timeout_enforced(), safe)
+        os.environ['SIM_COMPILE_ENFORCE_TIMEOUT'] = '0'
+        self.assertFalse(server._compile_timeout_enforced())
+        os.environ['SIM_COMPILE_ENFORCE_TIMEOUT'] = ' 0 '
+        self.assertFalse(server._compile_timeout_enforced())
 
     def test_sleeping_compiler_times_out_frees_the_slot_and_leaves_no_children(self):
         timeout = 0.35
