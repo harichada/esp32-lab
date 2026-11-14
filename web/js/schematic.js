@@ -7,9 +7,10 @@
  * A supply that feeds a chip or transistor stays a flag once it has 3+ pins. A battery
  * that only feeds discrete branches is drawn as wires, so parallel strings stay visible.
  * GND is a ground symbol, not a long wire.
- * SCHEMATIC_MATCH_LAYOUT (default on) lets the view seat each symbol where its part sits
- * on the 2D board. The server env of the same name, delivered as <meta name="schmatch" content="0">
- * or data-schmatch="0", forces it off for every visitor; ?schmatch= applies only when the server allows it.
+ * SCHEMATIC_MATCH_LAYOUT (default on) offers a Like breadboard seat. The sheet itself
+ * opens on the Tidy column layout unless this project has saved board. The server env
+ * of the same name, delivered as <meta name="schmatch" content="0"> or data-schmatch="0",
+ * hides that choice for every visitor; ?schmatch= applies only when the server allows it.
  * Off, or the Tidy choice, is this column layout exactly.
  * The breadboard body is never a symbol. Its strips are wires between the parts.
  * A ground part on a net that already has another pin is omitted; that pin draws the GND symbol.
@@ -261,16 +262,27 @@
   const LAYOUT_STORE = 'esp32lab.schLayout';
   const MIN_LABEL_FONT = 9.5;
   function layoutStoreKey(proj) {
+    if (proj && proj.example) return LAYOUT_STORE + '.ex.' + String(proj.example);
     if (proj && proj.id != null && String(proj.id) !== '') return LAYOUT_STORE + '.' + String(proj.id);
     return LAYOUT_STORE + '.unsaved';
+  }
+  // A saved or unsaved project keeps the choice in localStorage. A read-only
+  // example keeps it in sessionStorage for this tab only, so a new visit and
+  // every other example open on Tidy. Missing or unknown values are Tidy.
+  // Only the exact stored value "board" selects Like breadboard.
+  function layoutStoreOf(proj, store) {
+    if (store) return store;
+    const box = root.clStorage;
+    if (!box) return null;
+    return proj && proj.example ? box.session : box.local;
   }
   function layoutModeOf(proj, store) {
     let v = '';
     try {
-      const s = store || (root.clStorage && root.clStorage.local);
+      const s = layoutStoreOf(proj, store);
       if (s && s.getItem) v = s.getItem(layoutStoreKey(proj)) || '';
     } catch (e) { v = ''; }
-    return v === 'tidy' ? 'tidy' : 'board';
+    return v === 'board' ? 'board' : 'tidy';
   }
   function editorDragging() {
     try {
@@ -3127,7 +3139,7 @@
       this.proj = null;
       this.model = null;
       this._sig = '';
-      this._mode = 'board';
+      this._mode = 'tidy';
       this._queued = false;
       this._fitQueued = false;
       this._mountLayout();
@@ -3204,7 +3216,7 @@
       if (!matchFlagOn()) return;
       this._mode = mode;
       try {
-        const s = root.clStorage && root.clStorage.local;
+        const s = layoutStoreOf(this.proj);
         if (s) s.setItem(layoutStoreKey(this.proj), mode);
       } catch (e) { /* keep the choice in this view */ }
       this._syncLayout();

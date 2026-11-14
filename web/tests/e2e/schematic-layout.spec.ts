@@ -278,7 +278,7 @@ async function toolbarTops(page: Page) {
   });
 }
 
-function assertClear(report: Awaited<ReturnType<typeof drawing>>, where: string) {
+function assertClear(report: Awaited<ReturnType<typeof drawing>>, where: string, mode: 'tidy' | 'board' = 'tidy') {
   expect(report.hidden, where + ' toggle').toBe(false);
   if (!report.fitAll) expect(report.covers, where + ' fitted').toBe(true);
   expect(report.buttons.map((b) => b.name), where).toEqual(['Breadboard', 'Tidy']);
@@ -289,8 +289,8 @@ function assertClear(report: Awaited<ReturnType<typeof drawing>>, where: string)
     expect(b.h, where + ' ' + b.name).toBeGreaterThanOrEqual(44);
     expect(b.disabled, where).toBe(false);
   }
-  expect(report.buttons[0].pressed, where).toBe('true');
-  expect(report.buttons[1].pressed, where).toBe('false');
+  expect(report.buttons[0].pressed, where).toBe(mode === 'board' ? 'true' : 'false');
+  expect(report.buttons[1].pressed, where).toBe(mode === 'tidy' ? 'true' : 'false');
   for (let i = 0; i < report.bodies.length; i++) for (let j = i + 1; j < report.bodies.length; j++) {
     expect(overlaps(report.bodies[i], report.bodies[j]), where + ' bodies ' + report.bodies[i].id + ' ' + report.bodies[j].id).toBe(false);
   }
@@ -335,6 +335,8 @@ for (const example of EXAMPLES) {
         const p = (window as unknown as { app: { proj: { parts: { id: string; type: string }[] } } }).app.proj.parts.find((q) => q.type !== 'breadboard' && q.type !== 'label');
         return p ? p.id : '';
       });
+      await page.locator('#schLayBoard').click();
+      await expect(page.locator('#schLayBoard')).toHaveAttribute('aria-pressed', 'true');
       const before = await page.evaluate((id) => {
         const s = (window as unknown as { app: { schematic: { model: { symbols: { id: string; x: number; y: number }[] } } } }).app.schematic.model.symbols.find((s) => s.id === id);
         return s ? s.x + ',' + s.y : '';
@@ -361,7 +363,7 @@ for (const example of EXAMPLES) {
         requestAnimationFrame(() => requestAnimationFrame(() => resolve(null)));
       }));
       const moved = await drawing(page);
-      assertClear(moved, example.id + '@' + width + ' moved');
+      assertClear(moved, example.id + '@' + width + ' moved', 'board');
       if (example.id === 'blink' || example.id === 'simon') {
         expect(moved.wiredOutside, example.id + '@' + width + ' moved off screen').toEqual([]);
       }
@@ -491,27 +493,67 @@ test('remote at 390 keeps labels readable and the whole sheet can be shown', asy
   await expect.poll(async () => (await drawing(page)).covers).toBe(true);
 });
 
-test('Tidy is one key away and is remembered for this project', async ({ page }) => {
+test('Like breadboard is opt-in and a read-only example keeps it for this tab', async ({ page }) => {
   await install(page);
   await openExample(page, 'blink', 1280);
-  await page.locator('#schLayTidy').click();
   await expect(page.locator('#schLayTidy')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('#schLayBoard')).toHaveAttribute('aria-pressed', 'false');
   await page.locator('#schLayBoard').click();
   await expect(page.locator('#schLayBoard')).toHaveAttribute('aria-pressed', 'true');
   await page.locator('#schLayBoard').focus();
   await page.keyboard.press('ArrowRight');
   await expect(page.locator('#schLayTidy')).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator('#schLayBoard')).toHaveAttribute('aria-pressed', 'false');
+  await page.locator('#schLayBoard').click();
+  await expect(page.locator('#schLayBoard')).toHaveAttribute('aria-pressed', 'true');
   await page.reload();
   await page.waitForFunction(() => {
     const app = (window as unknown as { app?: { proj?: { parts?: unknown[] }; schematic?: unknown } }).app;
     return !!(app && app.proj && app.proj.parts && app.proj.parts.length && app.schematic);
   });
   await page.locator('#bViewSch').click();
+  await expect(page.locator('#schLayBoard')).toHaveAttribute('aria-pressed', 'true');
+  const stored = await page.evaluate(() => ({
+    session: sessionStorage.getItem('esp32lab.schLayout.ex.blink'),
+    local: localStorage.getItem('esp32lab.schLayout.unsaved'),
+  }));
+  expect(stored.session).toBe('board');
+  expect(stored.local).toBe(null);
+  await page.goto('/?ex=simon&resume=0');
+  await page.waitForFunction(() => {
+    const app = (window as unknown as { app?: { proj?: { example?: string; parts?: unknown[] }; schematic?: unknown } }).app;
+    return !!(app && app.proj && app.proj.example === 'simon' && app.proj.parts && app.proj.parts.length && app.schematic);
+  });
+  await page.locator('#bViewSch').click();
   await expect(page.locator('#schLayTidy')).toHaveAttribute('aria-pressed', 'true');
-  const stored = await page.evaluate(() => localStorage.getItem('esp32lab.schLayout.unsaved'));
-  expect(stored).toBe('tidy');
+  await expect(page.locator('#schLayBoard')).toHaveAttribute('aria-pressed', 'false');
 });
+
+for (const width of [390, 1280]) {
+  test('a first visit with clean storage opens Tidy at ' + width, async ({ page }) => {
+    await install(page);
+    await page.setViewportSize({ width: width, height: width === 390 ? 844 : 800 });
+    await page.addInitScript(() => {
+      localStorage.clear();
+      sessionStorage.clear();
+    });
+    await page.goto('/?resume=0');
+    await page.waitForFunction(() => {
+      const app = (window as unknown as { app?: { proj?: { example?: string; parts?: unknown[] }; schematic?: unknown } }).app;
+      return !!(app && app.proj && app.proj.example === 'blink' && app.proj.parts && app.proj.parts.length && app.schematic);
+    });
+    await page.locator('#bViewSch').click();
+    await page.waitForFunction(() => document.body.classList.contains('viewsch') && !!document.querySelector('#stageSch.on .sch-hit'));
+    await expect(page.locator('#schLayTidy')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('#schLayBoard')).toHaveAttribute('aria-pressed', 'false');
+    const stored = await page.evaluate(() => ({
+      local: localStorage.getItem('esp32lab.schLayout.unsaved'),
+      session: sessionStorage.getItem('esp32lab.schLayout.ex.blink'),
+    }));
+    expect(stored.local).toBe(null);
+    expect(stored.session).toBe(null);
+  });
+}
 
 test('schmatch=0 hides the control and keeps a schematic', async ({ page }) => {
   await install(page);
@@ -594,6 +636,8 @@ for (const width of [1280, 390]) {
     test(id + ' keeps separate nets at ' + width, async ({ page }) => {
       await install(page);
       await openExample(page, id, width);
+      await page.locator('#schLayBoard').click();
+      await expect(page.locator('#schLayBoard')).toHaveAttribute('aria-pressed', 'true');
       const led = await joined(page, { part: 'LED1', name: 'A' }, { part: 'LED1', name: 'C' });
       if (led !== null) expect(led, id + ' LED1 anode and cathode').toBe(false);
       const gpio = await joined(page, { name: 'D13' }, { name: 'D25' });
