@@ -2641,6 +2641,41 @@
     }
     return view;
   }
+  // Screen px a part, its label, or a power mark sits outside the canvas
+  // margin or inside an overlay's margin. Zero means the open view fits.
+  function safeSlack(svg) {
+    if (!svg || !svg.getBoundingClientRect || typeof document === 'undefined') return 0;
+    const stage = svg.getBoundingClientRect();
+    if (stage.width < 2 || stage.height < 2) return 0;
+    const m = 12;
+    const safe = { left: stage.left + m, top: stage.top + m, right: stage.right - m, bottom: stage.bottom - m };
+    const blocks = [];
+    for (const sel of ['.zoom-tools', '.canvas-tools', '.hint', '.projbanner', 'header#top']) {
+      const el = document.querySelector(sel);
+      if (!el) continue;
+      let cs; try { cs = root.getComputedStyle(el); } catch (e) { continue; }
+      if (!cs || cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 8 || r.height < 8) continue;
+      if (r.right < stage.left + 1 || r.left > stage.right - 1 || r.bottom < stage.top + 1 || r.top > stage.bottom - 1) continue;
+      blocks.push({ left: r.left - m, top: r.top - m, right: r.right + m, bottom: r.bottom + m });
+    }
+    let past = 0;
+    svg.querySelectorAll('.sch-hit, .sch-ref, .sch-val, .sch-title, .sch-flag, .sch-netlbl, .sch-gnd, .sch-rail').forEach((el) => {
+      let cs; try { cs = root.getComputedStyle(el); } catch (e) { return; }
+      if (!cs || cs.display === 'none' || cs.visibility === 'hidden') return;
+      const r = el.getBoundingClientRect();
+      if (r.width < 0.4 && r.height < 0.4) return;
+      past = Math.max(past, safe.left - r.left, r.right - safe.right, safe.top - r.top, r.bottom - safe.bottom);
+      for (let i = 0; i < blocks.length; i++) {
+        const b = blocks[i];
+        const ix = Math.min(r.right, b.right) - Math.max(r.left, b.left);
+        const iy = Math.min(r.bottom, b.bottom) - Math.max(r.top, b.top);
+        if (ix > 0 && iy > 0) past = Math.max(past, Math.min(ix, iy));
+      }
+    });
+    return past;
+  }
 
   class SchematicView {
     constructor(host, hooks) {
@@ -2749,7 +2784,7 @@
         bar.className = 'sch-layout';
         bar.setAttribute('role', 'group');
         bar.setAttribute('aria-label', 'Schematic arrangement');
-        const mk = (id, label, mode) => {
+        const mk = (id, label, mode, tip) => {
           const b = document.createElement('button');
           b.type = 'button';
           b.id = id;
@@ -2757,10 +2792,12 @@
           b.textContent = label;
           b.dataset.mode = mode;
           b.setAttribute('aria-pressed', 'false');
+          b.setAttribute('aria-label', tip);
+          b.title = tip;
           return b;
         };
-        bar.appendChild(mk('schLayBoard', 'Like breadboard', 'board'));
-        bar.appendChild(mk('schLayTidy', 'Tidy', 'tidy'));
+        bar.appendChild(mk('schLayBoard', 'Breadboard', 'board', 'Like breadboard'));
+        bar.appendChild(mk('schLayTidy', 'Tidy', 'tidy', 'Tidy arrangement'));
         if (tools) tools.insertAdjacentElement('afterend', bar);
         else if (this.host) this.host.appendChild(bar);
       }
@@ -2819,8 +2856,13 @@
       const show = !!this.active && matchFlagOn();
       bar.hidden = !show;
       bar.setAttribute('aria-hidden', show ? 'false' : 'true');
+      const short = { board: 'Breadboard', tidy: 'Tidy' };
+      const tip = { board: 'Like breadboard', tidy: 'Tidy arrangement' };
       for (const b of bar.querySelectorAll('button')) {
-        const on = b.dataset.mode === (this._mode === 'tidy' ? 'tidy' : 'board');
+        const mode = b.dataset.mode === 'tidy' ? 'tidy' : 'board';
+        const on = mode === (this._mode === 'tidy' ? 'tidy' : 'board');
+        if (short[mode]) b.textContent = short[mode];
+        if (tip[mode]) { b.setAttribute('aria-label', tip[mode]); b.title = tip[mode]; }
         b.setAttribute('aria-pressed', on ? 'true' : 'false');
         b.disabled = !show;
         b.tabIndex = show ? 0 : -1;
@@ -2873,57 +2915,68 @@
         return;
       }
       if (r.width < 2 || r.height < 2) return;
-      // The clear rect is the canvas with the banner, header, toolbar and hint
-      // taken out. Measured here, not guessed, so a tall banner cannot cover the chip.
+      // Largest zoom whose parts and labels sit in the canvas, 12px clear of
+      // the zoom panel, the toolbar, and the hint, and 12px clear of the edges.
       const frame = root.Pinch.frameOf(this.svg);
       const limits = { min: 0.12, max: 2.4 };
-      const pad = 14;
-      const framing = openFrame(this.model);
-      const clear = root.Pinch.resolveClear(frame, this._fitMode === 'all' ? b : framing.box, pad, limits);
-      if (this._fitMode === 'all') {
-        const fitted = root.Pinch.fitView(b, frame.stage, clear, pad, limits);
-        this.view.s = fitted.s; this.view.x = fitted.x; this.view.y = fitted.y;
-        this._syncFitAll(!!this._wantFitAll);
-      } else {
-        const fitted = root.Pinch.fitView(framing.box, frame.stage, clear, pad, limits);
-        const choice = chooseOpen(framing.font, fitted.s, cssScaleOf(this.svg), {
-          group: framing.box, esp: framing.esp, clear: clear, pad: pad, count: framing.count,
-        });
-        let zoomed = choice.zoomed;
-        const placed = (scale) => {
-          const focus = focusBox(this.model, scale, clear, pad);
-          let view = viewAt(focus, scale, frame.stage, clear);
-          const nudged = liftOff(view, this.model, this.svg);
-          if (!framing.esp || espHeld(nudged, framing.esp, frame.stage, clear, pad) || !espHeld(view, framing.esp, frame.stage, clear, pad)) view = nudged;
-          return view;
-        };
-        let view = fitted;
-        if (zoomed) {
-          view = placed(choice.s);
-          // The 11px zoom can sit a symbol on the arrangement control. Step down
-          // toward the framing fit until the chip stays in the clear rect and the
-          // control is clear. The framing fit is the last step, and it always fits.
-          const partsHeld = (trial) => symbolsHeld(trial, this.model, frame.stage, clear, pad);
-          if (coversToggle(view, this.model) || !partsHeld(view) || (framing.esp && !espHeld(view, framing.esp, frame.stage, clear, pad))) {
-            let lo = fitted.s, hi = choice.s, best = fitted, bestView = fitted;
-            for (let i = 0; i < 12; i++) {
-              const mid = (lo + hi) / 2;
-              const trial = placed(mid);
-              const ok = !coversToggle(trial, this.model) && partsHeld(trial) && (!framing.esp || espHeld(trial, framing.esp, frame.stage, clear, pad));
-              if (ok) { best = mid; bestView = trial; lo = mid; }
-              else hi = mid;
-            }
-            view = bestView;
-            zoomed = best > fitted.s + 0.02;
-          }
+      const box = b;
+      const margin = 12;
+      const stage = frame.stage;
+      const inset = {
+        left: stage.left + margin, top: stage.top + margin,
+        right: stage.right - margin, bottom: stage.bottom - margin,
+        width: Math.max(1, stage.width - 2 * margin), height: Math.max(1, stage.height - 2 * margin),
+      };
+      const blockers = frame.blockers.slice();
+      const banner = document.querySelector('.projbanner');
+      if (banner) {
+        let cs; try { cs = root.getComputedStyle(banner); } catch (e) { cs = null; }
+        if (cs && cs.display !== 'none' && cs.visibility !== 'hidden' && Number(cs.opacity) !== 0) {
+          const br = banner.getBoundingClientRect();
+          if (br.width > 8 && br.height > 8) blockers.push({ left: br.left, top: br.top, right: br.right, bottom: br.bottom });
         }
-        view = seatOffChrome(view, this.model, this.svg);
-        const covered = sheetInside(b, view, frame.stage, clear, pad);
-        this._wantFitAll = zoomed || !covered;
-        this.view.s = view.s; this.view.x = view.x; this.view.y = view.y;
-        this._syncFitAll(this._wantFitAll);
       }
-      this.apply();
+      // A tall gap can frame the symbol boxes and still clip the 11px labels.
+      // Try the roomiest holes and keep the largest zoom that actually clears.
+      const pool = [];
+      const seen = new Set();
+      const legacy = root.Pinch.clearRect(inset, blockers, margin);
+      for (const rect of [legacy].concat(root.Pinch.emptyRects(inset, blockers, margin))) {
+        if (!rect || rect.width < 40 || rect.height < 40) continue;
+        const key = [rect.left, rect.top, rect.right, rect.bottom].map((n) => Math.round(n)).join(',');
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const raw = root.Pinch.rawScale(box, rect, 0);
+        if (raw > 0) pool.push({ rect: rect, raw: raw });
+      }
+      pool.sort((a, b) => b.raw - a.raw);
+      const place = (rect, scale) => {
+        const next = viewAt(box, scale, stage, rect);
+        this.view.s = next.s; this.view.x = next.x; this.view.y = next.y;
+        this._labelZoom = 0;
+        this.apply();
+        return safeSlack(this.svg) <= 0.5;
+      };
+      let bestS = 0;
+      let bestRect = pool.length ? pool[0].rect : inset;
+      for (const c of pool.slice(0, 6)) {
+        const hi0 = Math.max(limits.min, Math.min(limits.max, c.raw));
+        if (hi0 <= bestS + 0.004) continue;
+        if (place(c.rect, hi0)) { bestS = hi0; bestRect = c.rect; continue; }
+        let lo = bestS, hi = hi0, win = 0;
+        for (let i = 0; i < 6; i++) {
+          const mid = (lo + hi) / 2;
+          if (mid <= bestS + 0.003) break;
+          if (place(c.rect, mid)) { win = mid; lo = mid; }
+          else hi = mid;
+        }
+        if (win > bestS) { bestS = win; bestRect = c.rect; }
+      }
+      if (!(bestS > 0)) place(bestRect, limits.min);
+      else place(bestRect, bestS);
+      this._safeS = this.view.s;
+      this._wantFitAll = safeSlack(this.svg) > 1;
+      this._syncFitAll(this._wantFitAll);
       if (n === 0 && typeof requestAnimationFrame === 'function') {
         this._fitGen = (this._fitGen || 0) + 1;
         const gen = this._fitGen;
@@ -2939,6 +2992,7 @@
       const v = root.Pinch.zoomAbout(this.view, f, anchor, frame.stage, { min: 0.12, max: 4 });
       this.view.x = v.x; this.view.y = v.y; this.view.s = v.s;
       this.apply();
+      if (this._safeS) this._syncFitAll(this.view.s > this._safeS + 0.02);
     }
     select(id) {
       this.sel = id;

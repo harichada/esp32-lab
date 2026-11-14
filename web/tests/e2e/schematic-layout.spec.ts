@@ -23,7 +23,7 @@ async function install(page: Page) {
 }
 
 async function openExample(page: Page, id: string, width: number) {
-  await page.setViewportSize({ width: width, height: width === 390 ? 844 : 800 });
+  await page.setViewportSize({ width: width, height: width === 390 || width === 320 ? 844 : 800 });
   await page.goto('/?ex=' + id + '&resume=0');
   await page.waitForFunction((key) => {
     const app = (window as unknown as { app?: { proj?: { example?: string; parts?: unknown[] }; schematic?: unknown } }).app;
@@ -68,6 +68,7 @@ async function drawing(page: Page) {
       const r = el.getBoundingClientRect();
       return {
         name: (el.textContent || '').trim(),
+        label: el.getAttribute('aria-label') || '',
         w: r.width,
         h: r.height,
         pressed: el.getAttribute('aria-pressed'),
@@ -105,27 +106,23 @@ async function drawing(page: Page) {
     const edge = (sel: string) => {
       const el = document.querySelector(sel);
       if (!el) return null;
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) return null;
       const r = el.getBoundingClientRect();
-      if (r.width < 1 || r.height < 1) return null;
-      return { top: r.top, bottom: r.bottom, left: r.left, right: r.right };
+      if (r.width < 8 || r.height < 8) return null;
+      return { x: r.left, y: r.top, x2: r.right, y2: r.bottom };
     };
-    let top = 0;
-    let bottom = window.innerHeight;
-    for (const sel of ['header#top', '.projbanner']) {
-      const r = edge(sel);
-      if (r && r.bottom > top && r.top < window.innerHeight * 0.5) top = Math.max(top, r.bottom);
-    }
-    for (const sel of ['.canvas-tools', '.hint']) {
-      const r = edge(sel);
-      if (r && r.top < bottom && r.bottom > window.innerHeight * 0.4) bottom = Math.min(bottom, r.top);
-    }
-    const open = { left: 0, top, right: window.innerWidth, bottom };
+    const overlays = ['.zoom-tools', '.canvas-tools', '.hint', '.projbanner', 'header#top'].map(edge).filter((r): r is { x: number; y: number; x2: number; y2: number } => !!r);
+    const meet = (a: { x: number; y: number; x2: number; y2: number }, b: { x: number; y: number; x2: number; y2: number }) =>
+      Math.min(a.x2, b.x2) - Math.max(a.x, b.x) > 1 && Math.min(a.y2, b.y2) - Math.max(a.y, b.y) > 1;
+    const open = { left: box.left + 8, top: box.top + 8, right: box.right - 8, bottom: box.bottom - 8 };
     const wired = new Set((window as unknown as { Schematic: { openFrame: (m: unknown) => { ids: string[] } } }).Schematic.openFrame(model).ids);
     const outside: string[] = [];
     const partsOutside: string[] = [];
     const clipped: string[] = [];
     for (const body of screenBodies) {
-      const inside = body.x >= open.left - 1 && body.y >= open.top - 1 && body.x2 <= open.right + 1 && body.y2 <= open.bottom + 1;
+      const inside = body.x >= open.left - 1 && body.y >= open.top - 1 && body.x2 <= open.right + 1 && body.y2 <= open.bottom + 1
+        && !overlays.some((o) => meet(body, o));
       const meets = body.x2 > open.left && body.x < open.right && body.y2 > open.top && body.y < open.bottom;
       if (!inside) partsOutside.push(body.id);
       if (meets && !inside) clipped.push(body.id);
@@ -284,7 +281,9 @@ async function toolbarTops(page: Page) {
 function assertClear(report: Awaited<ReturnType<typeof drawing>>, where: string) {
   expect(report.hidden, where + ' toggle').toBe(false);
   if (!report.fitAll) expect(report.covers, where + ' fitted').toBe(true);
-  expect(report.buttons.map((b) => b.name), where).toEqual(['Like breadboard', 'Tidy']);
+  expect(report.buttons.map((b) => b.name), where).toEqual(['Breadboard', 'Tidy']);
+  expect(report.buttons[0].label, where).toBe('Like breadboard');
+  expect(report.buttons[1].label, where).toBe('Tidy arrangement');
   for (const b of report.buttons) {
     expect(b.w, where + ' ' + b.name).toBeGreaterThanOrEqual(44);
     expect(b.h, where + ' ' + b.name).toBeGreaterThanOrEqual(44);
@@ -382,11 +381,92 @@ for (const width of [390, 768, 1280]) {
     for (const t of row.tops) expect(t, width + ' offsetTop ' + JSON.stringify(row)).toBe(top);
     if (width === 390) expect(row.minH, width + ' touch height').toBeGreaterThanOrEqual(44);
     const fit = page.locator('#schFitAll');
-    await expect(fit).toBeVisible();
-    const fitBox = await fit.boundingBox();
-    const zoom = await page.locator('.zoom-tools').boundingBox();
-    expect(fitBox && zoom && fitBox.x >= zoom.x - 1 && fitBox.x + fitBox.width <= zoom.x + zoom.width + 1).toBe(true);
+    if (await fit.isVisible()) {
+      const fitBox = await fit.boundingBox();
+      const zoom = await page.locator('.zoom-tools').boundingBox();
+      expect(fitBox && zoom && fitBox.x >= zoom.x - 1 && fitBox.x + fitBox.width <= zoom.x + zoom.width + 1).toBe(true);
+    }
   });
+}
+
+async function safeAudit(page: Page) {
+  return page.evaluate(() => {
+    const hit = (a: { x: number; y: number; x2: number; y2: number }, b: { x: number; y: number; x2: number; y2: number }) =>
+      Math.min(a.x2, b.x2) - Math.max(a.x, b.x) > 0.5 && Math.min(a.y2, b.y2) - Math.max(a.y, b.y) > 0.5;
+    const shown = (el: Element | null) => {
+      if (!el) return null;
+      const cs = getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) return null;
+      const r = el.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) return null;
+      return r;
+    };
+    const canvas = document.getElementById('stageSch')!.getBoundingClientRect();
+    const edge = 8;
+    const bars = ['.canvas-tools', '.zoom-tools'].map((sel) => {
+      const el = document.querySelector(sel) as HTMLElement | null;
+      const r = shown(el);
+      if (!el || !r) return { sel, scroll: 0, client: 0, ok: true };
+      return { sel, scroll: el.scrollWidth, client: el.clientWidth, ok: el.scrollWidth <= el.clientWidth + 0.5 };
+    });
+    const buttons = [...document.querySelectorAll('.canvas-tools button, .zoom-tools button')].filter((el) => {
+      const r = shown(el);
+      return !!r && !(el as HTMLButtonElement).hidden;
+    }).map((el) => {
+      const r = el.getBoundingClientRect();
+      const off = r.left < -0.5 || r.top < -0.5 || r.right > window.innerWidth + 0.5 || r.bottom > window.innerHeight + 0.5;
+      return { id: el.id || (el.textContent || '').trim(), off };
+    });
+    const overlays = ['.zoom-tools', '.canvas-tools', '.hint'].map((sel) => {
+      const r = shown(document.querySelector(sel));
+      return r ? { sel, x: r.left, y: r.top, x2: r.right, y2: r.bottom } : null;
+    }).filter((b): b is { sel: string; x: number; y: number; x2: number; y2: number } => !!b);
+    const bad: string[] = [];
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, n = 0;
+    document.querySelectorAll('#stageSch .sch-hit, #stageSch .sch-ref, #stageSch .sch-val, #stageSch .sch-title, #stageSch .sch-flag, #stageSch .sch-gnd').forEach((el) => {
+      if (!shown(el)) return;
+      const r = el.getBoundingClientRect();
+      const id = ((el.closest('.sch-sym') as HTMLElement | null)?.dataset.pid) || (el.textContent || el.className || '').toString().trim().slice(0, 24);
+      const box = { x: r.left, y: r.top, x2: r.right, y2: r.bottom };
+      if (r.left < canvas.left + edge - 0.5) bad.push(id + ' left ' + (r.left - canvas.left).toFixed(1));
+      if (r.top < canvas.top + edge - 0.5) bad.push(id + ' top ' + (r.top - canvas.top).toFixed(1));
+      if (r.right > canvas.right - edge + 0.5) bad.push(id + ' right ' + (canvas.right - r.right).toFixed(1));
+      if (r.bottom > canvas.bottom - edge + 0.5) bad.push(id + ' bottom ' + (canvas.bottom - r.bottom).toFixed(1));
+      for (const o of overlays) if (hit(box, o)) bad.push(id + ' ' + o.sel);
+      minX = Math.min(minX, r.left); minY = Math.min(minY, r.top);
+      maxX = Math.max(maxX, r.right); maxY = Math.max(maxY, r.bottom);
+      n += 1;
+    });
+    const Pinch = (window as unknown as { Pinch: { frameOf: (el: Element) => { stage: { left: number; top: number; right: number; bottom: number; width: number; height: number }; blockers: unknown[] }; bestClear: (stage: unknown, blockers: unknown, bounds: unknown, gap: number, pad: number, limits: unknown) => { width: number; height: number } } }).Pinch;
+    const model = (window as unknown as { app: { schematic: { model: { bounds: { w: number; h: number } } } } }).app.schematic.model;
+    const svg = document.getElementById('stageSch')!;
+    const frame = Pinch.frameOf(svg);
+    const hole = Pinch.bestClear(frame.stage, frame.blockers, model.bounds, 12, 12, { min: 0.12, max: 2.4 });
+    const contentW = n ? maxX - minX : 0;
+    const contentH = n ? maxY - minY : 0;
+    const limit = Math.max(contentW / Math.max(hole.width, 1), contentH / Math.max(hole.height, 1));
+    const zoom = (document.getElementById('zoomPct')?.textContent || '').trim();
+    return { bars, buttons: buttons.filter((b) => b.off), bad: bad.slice(0, 12), limit, zoom, n };
+  });
+}
+
+for (const example of EXAMPLES) {
+  for (const width of [320, 390, 1280]) {
+    test(example.id + ' fits the safe area at ' + width, async ({ page }) => {
+      await install(page);
+      await openExample(page, example.id, width);
+      const audit = await safeAudit(page);
+      for (const bar of audit.bars) {
+        expect(bar.ok, example.id + '@' + width + ' ' + bar.sel + ' ' + bar.scroll + ' in ' + bar.client).toBe(true);
+      }
+      expect(audit.buttons, example.id + '@' + width + ' toolbar off screen').toEqual([]);
+      expect(audit.bad, example.id + '@' + width + ' outside the safe area').toEqual([]);
+      expect(audit.n, example.id + '@' + width + ' parts').toBeGreaterThan(0);
+      if (example.id === 'remote' && width === 1280) {
+        expect(audit.limit, example.id + '@' + width + ' fill ' + audit.zoom + ' ' + audit.limit.toFixed(2)).toBeGreaterThanOrEqual(0.6);
+      }
+    });
+  }
 }
 
 test('remote at 390 keeps labels readable and the whole sheet can be shown', async ({ page }) => {
