@@ -33,3 +33,30 @@ test('every example: drawn schematic matches breadboard connectivity', () => {
   }
   assert.deepStrictEqual(problems, []);
 });
+
+test('every example: breadboard layout matches breadboard connectivity', () => {
+  const keys = E.LIST.map((row) => row[0]);
+  assert.ok(keys.length >= 42, 'examples ' + keys.length);
+  const problems = [];
+  let tidyNets = 0;
+  let sheets = 0;
+  for (const key of keys) {
+    const proj = E.EX[key]();
+    let model = null;
+    let svg = '';
+    try {
+      model = layout(proj, { match: true });
+      svg = toSvg(model);
+    } catch (e) {
+      problems.push(key + ' draw ' + e.message);
+      continue;
+    }
+    if (model.sheetFallback) sheets += 1;
+    else tidyNets += (model.tidyNets || []).length;
+    const pins = (svg.match(/class="sch-pin"/g) || []).length;
+    if (!pins) problems.push(key + ' schematic drew no pins');
+    problems.push(...summarize(key, A.auditProject(proj, svg)));
+  }
+  console.log('match layout fallbacks: ' + tidyNets + ' nets, ' + sheets + ' sheets');
+  assert.deepStrictEqual(problems, []);
+});

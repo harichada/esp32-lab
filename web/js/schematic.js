@@ -1199,6 +1199,17 @@
       catch (err) { if (typeof console !== 'undefined' && console.error) console.error('schematic match', err); }
     }
 
+    // On the breadboard seating a supply flag is only safe when its name sits on
+    // that net's wire and on no other. Draw those pins as wires instead, so the
+    // line itself is the connection.
+    if (wantMatch) {
+      for (const s of symbols) for (const t of s.terms) {
+        if (t.rail !== 'flag') continue;
+        t.rail = null;
+        t.wire = true;
+      }
+    }
+
     // Absolute pins, rails, routes.
     for (const s of symbols) for (const t of s.terms) { t.x = s.x + t.lx; t.y = s.y + t.ly; }
     const rails = [];
@@ -1216,12 +1227,97 @@
         obstacles.push({ x: g.x, y: g.y, x2: g.x2, y2: g.y2, sid: s.id, rail: true });
       }
     }
-    const routed = routeNets(symbols, netTerms, meta, obstacles);
-    const dots = junctions(routed.polys, symbols);
-    const labels = wireLabels(routed.polys, netTerms, meta);
-    const texts = placeTexts(symbols, rails, routed.polys, labels);
-    const bounds = computeBounds(symbols, rails, routed.polys, labels, texts);
-    return { symbols, rails, polys: routed.polys, dots, labels, texts, bounds, fallback: routed.fallback, fallbackWhy: routed.fallbackWhy || [], nets: meta };
+    const routed = routeNets(symbols, netTerms, meta, obstacles, wantMatch);
+    let polys = routed.polys;
+    let dots = junctions(polys, symbols);
+    let labels = wireLabels(polys, netTerms, meta);
+    let texts = placeTexts(symbols, rails, polys, labels, wantMatch);
+    const tidyNets = routed.tidyNets || [];
+    if (wantMatch) {
+      let bad = connectivityFaults(symbols, polys, labels);
+      if ((routed.unfixed || []).length || bad.length) {
+        const tidy = layout(proj, { match: false });
+        tidy.sheetFallback = true;
+        tidy.notice = 'The tidy layout is shown for this circuit.';
+        tidy.tidyNets = tidyNets;
+        const why = (routed.unfixed || []).concat(bad).join(',');
+        if (typeof console !== 'undefined' && console.warn) console.warn('schematic: tidy layout for this circuit (' + why + ')');
+        return tidy;
+      }
+    }
+    const bounds = computeBounds(symbols, rails, polys, labels, texts);
+    return {
+      symbols, rails, polys: polys, dots, labels, texts, bounds,
+      fallback: routed.fallback, fallbackWhy: routed.fallbackWhy || [], nets: meta,
+      tidyNets: tidyNets, sheetFallback: false, notice: '',
+    };
+  }
+
+  // Pins of one net must be one drawn component, and a component must not hold two nets.
+  // Flags of one name are one net. A label within 16 of its wire joins that wire to the flag.
+  function connectivityFaults(symbols, polys, labels) {
+    const uf = new UF();
+    const pins = [];
+    for (const s of symbols) for (const t of s.terms || []) {
+      if (t.nc) continue;
+      if (!t.wire && t.rail !== 'flag' && t.rail !== 'gnd') continue;
+      const id = t.sid + ':' + t.name;
+      pins.push({
+        id: id, net: t.net, x: t.x, y: t.y, rail: t.rail,
+        name: t.rail === 'gnd' ? 'GND' : (t.netName || ''),
+      });
+      uf.find(id);
+    }
+    const segs = [];
+    for (const pl of polys || []) {
+      const pts = pl.pts || [];
+      for (let i = 1; i < pts.length; i++) {
+        if (pts[i].x === pts[i - 1].x && pts[i].y === pts[i - 1].y) continue;
+        segs.push({ x1: pts[i - 1].x, y1: pts[i - 1].y, x2: pts[i].x, y2: pts[i].y });
+      }
+    }
+    for (let i = 0; i < segs.length; i++) {
+      uf.find('seg:' + i);
+      for (const pin of pins) if (pointSegDist(pin, segs[i]) <= PIN_GAP) uf.union('seg:' + i, pin.id);
+      for (let j = 0; j < i; j++) if (segNear(segs[i], segs[j])) uf.union('seg:' + i, 'seg:' + j);
+    }
+    for (const pin of pins) {
+      if (pin.rail === 'gnd') uf.union(pin.id, 'flag:GND');
+      else if (pin.rail === 'flag' && pin.name) uf.union(pin.id, 'flag:' + pin.name);
+    }
+    for (const lab of labels || []) {
+      if (!lab.name && !lab.text) continue;
+      const text = lab.name || lab.text;
+      let best = null, bd = 17;
+      for (let i = 0; i < segs.length; i++) {
+        const d = pointSegDist(lab, segs[i]);
+        if (d < bd) { bd = d; best = i; }
+      }
+      if (best == null || bd > 16) continue;
+      const named = pins.some((p) => (p.rail === 'flag' || p.rail === 'gnd') && p.name === text);
+      if (named) uf.union('seg:' + best, 'flag:' + text);
+    }
+    const bad = new Set();
+    const byNet = new Map();
+    for (const pin of pins) {
+      if (!byNet.has(pin.net)) byNet.set(pin.net, []);
+      byNet.get(pin.net).push(pin);
+    }
+    for (const [net, list] of byNet) {
+      const roots = new Set(list.map((p) => uf.find(p.id)));
+      if (roots.size > 1) bad.add(net);
+    }
+    const byRoot = new Map();
+    for (const pin of pins) {
+      const r = uf.find(pin.id);
+      if (!byRoot.has(r)) byRoot.set(r, []);
+      byRoot.get(r).push(pin.net);
+    }
+    for (const list of byRoot.values()) {
+      const nets = new Set(list);
+      if (nets.size > 1) for (const n of nets) bad.add(n);
+    }
+    return [...bad];
   }
 
   function opp(dir) { return { l: 'r', r: 'l', t: 'b', b: 't' }[dir] || 'r'; }
@@ -1650,24 +1746,210 @@
 
   function inside(p, r) { return p.x > r.x && p.x < r.x2 && p.y > r.y && p.y < r.y2; }
 
-  function routeNets(symbols, netTerms, meta, obstacles) {
+  // A foreign wire closer than this reads as the same net. A pin is joined at 3
+  // by the same measurement the drawn sheet uses. A right-angle cross whose
+  // intersection sits in both interiors is not a join.
+  const WIRE_GAP = 2;
+  const PIN_GAP = 3;
+  function pointSegDist(p, s) {
+    const dx = s.x2 - s.x1, dy = s.y2 - s.y1, l2 = dx * dx + dy * dy;
+    if (l2 < 1e-6) return Math.hypot(p.x - s.x1, p.y - s.y1);
+    let t = ((p.x - s.x1) * dx + (p.y - s.y1) * dy) / l2;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(p.x - (s.x1 + t * dx), p.y - (s.y1 + t * dy));
+  }
+  function segHoriz(s) { return Math.abs(s.y1 - s.y2) <= 1e-6 && Math.abs(s.x1 - s.x2) > 1e-6; }
+  function segVert(s) { return Math.abs(s.x1 - s.x2) <= 1e-6 && Math.abs(s.y1 - s.y2) > 1e-6; }
+  function cleanCross(a, b) {
+    let h = null, v = null;
+    if (segHoriz(a) && segVert(b)) { h = a; v = b; }
+    else if (segHoriz(b) && segVert(a)) { h = b; v = a; }
+    else return false;
+    const x = v.x1, y = h.y1;
+    const hx0 = Math.min(h.x1, h.x2), hx1 = Math.max(h.x1, h.x2);
+    const vy0 = Math.min(v.y1, v.y2), vy1 = Math.max(v.y1, v.y2);
+    return x > hx0 + WIRE_GAP && x < hx1 - WIRE_GAP && y > vy0 + WIRE_GAP && y < vy1 - WIRE_GAP;
+  }
+  function segNear(a, b) {
+    if (cleanCross(a, b)) return false;
+    if (pointSegDist({ x: a.x1, y: a.y1 }, b) <= WIRE_GAP) return true;
+    if (pointSegDist({ x: a.x2, y: a.y2 }, b) <= WIRE_GAP) return true;
+    if (pointSegDist({ x: b.x1, y: b.y1 }, a) <= WIRE_GAP) return true;
+    if (pointSegDist({ x: b.x2, y: b.y2 }, a) <= WIRE_GAP) return true;
+    if (segHoriz(a) && segHoriz(b) && Math.abs(a.y1 - b.y1) <= WIRE_GAP) {
+      const a0 = Math.min(a.x1, a.x2), a1 = Math.max(a.x1, a.x2);
+      const b0 = Math.min(b.x1, b.x2), b1 = Math.max(b.x1, b.x2);
+      if (Math.min(a1, b1) > Math.max(a0, b0)) return true;
+    }
+    if (segVert(a) && segVert(b) && Math.abs(a.x1 - b.x1) <= WIRE_GAP) {
+      const a0 = Math.min(a.y1, a.y2), a1 = Math.max(a.y1, a.y2);
+      const b0 = Math.min(b.y1, b.y2), b1 = Math.max(b.y1, b.y2);
+      if (Math.min(a1, b1) > Math.max(a0, b0)) return true;
+    }
+    return false;
+  }
+  function segsOf(pts) {
+    const s = simplify(pts);
+    const out = [];
+    for (let i = 1; i < s.length; i++) out.push({ x1: s[i - 1].x, y1: s[i - 1].y, x2: s[i].x, y2: s[i].y });
+    return out;
+  }
+  function pathBad(pts, ctx, net) {
+    const segs = segsOf(pts);
+    for (const seg of segs) {
+      for (const p of ctx.pins || []) {
+        if (p.net === net) continue;
+        if (pointSegDist(p, seg) <= PIN_GAP) return true;
+      }
+      for (const o of ctx.segs || []) {
+        if (o.net === net) continue;
+        if (segNear(seg, o)) return true;
+      }
+      if (ctx.obstacles && pathHitsObs([{ x: seg.x1, y: seg.y1 }, { x: seg.x2, y: seg.y2 }], ctx.bodyObs || ctx.obstacles)) return true;
+    }
+    return false;
+  }
+  function addDrawn(ctx, net, pts) {
+    for (const s of segsOf(pts)) ctx.segs.push({ net: net, x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2 });
+  }
+  function chooseClearLeads(symbols, obstacles) {
+    const pins = [];
+    for (const s of symbols) for (const t of s.terms) if (t.wire) pins.push(t);
+    pins.sort((a, b) => (a.net - b.net) || String(a.sid).localeCompare(String(b.sid)) || String(a.name).localeCompare(String(b.name)));
+    const segs = [];
+    const pinPts = pins.map((t) => ({ x: t.x, y: t.y, net: t.net }));
+    const stepOf = (t) => t.dir === 'l' ? [-1, 0] : t.dir === 'r' ? [1, 0] : t.dir === 't' ? [0, -1] : [0, 1];
+    for (const t of pins) {
+      const [sx, sy] = stepOf(t);
+      const perps = [[0, 1], [0, -1], [1, 0], [-1, 0]].filter(([dx, dy]) => dx !== sx || dy !== sy);
+      const cands = [];
+      for (let n = 3; n <= 16; n++) cands.push([{ x: t.x, y: t.y }, { x: snap(t.x + sx * n * GS), y: snap(t.y + sy * n * GS) }]);
+      for (let along = 2; along <= 6; along++) for (const [px, py] of perps) for (let n = 1; n <= 8; n++) {
+        const bend = { x: snap(t.x + sx * along * GS), y: snap(t.y + sy * along * GS) };
+        cands.push([
+          { x: t.x, y: t.y },
+          bend,
+          { x: snap(bend.x + px * n * GS), y: snap(bend.y + py * n * GS) },
+        ]);
+      }
+      const bodies = (obstacles || []).filter((r) => r.sid !== t.sid && !r.rail);
+      let chosen = null;
+      for (const pts of cands) {
+        const end = pts[pts.length - 1];
+        if ((obstacles || []).some((r) => inside(end, r))) continue;
+        if (pathHitsObs(pts, bodies)) continue;
+        if (pathBad(pts, { segs: segs, pins: pinPts, obstacles: null }, t.net)) continue;
+        chosen = pts;
+        break;
+      }
+      // No clear stub. Start the route at the pin itself rather than draw a lead
+      // along another net.
+      if (!chosen) chosen = [{ x: t.x, y: t.y }];
+      t.lead = simplify(chosen);
+      t.sx = t.lead[t.lead.length - 1].x;
+      t.sy = t.lead[t.lead.length - 1].y;
+      for (const s of segsOf(t.lead)) segs.push({ net: t.net, x1: s.x1, y1: s.y1, x2: s.x2, y2: s.y2 });
+    }
+  }
+  function outerPaths(a, b, board) {
+    const cands = [];
+    const put = (pts) => cands.push(pts.filter((p, i) => i === 0 || p.x !== pts[i - 1].x || p.y !== pts[i - 1].y));
+    for (const m of [40, 80, 120, 180, 260, 360, 480]) {
+      const top = snap(board.minY - m), bot = snap(board.maxY + m);
+      const left = snap(board.minX - m), right = snap(board.maxX + m);
+      put([a, { x: a.x, y: top }, { x: b.x, y: top }, b]);
+      put([a, { x: a.x, y: bot }, { x: b.x, y: bot }, b]);
+      put([a, { x: left, y: a.y }, { x: left, y: b.y }, b]);
+      put([a, { x: right, y: a.y }, { x: right, y: b.y }, b]);
+      put([a, { x: a.x, y: top }, { x: right, y: top }, { x: right, y: b.y }, b]);
+      put([a, { x: a.x, y: bot }, { x: left, y: bot }, { x: left, y: b.y }, b]);
+    }
+    return cands;
+  }
+  function insideAny(p, obstacles) {
+    return (obstacles || []).some((r) => p.x > r.x && p.x < r.x2 && p.y > r.y && p.y < r.y2);
+  }
+  // Walk out of the symbols to a point past the board, then join those points
+  // on a lane no other net is using. That is the tidy route for one net.
+  function tidyLink(a, b, ctx, net) {
+    const goal = { x: b.x, y: b.y };
+    const tree = [{ x: a.x, y: a.y }];
+    // The breadboard channel is blocked. Cross symbol bodies if needed, but never
+    // another net. A right-angle cross of a foreign wire is still allowed.
+    const prevPass = ctx.passSid, prevBody = ctx.bodyObs;
+    ctx.passSid = true;
+    ctx.bodyObs = [];
+    const done = (path) => { ctx.passSid = prevPass; ctx.bodyObs = prevBody; return path; };
+    if (goal.x !== tree[0].x || goal.y !== tree[0].y) {
+      for (const strict of [true, false, 'open']) {
+        const path = astar(tree, goal, ctx, net, strict, ctx.board);
+        if (path && !pathBad(path, ctx, net)) return done(simplify(path));
+      }
+    }
+    const board = ctx.board;
+    const dirsOf = (p) => {
+      const all = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+      const primary = p.dir === 'l' ? [-1, 0] : p.dir === 'r' ? [1, 0] : p.dir === 't' ? [0, -1] : p.dir === 'b' ? [0, 1] : null;
+      return primary ? [primary].concat(all.filter((d) => d[0] !== primary[0] || d[1] !== primary[1])) : all;
+    };
+    const runOut = (p) => {
+      for (const [dx, dy] of dirsOf(p)) {
+        const pts = [{ x: p.x, y: p.y }];
+        let x = p.x, y = p.y;
+        for (let n = 0; n < 100; n++) {
+          const nx = snap(x + dx * GS), ny = snap(y + dy * GS);
+          if (insideAny({ x: nx, y: ny }, ctx.bodyObs || ctx.obstacles)) break;
+          x = nx; y = ny;
+          pts.push({ x: x, y: y });
+          if (x < board.minX - GS || x > board.maxX + GS || y < board.minY - GS || y > board.maxY + GS) return pts;
+        }
+      }
+      return null;
+    };
+    const pa = runOut(a), pb = runOut(b);
+    if (!pa || !pb) return done(null);
+    const ea = pa[pa.length - 1], eb = pb[pb.length - 1];
+    for (const m of [GS, GS * 4, GS * 8, GS * 14, GS * 22, GS * 32]) {
+      const top = snap(board.minY - m), bot = snap(board.maxY + m);
+      const left = snap(board.minX - m), right = snap(board.maxX + m);
+      const mids = [
+        [ea, { x: ea.x, y: top }, { x: eb.x, y: top }, eb],
+        [ea, { x: ea.x, y: bot }, { x: eb.x, y: bot }, eb],
+        [ea, { x: left, y: ea.y }, { x: left, y: eb.y }, eb],
+        [ea, { x: right, y: ea.y }, { x: right, y: eb.y }, eb],
+      ];
+      for (const mid of mids) {
+        const full = simplify(pa.concat(mid.slice(1), pb.slice(0, -1).reverse()));
+        if (pathHitsObs(full, ctx.bodyObs || ctx.obstacles)) continue;
+        if (pathBad(full, ctx, net)) continue;
+        return done(full);
+      }
+    }
+    return done(null);
+  }
+
+  function routeNets(symbols, netTerms, meta, obstacles, clearance) {
     const pinAt = new Map();
     const endpoints = new Map(); // net -> [{pin, stub}]
+    if (clearance) chooseClearLeads(symbols, obstacles);
     for (const s of symbols) for (const t of s.terms) {
       if (!t.wire) continue;
-      let stub = stubOf(t, STUB);
-      for (let k = 0; k < 10; k++) {
-        const key = stub.x + ',' + stub.y;
-        const owner = pinAt.get(key);
-        const taken = owner !== undefined && owner !== t.net;
-        const buried = obstacles.some((r) => inside(stub, r));
-        const cuts = leadCuts(t, stub, obstacles);
-        if (!taken && !buried && !cuts) break;
-        stub = stubOf(t, STUB + (k + 1) * GS);
+      if (!clearance) {
+        let stub = stubOf(t, STUB);
+        for (let k = 0; k < 10; k++) {
+          const key = stub.x + ',' + stub.y;
+          const owner = pinAt.get(key);
+          const taken = owner !== undefined && owner !== t.net;
+          const buried = obstacles.some((r) => inside(stub, r));
+          const cuts = leadCuts(t, stub, obstacles);
+          if (!taken && !buried && !cuts) break;
+          stub = stubOf(t, STUB + (k + 1) * GS);
+        }
+        t.sx = stub.x; t.sy = stub.y;
+        t.lead = [{ x: t.x, y: t.y }, { x: stub.x, y: stub.y }];
       }
-      t.sx = stub.x; t.sy = stub.y;
       pinAt.set(t.x + ',' + t.y, t.net);
-      pinAt.set(stub.x + ',' + stub.y, t.net);
+      pinAt.set(t.sx + ',' + t.sy, t.net);
       if (!endpoints.has(t.net)) endpoints.set(t.net, []);
       endpoints.get(t.net).push(t);
     }
@@ -1679,7 +1961,17 @@
     if (!isFinite(bMinX)) { bMinX = 0; bMaxX = 0; bMinY = 0; bMaxY = 0; }
     const spanX = Math.ceil((bMaxX - bMinX + 160) / GS), spanY = Math.ceil((bMaxY - bMinY + 160) / GS);
     const board = { minX: bMinX - 80, maxX: bMaxX + 80, minY: bMinY - 80, maxY: bMaxY + 80, cap: Math.min(250000, Math.max(40000, spanX * spanY * 4)) };
-    const ctx = { obstacles, pinAt, used: new Map(), vinfo: new Map(), fallback: false, fallbackWhy: [], board };
+    const ctx = {
+      obstacles, pinAt, used: new Map(), vinfo: new Map(), fallback: false, fallbackWhy: [], board,
+      segs: [], pins: [], tidyNets: [], unfixed: [], clearance: !!clearance,
+    };
+    if (clearance) {
+      for (const pins of endpoints.values()) for (const t of pins) ctx.pins.push({ x: t.x, y: t.y, net: t.net });
+      for (const [net, pins] of endpoints) for (const t of pins) {
+        commitPath(ctx, net, t.lead);
+        addDrawn(ctx, net, t.lead);
+      }
+    }
     const polys = []; // {net, name, pts}
     for (const [net, pins] of nets) {
       if (pins.length < 2) continue;
@@ -1695,31 +1987,98 @@
         if (!path) path = astar(tree, goal, ctx, net, true, ctx.board);
         if (!path) path = astar(tree, goal, ctx, net, false, ctx.board);
         if (!path) path = astar(tree, goal, ctx, net, 'open', ctx.board);
+        if (path && clearance && pathBad(path, ctx, net)) path = null;
+        if (!path && clearance) {
+          let around = null;
+          for (const from of tree) {
+            around = tidyLink(from, goal, ctx, net);
+            if (around) break;
+          }
+          if (around) {
+            path = around;
+            if (!ctx.tidyNets.includes(net)) {
+              ctx.tidyNets.push(net);
+              if (typeof console !== 'undefined' && console.warn) console.warn('schematic: tidy route for net ' + net);
+            }
+          }
+        }
         if (!path) {
           const why = 'net ' + net + ' ' + pins[0].sid + '.' + pins[0].name + ' → ' + pins[i].sid + '.' + pins[i].name;
           ctx.fallback = true;
           ctx.fallbackWhy.push(why);
           if (typeof console !== 'undefined' && console.warn) console.warn('schematic fallback: ' + why);
-          path = orthoFallback(tree[0], goal, ctx.obstacles);
+          path = orthoFallback(tree[0], goal, ctx.obstacles, clearance ? ctx : null, net);
+          if (path && clearance && pathBad(path, ctx, net)) path = null;
+          if (!path) { ctx.unfixed.push(net); ok = false; break; }
         }
         for (const p of path) tree.push(p);
         branches.push({ path, pin: pins[i] });
       }
-      commitPath(ctx, net, [{ x: pins[0].x, y: pins[0].y }, { x: pins[0].sx, y: pins[0].sy }]);
-      polys.push({ net, name, pts: simplify([{ x: pins[0].x, y: pins[0].y }, { x: pins[0].sx, y: pins[0].sy }]) });
+      if (clearance) {
+        for (const t of pins) polys.push({ net, name, pts: simplify(t.lead) });
+      } else {
+        commitPath(ctx, net, [{ x: pins[0].x, y: pins[0].y }, { x: pins[0].sx, y: pins[0].sy }]);
+        polys.push({ net, name, pts: simplify([{ x: pins[0].x, y: pins[0].y }, { x: pins[0].sx, y: pins[0].sy }]) });
+      }
       for (const b of branches) {
-        const pts = simplify([{ x: b.path[0].x, y: b.path[0].y }, ...b.path, { x: b.pin.x, y: b.pin.y }].filter((p, i, a) => i === 0 || p.x !== a[i - 1].x || p.y !== a[i - 1].y));
-        // path already ends at stub; append pin
         const full = b.path.slice();
         const last = full[full.length - 1];
         if (!last || last.x !== b.pin.sx || last.y !== b.pin.sy) full.push({ x: b.pin.sx, y: b.pin.sy });
-        full.push({ x: b.pin.x, y: b.pin.y });
+        // The lead is already its own polyline when clearance is on. A straight
+        // stub-to-pin segment would draw over the jog and onto the other net.
+        if (!clearance) full.push({ x: b.pin.x, y: b.pin.y });
         commitPath(ctx, net, full);
+        if (clearance) addDrawn(ctx, net, full);
         polys.push({ net, name, pts: simplify(full) });
       }
       void ok;
     }
-    return { polys, fallback: ctx.fallback, fallbackWhy: ctx.fallbackWhy };
+    if (clearance) repairDirtyNets(ctx, polys, endpoints, meta);
+    return { polys, fallback: ctx.fallback, fallbackWhy: ctx.fallbackWhy, tidyNets: ctx.tidyNets, unfixed: ctx.unfixed };
+  }
+
+  function repairDirtyNets(ctx, polys, endpoints, meta) {
+    const dirty = new Set(ctx.unfixed);
+    for (const pins of endpoints.values()) for (const t of pins) if (t._leadDirty) dirty.add(t.net);
+    for (let i = 0; i < ctx.segs.length; i++) for (let j = i + 1; j < ctx.segs.length; j++) {
+      if (ctx.segs[i].net === ctx.segs[j].net) continue;
+      if (segNear(ctx.segs[i], ctx.segs[j])) { dirty.add(ctx.segs[i].net); dirty.add(ctx.segs[j].net); }
+    }
+    for (const p of ctx.pins) for (const s of ctx.segs) {
+      if (s.net === p.net) continue;
+      if (pointSegDist(p, s) <= PIN_GAP) { dirty.add(p.net); dirty.add(s.net); }
+    }
+    for (const net of dirty) {
+      for (let i = polys.length - 1; i >= 0; i--) if (polys[i].net === net) polys.splice(i, 1);
+      ctx.segs = ctx.segs.filter((s) => s.net !== net);
+      const pins = endpoints.get(net) || [];
+      const name = (meta.get(net) && meta.get(net).name) || '';
+      const built = [];
+      let failed = pins.length < 2;
+      let at = pins.length ? { x: pins[0].x, y: pins[0].y } : null;
+      for (let i = 1; !failed && i < pins.length; i++) {
+        const goal = { x: pins[i].x, y: pins[i].y };
+        const path = tidyLink(at, goal, ctx, net);
+        if (!path) { failed = true; break; }
+        addDrawn(ctx, net, path);
+        commitPath(ctx, net, path);
+        built.push({ net: net, name: name, pts: path });
+        at = goal;
+      }
+      if (failed) {
+        ctx.segs = ctx.segs.filter((s) => s.net !== net);
+        if (!ctx.unfixed.includes(net)) ctx.unfixed.push(net);
+        if (typeof console !== 'undefined' && console.warn) console.warn('schematic unfixed net ' + net + ' pins ' + pins.map((t) => t.sid + '.' + t.name + '@' + t.x + ',' + t.y + (t._leadDirty ? ' dirty' : '')).join(' '));
+        continue;
+      }
+      for (const pl of built) polys.push(pl);
+      const ix = ctx.unfixed.indexOf(net);
+      if (ix >= 0) ctx.unfixed.splice(ix, 1);
+      if (!ctx.tidyNets.includes(net)) {
+        ctx.tidyNets.push(net);
+        if (typeof console !== 'undefined' && console.warn) console.warn('schematic: tidy route for net ' + net);
+      }
+    }
   }
 
   function leadCuts(t, stub, obstacles) {
@@ -1763,7 +2122,7 @@
     }
     return false;
   }
-  function orthoFallback(a, b, obstacles) {
+  function orthoFallback(a, b, obstacles, ctx, net) {
     const cands = [];
     const lane = (x, y) => cands.push([a, { x, y: a.y }, { x, y }, { x: b.x, y }, b]);
     if (a.x === b.x || a.y === b.y) cands.push([a, b]);
@@ -1774,11 +2133,14 @@
     for (const y of ys) cands.push([a, { x: a.x, y }, { x: b.x, y }, b]);
     for (const x of xs) cands.push([a, { x, y: a.y }, { x, y: b.y }, b]);
     for (const y of ys) for (const x of xs) lane(x, y);
+    if (ctx && ctx.board) for (const path of outerPaths(a, b, ctx.board)) cands.push(path);
     for (const path of cands) {
       const clean = path.filter((p, i) => i === 0 || p.x !== path[i - 1].x || p.y !== path[i - 1].y);
-      if (!pathHitsObs(clean, obstacles)) return clean;
+      if (pathHitsObs(clean, obstacles)) continue;
+      if (ctx && pathBad(clean, ctx, net)) continue;
+      return clean;
     }
-    return cands[0];
+    return ctx ? null : cands[0];
   }
   function simplify(pts) {
     const o = [];
@@ -1892,6 +2254,43 @@
     return null;
   }
 
+  function perpInterior(seg, o) {
+    const sh = Math.abs(seg.y1 - seg.y2) < 1e-6, sv = Math.abs(seg.x1 - seg.x2) < 1e-6;
+    const oh = Math.abs(o.y1 - o.y2) < 1e-6, ov = Math.abs(o.x1 - o.x2) < 1e-6;
+    if (!((sh && ov) || (sv && oh))) return false;
+    if (pointSegDist({ x: seg.x2, y: seg.y2 }, o) > 0.1) return false;
+    const span = oh ? Math.min(Math.abs(seg.x2 - o.x1), Math.abs(seg.x2 - o.x2)) : Math.min(Math.abs(seg.y2 - o.y1), Math.abs(seg.y2 - o.y2));
+    return span > WIRE_GAP;
+  }
+  function leavesInterior(seg, o) {
+    const sh = Math.abs(seg.y1 - seg.y2) < 1e-6, sv = Math.abs(seg.x1 - seg.x2) < 1e-6;
+    const oh = Math.abs(o.y1 - o.y2) < 1e-6, ov = Math.abs(o.x1 - o.x2) < 1e-6;
+    if (!((sh && ov) || (sv && oh))) return false;
+    if (pointSegDist({ x: seg.x1, y: seg.y1 }, o) > 0.1) return false;
+    const span = oh ? Math.min(Math.abs(seg.x1 - o.x1), Math.abs(seg.x1 - o.x2)) : Math.min(Math.abs(seg.y1 - o.y1), Math.abs(seg.y1 - o.y2));
+    return span > WIRE_GAP;
+  }
+  function sittingOn(ctx, x, y, net, horiz) {
+    for (const o of ctx.segs || []) {
+      if (o.net === net || pointSegDist({ x: x, y: y }, o) > 0.1) continue;
+      const oh = Math.abs(o.y1 - o.y2) < 1e-6;
+      const span = oh ? Math.min(Math.abs(x - o.x1), Math.abs(x - o.x2)) : Math.min(Math.abs(y - o.y1), Math.abs(y - o.y2));
+      if (span <= WIRE_GAP) return true;
+      if (oh === horiz) return true;
+    }
+    return false;
+  }
+  function tidyStep(ctx, x, y, nx, ny, horiz, net) {
+    const seg = { x1: x, y1: y, x2: nx, y2: ny };
+    for (const p of ctx.pins || []) if (p.net !== net && pointSegDist(p, seg) <= PIN_GAP) return false;
+    if (sittingOn(ctx, x, y, net, horiz)) return false;
+    for (const o of ctx.segs || []) {
+      if (o.net === net || !segNear(seg, o) || perpInterior(seg, o) || leavesInterior(seg, o)) continue;
+      return false;
+    }
+    return true;
+  }
+
   function stepOk(ctx, x, y, nx, ny, di, net, strict, goalK) {
     const horiz = di <= 1;
     const ek = edgeKey(x, y, nx, ny);
@@ -1900,6 +2299,12 @@
     const k = nx + ',' + ny;
     const owner = ctx.pinAt.get(k);
     if (owner !== undefined && owner !== net && k !== goalK) return false;
+    // A tidy retry may cross a foreign wire in the middle of a grid step. It may
+    // not stop there, run along it, or come close to a pin that is not its own.
+    if (ctx.passSid) {
+      if (!tidyStep(ctx, x, y, nx, ny, horiz, net)) return false;
+      return true;
+    }
     // The goal cell is this net's own stub. Reach it even when another route grazed the point.
     if (k === goalK) return true;
     const info = ctx.vinfo.get(k);
@@ -1911,7 +2316,9 @@
       if (strict !== 'open' && info.axes.size !== 1) return false;
     }
     if (owner === net) return true;
-    for (const r of ctx.obstacles) if (nx > r.x && nx < r.x2 && ny > r.y && ny < r.y2) return false;
+    if (!ctx.passSid) {
+      for (const r of ctx.obstacles) if (nx > r.x && nx < r.x2 && ny > r.y && ny < r.y2) return false;
+    }
     return true;
   }
 
@@ -1974,7 +2381,10 @@
       if (!v.name || v.len < 30) continue;
       const mx = (v.a.x + v.b.x) / 2, my = (v.a.y + v.b.y) / 2;
       const horiz = v.a.y === v.b.y;
-      labels.push({ x: mx, y: horiz ? my - 8 : my, name: v.name, net: v.net, anchor: horiz ? 'middle' : 'start' });
+      labels.push({
+        x: mx, y: horiz ? my - 8 : my, name: v.name, net: v.net, anchor: horiz ? 'middle' : 'start',
+        ax: v.a.x, ay: v.a.y, bx: v.b.x, by: v.b.y,
+      });
     }
     return labels;
   }
@@ -1998,7 +2408,7 @@
     return ix > 1 - p && iy > 1 - p;
   }
   /** Nudge every label onto a free spot. Side pin names and titles stay inside their own body. */
-  function placeTexts(symbols, rails, polys, labels) {
+  function placeTexts(symbols, rails, polys, labels, keepOnWire) {
     const blockers = [];
     for (const s of symbols) blockers.push({ x: s.x - 1, y: s.y - 1, x2: s.x + s.w + 1, y2: s.y + s.h + 1, body: s.id });
     for (const r of rails) if (r.kind === 'gnd') blockers.push({ x: r.x - 2, y: r.y - 2, x2: r.x2 + 2, y2: r.y2 + 2 });
@@ -2065,7 +2475,10 @@
       items.push(lab); r.labPos = lab;
     }
     for (const l of labels) {
-      const lab = { kind: 'net', text: l.name, size: 10.5, anchor: l.anchor || 'middle', x: l.x, y: l.y, move: true };
+      const lab = {
+        kind: 'net', text: l.name, size: 10.5, anchor: l.anchor || 'middle', x: l.x, y: l.y, move: true,
+        ax: l.ax, ay: l.ay, bx: l.bx, by: l.by,
+      };
       items.push(lab); l.labPos = lab;
     }
     function hitAny(box, self) {
@@ -2087,19 +2500,41 @@
     }
     for (const it of items) {
       if (!it.move) continue;
+      const onWire = (x, y) => {
+        if (!keepOnWire || it.kind !== 'net' || it.ax == null) return true;
+        return pointSegDist({ x: x, y: y }, { x1: it.ax, y1: it.ay, x2: it.bx, y2: it.by }) <= 16;
+      };
       let placed = null;
       for (const [dx, dy] of shifts) {
+        if (!onWire(it.x + dx, it.y + dy)) continue;
         const box = makeBox(it.text, it.x + dx, it.y + dy, it.size, it.anchor);
         if (!hitAny(box, it)) { placed = box; break; }
       }
-      if (!placed) {
-        // Last resort: step away until the box is clear, then keep that spot even if the sheet is crowded.
+      // A breadboard net label has to stay on its own wire. The tidy sheet may
+      // step a label clear of its neighbours.
+      if (!placed && keepOnWire && it.kind === 'net' && it.ax != null) {
+        const horiz = it.ay === it.by;
+        for (let i = 0; i <= 12 && !placed; i++) {
+          const t = i / 12;
+          const x = it.ax + (it.bx - it.ax) * t;
+          const y = it.ay + (it.by - it.ay) * t;
+          for (const off of [0, -8, 8, -12, 12, -16, 16]) {
+            const px = horiz ? x : x + off;
+            const py = horiz ? y - off : y;
+            if (!onWire(px, py)) continue;
+            const box = makeBox(it.text, px, py, it.size, it.anchor);
+            if (!hitAny(box, it)) { placed = box; break; }
+          }
+        }
+      }
+      if (!placed && !(keepOnWire && it.kind === 'net')) {
         for (let n = 1; n <= 12 && !placed; n++) {
           const box = makeBox(it.text, it.x + n * 16, it.y - n * 14, it.size, it.anchor);
           if (!hitAny(box, it)) placed = box;
         }
       }
-      if (!placed) placed = makeBox(it.text, it.x, it.y - 48, it.size, it.anchor);
+      if (!placed && !(keepOnWire && it.kind === 'net')) placed = makeBox(it.text, it.x, it.y - 48, it.size, it.anchor);
+      if (!placed) placed = makeBox(it.text, it.x, it.y, it.size, it.anchor);
       it.x = placed.ax; it.y = placed.ay; it.box = placed;
     }
     for (const l of labels) if (l.labPos) { l.x = l.labPos.x; l.y = l.labPos.y; l.anchor = l.labPos.anchor; }
@@ -2722,7 +3157,7 @@
         } else if (this._hint0) hint.textContent = this._hint0;
       }
       this._syncLayout();
-      if (!this.active) this._syncFitAll(false);
+      if (!this.active) { this._syncFitAll(false); this._syncNotice(); }
       if (this.active) this.rebuild(true);
     }
     invalidate() { this._sig = ''; if (this.active) this._queue(false); }
@@ -2756,6 +3191,7 @@
       try { this.model = layout(this.proj, { match: this._useMatch() }); }
       catch (e) { console.error('schematic layout', e); this.model = { symbols: [], rails: [], polys: [], dots: [], labels: [], texts: [], bounds: { x: 0, y: 0, w: 10, h: 10 }, fallback: true }; }
       this.paint();
+      this._syncNotice();
       if (fit) { this._fitMode = 'open'; this.fit(); }
     }
     fitAll() {
@@ -2886,6 +3322,22 @@
         this._labelZoom = scale;
         settlePartLabels(this.svg, this.view.s);
       }
+      // Pinch, wheel, keys and double-tap all land here. Fit all follows every one of them.
+      if (!this._fitting && this._safeS) this._syncFitAll(this.view.s > this._safeS + 0.02);
+    }
+    _syncNotice() {
+      let n = document.getElementById('schNotice');
+      if (!n && this.host) {
+        n = document.createElement('p');
+        n.id = 'schNotice';
+        n.hidden = true;
+        n.style.cssText = 'position:absolute;left:12px;top:8px;z-index:6;margin:0;padding:4px 10px;border-radius:8px;background:color-mix(in srgb,var(--l1) 92%,transparent);color:var(--txt2);font-size:12.5px;line-height:1.3;pointer-events:none;border:1px solid var(--line)';
+        this.host.appendChild(n);
+      }
+      if (!n) return;
+      const text = this.active && this.model && this.model.notice ? this.model.notice : '';
+      n.textContent = text;
+      n.hidden = !text;
     }
     _reveal(sym, on) {
       if (!sym) return;
@@ -2905,16 +3357,18 @@
     }
     fit(attempt) {
       if (!this.model) return;
+      this._fitting = true;
       const n = attempt || 0;
       const b = this.model.bounds, r = this.svg.getBoundingClientRect();
       // Opening the view toggles display in the same turn. The first box can
       // still be the hidden size, which left the sheet at the breadboard zoom.
       if ((r.width < 2 || r.height < 2) && n < 8 && typeof requestAnimationFrame === 'function') {
         const gen = this._fitGen;
+        this._fitting = false;
         requestAnimationFrame(() => { if (this.active && this._fitGen === gen) this.fit(n + 1); });
         return;
       }
-      if (r.width < 2 || r.height < 2) return;
+      if (r.width < 2 || r.height < 2) { this._fitting = false; return; }
       // Largest zoom whose parts and labels sit in the canvas, 12px clear of
       // the zoom panel, the toolbar, and the hint, and 12px clear of the edges.
       const frame = root.Pinch.frameOf(this.svg);
@@ -2976,6 +3430,7 @@
       else place(bestRect, bestS);
       this._safeS = this.view.s;
       this._wantFitAll = safeSlack(this.svg) > 1;
+      this._fitting = false;
       this._syncFitAll(this._wantFitAll);
       if (n === 0 && typeof requestAnimationFrame === 'function') {
         this._fitGen = (this._fitGen || 0) + 1;
@@ -3100,7 +3555,29 @@
       svg.addEventListener('pointerup', end, true);
       svg.addEventListener('pointercancel', end, true);
       svg.addEventListener('lostpointercapture', end, true);
-      svg.addEventListener('touchmove', (e) => { if (e.touches && e.touches.length >= 2) e.preventDefault(); }, { passive: false });
+      let touchPinch = null;
+      const touchPair = (list) => {
+        const a = list[0], b = list[1];
+        return { x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2, d: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY) };
+      };
+      svg.addEventListener('touchstart', (e) => {
+        if (document.body.classList.contains('m') || !this.active || !e.touches || e.touches.length < 2) return;
+        const m = touchPair(e.touches), rect = svg.getBoundingClientRect();
+        const w = root.Pinch.worldAt(this.view, m, rect);
+        touchPinch = { dist: Math.max(m.d, 1), s: this.view.s, wx: w.x, wy: w.y };
+        e.preventDefault();
+      }, { passive: false });
+      svg.addEventListener('touchmove', (e) => {
+        if (e.touches && e.touches.length >= 2) e.preventDefault();
+        if (document.body.classList.contains('m') || !touchPinch || !e.touches || e.touches.length < 2) return;
+        const m = touchPair(e.touches), rect = svg.getBoundingClientRect();
+        const next = root.Pinch.applyView(touchPinch, m, m.d, rect, { min: 0.12, max: 4 });
+        this.view.s = next.s; this.view.x = next.x; this.view.y = next.y;
+        this.apply();
+      }, { passive: false });
+      const touchEnd = (e) => { if (!e.touches || e.touches.length < 2) touchPinch = null; };
+      svg.addEventListener('touchend', touchEnd);
+      svg.addEventListener('touchcancel', touchEnd);
       window.addEventListener('resize', () => { if (this.active) this.apply(); });
     }
     _tip(ev) {

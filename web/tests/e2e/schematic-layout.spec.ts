@@ -527,3 +527,98 @@ test('schmatch=0 hides the control and keeps a schematic', async ({ page }) => {
   await page.waitForFunction(() => !!document.querySelector('#stageSch.on .sch-sym'));
   await expect(page.locator('#schLayout')).toBeHidden();
 });
+
+// Drawn nets, recovered from the SVG the page painted. A right-angle cross
+// whose intersection is in both interiors is not a join.
+async function joined(page: Page, a: { part?: string; name: string }, b: { part?: string; name: string }) {
+  return page.evaluate(({ a, b }) => {
+    const near = (p: { x: number; y: number }, s: { x1: number; y1: number; x2: number; y2: number }, tol: number) => {
+      const dx = s.x2 - s.x1, dy = s.y2 - s.y1, l2 = dx * dx + dy * dy;
+      if (l2 < 1e-6) return Math.hypot(p.x - s.x1, p.y - s.y1) <= tol;
+      let t = ((p.x - s.x1) * dx + (p.y - s.y1) * dy) / l2;
+      t = Math.max(0, Math.min(1, t));
+      return Math.hypot(p.x - (s.x1 + t * dx), p.y - (s.y1 + t * dy)) <= tol;
+    };
+    const segs: { x1: number; y1: number; x2: number; y2: number }[] = [];
+    document.querySelectorAll('#stageSch path.sch-wire').forEach((el) => {
+      const d = el.getAttribute('d') || '';
+      let x = 0, y = 0;
+      const re = /([ML])([^ML]*)/gi;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(d))) {
+        const nums = (m[2].match(/-?\d*\.?\d+/g) || []).map(Number);
+        for (let i = 0; i + 1 < nums.length; i += 2) {
+          const nx = nums[i], ny = nums[i + 1];
+          if (m[1].toUpperCase() === 'L') segs.push({ x1: x, y1: y, x2: nx, y2: ny });
+          x = nx; y = ny;
+        }
+      }
+    });
+    const pins = [...document.querySelectorAll('#stageSch circle.sch-pin')].map((el) => ({
+      part: el.getAttribute('data-pid') || '',
+      name: el.getAttribute('data-pin') || '',
+      x: +(el.getAttribute('cx') || 0),
+      y: +(el.getAttribute('cy') || 0),
+    }));
+    const find = (spec: { part?: string; name: string }) => pins.find((p) => p.name === spec.name && (!spec.part || p.part === spec.part));
+    const pa = find(a), pb = find(b);
+    if (!pa || !pb) return null;
+    const parent = new Map<string, string>();
+    const findId = (id: string): string => {
+      if (!parent.has(id)) parent.set(id, id);
+      const p = parent.get(id)!;
+      if (p === id) return id;
+      const r = findId(p);
+      parent.set(id, r);
+      return r;
+    };
+    const union = (u: string, v: string) => { parent.set(findId(u), findId(v)); };
+    pins.forEach((p, i) => findId('p' + i));
+    segs.forEach((_, i) => findId('s' + i));
+    segs.forEach((s, i) => {
+      pins.forEach((p, k) => { if (near(p, s, 3)) union('s' + i, 'p' + k); });
+      for (let j = 0; j < i; j++) {
+        const o = segs[j];
+        const touch = near({ x: s.x1, y: s.y1 }, o, 2) || near({ x: s.x2, y: s.y2 }, o, 2)
+          || near({ x: o.x1, y: o.y1 }, s, 2) || near({ x: o.x2, y: o.y2 }, s, 2);
+        if (touch) union('s' + i, 's' + j);
+      }
+    });
+    const ia = pins.indexOf(pa), ib = pins.indexOf(pb);
+    return findId('p' + ia) === findId('p' + ib);
+  }, { a, b });
+}
+
+for (const width of [1280, 390]) {
+  for (const id of ['b_series', 'stopwatch', 'remote']) {
+    test(id + ' keeps separate nets at ' + width, async ({ page }) => {
+      await install(page);
+      await openExample(page, id, width);
+      const led = await joined(page, { part: 'LED1', name: 'A' }, { part: 'LED1', name: 'C' });
+      if (led !== null) expect(led, id + ' LED1 anode and cathode').toBe(false);
+      const gpio = await joined(page, { name: 'D13' }, { name: 'D25' });
+      if (gpio !== null) expect(gpio, id + ' D13 and D25').toBe(false);
+      expect(led !== null || gpio !== null, id + ' has neither LED1 nor D13/D25').toBe(true);
+    });
+  }
+}
+
+test('a pinch on the schematic brings Fit all back', async ({ page }) => {
+  await install(page);
+  await openExample(page, 'blink', 1280);
+  await expect(page.locator('#schFitAll')).toBeHidden();
+  await page.evaluate(() => {
+    const el = document.getElementById('stageSch');
+    if (!el) throw new Error('no schematic');
+    const r = el.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    const fire = (type: string, pts: { x: number; y: number }[]) => {
+      const touches = pts.map((p, i) => new Touch({ identifier: i, target: el, clientX: p.x, clientY: p.y }));
+      el.dispatchEvent(new TouchEvent(type, { bubbles: true, cancelable: true, touches, targetTouches: touches, changedTouches: touches }));
+    };
+    fire('touchstart', [{ x: cx - 30, y: cy }, { x: cx + 30, y: cy }]);
+    fire('touchmove', [{ x: cx - 120, y: cy }, { x: cx + 120, y: cy }]);
+    fire('touchend', []);
+  });
+  await expect(page.locator('#schFitAll')).toBeVisible();
+});

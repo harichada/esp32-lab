@@ -15,6 +15,7 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       and ?schmatch= on that page is then free to choose.
 """
 import asyncio, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, argparse
+from email.utils import formatdate
 import diskkeep
 import staging
 from pathlib import Path
@@ -1421,7 +1422,14 @@ def index():
     body, plain = lab_page()
     if plain:
         return FileResponse(SITE / 'index.html')
-    return HTMLResponse(body)
+    # The off page is the file plus one meta tag, so its validators are over that
+    # body. Last-Modified stays the file's mtime; ETag changes with the injection.
+    stat = (SITE / 'index.html').stat()
+    etag = '"' + hashlib.sha256(body).hexdigest() + '"'
+    return HTMLResponse(body, headers={
+        'ETag': etag,
+        'Last-Modified': formatdate(stat.st_mtime, usegmt=True),
+    })
 app.mount('/', StaticFiles(directory=str(SITE)), name='site')
 app.add_middleware(staging.StagingMiddleware)
 
