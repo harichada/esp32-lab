@@ -1360,7 +1360,7 @@ class StagingTests(unittest.TestCase):
 
         async def dropped():
             url = 'ws://127.0.0.1:%d/staging/api/run/drop' % self.port
-            async with websockets.connect(url, open_timeout=3, proxy=None) as ws:
+            async with _ws_connect(url, open_timeout=3, proxy=None) as ws:
                 self.assertEqual(await ws.recv(), 'up')
                 try:
                     await asyncio.wait_for(ws.recv(), 3)
@@ -1378,7 +1378,7 @@ class StagingTests(unittest.TestCase):
 
         async def again():
             url = 'ws://127.0.0.1:%d/staging/api/run/abc' % self.port
-            async with websockets.connect(url, open_timeout=3, proxy=None) as ws:
+            async with _ws_connect(url, open_timeout=3, proxy=None) as ws:
                 await ws.send('back')
                 return await asyncio.wait_for(ws.recv(), 3)
 
