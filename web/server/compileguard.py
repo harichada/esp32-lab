@@ -77,12 +77,21 @@ _seccomp_reason = ''
 _seccomp_checked_at = None
 _PROBE_TTL = 60.0
 
-# Classic BPF. SECCOMP_RET_ERRNO | EPERM, so a denied call returns EPERM.
+# Classic BPF. A native syscall on the deny-list returns EPERM. Any other
+# seccomp arch (i386, x32, arm32) is killed before the number is checked,
+# because those ABIs use different numbers and a 32-bit ptrace would pass.
 _BPF_LD_W_ABS = 0x00 | 0x00 | 0x20
 _BPF_JEQ_K = 0x05 | 0x10 | 0x00
+_BPF_JSET_K = 0x05 | 0x40 | 0x00
 _BPF_RET_K = 0x06 | 0x00
+# x32 syscalls set this bit in the number. The kernel may still report the
+# native arch, so the bit is rejected on its own.
+_X32_SYSCALL_BIT = 0x40000000
 _SECCOMP_RET_ALLOW = 0x7FFF0000
 _SECCOMP_RET_EPERM = 0x00050000 | 1
+_SECCOMP_RET_KILL = 0x80000000
+# AUDIT_ARCH_* values. seccomp_data.arch is a 32-bit word at offset 4.
+_AUDIT_ARCH = {'x86_64': 0xC000003E, 'aarch64': 0xC00000B7}
 # Names the filter refuses. Numbers are the native syscall id seccomp sees.
 _SECCOMP_DENY = {
     'x86_64': {
@@ -890,37 +899,35 @@ def _setup_error(stderr: str, returncode: int = 0, stdout: str = '') -> bool:
 
 
 def host_sandbox_env(env=None) -> dict[str, str]:
-    """Environment of the host ``bwrap`` or ``docker`` process.
+    """Environment of the host ``bwrap`` process.
 
     That process runs as the server user, so ``/proc/<pid>/environ`` is
-    readable. Copy ``PATH`` and ``LANG``, and ``LD_LIBRARY_PATH`` only when
-    the server already set it. Do not prepend the toolchain directory; the
-    sandbox sets ``LD_LIBRARY_PATH`` to that directory itself. Nothing else
-    is copied: not ``SIM_TOKEN``, ``SIM_ACCESS_TOKEN``, or any other server
-    variable.
+    readable. Copy ``PATH`` and ``LANG`` only. ``LD_LIBRARY_PATH`` and every
+    other ``LD_*`` loader variable are left out, including one the server
+    inherited. The sandbox sets the toolchain library path itself, inside
+    the namespace. Nothing else is copied: not ``SIM_TOKEN``,
+    ``SIM_ACCESS_TOKEN``, or any other server variable.
 
     ``_PASS_ENV`` is not copied here. ``arduino-cli`` runs inside the sandbox,
-    after ``--clearenv``, and those keys are handed in with ``--setenv`` /
-    ``-e``. The host launcher does not read them.
+    after ``--clearenv``, and those keys are handed in with ``--setenv``.
+    The host launcher does not read them.
     """
     src = os.environ if env is None else env
     out: dict[str, str] = {}
     for key in ('PATH', 'LANG'):
         value = src.get(key)
-        if value:
+        if value and not key.startswith('LD_'):
             out[key] = value
-    library_path = src.get('LD_LIBRARY_PATH')
-    if library_path:
-        out['LD_LIBRARY_PATH'] = library_path
     return out
 
 
 def _direct_compiler_env(env=None) -> dict[str, str]:
     """Environment for a compiler run on the host, when the sandbox is ``off``.
 
-    Start from ``host_sandbox_env`` (``PATH``, ``LANG``, and an already-set
-    ``LD_LIBRARY_PATH``). Prepend the toolchain library directory so
-    ``xtensa-esp-elf-g++`` can dlopen ``xtensa_esp32.so`` by basename. Then
+    Start from ``host_sandbox_env`` (``PATH`` and ``LANG`` only). Set
+    ``LD_LIBRARY_PATH`` to the toolchain library directory so
+    ``xtensa-esp-elf-g++`` can dlopen ``xtensa_esp32.so`` by basename.
+    An inherited loader path is not appended. Then
     copy only ``_PASS_ENV``: arduino-cli is this process, so it needs its data,
     user, download, and cache directories (``ARDUINO_DIRECTORIES_DATA``,
     ``ARDUINO_DATA_DIR``, ``ARDUINO_DIRECTORIES_USER``,
@@ -931,8 +938,7 @@ def _direct_compiler_env(env=None) -> dict[str, str]:
     out = host_sandbox_env(src)
     lib = dynconfig_library_dir()
     if lib:
-        prev = out.get('LD_LIBRARY_PATH')
-        out['LD_LIBRARY_PATH'] = lib if not prev else lib + os.pathsep + prev
+        out['LD_LIBRARY_PATH'] = lib
     for key in _PASS_ENV:
         value = src.get(key)
         if value:
@@ -1256,16 +1262,28 @@ def seccomp_arch() -> str | None:
 def seccomp_filter_bytes() -> bytes | None:
     """Deny-list BPF for this machine, or None when the arch is unknown.
 
-    ``ld [0]`` loads the syscall number. Each ``jeq`` jumps to ``ret EPERM``;
-    a fall-through is ``ret ALLOW``. Bubblewrap installs this after it has
-    already made the namespaces, so refusing ``unshare`` and ``mount`` here
-    does not stop bwrap itself.
+    The first check loads ``seccomp_data.arch`` (offset 4) and kills any
+    value that is not this machine's native arch, so a 32-bit ``int 0x80``
+    never reaches the number check. Then ``ld [0]`` loads the syscall
+    number and kills it when bit 30 is set, which is how an x32 call is
+    marked even if the architecture word stays native. Each ``jeq`` jumps
+    to ``ret EPERM``; a fall-through is ``ret ALLOW``. Bubblewrap installs
+    this after it has already made the namespaces, so refusing ``unshare``
+    and ``mount`` here does not stop bwrap itself.
     """
     arch = seccomp_arch()
-    if arch is None:
+    if arch is None or arch not in _AUDIT_ARCH:
         return None
     numbers = list(_SECCOMP_DENY[arch].values())
-    program = [_sock_filter(_BPF_LD_W_ABS, 0, 0, 0)]
+    program = [
+        _sock_filter(_BPF_LD_W_ABS, 0, 0, 4),
+        _sock_filter(_BPF_JEQ_K, 1, 0, _AUDIT_ARCH[arch]),
+        _sock_filter(_BPF_RET_K, 0, 0, _SECCOMP_RET_KILL),
+        _sock_filter(_BPF_LD_W_ABS, 0, 0, 0),
+        # Bit 30 set means x32. Kill it. A clear bit skips this ret.
+        _sock_filter(_BPF_JSET_K, 0, 1, _X32_SYSCALL_BIT),
+        _sock_filter(_BPF_RET_K, 0, 0, _SECCOMP_RET_KILL),
+    ]
     total = len(numbers)
     for index, number in enumerate(numbers, start=1):
         program.append(_sock_filter(_BPF_JEQ_K, total + 1 - index, 0, number))
@@ -1536,10 +1554,18 @@ def _covered(path: Path, parents: list[Path]) -> bool:
 
 
 def _ro_for(work: Path) -> list[Path]:
-    """Toolchain and libraries the compiler may read. Never the caller's home or /etc/hostname."""
+    """Toolchain, libraries, and the shared Arduino cache. The cache is read-only.
+
+    A build writes its own scratch directory under ``work``. It cannot change
+    the shared cache, so one build cannot poison the next. Never the caller's
+    home or /etc/hostname.
+    """
     paths = []
+    cache = diskkeep.arduino_build_cache_dir()
+    if cache.exists() and not _covered(cache, [Path(work)]):
+        paths.append(cache)
     data = arduino_data_dir()
-    if data is not None and data.exists() and not _covered(data, [work]):
+    if data is not None and data.exists() and not _covered(data, [work]) and not _covered(data, paths):
         paths.append(data)
     try:
         tc = resolve_xtensa()
@@ -1556,22 +1582,278 @@ def _ro_for(work: Path) -> list[Path]:
 
 
 def _rw_for(work: Path) -> list[Path]:
-    cache = diskkeep.arduino_build_cache_dir()
-    try:
-        cache.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        pass
+    """The per-build work directory, which holds that build's scratch cache.
+
+    The shared Arduino cache is not writable. A netstack directory that lives
+    inside that cache stays read-only too. One that is a separate path stays
+    writable so the host can publish an archive the sandbox only reads.
+    """
     paths = [Path(work)]
-    if cache.exists() and not _covered(cache, [work]):
-        paths.append(cache)
+    cache = diskkeep.arduino_build_cache_dir()
     net = diskkeep.netstack_root_from_env()
     try:
         net.mkdir(parents=True, exist_ok=True)
     except OSError:
         pass
-    if net.exists() and not _covered(net, paths):
+    if net.exists() and not _covered(net, paths) and not _covered(net, [cache]):
         paths.append(net)
     return paths
+
+
+# The compile in progress. One compiler runs at a time. The scratch directory
+# is that build's writable cache; the shared cache stays read-only.
+_build_scratch: Path | None = None
+
+
+def active_cache_dir() -> Path:
+    """Where this build reads and writes its Arduino cache.
+
+    During a sandboxed compile this is the private scratch directory. Otherwise
+    it is the shared cache, which the sandbox mounts read-only.
+    """
+    if _build_scratch is not None:
+        return _build_scratch
+    return diskkeep.arduino_build_cache_dir()
+
+
+def _copy_tree(src: Path, dest: Path) -> None:
+    """Copy files. Symlinks are skipped so a cache entry cannot point outside it."""
+    for dirpath, _dirnames, filenames in os.walk(src, followlinks=False):
+        rel = Path(dirpath).relative_to(src)
+        folder = dest / rel
+        folder.mkdir(parents=True, exist_ok=True)
+        for name in filenames:
+            one = Path(dirpath) / name
+            if one.is_symlink():
+                continue
+            shutil.copy2(one, folder / name)
+
+
+def begin_build_scratch(work: Path) -> Path:
+    """Private writable cache for this build, seeded from the shared cache."""
+    global _build_scratch
+    scratch = Path(work) / '.scratch'
+    if scratch.exists():
+        shutil.rmtree(scratch, ignore_errors=True)
+    scratch.mkdir(parents=True)
+    shared = diskkeep.arduino_build_cache_dir()
+    try:
+        same = shared.exists() and shared.resolve() == scratch.resolve()
+    except OSError:
+        same = False
+    if shared.exists() and not same and not _covered(shared, [scratch]) and not _covered(scratch, [shared]):
+        try:
+            _copy_tree(shared, scratch)
+        except OSError:
+            pass
+    _build_scratch = scratch
+    return scratch
+
+
+def end_build_scratch(scratch: Path | None = None) -> None:
+    """Drop the private cache. The shared cache is left as it was."""
+    global _build_scratch
+    path = scratch if scratch is not None else _build_scratch
+    _build_scratch = None
+    if path is not None:
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def write_scratch_config(scratch: Path, work: Path) -> Path:
+    """arduino-cli config whose ``build_cache.path`` is this build's scratch."""
+    src = (os.environ.get('SIM_ARDUINO_CONFIG_FILE') or '').strip()
+    text = ''
+    if src and Path(src).is_file():
+        try:
+            text = Path(src).read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            text = ''
+    path_line = '  path: ' + str(scratch)
+    lines = text.splitlines()
+    out: list[str] = []
+    in_block = False
+    replaced = False
+    saw_block = False
+    for line in lines:
+        if re.match(r'^build_cache:\s*$', line):
+            in_block = True
+            saw_block = True
+            out.append(line)
+            continue
+        if in_block and line and not line[0].isspace():
+            if not replaced:
+                out.append(path_line)
+                replaced = True
+            in_block = False
+        if in_block and re.match(r'^\s+path\s*:', line):
+            out.append(path_line)
+            replaced = True
+            continue
+        out.append(line)
+    if in_block and not replaced:
+        out.append(path_line)
+        replaced = True
+    if not saw_block:
+        if out and out[-1] != '':
+            out.append('')
+        out.append('build_cache:')
+        out.append(path_line)
+    dest = Path(work) / 'sandbox-arduino-cli.yaml'
+    dest.write_text('\n'.join(out) + '\n')
+    return dest
+
+
+def _positive_int(env: dict, name: str, default: int) -> int:
+    raw = env.get(name)
+    if raw is None or str(raw).strip() == '':
+        return default
+    try:
+        value = int(str(raw).strip())
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def job_limits(env=None) -> dict:
+    """Caps for one sandboxed compile or run. Bad values keep the default.
+
+    ``wall_s`` is the compile wall clock (``SIM_SANDBOX_WALL_S``). A run uses
+    ``run_wall_s``. ``as_bytes`` is ``RLIMIT_AS``, ``fsize_bytes`` is
+    ``RLIMIT_FSIZE``, ``output_bytes`` is how much stdout and stderr we keep,
+    and ``nproc`` is ``RLIMIT_NPROC`` (and ``pids.max`` when a pids cgroup
+    can be created).
+    """
+    src = os.environ if env is None else env
+    return {
+        'wall_s': _positive_int(src, 'SIM_SANDBOX_WALL_S', 300),
+        'as_bytes': _positive_int(src, 'SIM_SANDBOX_AS_BYTES', 4 * 1024 ** 3),
+        'fsize_bytes': _positive_int(src, 'SIM_SANDBOX_FSIZE_BYTES', 256 * 1024 ** 2),
+        'output_bytes': _positive_int(src, 'SIM_SANDBOX_OUTPUT_BYTES', 1024 ** 2),
+        'nproc': _positive_int(src, 'SIM_SANDBOX_NPROC', 64),
+    }
+
+
+def compile_wall_s(env=None) -> float:
+    """Seconds a sandboxed compile may run. The lower of the two compile clocks."""
+    src = os.environ if env is None else env
+    wall = float(job_limits(src)['wall_s'])
+    raw = src.get('SIM_COMPILE_TIMEOUT')
+    if raw is None or str(raw).strip() == '':
+        return wall
+    try:
+        older = float(str(raw).strip())
+    except ValueError:
+        return wall
+    if older <= 0:
+        return wall
+    return min(wall, older)
+
+
+def run_wall_s(env=None) -> float:
+    """Seconds a sandboxed QEMU session may run. ``SIM_RUN_WALL_S``, default 1800."""
+    src = os.environ if env is None else env
+    return float(_positive_int(src, 'SIM_RUN_WALL_S', 1800))
+
+
+class OutputCap:
+    """Keep the tail of a captured stream and say when the rest was dropped."""
+
+    def __init__(self, limit: int | None = None):
+        self.limit = job_limits()['output_bytes'] if limit is None else int(limit)
+        self.chunks: list[str] = []
+        self.size = 0
+        self.truncated = False
+
+    def add(self, text: str) -> None:
+        if not text:
+            return
+        self.chunks.append(text)
+        self.size += len(text.encode(errors='replace'))
+        while self.size > self.limit and len(self.chunks) > 1:
+            self.truncated = True
+            dropped = self.chunks.pop(0)
+            self.size -= len(dropped.encode(errors='replace'))
+        if self.size > self.limit and self.chunks:
+            self.truncated = True
+            data = self.chunks[-1].encode(errors='replace')[-self.limit:]
+            self.chunks = [data.decode(errors='replace')]
+            self.size = len(data)
+
+    def text(self) -> str:
+        body = ''.join(self.chunks)
+        if not self.truncated:
+            return body
+        return (
+            'Output truncated: the sandbox stopped capturing after %d bytes.\n' % self.limit
+        ) + body
+
+
+def limit_argv(argv: list[str] | None, env=None) -> list[str] | None:
+    """Run a bwrap command under ``prlimit`` so the job inherits the caps.
+
+    The limits apply to bwrap's child and everything it forks. The host
+    server process is not limited. When ``prlimit`` is not installed the
+    command is unchanged and the caller still enforces the wall clock and
+    the captured-output cap.
+    """
+    if not argv:
+        return argv
+    if Path(argv[0]).name != 'bwrap':
+        return list(argv)
+    tool = shutil.which('prlimit')
+    if not tool or '--' not in argv:
+        return list(argv)
+    limits = job_limits(env)
+    index = len(argv) - 1 - argv[::-1].index('--')
+    flags = [
+        tool,
+        '--as=%d' % limits['as_bytes'],
+        '--fsize=%d' % limits['fsize_bytes'],
+        '--nproc=%d' % limits['nproc'],
+        '--',
+    ]
+    return [*argv[:index + 1], *flags, *argv[index + 1:]]
+
+
+def prepare_pids_cgroup(nproc: int, root: Path | None = None) -> Path | None:
+    """Create a pids cgroup for one job, or None when this host cannot.
+
+    ``root`` defaults to ``/sys/fs/cgroup``. A test can pass a directory that
+    contains ``cgroup.controllers``. The server process is not moved.
+    """
+    base = Path('/sys/fs/cgroup') if root is None else Path(root)
+    controllers = base / 'cgroup.controllers'
+    try:
+        text = controllers.read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return None
+    if 'pids' not in text.split():
+        return None
+    path = base / ('esp32lab-%d-%d' % (os.getpid(), time.monotonic_ns()))
+    try:
+        path.mkdir(exist_ok=True)
+        (path / 'pids.max').write_text('%d\n' % int(nproc))
+    except OSError:
+        shutil.rmtree(path, ignore_errors=True)
+        return None
+    return path
+
+
+def assign_pids_cgroup(path: Path | None, pid: int) -> bool:
+    """Put ``pid`` in the cgroup. False when the host will not allow it."""
+    if path is None or not pid:
+        return False
+    try:
+        (Path(path) / 'cgroup.procs').write_text('%d\n' % int(pid))
+    except OSError:
+        return False
+    return True
+
+
+def release_pids_cgroup(path: Path | None) -> None:
+    if path is None:
+        return
+    shutil.rmtree(path, ignore_errors=True)
 
 
 def _env_args() -> list[str]:
@@ -1587,7 +1869,13 @@ def _env_args() -> list[str]:
     lib = dynconfig_library_dir()
     if lib:
         args.extend(('--setenv', 'LD_LIBRARY_PATH', lib))
+    if _build_scratch is not None:
+        args.extend(('--setenv', 'ARDUINO_BUILD_CACHE_PATH', str(_build_scratch)))
     for key in _PASS_ENV:
+        # The private scratch is the only writable cache. A host value for this
+        # key would point arduino-cli back at the read-only shared cache.
+        if key == 'ARDUINO_BUILD_CACHE_PATH' and _build_scratch is not None:
+            continue
         value = os.environ.get(key)
         if value:
             args.extend(('--setenv', key, value))

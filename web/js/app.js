@@ -369,6 +369,7 @@ async function fetchRetry(u, o, n = 4) {
   let compileBusy = false;
   const BUILDING_TEXT = 'Building your code… the first build takes longer.';
   const COMPILE_TIMEOUT_TEXT = "Your sketch took too long to build. It's saved. Try Run again, and if it keeps happening, make the sketch smaller.";
+  const SIMULATOR_STATUS = "The simulator couldn't start. Try again in a minute. Your sketch is fine and saved.";
   const QUEUE_FALLBACK = 'Waiting for another build to finish…';
   // One phase for the Run button and the status line: idle, queued, building, running.
   // A 429, a 504 compile timeout, a compile error, an aborted fetch, and a dropped socket return to idle.
@@ -665,16 +666,95 @@ async function fetchRetry(u, o, n = 4) {
     if (app.run !== run) return;
     const failure = compileFailureLog(res);
     $('#buildLog').textContent = res.ok ? (res.cached ? cachedCompileLog(res.log) : (res.log || '')) : failure; if (app.codeview) app.codeview.setLog(res.ok ? '' : failure);
-    if (!res.ok) { setCompilePhase('idle'); setStatus('err', 'compile error'); $('#buildDet').open = true; document.querySelector('[data-tab=build]').click(); if (app.codeview) app.codeview.setLog(failure); serialAppend('\n[compile failed — see build log in Code tab]\n'); app.run = null; return; }
+    if (!res.ok) {
+      setCompilePhase('idle');
+      const sentence = failureStatus(res) || SIMULATOR_STATUS;
+      showFailureSurfaces(sentence);
+      $('#buildDet').open = true; document.querySelector('[data-tab=build]').click(); if (app.codeview) app.codeview.setLog(failure); serialAppend('\n[compile failed — see build log in Code tab]\n'); app.run = null; return;
+    }
     showNetNotice(!!res.net_blocked_notice);
     serialAppend(`\n[compiled ${res.cached ? '(cached)' : ''}${res.netShim ? ' + QemuNet shim' : ''}; starting QEMU]\n`);
     run.bid = res.id; run.lastN = 0; run.tries = 0; connectRun(run);
   }
+  function sketchToken(raw) {
+    // Anything copied out of the sketch is plain text, at most 80 characters,
+    // and never a host path or a sandbox path.
+    let text = String(raw || '').replace(/[\u0000-\u001f]/g, '');
+    if (text.length > 80) text = text.slice(0, 80);
+    if (!text || text.charAt(0) === '/' || text.charAt(0) === '\\' || text.indexOf('..') >= 0) return 'that file';
+    if (/\/proc\/|\/etc\/|bwrap|sandbox/i.test(text)) return 'that file';
+    return text;
+  }
+  function headerSuggestion(header) {
+    const low = String(header || '').replace(/\\/g, '/').toLowerCase();
+    const base = low.split('/').pop();
+    if (base === 'socket.h' || base === 'netdb.h' || base === 'in.h' || base === 'inet.h' || base === 'un.h' || base === 'winsock.h' || base === 'winsock2.h') {
+      return 'Remove it and use WiFi.h instead.';
+    }
+    if (base === 'stdio.h' || base === 'fstream' || base === 'fstream.h' || base === 'fcntl.h' || base === 'unistd.h' || base === 'dirent.h') {
+      return 'Remove it and keep data in your sketch instead.';
+    }
+    return 'Remove it and use a library such as WiFi.h, or a file in your sketch.';
+  }
+  function includeStatus(code) {
+    const lines = String(code || '').split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const inc = line.match(/^\s*#\s*include\s*([<"])([^>"]*)[>"]/);
+      if (inc) {
+        const header = sketchToken(inc[2]);
+        return 'Line ' + (i + 1) + ": Circuit Lab can't use <" + header + '>. ' + headerSuggestion(inc[2]);
+      }
+      if (/\.\s*inc\s*bin|\.\s*include/i.test(line)) {
+        return 'Line ' + (i + 1) + ": Circuit Lab can't use an assembler include. Remove the .incbin or .include.";
+      }
+    }
+    return "Circuit Lab can't use that include. Remove it and use a library such as WiFi.h, or a file in your sketch.";
+  }
+  function firstCompilerLine(log) {
+    const lines = String(log || '').split('\n');
+    let hit = '';
+    for (let i = 0; i < lines.length; i++) {
+      if (/error:/i.test(lines[i])) { hit = lines[i]; break; }
+    }
+    if (!hit) hit = lines.filter((ln) => ln.trim())[0] || '';
+    let text = hit.replace(/[\u0000-\u001f]/g, ' ');
+    text = text.replace(/(?:\/|[A-Za-z]:\\)[^\s:]*[\\/]/g, '');
+    text = text.replace(/\b(?:bwrap|\/proc\/\S*|\/etc\/\S*)/gi, '');
+    text = text.replace(/\s+/g, ' ').trim();
+    if (text.length > 80) text = text.slice(0, 80);
+    return text || 'Check the build log.';
+  }
+  function failureStatus(res) {
+    if (!res || res.ok) return '';
+    if (res.reason === 'infra') return SIMULATOR_STATUS;
+    const log = String(res.log || '');
+    if (res.reason === 'outside' || res.reason === 'asm' || res.reason === 'unsupported' || res.reason === 'unknown_library'
+      || /outside the project|assembler include|can't check|doesn't have a library/.test(log)) {
+      return includeStatus(app.proj && app.proj.code);
+    }
+    return firstCompilerLine(log);
+  }
+  function showFailureSurfaces(sentence) {
+    // Phone toast and desktop strip both show the same plain sentence.
+    const narrow = !!(window.matchMedia && window.matchMedia('(max-width: 640px)').matches);
+    const strip = document.getElementById && document.getElementById('compileStrip');
+    const toast = document.getElementById && document.getElementById('mCompileToast');
+    if (strip) {
+      strip.textContent = sentence;
+      strip.hidden = !!narrow;
+      strip.setAttribute('aria-hidden', narrow ? 'true' : 'false');
+    }
+    if (toast) {
+      toast.textContent = sentence;
+      toast.hidden = !narrow;
+      toast.setAttribute('aria-hidden', narrow ? 'false' : 'true');
+    }
+    setStatus('err', sentence);
+  }
   function compileFailureLog(res) {
     // reason=infra is the build server. The learner sentence is fixed; the include-lines hint is only for their sketch.
-    if (res && res.reason === 'infra') {
-      return "The build server had a problem. Your code wasn't the cause. Please try again in a minute.";
-    }
+    if (res && res.reason === 'infra') return SIMULATOR_STATUS;
     return (res && res.log) || '';
   }
   app.startRun = startRun;

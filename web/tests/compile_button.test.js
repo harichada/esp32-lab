@@ -270,7 +270,13 @@ test('Run stays busy for the whole compile, then restores', async () => {
   busy();
   failed.resolve(okResponse({ ok: false, log: 'error: sketch.ino:1\n' }));
   await failedFlight;
-  idle();
+  assert.equal(label.textContent, 'Run');
+  assert.equal(bRun.disabled, false);
+  assert.equal(app.compilePhase, 'idle');
+  assert.equal(ids.compileStrip.textContent, 'error: sketch.ino:1');
+  assert.equal(ids.compileStrip.hidden, false);
+  assert.equal(ids.stLive.textContent, 'error: sketch.ino:1');
+  assert.doesNotMatch(ids.stText.textContent, /compile error/);
   phoneRun();
   assert.equal(buildTab.clicked, 1);
 
@@ -474,7 +480,7 @@ test('a network sketch shows the safety line once, through textContent', async (
 });
 
 test('a build-server failure is shown as that sentence, not an include hint', async () => {
-  const msg = "The build server had a problem. Your code wasn't the cause. Please try again in a minute.";
+  const msg = "The simulator couldn't start. Try again in a minute. Your sketch is fine and saved.";
   const pending = gate();
   compileReply = pending.promise;
   const flight = app.startRun();
@@ -487,6 +493,7 @@ test('a build-server failure is shown as that sentence, not an include hint', as
   assert.equal(ids.buildLog.textContent, msg);
   assert.equal(ids.buildLog.innerHTML, undefined);
   assert.doesNotMatch(ids.buildLog.textContent, /#include lines/);
+  assert.doesNotMatch(ids.buildLog.textContent, /compile error/);
 });
 
 test('the busy Run button is grey, keeps its spinner, and theme.css is cache-busted', () => {
