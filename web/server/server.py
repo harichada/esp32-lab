@@ -8,11 +8,10 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       SIM_IMAGE_CACHE_MAX_MB, SIM_CORE_CACHE_MAX_MB, SIM_SKETCH_CACHE_MAX_MB,
       SIM_NETSTACK_CACHE_DIR, SIM_NETSTACK_CACHE_MAX_MB, SIM_NETSTACK_WARM,
       SIM_COMPILE_QUEUE, SIM_COMPILE_QUEUE_MAX, SIM_COMPILE_QUEUE_TIMEOUT_S,
-      SIM_COMPILE_TIMEOUT, SIM_COMPILE_KILL_GRACE_S,
       SIM_ORPHAN_MAX_AGE_S and the matching *_MAX_AGE_S knobs.
       Staging (off unless set): SIM_STAGING, SIM_ACCESS_TOKEN, SIM_STAGING_UPSTREAM, SIM_BASE_PATH.
 """
-import asyncio, hashlib, json, os, re, shutil, signal, subprocess, sys, tempfile, time, argparse
+import asyncio, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, argparse
 import diskkeep
 import staging
 from pathlib import Path
@@ -93,6 +92,16 @@ def _compile_kill_grace_s() -> float:
     if n != n or n < 0:
         return 2.0
     return min(n, 30.0)
+
+
+def _compile_timeout_enforced() -> bool:
+    """Kill a compile that passes its deadline and answer HTTP 504.
+
+    ``SIM_COMPILE_ENFORCE_TIMEOUT`` defaults to on. That is the safe setting:
+    the request returns and the queue slot is released. Only the exact value
+    ``0`` turns it off and leaves the compile wait unbounded.
+    """
+    return str(os.environ.get('SIM_COMPILE_ENFORCE_TIMEOUT', '1')).strip() != '0'
 
 
 def _compile_worker_begin(timeout_s: float) -> None:
@@ -893,6 +902,7 @@ async def _kill_compile_group(proc, grace: float) -> None:
     Every wait is bounded. A child that still holds stdout used to make
     ``Process.wait`` block forever after only the parent was killed.
     """
+    import signal
     if proc is None or proc.returncode is not None:
         return
     grace = max(0.0, float(grace))
@@ -976,13 +986,18 @@ async def _compile_in(work, bdir, key, sketch, files, defines, net, netmode, sim
     cmd.append(str(sk))
     t0 = PROGRESS['t0']
     cmd[2:2] = ['-v', '--no-color']
+    enforced = _compile_timeout_enforced()
     timeout = _compile_timeout_s()
     grace = _compile_kill_grace_s()
     # A new session makes the compiler the leader of its own process group, so a
     # timeout can signal arduino-cli and the compilers it spawned together.
+    # The flag defaults on. ``0`` keeps the compiler in this process's session
+    # and does not arm a deadline.
     p = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, start_new_session=True)
-    _compile_worker_begin(timeout)
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        start_new_session=enforced)
+    if enforced:
+        _compile_worker_begin(timeout)
     buf = []
     async def _pump():
         async for ln in p.stdout:
@@ -992,12 +1007,15 @@ async def _compile_in(work, bdir, key, sketch, files, defines, net, netmode, sim
         await p.wait()
     timed_out = False
     try:
-        await asyncio.wait_for(_pump(), timeout)
+        if enforced:
+            await asyncio.wait_for(_pump(), timeout)
+        else:
+            await _pump()
     except (asyncio.TimeoutError, TimeoutError):
         timed_out = True
         _note_compile_timeout()
     finally:
-        if p.returncode is None:
+        if enforced and p.returncode is None:
             await _kill_compile_group(p, grace)
     if timed_out:
         return _compile_timeout_response()
