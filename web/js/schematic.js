@@ -575,30 +575,187 @@
   }
 
   const READABLE_PX = 11;
-  function smallestLabel(model) {
+  // Part names and values. ESP32 pin names are 9.5 and are not this floor:
+  // using them opened Blink at 116% and pushed the LED off the phone.
+  const PART_KIND = { ref: 1, val: 1, title: 1 };
+  function partLabelFont(model) {
     let min = Infinity;
-    const texts = (model && model.texts) || [];
-    for (const t of texts) min = Math.min(min, t.size || MIN_LABEL_FONT);
-    if (!isFinite(min)) min = MIN_LABEL_FONT;
-    return min;
+    for (const t of (model && model.texts) || []) {
+      if (!PART_KIND[t.kind]) continue;
+      min = Math.min(min, t.size || 11);
+    }
+    return isFinite(min) ? min : 11;
+  }
+  function espSymbol(model) {
+    const syms = (model && model.symbols) || [];
+    return syms.find((s) => s.kind === 'ESP') || syms.find((s) => s.part && s.part.type === 'esp32') || null;
+  }
+  // Parts joined to the ESP32 by schematic wires, including a series LED
+  // on the far side of its resistor. Supply flags are not wires, so a shared
+  // GND rail does not pull the rest of the board into the frame.
+  function wiredIds(model) {
+    const syms = (model && model.symbols) || [];
+    const esp = espSymbol(model);
+    if (!esp) return new Set(syms.map((s) => s.id));
+    const adj = new Map(syms.map((s) => [s.id, new Set()]));
+    const nets = new Map();
+    for (const s of syms) for (const t of s.terms || []) {
+      if (!t.wire || t.nc || t.net == null) continue;
+      if (!nets.has(t.net)) nets.set(t.net, []);
+      nets.get(t.net).push(s.id);
+    }
+    for (const list of nets.values()) {
+      const ids = [...new Set(list)];
+      for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) {
+        adj.get(ids[i]).add(ids[j]);
+        adj.get(ids[j]).add(ids[i]);
+      }
+    }
+    const seen = new Set([esp.id]);
+    const q = [esp.id];
+    while (q.length) {
+      const id = q.pop();
+      for (const next of adj.get(id) || []) if (!seen.has(next)) { seen.add(next); q.push(next); }
+    }
+    return seen;
+  }
+  function directIds(model) {
+    const esp = espSymbol(model);
+    const ids = new Set(esp ? [esp.id] : []);
+    if (!esp) return ids;
+    const nets = new Set();
+    for (const t of esp.terms || []) if (t.wire && !t.nc && t.net != null) nets.add(t.net);
+    for (const s of (model && model.symbols) || []) {
+      if ((s.terms || []).some((t) => t.wire && !t.nc && nets.has(t.net))) ids.add(s.id);
+    }
+    return ids;
+  }
+  function clusterBox(model, ids) {
+    let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+    const add = (x, y) => { if (!isFinite(x) || !isFinite(y)) return; x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); };
+    for (const s of (model && model.symbols) || []) {
+      if (ids && !ids.has(s.id)) continue;
+      add(s.x, s.y); add(s.x + s.w, s.y + s.h);
+    }
+    for (const t of (model && model.texts) || []) {
+      if (!PART_KIND[t.kind]) continue;
+      if (ids && t.own && !ids.has(t.own)) continue;
+      if (ids && !t.own) continue;
+      add(t.x, t.y); add(t.x2, t.y2);
+    }
+    if (x0 > x1) return { x: 0, y: 0, w: 1, h: 1 };
+    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  }
+  function openFrame(model) {
+    const ids = wiredIds(model);
+    const esp = espSymbol(model);
+    return {
+      ids: [...ids],
+      count: ids.size,
+      box: clusterBox(model, ids),
+      esp: esp ? { x: esp.x, y: esp.y, w: esp.w, h: esp.h } : null,
+      font: partLabelFont(model),
+    };
   }
   // On-screen pixels: drawing-unit font × zoom × any CSS scale on the svg.
   function labelScreenPx(fontPx, zoom, cssScale) {
-    const font = fontPx > 0 && isFinite(fontPx) ? fontPx : MIN_LABEL_FONT;
+    const font = fontPx > 0 && isFinite(fontPx) ? fontPx : 11;
     const z = zoom > 0 && isFinite(zoom) ? zoom : 0;
     const css = cssScale > 0 && isFinite(cssScale) ? cssScale : 1;
     return font * z * css;
   }
-  // Smallest zoom that keeps the smallest label at READABLE_PX, unless the
-  // fit-all zoom already does. fitAll means the sheet opened larger than a full fit.
+  // Readability math for one font. fitAll means the caller zoomed past a full fit.
   function openScale(minFont, fittedS, cssScale) {
     const css = cssScale > 0 && isFinite(cssScale) ? cssScale : 1;
-    const font = minFont > 0 && isFinite(minFont) ? minFont : MIN_LABEL_FONT;
+    const font = minFont > 0 && isFinite(minFont) ? minFont : 11;
     const fitted = fittedS > 0 && isFinite(fittedS) ? fittedS : 0.12;
     const fittedPx = labelScreenPx(font, fitted, css);
     if (fittedPx >= READABLE_PX) return { s: fitted, px: fittedPx, fitAll: false };
     const s = READABLE_PX / (font * css);
     return { s: s, px: labelScreenPx(font, s, css), fitAll: true };
+  }
+  function clearAvail(clear, pad) {
+    const w = clear && (clear.width != null ? clear.width : clear.right - clear.left);
+    const h = clear && (clear.height != null ? clear.height : clear.bottom - clear.top);
+    return { w: Math.max(1, (w || 1) - 2 * pad), h: Math.max(1, (h || 1) - 2 * pad) };
+  }
+  function boxFits(box, s, clear, pad) {
+    if (!box || !(s > 0) || !clear) return false;
+    const a = clearAvail(clear, pad);
+    return box.w * s <= a.w + 0.5 && box.h * s <= a.h + 0.5;
+  }
+  // Framing fit wins while it keeps every wired part on screen.
+  // Zoom past it only when part names would be a few pixels (the remote):
+  // Blink is about 6px and Simon about 3.5px at the framing fit, and raising
+  // those to 11px pushes the LED off the phone. A Simon-sized board stays
+  // framed even if the clear rect shifts by a few pixels.
+  function chooseOpen(font, fittedS, css, info) {
+    const cssS = css > 0 && isFinite(css) ? css : 1;
+    const f = font > 0 && isFinite(font) ? font : 11;
+    const fitted = fittedS > 0 && isFinite(fittedS) ? fittedS : 0.12;
+    const px = labelScreenPx(f, fitted, cssS);
+    const pad = info && info.pad != null ? info.pad : 14;
+    const clear = info && info.clear;
+    if (px >= READABLE_PX - 1e-6) return { s: fitted, px: px, zoomed: false };
+    const sRead = READABLE_PX / (f * cssS);
+    if (boxFits(info && info.group, sRead, clear, pad)) return { s: sRead, px: labelScreenPx(f, sRead, cssS), zoomed: true };
+    const crowded = px < 3.2 && info && info.count >= 24 && info.esp;
+    if (!crowded) return { s: fitted, px: px, zoomed: false };
+    if (boxFits(info.esp, sRead, clear, pad)) return { s: sRead, px: labelScreenPx(f, sRead, cssS), zoomed: true };
+    let lo = fitted, hi = sRead, best = fitted;
+    for (let i = 0; i < 28; i++) {
+      const mid = (lo + hi) / 2;
+      if (boxFits(info.esp, mid, clear, pad)) { best = mid; lo = mid; }
+      else hi = mid;
+    }
+    if (best > fitted + 1e-3) return { s: best, px: labelScreenPx(f, best, cssS), zoomed: true };
+    return { s: fitted, px: px, zoomed: false };
+  }
+  function focusBox(model, s, clear, pad) {
+    const esp = espSymbol(model);
+    if (!esp) return clusterBox(model, wiredIds(model));
+    const fits = (b) => boxFits(b, s, clear, pad);
+    let box = { x: esp.x, y: esp.y, w: esp.w, h: esp.h };
+    if (!fits(box)) return box;
+    const ids = directIds(model);
+    const cx = esp.x + esp.w / 2, cy = esp.y + esp.h / 2;
+    const near = ((model && model.symbols) || []).filter((sym) => ids.has(sym.id) && sym.id !== esp.id);
+    near.sort((a, b) => {
+      const da = Math.hypot(a.x + a.w / 2 - cx, a.y + a.h / 2 - cy);
+      const db = Math.hypot(b.x + b.w / 2 - cx, b.y + b.h / 2 - cy);
+      return da - db || String(a.id).localeCompare(String(b.id));
+    });
+    for (const sym of near) {
+      const x = Math.min(box.x, sym.x), y = Math.min(box.y, sym.y);
+      const next = { x: x, y: y, w: Math.max(box.x + box.w, sym.x + sym.w) - x, h: Math.max(box.y + box.h, sym.y + sym.h) - y };
+      if (fits(next)) box = next;
+    }
+    return box;
+  }
+  function viewAt(box, s, stage, clear) {
+    const sx = ((+clear.left + +clear.right) / 2) - (+stage.left || 0);
+    const sy = ((+clear.top + +clear.bottom) / 2) - (+stage.top || 0);
+    return { s: s, x: box.x + box.w / 2 - sx / s, y: box.y + box.h / 2 - sy / s };
+  }
+  function worldRect(view, stage, clear, pad) {
+    const s = view.s || 1;
+    const p = pad || 0;
+    return {
+      x: view.x + (clear.left + p - (stage.left || 0)) / s,
+      y: view.y + (clear.top + p - (stage.top || 0)) / s,
+      x2: view.x + (clear.right - p - (stage.left || 0)) / s,
+      y2: view.y + (clear.bottom - p - (stage.top || 0)) / s,
+    };
+  }
+  function espHeld(view, esp, stage, clear, pad) {
+    if (!view || !esp || !clear) return false;
+    const r = worldRect(view, stage, clear, pad);
+    return esp.x >= r.x - 2 && esp.y >= r.y - 2 && esp.x + esp.w <= r.x2 + 2 && esp.y + esp.h <= r.y2 + 2;
+  }
+  function sheetInside(bounds, view, stage, clear, pad) {
+    if (!bounds || !view || !clear) return false;
+    const r = worldRect(view, stage, clear, pad);
+    return r.x <= bounds.x + 8 && r.y <= bounds.y + 8 && r.x2 >= bounds.x + bounds.w - 8 && r.y2 >= bounds.y + bounds.h - 8;
   }
   function cssScaleOf(el) {
     let s = 1;
@@ -618,7 +775,7 @@
     return s > 0 && isFinite(s) ? s : 1;
   }
   function placeReadable(model, frame, fitted, css) {
-    const open = openScale(smallestLabel(model), fitted.s, css);
+    const open = openScale(partLabelFont(model), fitted.s, css);
     if (!open.fitAll) return { view: { s: fitted.s, x: fitted.x, y: fitted.y }, open: open };
     const syms = (model && model.symbols) || [];
     const sym = syms.find((s) => s.kind === 'ESP') || syms.find((s) => s.part && s.part.type === 'esp32');
@@ -675,7 +832,25 @@
     }
     return best ? { s: s, x: best.x, y: best.y } : view;
   }
-  // Screen size of the smallest label after a fit-all into this viewport.
+  function coversToggle(view, model) {
+    if (!view || typeof document === 'undefined' || !document.getElementById) return false;
+    const bar = document.getElementById('schLayout');
+    const svg = document.getElementById('stageSch');
+    if (!bar || !svg) return false;
+    const br = bar.getBoundingClientRect();
+    if (br.width < 1 || br.height < 1) return false;
+    const host = svg.getBoundingClientRect();
+    const s = view.s;
+    for (const sym of (model && model.symbols) || []) {
+      const x1 = host.left + (sym.x - view.x) * s;
+      const y1 = host.top + (sym.y - view.y) * s;
+      const ix = Math.min(x1 + sym.w * s, br.right) - Math.max(x1, br.left);
+      const iy = Math.min(y1 + sym.h * s, br.bottom) - Math.max(y1, br.top);
+      if (ix > 1 && iy > 1) return true;
+    }
+    return false;
+  }
+  // Screen size of the smallest part name or value after a fit into this viewport.
   function screenLabelPx(model, width, height, chrome) {
     const b = (model && model.bounds) || { w: 1, h: 1 };
     const pad = 14;
@@ -684,7 +859,7 @@
     const availH = Math.max(1, height - pad * 2 - block);
     const raw = Math.min(availW / Math.max(b.w || 1, 1), availH / Math.max(b.h || 1, 1));
     const s = Math.max(0.12, Math.min(2.4, raw));
-    const font = smallestLabel(model);
+    const font = partLabelFont(model);
     const min = labelScreenPx(font, s, 1);
     return { s: s, minPx: min, minFont: font, raw: raw };
   }
@@ -1832,12 +2007,12 @@
     }
     const items = [];
     for (const s of symbols) {
-      const ref = { kind: 'ref', text: s.ref, size: 12, anchor: 'middle', x: s.x + s.w / 2, y: s.y - 8, move: true };
+      const ref = { kind: 'ref', text: s.ref, size: 12, anchor: 'middle', x: s.x + s.w / 2, y: s.y - 8, own: s.id, move: true };
       items.push(ref); s.refPos = ref;
       if (s.value && s.kind !== 'SRC' && s.kind !== 'MET') {
         const gnd = s.terms.some((t) => t.rail === 'gnd');
         const val = {
-          kind: 'val', text: s.value, size: 11, move: true,
+          kind: 'val', text: s.value, size: 11, own: s.id, move: true,
           anchor: gnd ? 'start' : 'middle',
           x: gnd ? s.x + s.w + 8 : s.x + s.w / 2,
           y: gnd ? s.y + Math.min(16, Math.max(12, s.h * 0.45)) : s.y + s.h + 14,
@@ -2431,17 +2606,54 @@
         return;
       }
       if (r.width < 2 || r.height < 2) return;
-      // Center the sheet in the largest clear rectangle: the header, hint and
-      // toolbars stay blocked, and the zoom stack only blocks its own box.
+      // The clear rect is the canvas with the banner, header, toolbar and hint
+      // taken out. Measured here, not guessed, so a tall banner cannot cover the chip.
       const frame = root.Pinch.frameOf(this.svg);
       const limits = { min: 0.12, max: 2.4 };
-      const clear = root.Pinch.resolveClear(frame, b, 14, limits);
-      const fitted = root.Pinch.fitView(b, frame.stage, clear, 14, limits);
-      const placed = placeReadable(this.model, { stage: frame.stage, clear: clear }, fitted, cssScaleOf(this.svg));
-      const whole = this._fitMode === 'all' || !placed.open.fitAll;
-      const view = whole ? fitted : liftOff(placed.view, this.model, this.svg);
-      this.view.s = view.s; this.view.x = view.x; this.view.y = view.y;
-      this._syncFitAll(!!placed.open.fitAll);
+      const pad = 14;
+      const framing = openFrame(this.model);
+      const clear = root.Pinch.resolveClear(frame, this._fitMode === 'all' ? b : framing.box, pad, limits);
+      if (this._fitMode === 'all') {
+        const fitted = root.Pinch.fitView(b, frame.stage, clear, pad, limits);
+        this.view.s = fitted.s; this.view.x = fitted.x; this.view.y = fitted.y;
+        this._syncFitAll(!!this._wantFitAll);
+      } else {
+        const fitted = root.Pinch.fitView(framing.box, frame.stage, clear, pad, limits);
+        const choice = chooseOpen(framing.font, fitted.s, cssScaleOf(this.svg), {
+          group: framing.box, esp: framing.esp, clear: clear, pad: pad, count: framing.count,
+        });
+        let zoomed = choice.zoomed;
+        const placed = (scale) => {
+          const focus = focusBox(this.model, scale, clear, pad);
+          let view = viewAt(focus, scale, frame.stage, clear);
+          const nudged = liftOff(view, this.model, this.svg);
+          if (!framing.esp || espHeld(nudged, framing.esp, frame.stage, clear, pad) || !espHeld(view, framing.esp, frame.stage, clear, pad)) view = nudged;
+          return view;
+        };
+        let view = fitted;
+        if (zoomed) {
+          view = placed(choice.s);
+          // The 11px zoom can sit a symbol on the arrangement control. Step down
+          // toward the framing fit until the chip stays in the clear rect and the
+          // control is clear. The framing fit is the last step, and it always fits.
+          if (coversToggle(view, this.model) || (framing.esp && !espHeld(view, framing.esp, frame.stage, clear, pad))) {
+            let lo = fitted.s, hi = choice.s, best = fitted, bestView = fitted;
+            for (let i = 0; i < 12; i++) {
+              const mid = (lo + hi) / 2;
+              const trial = placed(mid);
+              const ok = !coversToggle(trial, this.model) && (!framing.esp || espHeld(trial, framing.esp, frame.stage, clear, pad));
+              if (ok) { best = mid; bestView = trial; lo = mid; }
+              else hi = mid;
+            }
+            view = bestView;
+            zoomed = best > fitted.s + 0.02;
+          }
+        }
+        const covered = sheetInside(b, view, frame.stage, clear, pad);
+        this._wantFitAll = zoomed || !covered;
+        this.view.s = view.s; this.view.x = view.x; this.view.y = view.y;
+        this._syncFitAll(this._wantFitAll);
+      }
       this.apply();
       if (n === 0 && typeof requestAnimationFrame === 'function') {
         this._fitGen = (this._fitGen || 0) + 1;
@@ -2592,7 +2804,7 @@
 
   const api = {
     layout, toSvg, SchematicView, signature, pinNets: pinNetMap,
-    separateSymbols, wireJoints, layoutStoreKey, layoutModeOf, screenLabelPx, labelScreenPx, openScale, READABLE_PX, MIN_LABEL_FONT,
+    separateSymbols, wireJoints, layoutStoreKey, layoutModeOf, screenLabelPx, labelScreenPx, openScale, chooseOpen, openFrame, READABLE_PX, MIN_LABEL_FONT,
     configureMatch,
   };
   Object.defineProperty(api, 'SCHEMATIC_MATCH_LAYOUT', {
