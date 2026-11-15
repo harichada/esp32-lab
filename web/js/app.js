@@ -88,7 +88,8 @@ async function fetchRetry(u, o, n = 4) {
       if (!doc.head) return;
       const css = doc.createElement('style');
       css.id = 'storageFullStyle';
-      css.textContent = '#storageFull{position:fixed;z-index:100;left:50%;top:50%;transform:translate(-50%,-50%);width:min(480px,calc(100vw - 16px));max-height:calc(100vh - 16px);box-sizing:border-box;margin:0;padding:12px;background:#15181c;color:#e6e8eb;border:1px solid #2c3138;border-radius:10px;box-shadow:0 24px 64px rgba(0,0,0,.6);overflow:auto}#storageFull p{margin:0 0 12px;white-space:normal;overflow-wrap:anywhere;line-height:1.4;font-size:14px}#storageFull .storage-full-actions{display:flex;flex-wrap:wrap;gap:8px}#storageFull button{min-width:44px;min-height:44px;height:auto;white-space:normal;padding:8px 14px;box-sizing:border-box}';
+      css.textContent = '#storageFull{position:fixed;z-index:100;left:50%;top:50%;transform:translate(-50%,-50%);width:min(480px,calc(100vw - 16px));max-height:calc(100vh - 16px);box-sizing:border-box;margin:0;padding:12px;background:#15181c;color:#e6e8eb;border:1px solid #2c3138;border-radius:10px;box-shadow:0 24px 64px rgba(0,0,0,.6);overflow:auto}#storageFull p{margin:0 0 12px;white-space:normal;overflow-wrap:anywhere;line-height:1.4;font-size:14px}#storageFull .storage-full-actions{display:flex;flex-wrap:wrap;gap:8px}#storageFull button{min-width:44px;min-height:44px;height:auto;white-space:normal;padding:8px 14px;box-sizing:border-box}'
+        + 'body.m.storage-full[data-msheet=more] #storageFull{top:calc(var(--mTop, 0px) + var(--stage-offset, 0px) + 8px);left:max(8px, env(safe-area-inset-left));right:max(8px, env(safe-area-inset-right));width:auto;transform:none;max-height:var(--storage-alert, 220px);z-index:80}';
       doc.head.appendChild(css);
       box = doc.createElement('div');
       box.id = 'storageFull';
@@ -98,11 +99,33 @@ async function fetchRetry(u, o, n = 4) {
       doc.body.appendChild(box);
       box.querySelector('#storageFullExport').onclick = () => { try { download(); } catch (e) { /* the JSON is built in memory */ } };
       box.querySelector('#storageFullProjects').onclick = () => { try { projectsDialog(); } catch (e) { /* the list stays closed */ } };
-      box.querySelector('#storageFullDismiss').onclick = () => { box.hidden = true; };
+      box.querySelector('#storageFullDismiss').onclick = () => { box.hidden = true; placeStorageFull(); };
+      if (typeof MutationObserver === 'function' && doc.body && !doc.body.__storageWatch) {
+        doc.body.__storageWatch = true;
+        new MutationObserver(() => placeStorageFull()).observe(doc.body, { attributes: true, attributeFilter: ['data-msheet', 'class'] });
+      }
     }
     const msg = doc.getElementById('storageFullMsg');
     if (msg) msg.textContent = STORAGE_FULL_MSG;
     box.hidden = false;
+    placeStorageFull();
+  }
+  function placeStorageFull() {
+    const doc = document;
+    const box = doc.getElementById && doc.getElementById('storageFull');
+    const body = doc.body;
+    if (!box || !body) return;
+    const open = !box.hidden;
+    if (body.classList) body.classList.toggle('storage-full', open);
+    if (!open || !body.classList || !body.classList.contains('m') || body.dataset.msheet !== 'more') {
+      if (body.style) body.style.removeProperty('--storage-alert');
+      return;
+    }
+    const prev = box.style.maxHeight;
+    box.style.maxHeight = 'none';
+    const h = Math.ceil(box.getBoundingClientRect().height);
+    box.style.maxHeight = prev;
+    body.style.setProperty('--storage-alert', Math.max(120, h + 16) + 'px');
   }
   window.onStorageFull = showStorageFull;
   function makeCopy(auto) {
@@ -283,6 +306,18 @@ async function fetchRetry(u, o, n = 4) {
   }
   function syncCode() { const v = $('#code').value; if (app.file === 'sketch') app.proj.code = v; else app.proj.files[app.file] = v; }
   function loadCode() { $('#code').value = app.file === 'sketch' ? app.proj.code : app.proj.files[app.file] || ''; }
+  function openCodeFile(name) {
+    const file = !name || name === 'sketch' || name === 'sketch.ino' || name === 'sketch.ino.cpp' || /\.ino\.cpp$/.test(name) ? 'sketch' : name;
+    if (!app.proj) return;
+    if (file !== 'sketch' && !(app.proj.files && Object.prototype.hasOwnProperty.call(app.proj.files, file))) return;
+    if (app.file === file) return;
+    syncCode();
+    app.file = file;
+    renderFileTabs();
+    loadCode();
+    if (app.codeview && typeof app.codeview.refresh === 'function') app.codeview.refresh(true);
+  }
+  app.openCodeFile = openCodeFile;
   function modeNote() {
     $('#modeNote').innerHTML = app.proj.mode === 'qemu'
       ? '<b>Real firmware.</b> Compiled by arduino-cli (esp32 core 3.3, DOIT DevKit V1) and executed in Espressif QEMU (Xtensa LX6). GPIO out/in/enable, pull-ups, RMT (IR) and UART0 are bridged to this circuit. ADC (SAR with a typical chip’s non-linear response + eFuse Vref, so analogReadMilliVolts is right up to 3.13 V), LEDC PWM + hardware fades, I²C (SSD1306, BME280, MPU6050) and SPI (ILI9341 TFT, MCP3008, microSD/FAT) are bridged; Wi-Fi sketches run real lwIP (TCP/HTTP + UDP) over QEMU’s open_eth NIC. <span class="warn">Not emulated: the 802.11 radio, Bluetooth, deep sleep.</span>'
@@ -391,7 +426,7 @@ async function fetchRetry(u, o, n = 4) {
     const st = document.getElementById && document.getElementById('status');
     if (st && st.setAttribute) st.setAttribute('title', sentence);
     const live = document.getElementById && document.getElementById('stLive');
-    if (live) live.textContent = sentence;
+    if (live && live.textContent !== sentence) live.textContent = sentence;
     applyStatusTier(0);
     if (typeof syncHeaderFit === 'function') syncHeaderFit();
   }
@@ -490,6 +525,7 @@ async function fetchRetry(u, o, n = 4) {
   const stripDown = new Set();
   function setCompilePhase(phase, detail) {
     const next = phase === 'queued' || phase === 'building' || phase === 'running' ? phase : 'idle';
+    if (window.StatusStrip && StatusStrip.clearTimeoutCard) StatusStrip.clearTimeoutCard();
     app.compilePhase = next;
     compileBusy = next === 'queued' || next === 'building';
     const sentence = next === 'queued' ? (detail || QUEUE_FALLBACK) : next === 'building' ? BUILDING_TEXT : '';
@@ -558,7 +594,69 @@ async function fetchRetry(u, o, n = 4) {
         root.style.setProperty('--strip-h', '0px');
         if (root.classList) root.classList.remove('strip-on');
       }
+      syncStatusStrip();
     } catch (e) {}
+  }
+  function syncStatusStrip() {
+    const el = document.getElementById && document.getElementById('statusStrip');
+    const root = document.documentElement;
+    if (!root || !root.classList) return;
+    if (!el || el.hidden) { root.classList.remove('backend-down'); return; }
+    const h = el.getBoundingClientRect ? el.getBoundingClientRect().height : 0;
+    if (root.style && root.style.setProperty) root.style.setProperty('--status-h', (h || 0) + 'px');
+    root.classList.add('backend-down');
+  }
+  function paintBackend(down, health) {
+    if (health) app.health = health;
+    app.backendDown = down;
+    const dot = $('#connDot');
+    if (dot) {
+      dot.className = 'conn ' + (down ? 'bad' : 'ok');
+      dot.title = down ? StatusStrip.LINE : 'Backend connected: arduino-cli + QEMU ready';
+    }
+    if (down) StatusStrip.showDown(document);
+    else StatusStrip.hideDown(document);
+    syncStatusStrip();
+    markStripSeen();
+  }
+  function markStripSeen() {
+    const el = document.getElementById && document.getElementById('statusStrip');
+    let seen = false;
+    if (el && !el.hidden && el.getBoundingClientRect) {
+      const b = el.getBoundingClientRect();
+      const w = window.innerWidth || 0;
+      const h = window.innerHeight || 0;
+      if (b.width === 0 && b.height === 0 && typeof requestAnimationFrame === 'function' && !el.__stripMeasure) {
+        el.__stripMeasure = true;
+        requestAnimationFrame(() => { el.__stripMeasure = false; markStripSeen(); });
+      }
+      seen = b.width > 0 && b.height > 0 && b.top >= -1 && b.left >= -1 && b.bottom <= h + 1 && b.right <= w + 1;
+    }
+    if (document.body && document.body.classList && document.body.classList.toggle) document.body.classList.toggle('strip-seen', !!seen);
+  }
+  function watchBackend() {
+    if (app.healthWatch) return;
+    if (document.body && document.body.classList) document.body.classList.add('strip-flag');
+    const watch = StatusStrip.watchHealth({
+      hidden: () => !!document.hidden,
+      fetch: async () => {
+        const r = await fetch('api/health');
+        return r.json();
+      },
+      onDown: (h) => {
+        paintBackend(true, h);
+        if (!compileBusy && (statusWord === 'Idle' || statusWord === 'Offline' || !statusWord)) setStatus('warn', 'Offline');
+      },
+      onUp: (h) => {
+        paintBackend(false, h);
+        if (statusWord === 'Offline') setStatus('idle', 'Idle');
+      },
+    });
+    app.healthWatch = watch;
+    document.addEventListener('visibilitychange', () => watch.onVisibility());
+    window.addEventListener('focus', () => watch.onVisibility());
+    window.addEventListener('resize', markStripSeen);
+    watch.start();
   }
   let stripObserver = null;
   function watchStripChrome() {
@@ -631,6 +729,18 @@ async function fetchRetry(u, o, n = 4) {
   app.setCompilePhase = setCompilePhase;
   app.BUILDING_TEXT = BUILDING_TEXT;
   app.COMPILE_TIMEOUT_TEXT = COMPILE_TIMEOUT_TEXT;
+  function compileJobId() {
+    const raw = (globalThis.crypto && crypto.randomUUID && crypto.randomUUID()) || ('j' + Math.random().toString(36).slice(2) + Date.now().toString(36));
+    const id = String(raw).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
+    return id.length >= 8 ? id : (id + 'jobtoken').slice(0, 16);
+  }
+  function shownCompileLog(log, job) {
+    const text = String(log || '');
+    if (!/^# job /.test(text)) return text;
+    if (window.CompileHints && CompileHints.ownsLog && !CompileHints.ownsLog(text, job)) return null;
+    if (window.CompileHints && CompileHints.untag) return CompileHints.untag(text);
+    return text.replace(/^# job [A-Za-z0-9_-]+\n/, '');
+  }
   function tabClientId() {
     try {
       let id = clStorage.session.getItem('esp32client');
@@ -673,11 +783,22 @@ async function fetchRetry(u, o, n = 4) {
       try { await sk.start(); } catch (e) { return; }
       return;
     }
-    const run = app.run = { kind: 'qemu', t0: performance.now(), compileId: '' };
+    if (app.healthWatch && typeof app.healthWatch.poke === 'function') await app.healthWatch.poke();
+    if (window.StatusStrip && StatusStrip.enabled() && app.backendDown) {
+      setStatus('warn', 'Offline');
+      StatusStrip.repeat(document);
+      syncStatusStrip();
+      return;
+    }
+    const run = app.run = { kind: 'qemu', t0: performance.now(), compileId: '', job: compileJobId() };
     app.netlog.add({ k: 'info', msg: `—— run: ${app.proj.name || 'sketch'} ——` });
     setCompilePhase('building');
     setStatus('busy', BUILDING_TEXT); $('#buildLog').textContent = '';
     showNetNotice(false);
+    if (window.CompileHints && CompileHints.enabled()) {
+      CompileHints.clear();
+      if (app.codeview) app.codeview.setLog('');
+    }
     let res;
     let timeoutText = '';
     let shownWait = '';
@@ -689,6 +810,12 @@ async function fetchRetry(u, o, n = 4) {
           const id = run.compileId;
           const q = await (await fetch('api/compile/progress' + (id ? ('?id=' + encodeURIComponent(id)) : ''), { headers: progressHeaders(id) })).json();
           if (app.run !== run || !run.poll || run.settled) return;
+          if (q.compile_id) {
+            if (run.compileId && q.compile_id !== run.compileId) return;
+            run.compileId = q.compile_id;
+          }
+          const stamp = run.compileId || run.job;
+          if (q.job && q.job !== run.job && q.job !== stamp) return;
           const waiting = q.wait && (q.wait.message || q.wait.position != null || q.wait.reason);
           if (waiting) {
             const copy = queuedCopy(q.wait);
@@ -702,13 +829,17 @@ async function fetchRetry(u, o, n = 4) {
           } else if (q.unpacking || q.active) {
             setCompilePhase('building');
             setStatus('busy', BUILDING_TEXT);
-            if (q.active) { const stage = q.stage || 'compiling…'; bl.textContent = q.log || (stage + '\n'); bl.scrollTop = bl.scrollHeight; }
+            if (q.active) {
+              const stage = q.stage || 'compiling…';
+              const active = shownCompileLog(q.log, run.compileId || run.job);
+              if (active != null) { bl.textContent = active || (stage + '\n'); bl.scrollTop = bl.scrollHeight; }
+            }
           }
         } catch (e) {}
       };
       run.poll = setInterval(poll, 400);
       poll();
-      const r = await fetchRetry('api/compile', { method: 'POST', headers: { 'content-type': 'application/json', ...progressHeaders('') }, body: JSON.stringify({ sketch: app.proj.code, files: app.proj.files, defines: app.proj.defines }) });
+      const r = await fetchRetry('api/compile', { method: 'POST', headers: { 'content-type': 'application/json', ...progressHeaders('') }, body: JSON.stringify({ sketch: app.proj.code, files: app.proj.files, defines: app.proj.defines, job: run.job }) });
       clearInterval(run.poll); run.poll = null;
       if (r.status === 504) {
         let body = {};
@@ -724,12 +855,18 @@ async function fetchRetry(u, o, n = 4) {
         const msg = (reason === 'full' || reason === 'timeout') && body.log
           ? body.log
           : `Please wait ${wait} second${wait === 1 ? '' : 's'} before compiling again`;
-        setCompilePhase('idle');
-        setStatus('warn', msg); toast(msg);
-        $('#buildLog').textContent = msg + '\n';
-        serialAppend('\n[' + msg + ']\n');
-        app.run = null;
-        return;
+        if (reason === 'timeout' && window.StatusStrip && StatusStrip.enabled()) {
+          timeoutText = StatusStrip.timeoutSentence(msg, StatusStrip.hasUserCopy(app.proj, app.readOnly, app.store));
+          setStatus('warn', 'Timed out');
+          app.run = null;
+        } else {
+          setCompilePhase('idle');
+          setStatus('warn', msg); toast(msg);
+          $('#buildLog').textContent = msg + '\n';
+          serialAppend('\n[' + msg + ']\n');
+          app.run = null;
+          return;
+        }
       } else {
         res = await r.json();
         run.compileId = res && res.compile_id ? String(res.compile_id) : '';
@@ -745,21 +882,69 @@ async function fetchRetry(u, o, n = 4) {
       if (gaveUp) {
         app.run = null;
         timeoutText = COMPILE_TIMEOUT_TEXT;
+      } else if (window.StatusStrip && StatusStrip.enabled()) {
+        app.backendDown = true;
+        app.run = null;
+        setStatus('warn', 'Offline');
       } else {
         setCompilePhase('idle'); setStatus('err', OFFLINE); serialAppend('\n' + OFFLINE + '\n'); app.run = null; return;
       }
     }
     finally { if (!holdBuilding || app.run !== run) setCompilePhase('idle'); }
-    if (timeoutText) { showCompileTimeout(timeoutText); return; }
-    if (app.run !== run) return;
+    if (timeoutText) {
+      if (window.StatusStrip && StatusStrip.enabled()) {
+        StatusStrip.showTimeout(document, StatusStrip.timeoutSentence(timeoutText, StatusStrip.hasUserCopy(app.proj, app.readOnly, app.store)));
+        syncStripMetrics();
+        setStatus('warn', 'Timed out');
+        return;
+      }
+      showCompileTimeout(timeoutText);
+      return;
+    }
+    if (window.StatusStrip && StatusStrip.enabled() && app.backendDown && app.run !== run) {
+      document.body.classList.add('strip-flag');
+      StatusStrip.repeat(document);
+      syncStatusStrip();
+      return;
+    }
+    if (app.run !== run || !res) return;
+    const stamp = (res.compile_id || res.job || run.compileId || run.job);
+    if (res.compile_id && run.compileId && res.compile_id !== run.compileId) { app.run = null; return; }
+    if (res.job && res.job !== run.job && res.job !== res.compile_id && res.job !== run.compileId) { app.run = null; return; }
+    const hintsOn = !!(window.CompileHints && CompileHints.enabled());
     const failure = compileFailureLog(res);
-    $('#buildLog').textContent = res.ok ? (res.cached ? cachedCompileLog(res.log) : (res.log || '')) : failure; if (app.codeview) app.codeview.setLog(res.ok ? '' : failure);
+    const fullLog = failure || res.log || '';
+    const visible = shownCompileLog(fullLog, stamp);
+    if (visible == null) { app.run = null; return; }
+    const buildText = res.ok ? (res.cached ? cachedCompileLog(visible) : visible) : visible;
+    $('#buildLog').textContent = hintsOn && window.CompileHints.boundLog ? CompileHints.boundLog(buildText) : buildText;
+    if (app.codeview) app.codeview.setLog(res.ok ? '' : (hintsOn && window.CompileHints.boundLog ? CompileHints.boundLog(visible) : visible));
     if (!res.ok) {
       setCompilePhase('idle');
+      if (window.StatusStrip && StatusStrip.enabled() && StatusStrip.isCompileTimeout(visible)) {
+        StatusStrip.showTimeout(document, StatusStrip.timeoutSentence(StatusStrip.COMPILE_TIMEOUT_BASE, StatusStrip.hasUserCopy(app.proj, app.readOnly, app.store)));
+        syncStripMetrics();
+        setStatus('warn', 'Timed out');
+        app.run = null;
+        return;
+      }
+      if (hintsOn) {
+        const owned = CompileHints.acceptLog(fullLog, stamp);
+        setStatus('err', 'Error');
+        if (owned) CompileHints.showFailure(owned, { code: $('#code') ? $('#code').value : '' });
+        else {
+          CompileHints.clear();
+          showFailureSurfaces('The compile failed. The log has no compiler error line.');
+        }
+        serialAppend('\n[compile failed — see the note on the code]\n');
+        app.run = null;
+        return;
+      }
       const sentence = failureStatus(res) || SIMULATOR_STATUS;
       showFailureSurfaces(sentence);
-      $('#buildDet').open = true; document.querySelector('[data-tab=build]').click(); if (app.codeview) app.codeview.setLog(failure); serialAppend('\n[compile failed — see build log in Code tab]\n'); app.run = null; return;
+      $('#buildDet').open = true; document.querySelector('[data-tab=build]').click(); if (app.codeview) app.codeview.setLog(res.log || ''); serialAppend('\n[compile failed — see build log in Code tab]\n'); app.run = null; return;
     }
+    if (hintsOn) CompileHints.clear();
     showNetNotice(!!res.net_blocked_notice);
     serialAppend(`\n[compiled ${res.cached ? '(cached)' : ''}${res.netShim ? ' + QemuNet shim' : ''}; starting QEMU]\n`);
     run.bid = res.id; run.lastN = 0; run.tries = 0; connectRun(run);
@@ -1680,6 +1865,31 @@ async function fetchRetry(u, o, n = 4) {
     { const grp = {}; for (const [k, n, c] of Examples.LIST) (grp[c || 'ESP32 projects'] = grp[c || 'ESP32 projects'] || []).push(`<option value="${k}">${n}</option>`);
       $('#selExample').innerHTML = '<option value="">Examples…</option>' + Object.entries(grp).map(([c, o]) => `<optgroup label="${P.esc(c)}">${o.join('')}</optgroup>`).join(''); }
     $('#selExample').onchange = (e) => { if (e.target.value) loadExample(e.target.value); e.target.value = ''; };
+    // The Examples button replaces the select once the top bar is narrow.
+    // Hide that select from the accessibility tree while the button is on
+    // screen, so the name "Examples" belongs to one control.
+    const syncExampleSelectA11y = () => {
+      const sel = document.getElementById('selExample');
+      const btn = document.getElementById('bExamples');
+      if (!sel || !btn) return;
+      const phone = window.matchMedia('(max-width: 820px), (pointer: coarse) and (max-height: 520px)').matches;
+      const replaced = getComputedStyle(btn).display !== 'none';
+      if (phone || replaced) {
+        sel.setAttribute('aria-hidden', 'true');
+        sel.removeAttribute('aria-label');
+        sel.tabIndex = -1;
+      } else {
+        sel.removeAttribute('aria-hidden');
+        sel.removeAttribute('tabindex');
+        sel.setAttribute('aria-label', 'Examples');
+      }
+    };
+    syncExampleSelectA11y();
+    window.addEventListener('resize', syncExampleSelectA11y);
+    const exampleMq = window.matchMedia('(max-width: 820px), (pointer: coarse) and (max-height: 520px)');
+    if (exampleMq.addEventListener) exampleMq.addEventListener('change', syncExampleSelectA11y);
+    const topBar = document.getElementById('top');
+    if (topBar && window.ResizeObserver) new ResizeObserver(syncExampleSelectA11y).observe(topBar);
     $('#selWireColor').innerHTML = ['auto', ...Object.keys(window.WIRE_COLORS)].map((c) => `<option>${c}</option>`).join(''); $('#selWireColor').onchange = (e) => app.editor.setWireColor(e.target.value);
     $('#bRun').onclick = startRun; $('#bStop').onclick = stopRun; $('#bReset').onclick = () => { app.sim.resetState(); app.editor.render(); };
     $('#bUndo').onclick = () => app.editor.undo(); $('#bRedo').onclick = () => app.editor.redo(); $('#bRot').onclick = () => app.editor.rotateSel(); $('#bDel').onclick = () => app.editor.deleteSel();
@@ -1688,7 +1898,11 @@ async function fetchRetry(u, o, n = 4) {
     $('#selMode').onchange = (e) => { beforeEdit(); app.proj.mode = e.target.value; autosave(); modeNote(); renderFileTabs(); };
     $('#fileTabs').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; syncCode(); if (b.dataset.f === '+') { const n = prompt('File name (e.g. config.h)'); if (!n || !/^[\w.-]+\.(h|hpp|c|cpp|ino)$/.test(n)) return; beforeEdit(); app.proj.files[n] = ''; autosave(); app.file = n; } else app.file = b.dataset.f; renderFileTabs(); loadCode(); };
     $('#code').addEventListener('beforeinput', beforeEdit); $('#inDefines').addEventListener('beforeinput', beforeEdit);
-    $('#code').addEventListener('input', () => { syncCode(); autosave(); }); $('#inDefines').addEventListener('input', () => { syncDefines(); autosave(); });
+    $('#code').addEventListener('input', () => {
+      syncCode(); autosave();
+      if (window.CompileHints && CompileHints.clear) CompileHints.clear(document);
+      if (app.codeview && typeof app.codeview.setLog === 'function') app.codeview.setLog('');
+    }); $('#inDefines').addEventListener('input', () => { syncDefines(); autosave(); });
     $('#bProjects').onclick = projectsDialog;
     $('#bRestart').onclick = () => { stopRun(); startRun(); };
     $('#cbFlow').checked = clStorage.local.getItem('esp32lab.flow') !== '0'; $('#stage').classList.toggle('flow', $('#cbFlow').checked);
@@ -1741,7 +1955,8 @@ async function fetchRetry(u, o, n = 4) {
         history.replaceState(null, '', location.pathname + (sp.toString() ? '?' + sp.toString() : '') + location.hash);
       }
     } catch (e) { /* history or the address bar is unavailable */ }
-    fetch('api/health').then((r) => r.json()).then((h) => { app.health = h; $('#connDot').className = 'conn ' + (h.ok ? 'ok' : 'bad'); $('#connDot').title = h.ok ? 'Backend connected: arduino-cli + QEMU ready' : 'Backend missing QEMU/arduino-cli'; if (!h.ok) toast('Backend found but QEMU/arduino-cli missing — JS sketch mode only', true); }).catch(() => { $('#connDot').className = 'conn bad'; toast('No backend: real-firmware mode needs server/server.py (JS sketch mode still works)', true); });
+    if (window.StatusStrip && StatusStrip.enabled()) watchBackend();
+    else fetch('api/health').then((r) => r.json()).then((h) => { app.health = h; $('#connDot').className = 'conn ' + (h.ok ? 'ok' : 'bad'); $('#connDot').title = h.ok ? 'Backend connected: arduino-cli + QEMU ready' : 'Backend missing QEMU/arduino-cli'; if (!h.ok) toast('Backend found but QEMU/arduino-cli missing — JS sketch mode only', true); }).catch(() => { $('#connDot').className = 'conn bad'; toast('No backend: real-firmware mode needs server/server.py (JS sketch mode still works)', true); });
     requestAnimationFrame(tick); if (window.UI) window.UI.init(app);
     if (new URLSearchParams(location.search).get('resume') !== '0') setTimeout(() => app.resumeSavedRun(), 300);
     if (new URLSearchParams(location.search).get('tab')) document.querySelector(`[data-tab=${new URLSearchParams(location.search).get('tab')}]`).click();
@@ -1749,7 +1964,7 @@ async function fetchRetry(u, o, n = 4) {
 
   // ---------------- 2D / 3D view ----------------
   let viewMode = '2d', view3dLoading = null, knob3d = null;
-  const VIEW3D_SRC = 'js/view3d.js?v=56';
+  const VIEW3D_SRC = 'js/view3d.js?v=57';
   const THREE_SRC = 'vendor/three.min.js?v=2';
   function loadScriptOnce(src) {
     return new Promise((res, rej) => {
@@ -1825,6 +2040,7 @@ async function fetchRetry(u, o, n = 4) {
           if (kind === 'knob') knob3d = null;
         },
         onFail: (e) => view3dFail(e),
+        onFirstFrame: () => { if (viewMode === '3d') show3dLoad(false); },
       });
       app.view3d = v; if (app.proj) v.setProject(app.proj); return v;
     })();

@@ -12,6 +12,7 @@ local.properties
 *.key
 .env
 .ngrok*
+web/server/.ngrok_url
 __pycache__/
 *.pyc
 *.bak*

@@ -1965,7 +1965,20 @@
           if (this.composer) this.composer.render();
           else this.renderer.render(this.scene, this.camera);
           this._frames = (this._frames || 0) + 1; this._errs = 0;
-          if (this._frames === 1) t3d('firstFrame');
+          if (this._frames === 1) {
+            t3d('firstFrame');
+            // Drop the overlay on this rendered frame. The follow-up frame
+            // repeats it. Neither wait is the script or health-check promise,
+            // which left the loader up after the scene had already drawn.
+            if (!this._toldFrame) {
+              this._toldFrame = true;
+              const tell = this.hooks.onFirstFrame;
+              if (tell) {
+                try { tell(); } catch (_) {}
+                requestAnimationFrame(() => { try { tell(); } catch (_) {} });
+              }
+            }
+          }
           if (this._probe) this._probe();
         } catch (e) {
           // composer/bloom failures: drop to plain renderer once; persistent errors bail to 2D

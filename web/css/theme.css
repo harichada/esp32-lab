@@ -8,7 +8,7 @@
   --s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:24px;
   --bg:#08090b;--l0:#0b0d10;--l1:#101215;--l2:#15181c;--l3:#1b1f24;--l4:#23282f;
   --line:#22262c;--line2:#2c3138;--hair:rgba(255,255,255,.06);
-  --txt:#e6e8eb;--txt2:#a9afb8;--mut:#6c737d;
+  --txt:#e6e8eb;--txt2:#a9afb8;--mut:#8b939e;
   --acc:#22d3ee;--acc-d:#0e7490;--acc-bg:rgba(34,211,238,.10);--acc2:#22d3ee;
   --ok:#34d399;--warn:#fbbf24;--err:#f87171;--panel:var(--l1);--panel2:var(--l2);
   --r1:4px;--r2:6px;--r3:10px;
@@ -19,7 +19,7 @@
   --dockH:300px;--sideW:300px;--palW:232px;
   font-family:var(--font);font-feature-settings:'cv11','ss01';-webkit-font-smoothing:antialiased;color-scheme:dark;
 }
-[data-theme=light]{--bg:#eef0f3;--l0:#f6f7f9;--l1:#ffffff;--l2:#f4f5f7;--l3:#eceef1;--l4:#e2e5e9;--line:#dfe2e6;--line2:#cfd4da;--hair:rgba(0,0,0,.06);--txt:#15181c;--txt2:#4b525c;--mut:#7c848f;--acc:#0891b2;--acc-d:#0e7490;--acc-bg:rgba(8,145,178,.10);--canvas:#f7f8fa;--grid:#d5d9df;--grid2:#c3c9d1;--sh2:0 8px 24px rgba(16,24,40,.12),0 0 0 1px var(--line);--sh3:0 24px 64px rgba(16,24,40,.2),0 0 0 1px var(--line);color-scheme:light}
+[data-theme=light]{--bg:#eef0f3;--l0:#f6f7f9;--l1:#ffffff;--l2:#f4f5f7;--l3:#eceef1;--l4:#e2e5e9;--line:#dfe2e6;--line2:#cfd4da;--hair:rgba(0,0,0,.06);--txt:#15181c;--txt2:#4b525c;--mut:#5c6570;--warn:#92400e;--acc:#0891b2;--acc-d:#0e7490;--acc-bg:rgba(8,145,178,.10);--canvas:#f7f8fa;--grid:#d5d9df;--grid2:#c3c9d1;--sh2:0 8px 24px rgba(16,24,40,.12),0 0 0 1px var(--line);--sh3:0 24px 64px rgba(16,24,40,.2),0 0 0 1px var(--line);color-scheme:light}
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);font-size:13px;line-height:1.45;overflow:hidden}
 ::selection{background:rgba(34,211,238,.3)}
@@ -69,6 +69,12 @@ html[data-theme=light] #bRun.spinning:active{background:#d5d9df;border-color:#3d
 #compileStrip{position:fixed;top:var(--strip-top,0px);left:0;right:0;z-index:12;margin:0;padding:8px 16px;box-sizing:border-box;background:#1b1f24;color:#e8eaed;border-bottom:1px solid #9aa3af;font-size:13.5px;line-height:1.45;font-weight:500;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;pointer-events:none}
 #compileStrip[hidden]{display:none!important}
 html[data-theme=light] #compileStrip{background:#eceef1;color:#2c333c;border-bottom-color:#3d4550}
+/* Build-server line. Fixed, so it does not grow the header. One sentence, wrapping, no ellipsis. */
+.status-strip{position:fixed;top:48px;left:var(--palW);right:var(--sideW);z-index:12;margin:0;padding:8px 16px;box-sizing:border-box;background:#1b1f24;color:#e8eaed;border-bottom:1px solid #9aa3af;font-size:13.5px;line-height:1.45;font-weight:500;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;pointer-events:none}
+.status-strip[hidden]{display:none!important}
+html[data-theme=light] .status-strip{background:#eceef1;color:#2c333c;border-bottom-color:#3d4550}
+html.backend-down body:not(.m) #center{padding-top:var(--status-h,0px)}
+body.c-palette .status-strip{left:0}body.c-side .status-strip{right:0}
 /* Push the canvas down while the strip is up. Transform is not layout, so CLS stays 0. */
 html.strip-on #stage,html.strip-on #projBanner,html.strip-on #mParts,html.strip-on #mWireBar{transform:translateY(var(--strip-h,0px))}
 html.strip-on body:not(.m) #palette,html.strip-on body:not(.m) #side{transform:translateY(var(--strip-h,0px))}
@@ -264,7 +270,7 @@ body.reconnecting #status{border-color:var(--warn);box-shadow:0 0 0 3px rgba(251
 .lbl-hit{cursor:move}
 .espp{cursor:crosshair}
 
-#legalFoot{height:22px;line-height:22px;font-size:11px;padding:0 10px;color:var(--muted,#888);border-top:1px solid var(--line,rgba(127,127,127,.2));display:flex;gap:12px;justify-content:space-between;overflow:hidden;white-space:nowrap}#legalFoot span{overflow:hidden;text-overflow:ellipsis}#legalFoot a{color:inherit;text-decoration:underline;flex:none}
+#legalFoot{height:22px;line-height:22px;font-size:11px;padding:0 10px;color:var(--mut);border-top:1px solid var(--line,rgba(127,127,127,.2));display:flex;gap:12px;justify-content:space-between;overflow:hidden;white-space:nowrap}#legalFoot span{overflow:hidden;text-overflow:ellipsis}#legalFoot a{color:inherit;text-decoration:underline;flex:none}
 
 /* ---- 3D view ---- */
 .view-toggle{display:inline-flex;border:1px solid var(--line);border-radius:var(--r2);overflow:hidden;background:var(--l2)}
@@ -437,3 +443,30 @@ html[data-cl-env=staging] #main{height:calc(100% - 70px - var(--stage-h))}
 #authSaveDlg .row{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}
 #authSaveYes,#authSaveNo{min-height:44px;min-width:44px;padding:0 16px}
 .auth-provs{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 8px}
+/* Compile hint. The card stays in the code tab so it does not cover the editor. */
+#tab-code.hint-on{position:relative}
+.compile-hint{position:relative;flex:none;z-index:6;display:flex;flex-direction:row;flex-wrap:wrap;align-items:center;gap:6px;box-sizing:border-box;max-width:100%;margin:0;padding:4px 8px;background:#1b1f24;color:#e8eaed;border:1px solid #9aa3af;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.35);font:500 13.5px/1.45 system-ui,-apple-system,'Segoe UI',sans-serif}
+.compile-hint.open{flex-direction:column;align-items:stretch}
+.compile-hint button{height:auto;min-height:44px;min-width:44px;box-sizing:border-box;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;word-break:break-word;text-align:left;justify-content:flex-start;font:inherit;line-height:1.45;color:#e8eaed;background:#2a3038;border:1px solid #9aa3af;border-radius:8px;padding:6px 10px;cursor:pointer}
+.compile-hint-jump{padding-top:4px;padding-bottom:4px}
+.compile-hint-jump{flex:1;min-width:0;min-height:0;max-height:2.9em;overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2}
+.compile-hint-more{flex:none}
+.compile-hint.open .compile-hint-jump{max-height:none;-webkit-line-clamp:unset;display:block}
+.compile-hint-extra{display:none;width:100%}
+.compile-hint.open .compile-hint-extra{display:flex;flex-direction:column;gap:6px}
+.compile-hint-rawbtn,.compile-hint.open .compile-hint-jump{width:100%}
+/* The code dock is 300px. Grow it while a hint is up, but stay inside the
+   center column so focusing a hint button cannot scroll the header away. */
+body:not(.m) #dock:has(#compileHints){height:min(560px,calc(100vh - 220px))}
+body:not(.m) #tab-code.hint-on .codewrap{min-height:340px}
+.compile-hint-nav{display:flex;align-items:center;gap:8px;min-width:0}
+.compile-hint-nav[hidden]{display:none!important}
+#compileHintCount{flex:1;min-width:0;overflow-wrap:anywhere;font-weight:600}
+.compile-hint-next{flex:none}
+.compile-hint-raw{margin:0;max-height:9.5em;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;font:12px/1.45 ui-monospace,SFMono-Regular,monospace;background:#0c0e12;color:#e8eaed;border-radius:8px;padding:8px 10px;box-sizing:border-box;max-width:100%}
+.compile-hint-hit{display:block;background:rgba(248,113,113,.22);box-shadow:inset 3px 0 0 #f87171}
+.compile-hint-raw[hidden]{display:none!important}
+.compile-hint button:focus,.compile-hint button:focus-visible,.compile-hint-raw:focus,.compile-hint-raw:focus-visible{outline:2px solid #67e8f9;outline-offset:2px}
+html[data-theme=light] .compile-hint{background:#eceef1;color:#15181c;border-color:#3d4550}
+html[data-theme=light] .compile-hint button{background:#fff;color:#15181c;border-color:#3d4550}
+html[data-theme=light] .compile-hint-raw{background:#fff;color:#15181c}

@@ -25,7 +25,7 @@
     const si = $('#scopeInst'), ms = $('#mScope');
     if (si && ms) { if (sheet === 'scope') { if (si.parentNode !== ms) ms.appendChild(si); } else if (si.parentNode === ms) $('#tab-scope').appendChild(si); }
     const cur = { scope: ['m-scope', 'SCOPE'], code: ['m-code', 'CODE'], parts: ['m-parts', 'PARTS'], serial: ['m-serial', 'SERIAL'], insp: ['m-sliders', 'INSPECT'], more: ['m-more', 'MORE'], dock: ['m-more', 'PANEL'] }[sheet] || ['m-circuit', 'CIRCUIT'];
-    const hub = $('#mHub'); if (hub) { hub.querySelector('use').setAttribute('href', '#' + cur[0]); hub.querySelector('.m-hub-t').textContent = cur[1]; }
+    const hub = $('#mHub'); if (hub) { hub.querySelector('use').setAttribute('href', '#' + cur[0]); hub.querySelector('.m-hub-t').textContent = cur[1]; hub.setAttribute('aria-label', cur[1] + ', open mode dial'); }
     if (sheet === 'code') dockTab('code'); else if (sheet === 'serial') dockTab('serial');
     if (sheet === 'parts' && window.Mobile_orbit) setTimeout(window.Mobile_orbit, 30);
     if (sheet === 'code') setTimeout(() => app.codeView && app.codeView.refresh && app.codeView.refresh(), 0);
@@ -83,9 +83,9 @@
     const modes = [['circuit', 'Circuit', 'm-circuit'], ['code', 'Code', 'm-code'], ['parts', 'Parts', 'm-parts'], ['serial', 'Serial', 'm-serial'], ['insp', 'Inspect', 'm-sliders'], ['scope', 'Scope', 'm-scope'], ['more', 'More', 'm-more']];
     document.body.insertAdjacentHTML('beforeend', `<div id="mScrim" class="m-only"></div>
       <nav id="mDial" class="m-only" aria-label="Mode dial"><div class="m-orbit">${modes.map(([k, n, i], j) => `<button class="m-tab" data-m="${k}" style="--j:${j}" aria-label="${n}">${ic(i)}<span>${n}</span></button>`).join('')}</div>
-        <button id="mHub" aria-label="Open mode dial"><svg class="m-ring" viewBox="0 0 80 80"><circle cx="40" cy="40" r="36"/><circle cx="40" cy="40" r="30" class="m-ring2"/></svg><span class="m-hub-i">${ic('m-circuit')}</span><span class="m-hub-t">CIRCUIT</span></button></nav>
+        <button id="mHub" aria-label="CIRCUIT, open mode dial"><svg class="m-ring" viewBox="0 0 80 80"><circle cx="40" cy="40" r="36"/><circle cx="40" cy="40" r="30" class="m-ring2"/></svg><span class="m-hub-i">${ic('m-circuit')}</span><span class="m-hub-t">CIRCUIT</span></button></nav>
       <button id="mIgnite" class="m-only" aria-label="Run"><svg viewBox="0 0 80 80"><circle cx="40" cy="40" r="34" class="m-ig-bg"/><circle cx="40" cy="40" r="34" class="m-ig-p" pathLength="100"/></svg><span class="m-ig-i">${ic('i-play')}</span><span class="m-ig-t">RUN</span></button>
-      <div id="mTicker" class="m-only"><div id="mTickT"></div></div><div id="mCount" class="m-only"></div><div id="mFlash" class="m-only"></div>`);
+      <div id="mTicker" class="m-only" role="region" aria-label="Status"><div id="mTickT"></div></div><div id="mCount" class="m-only"></div><div id="mFlash" class="m-only"></div>`);
     const dial = $('#mDial'); let dialOpen = false;
     const openDial = (v) => { dialOpen = v; dial.classList.toggle('open', v); document.body.classList.toggle('m-dial', v); haptic(6); };
     $('#mHub').onclick = () => openDial(!dialOpen);

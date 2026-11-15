@@ -439,6 +439,82 @@ class AuthTests(unittest.TestCase):
         self.assertIn('lamp1', ids)
         self.assertTrue(any(item.startswith('lamp1-') for item in ids))
 
+    def test_import_never_changes_another_users_project(self):
+        self.idp.github_id = 4242
+        try:
+            jar_a, _old, _landed, _body = self._finish('github', '/')
+            view_a, _pairs = self._session(jar_a)
+
+            def item(pid, name, marker):
+                return {'id': pid, 'name': name, 'updated': 1, 'proj': {'id': pid, 'name': name, 'parts': [marker], 'wires': []}}
+
+            def post(jar, view, projects):
+                return self._req(
+                    'POST', '/auth/projects/import',
+                    headers={
+                        'Cookie': self._jar_header(jar),
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token': view['csrf'],
+                    },
+                    body=json.dumps({'csrf': view['csrf'], 'projects': projects}).encode(),
+                )
+
+            def user_id(github_id):
+                conn = sqlite3.connect(self.db)
+                found = conn.execute(
+                    'SELECT id FROM users WHERE provider = ? AND provider_user_id = ?',
+                    ('github', str(github_id)),
+                ).fetchone()
+                conn.close()
+                self.assertIsNotNone(found)
+                return found[0]
+
+            def owned(uid, pid):
+                conn = sqlite3.connect(self.db)
+                found = conn.execute(
+                    'SELECT name, body, body_hash, updated FROM owned_projects WHERE user_id = ? AND project_id = ?',
+                    (uid, pid),
+                ).fetchone()
+                conn.close()
+                return None if found is None else tuple(found)
+
+            status, _pairs, body = post(jar_a, view_a, [item('lamp', 'Ada lamp', 'a-body')])
+            self.assertEqual(status, 200, body)
+            self.assertEqual(json.loads(body)['imported'], 1)
+            user_a = user_id(4242)
+            before = owned(user_a, 'lamp')
+            self.assertIsNotNone(before)
+
+            self.idp.github_id = 7777
+            jar_b, _old, _landed, _body = self._finish('github', '/')
+            view_b, _pairs = self._session(jar_b)
+            status, _pairs, body = post(jar_b, view_b, [item('lamp', 'Grace lamp', 'b-body')])
+            self.assertEqual(status, 200, body)
+            self.assertEqual(owned(user_a, 'lamp'), before)
+            status, _pairs, body = self._req('GET', '/auth/projects/lamp', headers={'Cookie': self._jar_header(jar_a)})
+            self.assertEqual(status, 200, body)
+            got = json.loads(body)
+            self.assertEqual(got['name'], 'Ada lamp')
+            self.assertEqual(got['proj']['parts'], ['a-body'])
+
+            changed = item('lamp', 'Ada lamp', 'a-body-2')
+            encoded = json.dumps(changed['proj'], separators=(',', ':'), sort_keys=True)
+            digest = hashlib.sha256(encoded.encode('utf-8')).hexdigest()
+            status, _pairs, body = post(jar_a, view_a, [changed])
+            self.assertEqual(status, 200, body)
+            self.assertEqual(json.loads(body)['imported'], 1)
+            self.assertEqual(owned(user_a, 'lamp'), before)
+            copy_id = ('lamp-' + digest[:8])[:40]
+            copied = owned(user_a, copy_id)
+            self.assertIsNotNone(copied)
+            self.assertNotEqual(copy_id, 'lamp')
+            self.assertEqual(copied[1], encoded)
+            status, _pairs, body = self._req('GET', '/auth/projects/lamp', headers={'Cookie': self._jar_header(jar_a)})
+            self.assertEqual(status, 200, body)
+            self.assertEqual(json.loads(body)['proj']['parts'], ['a-body'])
+        finally:
+            self.idp.github_id = 4242
+
     def test_host_header_does_not_change_the_callback(self):
         status, pairs, body = self._req(
             'GET', '/auth/google?next=/',

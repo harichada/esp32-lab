@@ -15,12 +15,13 @@ for (const width of [390, 1280]) {
     await page.goto(origin + '/?view=schematic');
     await assertNoGoogle(page);
     if (width === 390) {
+      await expect(page.locator('#mMore')).toBeHidden();
       await page.getByRole('button', { name: 'More options' }).click();
-      const signIn = page.locator('#mSignIn');
+      const heading = page.getByRole('heading', { name: 'Account' });
+      await expect(heading).toBeVisible();
+      const signIn = page.getByRole('button', { name: 'Sign in with GitHub' });
       await expect(signIn).toBeVisible();
-      await expect(signIn).toHaveText('Sign in');
-      await expect(page.locator('#mMore .m-more-b button').first()).toHaveAttribute('id', 'mSignIn');
-      await expect(page.locator('#mMore').getByText('Account', { exact: true })).toHaveCount(0);
+      await expect(page.locator('#mMore .m-more-b button').first()).toHaveText('Sign in with GitHub');
       const box = await signIn.boundingBox();
       expect(box).not.toBeNull();
       expect(box!.width).toBeGreaterThanOrEqual(44);

@@ -155,8 +155,15 @@
       slot.append(btn, menu);
     }
     const dot = $('#connDot');
-    if (dot) tb.insertBefore(slot, dot);
+    if (dot && dot.parentNode === tb) tb.insertBefore(slot, dot);
     else tb.appendChild(slot);
+  }
+  function accountHeading() {
+    const title = document.createElement('h2');
+    title.className = 'm-lbl';
+    title.id = 'mAuthTitle';
+    title.textContent = 'Account';
+    return title;
   }
   function mountMobile() {
     const more = $('#mMore .m-more-b');
@@ -169,6 +176,8 @@
       more.insertBefore(box, more.firstChild);
     }
     box.textContent = '';
+    box.setAttribute('role', 'group');
+    box.setAttribute('aria-labelledby', 'mAuthTitle');
     if (session.signed_in) {
       const name = document.createElement('p');
       name.className = 'auth-who';
@@ -179,41 +188,13 @@
       out.id = 'mSignOut';
       out.textContent = 'Sign out';
       out.addEventListener('click', () => signOut(out));
-      box.append(name, out);
+      box.append(accountHeading(), name, out);
       return;
     }
     const choices = menuButtons();
     if (!choices.length) { box.remove(); return; }
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.id = 'mSignIn';
-    btn.textContent = 'Sign in';
-    if (choices.length === 1) {
-      btn.addEventListener('click', () => begin(choices[0][0], btn));
-      box.appendChild(btn);
-      return;
-    }
-    const menu = document.createElement('div');
-    menu.id = 'mAuthMenu';
-    menu.hidden = true;
-    menu.setAttribute('role', 'group');
-    menu.setAttribute('aria-label', 'Sign in');
-    choices.forEach(([id, text]) => {
-      const b = providerButton(id, 'Sign in with ' + text);
-      menu.appendChild(b);
-    });
-    btn.setAttribute('aria-expanded', 'false');
-    btn.setAttribute('aria-controls', 'mAuthMenu');
-    btn.addEventListener('click', () => {
-      const open = menu.hidden;
-      menu.hidden = !open;
-      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-      if (open) {
-        const first = menu.querySelector('button');
-        if (first) first.focus();
-      }
-    });
-    box.append(btn, menu);
+    const buttons = choices.map(([id, text]) => providerButton(id, 'Sign in with ' + text));
+    box.append(accountHeading(), ...buttons);
   }
   function accountWhen(updated) {
     const t = Number(updated);

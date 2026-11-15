@@ -11,6 +11,7 @@ RUN arduino-cli config init && arduino-cli config add board_manager.additional_u
  && rm -rf /home/sim/.arduino15/staging
 COPY --chown=sim:sim home/ /home/sim/
 COPY --chown=sim:sim app/ /app/
+RUN rm -f /app/server/.ngrok_url
 RUN mkdir -p /home/sim/.cache/arduino /home/sim/builds /home/sim/.esp32lab/projects && chmod +x /home/sim/qemu-gpio/bin/qemu-system-xtensa
 ENV QEMU_BIN=/home/sim/qemu-gpio/bin/qemu-system-xtensa QEMU_ROM_DIR=/home/sim/qemu-gpio/share/qemu \
     SIM_RUN_CAP=0 SIM_TOKEN= SIM_BUILD_DIR=/home/sim/builds SIM_PROJECT_DIR=/home/sim/.esp32lab/projects

@@ -28,11 +28,8 @@ async function setMode(page: Page, mode: string) {
 async function signIn(page: Page, provider: 'Google' | 'GitHub', width: number) {
   if (width <= 820) {
     await page.getByRole('button', { name: 'More options' }).click();
-    const signInBtn = page.locator('#mSignIn');
-    await expect(signInBtn).toBeVisible();
-    await signInBtn.click();
-    const named = page.getByRole('button', { name: 'Sign in with ' + provider });
-    if (await named.count()) await named.click();
+    await expect(page.getByRole('heading', { name: 'Account' })).toBeVisible();
+    await page.getByRole('button', { name: 'Sign in with ' + provider }).click();
     return;
   }
   await page.locator('#bSignIn').click();
@@ -116,21 +113,44 @@ test('Not now leaves the guest projects on this device', async ({ page }) => {
   await expect(page.locator('#authName')).toHaveText('Ada Lovelace');
 });
 
+test('390 reaches a provider in two taps and shows Account', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(origin + '/');
+  await expect(page.locator('#mAuthTitle')).toBeAttached();
+  await expect(page.locator('#mMore')).toBeHidden();
+  const heading = page.getByRole('heading', { name: 'Account' });
+  await expect(heading).toBeHidden();
+  let taps = 0;
+  await page.getByRole('button', { name: 'More options' }).click();
+  taps += 1;
+  await expect(heading).toBeVisible();
+  await expect(heading).toHaveAttribute('id', 'mAuthTitle');
+  expect(await heading.evaluate((el) => el.tagName)).toBe('H2');
+  await expect(page.locator('#mAuth')).toHaveAttribute('role', 'group');
+  await expect(page.locator('#mAuth')).toHaveAttribute('aria-labelledby', 'mAuthTitle');
+  const google = page.getByRole('button', { name: 'Sign in with Google' });
+  await expect(google).toBeVisible();
+  const hit = page.waitForRequest((req) => {
+    try { return new URL(req.url()).pathname === '/auth/google' && req.method() === 'GET'; }
+    catch (e) { return false; }
+  });
+  await google.click();
+  taps += 1;
+  const req = await hit;
+  expect(taps).toBe(2);
+  expect(new URL(req.url()).pathname).toBe('/auth/google');
+});
+
 test('GitHub sign-in at 390 uses the More sheet', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 800 });
   await page.goto(origin + '/');
+  await expect(page.locator('#mMore')).toBeHidden();
   await page.getByRole('button', { name: 'More options' }).click();
-  const signInBtn = page.locator('#mSignIn');
-  await expect(signInBtn).toBeVisible();
-  await expect(page.locator('#mMore .m-more-b button').first()).toHaveAttribute('id', 'mSignIn');
-  await expect(page.locator('#mMore').getByText('Account', { exact: true })).toHaveCount(0);
-  const box = await signInBtn.boundingBox();
-  expect(box).not.toBeNull();
-  expect(box!.width).toBeGreaterThanOrEqual(44);
-  expect(box!.height).toBeGreaterThanOrEqual(44);
-  await signInBtn.click();
+  const heading = page.getByRole('heading', { name: 'Account' });
+  await expect(heading).toBeVisible();
   const github = page.getByRole('button', { name: 'Sign in with GitHub' });
   await expect(github).toBeVisible();
+  await expect(page.locator('#mMore .m-more-b button').nth(1)).toHaveText('Sign in with GitHub');
   const gitBox = await github.boundingBox();
   expect(gitBox).not.toBeNull();
   expect(gitBox!.width).toBeGreaterThanOrEqual(44);

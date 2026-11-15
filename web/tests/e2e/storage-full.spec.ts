@@ -147,3 +147,58 @@ for (const width of [390, 1280]) {
     await expect(banner).toBeVisible();
   });
 }
+
+test('storage alert stays off the More sheet at 390', async ({ page }) => {
+  await install(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/?ex=blink&resume=0');
+  const mainBefore = await page.locator('#main').boundingBox();
+  expect(mainBefore).toBeTruthy();
+  await page.locator('#mMenu').click();
+  await expect(page.locator('#mMore')).toBeVisible();
+  await fillQuota(page);
+  await page.evaluate(() => {
+    const ta = document.getElementById('code') as HTMLTextAreaElement;
+    ta.value = ta.value + '\n/* STORAGE-SHEET */';
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.locator('#mMore button[data-a="save"]').click();
+  const alert = page.locator('#storageFull');
+  await expect(alert).toBeVisible();
+  await expect(page.locator('#mMore')).toBeVisible();
+  const boxes = await page.evaluate(() => {
+    const a = document.getElementById('storageFull')!.getBoundingClientRect();
+    const s = document.getElementById('mMore')!.getBoundingClientRect();
+    const main = document.getElementById('main')!.getBoundingClientRect();
+    const save = document.querySelector('#mMore button[data-a="save"]') as HTMLElement;
+    const exp = document.getElementById('storageFullExport')!;
+    const point = (el: Element) => {
+      const r = el.getBoundingClientRect();
+      const top = document.elementFromPoint(r.left + r.width / 2, r.top + Math.min(r.height / 2, 20));
+      return { w: r.width, h: r.height, ok: !!(top && (top === el || el.contains(top))) };
+    };
+    return {
+      alert: { top: a.top, left: a.left, right: a.right, bottom: a.bottom, w: a.width, h: a.height },
+      sheet: { top: s.top, left: s.left, right: s.right, bottom: s.bottom, w: s.width, h: s.height },
+      main: { top: main.top, height: main.height, left: main.left },
+      save: point(save),
+      exp: point(exp),
+    };
+  });
+  const overlap = boxes.alert.left < boxes.sheet.right && boxes.alert.right > boxes.sheet.left
+    && boxes.alert.top < boxes.sheet.bottom && boxes.alert.bottom > boxes.sheet.top;
+  expect(overlap).toBe(false);
+  expect(boxes.alert.w).toBeGreaterThan(40);
+  expect(boxes.alert.h).toBeGreaterThan(40);
+  expect(boxes.sheet.w).toBeGreaterThan(40);
+  expect(boxes.sheet.h).toBeGreaterThan(40);
+  expect(boxes.alert.bottom).toBeLessThanOrEqual(boxes.sheet.top + 1);
+  expect(boxes.save.ok).toBe(true);
+  expect(boxes.save.h).toBeGreaterThanOrEqual(44);
+  expect(boxes.exp.ok).toBe(true);
+  expect(boxes.exp.w).toBeGreaterThanOrEqual(44);
+  expect(boxes.exp.h).toBeGreaterThanOrEqual(44);
+  expect(Math.abs(boxes.main.top - mainBefore!.y)).toBeLessThan(1);
+  expect(Math.abs(boxes.main.left - mainBefore!.x)).toBeLessThan(1);
+  expect(Math.abs(boxes.main.height - mainBefore!.height)).toBeLessThan(1);
+});
