@@ -9,7 +9,7 @@ SIM_ACCESS_TOKEN      default empty (off). Cookie cl_stage, constant-time compar
 SIM_STAGING_UPSTREAM  default empty (off). Only http://esp32lab-staging:8765.
 SIM_BASE_PATH         cookie and redirect prefix. Defaults to /staging when SIM_STAGING=1.
 """
-import asyncio, hashlib, hmac, html, os, re, time
+import asyncio, hashlib, hmac, html, inspect, os, re, time
 from urllib.parse import parse_qs, unquote, urlencode
 
 PROXY_TIMEOUT = 30.0
@@ -767,11 +767,20 @@ async def _proxy_ws(scope, receive, send):
         _log('staging_proxy status=502 ms=%d' % _ms(t0))
         await _ws_http(send, 502, DOWN_HTML.encode('utf-8'))
         return
-    kwargs = dict(additional_headers=headers, open_timeout=PROXY_TIMEOUT, max_size=None, ping_interval=None, compression=None)
-    try:
-        connector = websockets.connect(url, proxy=None, **kwargs)
-    except TypeError:
-        connector = websockets.connect(url, **kwargs)
+    kwargs = dict(open_timeout=PROXY_TIMEOUT, max_size=None, ping_interval=None, compression=None)
+    params = inspect.signature(websockets.connect).parameters
+
+    def _explicit(name):
+        param = params.get(name)
+        return param is not None and param.kind is not inspect.Parameter.VAR_KEYWORD
+
+    if _explicit('additional_headers'):
+        kwargs['additional_headers'] = headers
+    else:
+        kwargs['extra_headers'] = headers
+    if _explicit('proxy'):
+        kwargs['proxy'] = None
+    connector = websockets.connect(url, **kwargs)
     try:
         remote = await asyncio.wait_for(connector.__aenter__(), PROXY_TIMEOUT)
     except Exception as exc:

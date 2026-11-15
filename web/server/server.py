@@ -10,15 +10,24 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       SIM_COMPILE_QUEUE, SIM_COMPILE_QUEUE_MAX, SIM_COMPILE_QUEUE_TIMEOUT_S,
       SIM_ORPHAN_MAX_AGE_S and the matching *_MAX_AGE_S knobs.
       Staging (off unless set): SIM_STAGING, SIM_ACCESS_TOKEN, SIM_STAGING_UPSTREAM, SIM_BASE_PATH.
+      Sign-in (off unless set): AUTH_ENABLED, AUTH_GOOGLE, AUTH_GITHUB, AUTH_BASE_URL.
+      Secrets: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GITHUB_CLIENT_ID,
+      GITHUB_CLIENT_SECRET, from the environment or --env-file. See auth.py.
+      Live keeps AUTH_GOOGLE=0 until the Google consent screen is published.
+      Account data is <SIM_PROJECT_DIR>/accounts/ (directory 0700, files 0600).
+      TRUSTED_PROXY_IPS is a comma-separated list of exact IPs. Empty trusts
+      nobody. Production uses 172.30.0.250. See https.py. proxy_headers stays off.
 """
 import asyncio, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, argparse
 import diskkeep
 import staging
+import auth
+import https
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
 import secrets
 from fastapi.responses import PlainTextResponse
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
@@ -1397,9 +1406,24 @@ def robots_txt():
     if found.is_file():
         return FileResponse(found)
     raise HTTPException(status_code=404)
-@app.get('/')
-def index(): return FileResponse(SITE / 'index.html')
+AUTH_META = b'<meta name="cl-auth" content="1">'
+def lab_page():
+    """The lab file. Sign-in on adds cl-auth so the page may ask /auth/session."""
+    raw = (SITE / 'index.html').read_bytes()
+    if not auth.enabled() or AUTH_META in raw or b'<head>' not in raw:
+        return raw, True
+    return raw.replace(b'<head>', b'<head>\n' + AUTH_META, 1), False
+@app.api_route('/', methods=['GET', 'HEAD'])
+@app.api_route('/index.html', methods=['GET', 'HEAD'])
+def index():
+    body, plain = lab_page()
+    if plain:
+        return FileResponse(SITE / 'index.html')
+    return Response(content=body, media_type='text/html')
 app.mount('/', StaticFiles(directory=str(SITE)), name='site')
+auth.apply_env()
+https.apply_env()
+app.add_middleware(auth.AuthMiddleware)
 app.add_middleware(staging.StagingMiddleware)
 
 if __name__ == '__main__':
