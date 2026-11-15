@@ -25,13 +25,10 @@ async function install(page: Page) {
 async function openExample(page: Page, id: string, width: number) {
   await page.setViewportSize({ width: width, height: width === 390 || width === 320 ? 844 : 800 });
   await page.goto('/?ex=' + id + '&resume=0');
-  await page.waitForFunction((key) => {
-    const app = (window as unknown as { app?: { proj?: { example?: string; parts?: unknown[] }; schematic?: unknown } }).app;
-    return !!(app && app.proj && app.proj.example === key && app.proj.parts && app.proj.parts.length && app.schematic);
-  }, id);
   await page.locator('#bViewSch').click();
-  await expect(page.locator('.toast')).not.toHaveCount(0);
-  await page.waitForFunction(() => document.body.classList.contains('viewsch') && !!document.querySelector('#stageSch.on .sch-hit'));
+  // data-example-ready is set once the example's files, netlist and schematic are drawn,
+  // and it stays set. A toast is removed on a timer, so waiting on it flakes.
+  await expect(page.locator('html')).toHaveAttribute('data-example-ready', id);
   await expect.poll(async () => page.evaluate(() => {
     let w = 0;
     document.querySelectorAll('#stageSch .sch-hit').forEach((el) => { w = Math.max(w, el.getBoundingClientRect().width); });

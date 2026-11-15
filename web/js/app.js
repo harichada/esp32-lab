@@ -48,6 +48,22 @@ async function fetchRetry(u, o, n = 4) {
     if (window.Bom) Bom.render(document.getElementById('bomView'), app.proj);
     if (app.view3d) app.view3d.setProject(app.proj);
     if (app.schematic) { app.schematic.sel = null; app.schematic.setProject(app.proj); }
+    syncExampleReady();
+  }
+  // Stays set for the life of the view. The e2e helper waits on this instead of a toast,
+  // which is removed on a timer and is gone before a slow assertion notices it.
+  function syncExampleReady() {
+    const root = document.documentElement;
+    if (!root || !root.setAttribute || !root.removeAttribute) return;
+    const proj = app.proj;
+    const sch = app.schematic;
+    const tabs = document.getElementById('fileTabs');
+    const code = document.getElementById('code');
+    const filesReady = !!(proj && proj.example && proj.files && tabs && tabs.querySelector('button[data-f="sketch"]') && code && code.value === (proj.code || ''));
+    const netReady = !!(proj && proj.netlist && Array.isArray(proj.netlist.nets) && proj.netlist.nets.length);
+    const drawn = !!(sch && sch.active && sch.svg && sch.svg.classList.contains('on') && sch.svg.querySelector('.sch-hit'));
+    if (filesReady && netReady && drawn) root.setAttribute('data-example-ready', String(proj.example));
+    else root.removeAttribute('data-example-ready');
   }
   async function loadExample(k) {
     const ex = Examples.EX[k](); ex.example = k;
@@ -1833,6 +1849,7 @@ async function fetchRetry(u, o, n = 4) {
     if (viewMode === '2d') {
       try { clStorage.local.removeItem(LSV); } catch (_) {}
       leaveSchematic();
+      syncExampleReady();
       try { app.editor && app.editor.render && app.editor.render(); } catch (_) {}
       const z = $('#zoomPct'); if (z && app.editor) z.textContent = Math.round(app.editor.view.s * 100) + '%';
       return;
@@ -1841,6 +1858,7 @@ async function fetchRetry(u, o, n = 4) {
       try { clStorage.local.removeItem(LSV); } catch (_) {}
       app.schematic.setProject(app.proj);
       app.schematic.setActive(true);
+      syncExampleReady();
       if (!quiet) toast('Schematic — view only · select a part to inspect · pan and zoom · edit in 2D');
       return;
     }
