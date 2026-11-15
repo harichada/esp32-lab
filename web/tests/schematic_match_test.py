@@ -27,6 +27,7 @@ class SchematicMatchEnvTests(unittest.TestCase):
         self.client = TestClient(server.app)
 
     def tearDown(self):
+        self.client.close()
         os.environ.pop('SCHEMATIC_MATCH_LAYOUT', None)
 
     def test_default_and_one_serve_the_file_unchanged(self):

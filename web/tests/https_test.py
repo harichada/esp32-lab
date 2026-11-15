@@ -4,9 +4,9 @@ Flags default off. Nothing here contacts the live host. Host names in these
 tests are headers sent to 127.0.0.1. The documented proxy address is
 172.30.0.250. This process does not terminate TLS.
 """
-import asyncio, base64, http.client, json, os, re, socket, ssl, sys, unittest, urllib.parse
+import asyncio, base64, http.client, inspect, json, os, re, socket, ssl, sys, unittest, urllib.parse
 import websockets
-from websockets.exceptions import InvalidStatus
+from websockets.exceptions import InvalidStatus, InvalidStatusCode
 from pathlib import Path
 
 os.environ['SIM_PREWARM'] = '0'
@@ -20,6 +20,33 @@ HOST = 'esp32lab.duckdns.org'
 PROXY = '172.30.0.250'
 NEIGHBOR = '172.30.0.5'
 OLD_NET = '172.18.0.5'
+
+
+def _ws_connect(url, **kwargs):
+    """Pass proxy and additional_headers only when this websockets declares them."""
+    headers = kwargs.pop('additional_headers', None)
+    params = inspect.signature(websockets.connect).parameters
+    explicit = {
+        name for name, param in params.items()
+        if param.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+    }
+    if headers is not None:
+        if 'additional_headers' in explicit:
+            kwargs['additional_headers'] = headers
+        else:
+            kwargs['extra_headers'] = headers
+    if 'proxy' in explicit:
+        kwargs.setdefault('proxy', None)
+    else:
+        kwargs.pop('proxy', None)
+    return websockets.connect(url, **kwargs)
+
+
+def _ws_status(exc):
+    response = getattr(exc, 'response', None)
+    if response is not None:
+        return response.status_code
+    return exc.status_code
 
 
 def _on(env):
@@ -206,9 +233,18 @@ def ws_status(port, host, path='/nowhere'):
         while b'\r\n\r\n' not in data:
             chunk = sock.recv(4096)
             if not chunk:
-                break
+                return data
             data += chunk
-        return data
+        head, body = data.split(b'\r\n\r\n', 1)
+        match = re.search(br'(?i)\r\ncontent-length:\s*(\d+)\r\n', head + b'\r\n')
+        if match:
+            need = int(match.group(1))
+            while len(body) < need:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                body += chunk
+        return head + b'\r\n\r\n' + body
     finally:
         sock.close()
 
@@ -791,7 +827,7 @@ class HttpsServerTest(unittest.TestCase):
 
             async def resume():
                 url = 'ws://127.0.0.1:%d/api/run/abc?sid=resume-sid&since=1' % self.http
-                async with websockets.connect(
+                async with _ws_connect(
                     url, open_timeout=3, proxy=None,
                     additional_headers={
                         'X-Forwarded-Proto': 'https',
@@ -809,7 +845,7 @@ class HttpsServerTest(unittest.TestCase):
             async def spoofed():
                 url = 'ws://127.0.0.1:%d/api/run/abc?sid=resume-sid&since=1' % self.http
                 try:
-                    async with websockets.connect(
+                    async with _ws_connect(
                         url, open_timeout=3, proxy=None,
                         additional_headers={
                             'X-Forwarded-Proto': 'https',
@@ -819,8 +855,8 @@ class HttpsServerTest(unittest.TestCase):
                     ) as ws:
                         await ws.recv()
                     return 101
-                except InvalidStatus as exc:
-                    return exc.response.status_code
+                except (InvalidStatus, InvalidStatusCode) as exc:
+                    return _ws_status(exc)
 
             self.assertEqual(asyncio.run(spoofed()), 403)
             self.assertEqual(link.resumes, 1)
