@@ -61,13 +61,19 @@ class StatusStripEnvTests(unittest.TestCase):
         self.assertIn(b'<head>\n' + SCH + b'\n' + HINTS + b'\n' + META, body)
         self.assertEqual(body.count(META), 1)
 
-    def test_page_keeps_app_at_85_and_a_unique_strip_script(self):
+    def test_page_keeps_app_at_93_and_loads_the_strip_only_when_on(self):
         html = PAGE.decode('utf-8')
-        self.assertIn('js/app.js?v=85', html)
-        self.assertIn('js/statusstrip.js?v=5', html)
+        self.assertIn('js/app.js?v=93', html)
+        self.assertNotIn('js/statusstrip.js', html)
+        self.assertNotIn('js/compilehints.js', html)
         self.assertNotIn('js/app.js?v=84', html)
-        for banned in ('86', '87', '88', '89'):
+        for banned in ('86', '87', '88', '89', '90', '91', '92'):
             self.assertNotIn('js/app.js?v=%s' % banned, html)
+        os.environ['STATUS_STRIP_ENABLED'] = '1'
+        body, plain = server.lab_page()
+        self.assertFalse(plain)
+        self.assertIn(b'js/statusstrip.js?v=6', body)
+        self.assertNotIn(b'js/compilehints.js', body)
         self.assertNotIn('js/projects.js?v=48', html)
         self.assertNotIn('js/schematic.js?v=71', html)
 

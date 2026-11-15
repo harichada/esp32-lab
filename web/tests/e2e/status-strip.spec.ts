@@ -15,6 +15,9 @@ async function install(page: Page, opts: { strip?: boolean; health?: 'ok' | 'dow
       if (strip && !body.includes('name="statusstrip"')) {
         body = body.replace('<head>', '<head>\n<meta name="statusstrip" content="1">');
       }
+      if (strip && !body.includes('statusstrip.js')) {
+        body = body.replace('<script src="js/app.js', '<script src="js/statusstrip.js?v=6"></script>\n<script src="js/app.js');
+      }
       await route.fulfill({ response: res, body });
       return;
     }
@@ -52,6 +55,7 @@ async function openLab(page: Page, width: number) {
   await page.setViewportSize({ width, height: 800 });
   await page.goto('/?ex=blink&resume=0', { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => !!(window as unknown as { app?: { proj?: unknown } }).app?.proj);
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
 }
 
 test.describe('status strip off keeps today', () => {
@@ -64,6 +68,8 @@ test.describe('status strip off keeps today', () => {
     await expect(page.locator('#statusStrip')).toHaveCount(0);
     await expect(page.locator('#compileStrip')).not.toHaveClass(/timeout-card/);
     await expect(page.locator('#serial')).toContainText('build slot');
+    const flagged = await page.evaluate(() => performance.getEntriesByType('resource').map((entry) => entry.name).filter((name) => /compilehints\.js|statusstrip\.js/.test(name)));
+    expect(flagged).toEqual([]);
   });
 });
 
@@ -122,12 +128,13 @@ test.describe('compile timeout copy', () => {
 });
 
 test.describe('build server line', () => {
-  for (const width of [390, 1280]) {
+  for (const width of [320, 390, 1280]) {
     test(`a stopped backend explains Run at ${width} before anyone opens a menu`, async ({ page }) => {
       await install(page, { strip: true, health: 'down' });
       await openLab(page, width);
       const strip = page.locator('#statusStrip');
       await expect(strip).toBeVisible();
+      await expect(strip).toBeInViewport();
       await expect(strip).toHaveText(LINE);
       await expect(strip).toHaveAttribute('role', 'status');
       const run = page.locator(width < 700 ? '#mIgnite' : '#bRun');
@@ -151,9 +158,50 @@ test.describe('build server line', () => {
       expect(beside.scroll).toBe(false);
       expect(beside.text).toBe(LINE);
       expect(beside.runClear).toBe(true);
+      const signal = await page.evaluate(() => {
+        function inView(el: Element | null) {
+          if (!el) return false;
+          const style = getComputedStyle(el);
+          if (style.display === 'none' || style.visibility === 'hidden') return false;
+          const box = el.getBoundingClientRect();
+          return box.width > 0 && box.height > 0 && box.top >= -1 && box.left >= -1 && box.bottom <= window.innerHeight + 1 && box.right <= window.innerWidth + 1;
+        }
+        return inView(document.getElementById('statusStrip')) || inView(document.getElementById('connDot')) || inView(document.getElementById('mConn'));
+      });
+      expect(signal).toBe(true);
       if (width < 700) expect(beside.dotShown).toBe(false);
+      expect(await strip.evaluate((el) => el.parentElement && el.parentElement.tagName)).toBe('BODY');
+      const geom = await page.evaluate((sentence) => {
+        const vpH = window.innerHeight;
+        const vpW = window.innerWidth;
+        const strip = document.getElementById('statusStrip')!;
+        const box = strip.getBoundingClientRect();
+        function overlaps(a: DOMRect, b: DOMRect) {
+          if (b.width < 1 || b.height < 1) return false;
+          if (b.bottom < 0 || b.top > vpH || b.right < 0 || b.left > vpW) return false;
+          return !(a.right <= b.left + 1 || a.left >= b.right - 1 || a.bottom <= b.top + 1 || a.top >= b.bottom - 1);
+        }
+        const runEl = document.querySelector(document.body.classList.contains('m') ? '#mIgnite' : '#bRun')!;
+        const parts = document.querySelector('#palette .panel-h');
+        const insp = document.querySelector('#side .panel-h');
+        return {
+          inside: box.top >= -1 && box.left >= -1 && box.bottom <= vpH + 1 && box.right <= vpW + 1 && box.width > 0 && box.height > 0,
+          complete: (strip.textContent || '') === sentence && strip.scrollHeight <= strip.clientHeight + 2,
+          run: overlaps(box, runEl.getBoundingClientRect()),
+          title: overlaps(box, document.getElementById('projTitle')!.getBoundingClientRect()),
+          parts: parts ? overlaps(box, parts.getBoundingClientRect()) : false,
+          insp: insp ? overlaps(box, insp.getBoundingClientRect()) : false,
+        };
+      }, LINE);
+      expect(geom.inside).toBe(true);
+      expect(geom.complete).toBe(true);
+      expect(geom.run).toBe(false);
+      expect(geom.title).toBe(false);
+      expect(geom.parts).toBe(false);
+      expect(geom.insp).toBe(false);
       const before = await strip.getAttribute('data-said');
       await run.click();
+      await expect(page.locator('#stText')).toHaveText('Offline');
       await expect(strip).toHaveText(LINE);
       await expect.poll(async () => strip.getAttribute('data-said')).not.toBe(before);
       await expect(page.locator('.toast')).toHaveCount(0);
@@ -198,7 +246,7 @@ test.describe('build server line', () => {
     await expect(page.locator('#statusStrip')).toHaveCount(0);
   });
 
-  test('a healthy phone does not grow a status dot', async ({ page }) => {
+  test('a healthy phone keeps the connection dot while the strip is off screen', async ({ page }) => {
     await install(page, { strip: true, health: 'ok' });
     await openLab(page, 390);
     await page.waitForTimeout(400);
@@ -209,6 +257,6 @@ test.describe('build server line', () => {
       const s = getComputedStyle(el);
       return s.display !== 'none' && el.getBoundingClientRect().width > 0;
     });
-    expect(dot).toBe(false);
+    expect(dot).toBe(true);
   });
 });

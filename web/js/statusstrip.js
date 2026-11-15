@@ -2,8 +2,11 @@
  * <meta name="statusstrip" content="1"> is present. Text only. */
 (function (root) {
   const LINE = "Can't reach the build server right now. Your work is safe; Run will work again when it's back.";
-  const HEALTH_MIN_MS = 5000;
-  const HEALTH_MAX_MS = 60000;
+  const HEALTHY_MS = 30000;
+  const HEALTH_JITTER = 0.2;
+  const BACKOFF_MS = [5000, 10000, 20000, 40000, 60000];
+  const HEALTH_MIN_MS = BACKOFF_MS[0];
+  const HEALTH_MAX_MS = BACKOFF_MS[BACKOFF_MS.length - 1];
   const COMPILE_TIMEOUT_BASE = 'The compile timed out. Press Run again.';
   const ON = { '1': 1, 'true': 1, 'yes': 1, 'on': 1 };
 
@@ -75,62 +78,84 @@
       el.className = 'status-strip';
       el.setAttribute('role', 'status');
       el.setAttribute('aria-live', 'polite');
-      const run = doc.querySelector && doc.querySelector('.runctl');
-      if (run && run.parentNode) run.parentNode.insertBefore(el, run.nextSibling);
-      else if (doc.body) doc.body.appendChild(el);
     }
+    if (doc.body && el.parentNode !== doc.body && doc.body.appendChild) doc.body.appendChild(el);
     if (el.textContent !== LINE) el.textContent = LINE;
     el.hidden = false;
     return el;
   }
+  function healthyDelay(rand) {
+    const raw = typeof rand === 'function' ? rand() : (typeof rand === 'number' ? rand : Math.random());
+    const unit = Math.min(1, Math.max(0, Number(raw)));
+    const span = 1 + (unit - 0.5) * 2 * HEALTH_JITTER;
+    return Math.round(HEALTHY_MS * span);
+  }
   function nextDelay(prev) {
-    const n = Number(prev);
-    if (!Number.isFinite(n) || n < HEALTH_MIN_MS) return HEALTH_MIN_MS;
-    const doubled = n * 2;
-    return doubled > HEALTH_MAX_MS ? HEALTH_MAX_MS : doubled;
+    const i = BACKOFF_MS.indexOf(Number(prev));
+    if (i < 0) return BACKOFF_MS[0];
+    return BACKOFF_MS[Math.min(i + 1, BACKOFF_MS.length - 1)];
   }
   function watchHealth(opts) {
     opts = opts || {};
     const isHidden = opts.hidden || (() => false);
     const setTimer = opts.setTimer || ((fn, ms) => setTimeout(fn, ms));
     const clearTimer = opts.clearTimer || ((id) => clearTimeout(id));
-    let delay = HEALTH_MIN_MS;
+    const random = opts.random || Math.random;
     let timer = null;
     let wasDown = false;
-    let primed = false;
-    async function tick() {
-      if (isHidden()) return;
-      let down = true;
-      let health = null;
-      try {
-        health = await opts.fetch();
-        down = !(health && health.ok);
-      } catch (e) { down = true; health = null; }
-      if (isHidden()) return;
-      if (down) {
-        if (!wasDown && opts.onDown) opts.onDown(health);
-        wasDown = true;
-      } else {
-        const tell = wasDown || !primed;
-        wasDown = false;
-        if (tell && opts.onUp) opts.onUp(health);
-      }
-      primed = true;
-      arm();
+    let fails = 0;
+    let inflight = null;
+    function waitFor() {
+      if (wasDown) return BACKOFF_MS[Math.min(Math.max(fails - 1, 0), BACKOFF_MS.length - 1)];
+      return healthyDelay(random);
+    }
+    function clear() {
+      if (timer != null) { clearTimer(timer); timer = null; }
     }
     function arm() {
-      if (timer != null) { clearTimer(timer); timer = null; }
+      clear();
       if (isHidden()) return;
-      const wait = delay < HEALTH_MIN_MS ? HEALTH_MIN_MS : (delay > HEALTH_MAX_MS ? HEALTH_MAX_MS : delay);
-      timer = setTimer(() => { timer = null; tick(); }, wait);
-      delay = nextDelay(wait);
+      timer = setTimer(() => { timer = null; return tick(); }, waitFor());
     }
-    function onVisibility() {
-      if (timer != null) { clearTimer(timer); timer = null; }
-      if (isHidden()) return;
+    async function tick() {
+      if (isHidden()) { clear(); return; }
+      if (inflight) return inflight;
+      inflight = (async () => {
+        let down = true;
+        let health = null;
+        try {
+          health = await opts.fetch();
+          down = !(health && health.ok);
+        } catch (e) { down = true; health = null; }
+        if (isHidden()) return;
+        if (down) {
+          if (!wasDown && opts.onDown) opts.onDown(health);
+          wasDown = true;
+          fails = Math.min(fails + 1, BACKOFF_MS.length);
+        } else {
+          const recovered = wasDown;
+          wasDown = false;
+          fails = 0;
+          if (recovered && opts.onUp) opts.onUp(health);
+        }
+        arm();
+      })();
+      try { await inflight; } finally { inflight = null; }
+    }
+    function poke() {
+      clear();
       return tick();
     }
-    return { start: tick, onVisibility: onVisibility };
+    function start() {
+      wasDown = false;
+      fails = 0;
+      arm();
+    }
+    function onVisibility() {
+      if (isHidden()) { clear(); return; }
+      return poke();
+    }
+    return { start: start, onVisibility: onVisibility, poke: poke };
   }
 
   function hideDown(doc) {
@@ -155,8 +180,11 @@
 
   const api = {
     LINE: LINE,
+    HEALTHY_MS: HEALTHY_MS,
     HEALTH_MIN_MS: HEALTH_MIN_MS,
     HEALTH_MAX_MS: HEALTH_MAX_MS,
+    BACKOFF_MS: BACKOFF_MS,
+    healthyDelay: healthyDelay,
     COMPILE_TIMEOUT_BASE: COMPILE_TIMEOUT_BASE,
     nextDelay: nextDelay,
     watchHealth: watchHealth,

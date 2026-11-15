@@ -70,7 +70,7 @@ class CompileHintsEnvTests(unittest.TestCase):
         self.assertEqual(body.count(META), 1)
         self.assertIn(b'<head>\n' + META, body)
         self.assertNotIn(SCH, body)
-        self.assertIn(b'compilehints.js?v=1', body)
+        self.assertIn(b'compilehints.js?v=2', body)
         for path in ('/', '/index.html'):
             resp = self.client.get(path)
             self.assertEqual(resp.status_code, 200, path)

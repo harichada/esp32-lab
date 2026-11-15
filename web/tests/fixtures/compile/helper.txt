@@ -1,0 +1,5 @@
+FQBN: esp32:esp32:esp32doit-devkit-v1
+Compiling sketch...
+helper.h:2:1: error: ‘Foo’ does not name a type
+    2 | Foo reading;
+      | ^~~

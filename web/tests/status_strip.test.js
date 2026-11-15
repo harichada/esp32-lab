@@ -16,9 +16,13 @@ function docWith(meta) {
   const toast = { textContent: 'old', hidden: false, attrs: {}, setAttribute(k, v) { this.attrs[k] = v; } };
   const status = { textContent: '', hidden: false, attrs: {}, parentNode: null, setAttribute(k, v) { this.attrs[k] = v; }, getAttribute(k) { return this.attrs[k]; } };
   const doc = {
+    body: {
+      appendChild(el) { doc._mounted = el; el.parentNode = doc.body; },
+      removeChild() { doc._mounted = null; },
+    },
     querySelector(sel) {
       if (sel === 'meta[name="statusstrip"]') return meta ? { getAttribute: () => meta } : null;
-      if (sel === '.runctl') return { parentNode: { insertBefore(el) { doc._mounted = el; }, removeChild() { doc._mounted = null; } }, nextSibling: null };
+      if (sel === '.runctl') return { parentNode: { insertBefore() { throw new Error('status line mounted inside the header'); } }, nextSibling: null };
       return null;
     },
     getElementById(id) {
@@ -93,6 +97,7 @@ test('the timeout sentence is text on the compile card and the phone toast is cl
 test('the build-server line is one sentence, and a repeat writes it again', async () => {
   const doc = docWith('1');
   const el = S.showDown(doc);
+  assert.equal(el.parentNode, doc.body);
   assert.equal(el.textContent, LINE);
   assert.equal(el.attrs.role, 'status');
   assert.equal(el.attrs['aria-live'], 'polite');
@@ -106,12 +111,12 @@ test('the build-server line is one sentence, and a repeat writes it again', asyn
   assert.equal(doc.getElementById('statusStrip'), null);
 });
 
-test('health checks wait 5s, double up to 60s, and pause while the tab is hidden', async () => {
-  assert.equal(S.HEALTH_MIN_MS, 5000);
-  assert.equal(S.HEALTH_MAX_MS, 60000);
+test('health checks back off after a failure, pause while hidden, and reset after recovery', async () => {
+  assert.deepEqual(S.BACKOFF_MS, [5000, 10000, 20000, 40000, 60000]);
+  assert.equal(S.healthyDelay(0), 24000);
+  assert.equal(S.healthyDelay(0.5), 30000);
+  assert.equal(S.healthyDelay(1), 36000);
   assert.equal(S.nextDelay(undefined), 5000);
-  assert.equal(S.nextDelay(0), 5000);
-  assert.equal(S.nextDelay(4999), 5000);
   let wait = 5000;
   const waits = [wait];
   for (let i = 0; i < 6; i++) { wait = S.nextDelay(wait); waits.push(wait); }
@@ -125,6 +130,7 @@ test('health checks wait 5s, double up to 60s, and pause while the tab is hidden
   let upN = 0;
   const watch = S.watchHealth({
     hidden: () => hidden,
+    random: () => 0.5,
     fetch: async () => { calls.push(hidden ? 'hidden' : 'shown'); return { ok: ok }; },
     setTimer: (fn, ms) => { timer = { fn: fn, ms: ms }; return timer; },
     clearTimer: () => { timer = null; },
@@ -147,6 +153,12 @@ test('health checks wait 5s, double up to 60s, and pause while the tab is hidden
   assert.equal(timer.ms, 10000);
   await timer.fn();
   assert.equal(timer.ms, 20000);
+  await timer.fn();
+  assert.equal(timer.ms, 40000);
+  await timer.fn();
+  assert.equal(timer.ms, 60000);
+  await timer.fn();
+  assert.equal(timer.ms, 60000);
   hidden = true;
   watch.onVisibility();
   assert.equal(timer, null);
@@ -159,16 +171,56 @@ test('health checks wait 5s, double up to 60s, and pause while the tab is hidden
   await timer.fn();
   assert.equal(upN, 1);
   assert.equal(downN, 1);
+  assert.equal(timer.ms, 30000);
+});
+
+test('a healthy tab polls at most twice a minute and a hidden tab does not poll', async () => {
+  let calls = 0;
+  let timer = null;
+  const watch = S.watchHealth({
+    random: () => 0,
+    fetch: async () => { calls++; return { ok: true }; },
+    setTimer: (fn, ms) => { timer = { fn: fn, ms: ms }; return timer; },
+    clearTimer: () => { timer = null; },
+  });
+  watch.start();
+  assert.equal(calls, 0);
+  let elapsed = 0;
+  let fired = 0;
+  while (timer && elapsed + timer.ms <= 60000) {
+    elapsed += timer.ms;
+    const fn = timer.fn;
+    timer = null;
+    await fn();
+    fired++;
+  }
+  assert.equal(fired, 2);
+  assert.equal(calls, 2);
+  assert.ok(elapsed <= 60000);
+
+  let hiddenCalls = 0;
+  let hiddenTimer = null;
+  const quiet = S.watchHealth({
+    hidden: () => true,
+    random: () => 0,
+    fetch: async () => { hiddenCalls++; return { ok: true }; },
+    setTimer: (fn, ms) => { hiddenTimer = { fn: fn, ms: ms }; return hiddenTimer; },
+    clearTimer: () => { hiddenTimer = null; },
+  });
+  quiet.start();
+  assert.equal(hiddenTimer, null);
+  assert.equal(hiddenCalls, 0);
 });
 
 test('the module never builds HTML from a log', () => {
   const src = fs.readFileSync(path.join(__dirname, '../js/statusstrip.js'), 'utf8');
   assert.doesNotMatch(src, /innerHTML|insertAdjacentHTML|DOMParser|document\.write/);
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
-  assert.match(html, /js\/statusstrip\.js\?v=5/);
-  assert.match(html, /js\/app\.js\?v=85/);
+  assert.doesNotMatch(html, /js\/statusstrip\.js/);
+  assert.doesNotMatch(html, /js\/compilehints\.js/);
+  assert.match(html, /js\/app\.js\?v=93/);
   assert.doesNotMatch(html, /id="statusStrip"/);
-  for (const banned of ['84', '86', '87', '88', '89']) assert.doesNotMatch(html, new RegExp('js/app\\.js\\?v=' + banned + '(?:\\D|$)'));
+  for (const banned of ['84', '86', '87', '88', '89', '90', '91', '92']) assert.doesNotMatch(html, new RegExp('js/app\\.js\\?v=' + banned + '(?:\\D|$)'));
   assert.doesNotMatch(html, /js\/projects\.js\?v=48/);
   assert.doesNotMatch(html, /js\/schematic\.js\?v=71/);
 });

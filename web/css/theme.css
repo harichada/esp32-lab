@@ -70,10 +70,11 @@ html[data-theme=light] #bRun.spinning:active{background:#d5d9df;border-color:#3d
 #compileStrip[hidden]{display:none!important}
 html[data-theme=light] #compileStrip{background:#eceef1;color:#2c333c;border-bottom-color:#3d4550}
 /* Build-server line. Fixed, so it does not grow the header. One sentence, wrapping, no ellipsis. */
-.status-strip{position:fixed;top:48px;left:0;right:0;z-index:12;margin:0;padding:8px 16px;box-sizing:border-box;background:#1b1f24;color:#e8eaed;border-bottom:1px solid #9aa3af;font-size:13.5px;line-height:1.45;font-weight:500;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;pointer-events:none}
+.status-strip{position:fixed;top:48px;left:var(--palW);right:var(--sideW);z-index:12;margin:0;padding:8px 16px;box-sizing:border-box;background:#1b1f24;color:#e8eaed;border-bottom:1px solid #9aa3af;font-size:13.5px;line-height:1.45;font-weight:500;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;pointer-events:none}
 .status-strip[hidden]{display:none!important}
 html[data-theme=light] .status-strip{background:#eceef1;color:#2c333c;border-bottom-color:#3d4550}
-html.backend-down body:not(.m) #stage,html.backend-down body:not(.m) #projBanner{transform:translateY(var(--status-h,0px))}
+html.backend-down body:not(.m) #center{padding-top:var(--status-h,0px)}
+body.c-palette .status-strip{left:0}body.c-side .status-strip{right:0}
 /* Push the canvas down while the strip is up. Transform is not layout, so CLS stays 0. */
 html.strip-on #stage,html.strip-on #projBanner,html.strip-on #mParts,html.strip-on #mWireBar{transform:translateY(var(--strip-h,0px))}
 html.strip-on body:not(.m) #palette,html.strip-on body:not(.m) #side{transform:translateY(var(--strip-h,0px))}
@@ -428,14 +429,26 @@ html[data-cl-env=staging] #main{height:calc(100% - 70px - var(--stage-h))}
 }
 /* Compile hint. Absolute, so the sentence does not move the editor. */
 #tab-code.hint-on{position:relative}
-.compile-hint{position:absolute;left:8px;right:8px;bottom:8px;z-index:6;display:flex;flex-direction:column;gap:6px;box-sizing:border-box;max-width:calc(100% - 16px);margin:0;padding:8px;background:#1b1f24;color:#e8eaed;border:1px solid #9aa3af;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.35);font:500 13.5px/1.45 system-ui,-apple-system,'Segoe UI',sans-serif}
-.compile-hint button{height:auto;min-height:44px;min-width:44px;box-sizing:border-box;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;word-break:break-word;text-align:left;justify-content:flex-start;font:inherit;line-height:1.45;color:#e8eaed;background:#2a3038;border:1px solid #9aa3af;border-radius:8px;padding:10px 12px;cursor:pointer}
-.compile-hint-jump,.compile-hint-rawbtn{width:100%}
+.compile-hint{position:relative;flex:none;z-index:6;display:flex;flex-direction:row;flex-wrap:wrap;align-items:center;gap:6px;box-sizing:border-box;max-width:100%;margin:0;padding:4px 8px;background:#1b1f24;color:#e8eaed;border:1px solid #9aa3af;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.35);font:500 13.5px/1.45 system-ui,-apple-system,'Segoe UI',sans-serif}
+.compile-hint.open{flex-direction:column;align-items:stretch}
+.compile-hint button{height:auto;min-height:44px;min-width:44px;box-sizing:border-box;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;word-break:break-word;text-align:left;justify-content:flex-start;font:inherit;line-height:1.45;color:#e8eaed;background:#2a3038;border:1px solid #9aa3af;border-radius:8px;padding:6px 10px;cursor:pointer}
+.compile-hint-jump{padding-top:4px;padding-bottom:4px}
+.compile-hint-jump{flex:1;min-width:0;min-height:0;max-height:2.9em;overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2}
+.compile-hint-more{flex:none}
+.compile-hint.open .compile-hint-jump{max-height:none;-webkit-line-clamp:unset;display:block}
+.compile-hint-extra{display:none;width:100%}
+.compile-hint.open .compile-hint-extra{display:flex;flex-direction:column;gap:6px}
+.compile-hint-rawbtn,.compile-hint.open .compile-hint-jump{width:100%}
+/* The code dock is 300px. Grow it while a hint is up, but stay inside the
+   center column so focusing a hint button cannot scroll the header away. */
+body:not(.m) #dock:has(#compileHints){height:min(560px,calc(100vh - 220px))}
+body:not(.m) #tab-code.hint-on .codewrap{min-height:340px}
 .compile-hint-nav{display:flex;align-items:center;gap:8px;min-width:0}
 .compile-hint-nav[hidden]{display:none!important}
 #compileHintCount{flex:1;min-width:0;overflow-wrap:anywhere;font-weight:600}
 .compile-hint-next{flex:none}
-.compile-hint-raw{margin:0;max-height:140px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;font:12px/1.45 ui-monospace,SFMono-Regular,monospace;background:#0c0e12;color:#e8eaed;border-radius:8px;padding:8px 10px;box-sizing:border-box;max-width:100%}
+.compile-hint-raw{margin:0;max-height:9.5em;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;font:12px/1.45 ui-monospace,SFMono-Regular,monospace;background:#0c0e12;color:#e8eaed;border-radius:8px;padding:8px 10px;box-sizing:border-box;max-width:100%}
+.compile-hint-hit{display:block;background:rgba(248,113,113,.22);box-shadow:inset 3px 0 0 #f87171}
 .compile-hint-raw[hidden]{display:none!important}
 .compile-hint button:focus,.compile-hint button:focus-visible,.compile-hint-raw:focus,.compile-hint-raw:focus-visible{outline:2px solid #67e8f9;outline-offset:2px}
 html[data-theme=light] .compile-hint{background:#eceef1;color:#15181c;border-color:#3d4550}

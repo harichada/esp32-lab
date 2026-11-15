@@ -242,8 +242,13 @@ body.m #mIgnite.compiling::after{content:"";position:absolute;left:50%;top:50%;w
   #compileStrip{display:none!important}
   #compileStrip.timeout-card{display:block!important;top:var(--strip-top,54px)}
 }
-body.m .status-strip{top:auto;left:max(12px,env(safe-area-inset-left));right:108px;bottom:calc(22px + env(safe-area-inset-bottom));border-bottom:0;border-radius:12px;border:1px solid #9aa3af;box-shadow:0 8px 24px rgba(0,0,0,.35)}
-body.m.strip-flag #connDot,body.m.strip-flag #mConn{display:none!important}
+body.m .status-strip{top:auto;left:max(12px,env(safe-area-inset-left));right:max(108px,env(safe-area-inset-right));bottom:calc(96px + env(safe-area-inset-bottom));width:auto;border-bottom:0;border-radius:12px;border:1px solid #9aa3af;box-shadow:0 8px 24px rgba(0,0,0,.35)}
+/* The phone toolbar is hidden, so the dot is its own header item. Show it unless the status line is already on screen. */
+body.m #connDot{display:none!important}
+body.m.strip-flag:not(.strip-seen) #connDot{display:inline-flex!important;grid-column:2;grid-row:2;justify-self:end;align-self:center;padding:0;gap:6px}
+body.m.strip-flag:not(.strip-seen) #connDot>span{display:none}
+body.m.strip-flag:not(.strip-seen) #status{padding-right:14px}
+body.m.strip-flag.strip-seen #connDot,body.m.strip-flag.strip-seen #mConn{display:none!important}
 html[data-theme=light] body.m .m-compile-toast{background:#eceef1;color:#2c333c;border-color:#3d4550}
 body.busy #mIgnite .m-ig-bg{stroke:var(--warn);stroke-dasharray:8 6;animation:mSpin 1.2s linear infinite;transform-origin:center}
 #mCount{position:fixed;inset:0;z-index:85;pointer-events:none;place-items:center;font:700 min(60px,12vw) var(--mono);letter-spacing:.06em;color:#e6fdff;text-shadow:0 0 30px var(--acc),0 0 60px rgba(34,211,238,.5)}
@@ -361,5 +366,5 @@ html[data-cl-env=staging] body.m .modal{padding-top:calc(54px + var(--stage-offs
   html[data-cl-env=staging] body.m.viewsch .zoom-tools{top:calc(88px + var(--stage-offset))}
 }
 /* Sit above the Run button. The editor underneath does not move. */
-body.m .compile-hint{left:10px;right:10px;bottom:calc(96px + env(safe-area-inset-bottom));max-width:calc(100% - 20px);font-size:15px}
+body.m .compile-hint{position:relative;left:auto;right:auto;bottom:auto;max-width:100%;font-size:15px}
 body.m .compile-hint button{font-size:15px}

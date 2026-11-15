@@ -89,10 +89,15 @@ test('a missing #include names the header', () => {
   assert.equal(h.sentence, 'Line 1 can\'t find `NoSuchLib.h`. Install the library that provides it, or correct the #include.');
 });
 
-test('a library the build system cannot find is one sentence', () => {
-  const h = H.parse("Error during build: Library 'Adafruit_SSD1306' not found\n", '').hints[0];
-  assert.equal(h.kind, 'library');
-  assert.equal(h.sentence, 'The library `Adafruit_SSD1306` is not installed. Install it, or remove the #include that asks for it.');
+test('a library banner is not a hint, and a trailing comment is not part of the semicolon', () => {
+  assert.equal(H.parse("Error during build: Library 'Adafruit_SSD1306' not found\nFQBN: esp32:esp32:esp32doit-devkit-v1\n", '').hints.length, 0);
+  const commented = 'sketch.ino:4:5: error: expected \';\' before \'}\' token\n   4 |   delay(1000) // wait for a second\n';
+  const block = 'sketch.ino:4:5: error: expected \';\' before \'}\' token\n   4 |   delay(1000) /* wait for a second */\n';
+  const line = 'Line 4 is missing a semicolon (;) at the end. Add ; after `delay(1000)`.';
+  assert.equal(H.parse(commented, '').hints[0].sentence, line);
+  assert.equal(H.parse(block, '').hints[0].sentence, line);
+  assert.equal(H.parse(commented, '').hints[0].sentence.includes('//'), false);
+  assert.equal(H.parse(block, '').hints[0].sentence.includes('/*'), false);
 });
 
 test('a missing return type tells you to write void setup()', () => {
@@ -133,7 +138,7 @@ test('a variable used outside its block names the declaration', () => {
   assert.equal(h.kind, 'scope');
   assert.equal(h.line, 4);
   assert.equal(h.column, 3);
-  assert.equal(h.sentence, 'Line 4 uses `i` outside the block where it was declared (line 2). Move the use inside that block, or declare `i` again on this line.');
+  assert.equal(h.sentence, 'Line 4 uses `i` past its block (line 2). Move it inside, or write `int i` on this line.');
 });
 
 test('the same gcc line without the sketch is still a sentence', () => {
@@ -158,23 +163,20 @@ test('a string missing its quote names the line', () => {
   assert.equal(h.sentence, 'Line 2 is missing the closing " of a string. Add " at the end of the text.');
 });
 
-test('an unrecognized diagnostic is a sentence plus that compiler line', () => {
+test('an unrecognized diagnostic names the line and does not quote the compiler', () => {
   const h = H.parse('sketch.ino:9:1: error: template constraint failure for foo\n', '').hints[0];
   assert.equal(h.kind, 'generic');
   assert.equal(h.line, 9);
-  assert.match(h.sentence, /template constraint failure for foo/);
-  assert.notEqual(h.sentence.trim(), '');
+  assert.equal(h.sentence, 'Line 9 failed to compile. Check the code on that line.');
+  assert.equal(h.sentence.includes('template'), false);
 });
 
-test('a log with no diagnostic is a sentence plus the first compiler line', () => {
-  const h = H.parse('ld: something unexpected happened\n', '').hints[0];
-  assert.equal(h.kind, 'generic');
-  assert.equal(h.sentence, 'The compiler stopped, and this view doesn\'t have a plainer version of that message yet: `ld: something unexpected happened`.');
-});
-
-test('an empty log is never a blank sentence', () => {
-  const h = H.parse('   \n\n', '').hints[0];
-  assert.equal(h.sentence, 'The compiler stopped without a message. Press Run again in a moment.');
+test('a log with no GCC error line shows no hint', () => {
+  const banner = 'FQBN: esp32:esp32:esp32doit-devkit-v1\nCompilation error: exit status 1\nld: something unexpected happened\n';
+  assert.deepEqual(H.parse(banner, '').hints, []);
+  assert.deepEqual(H.parse('   \n\n', '').hints, []);
+  const spliced = 'FQBN: esp32:esp32:esp32doit-devkit-v1sketch.ino.cpp:4:3: error: \'led\' was not declared in this scope\n';
+  assert.deepEqual(H.parse(spliced, '').hints, []);
 });
 
 test('two real errors keep the first, with a count available to the next', () => {
@@ -232,7 +234,7 @@ function makeDoc(metaContent) {
       tagName: String(tag).toUpperCase(),
       id: '',
       className: '',
-      textContent: '',
+      _text: '',
       hidden: false,
       value: '',
       parentNode: null,
@@ -259,6 +261,16 @@ function makeDoc(metaContent) {
       setSelectionRange() {},
     };
     Object.defineProperty(node, 'classList', { value: classListFor(node) });
+    Object.defineProperty(node, 'textContent', {
+      get() {
+        if (this.children.length) return this.children.map((c) => (c.textContent == null ? '' : String(c.textContent))).join('');
+        return this._text;
+      },
+      set(v) {
+        this._text = v == null ? '' : String(v);
+        this.children = [];
+      },
+    });
     Object.defineProperty(node, 'innerHTML', {
       set() { throw new Error('innerHTML used'); },
       get() { throw new Error('innerHTML used'); },
@@ -294,7 +306,7 @@ function makeDoc(metaContent) {
 test('compiler text is textContent, so an img and a script tag are not created', () => {
   const { doc, nodes } = makeDoc('1');
   const payload = '<img src=x onerror=alert(1)> </script>';
-  const log = 'sketch.ino:4:2: error: ' + payload + '\n';
+  const log = "sketch.ino:4:5: error: expected ';' before '}' token\n   4 |   " + payload + '\n';
   let ran = 0;
   const prev = global.alert;
   global.alert = () => { ran++; };
@@ -329,13 +341,15 @@ test('a 1 MB log, invalid bytes, and a very long line finish quickly', () => {
     Buffer.concat([Buffer.alloc(1024 * 1024, 0xff), Buffer.from(tail)]),
     'sketch.ino:8:1: error: ' + 'A'.repeat(200000) + '\n',
   ];
-  for (const log of cases) {
+  const expectHint = [true, false, false];
+  for (let i = 0; i < cases.length; i++) {
+    const log = cases[i];
     const t0 = performance.now();
     const parsed = H.parse(log, '');
     const ms = performance.now() - t0;
     assert.ok(ms < 200, 'parse took ' + ms + 'ms');
-    assert.ok(parsed.hints.length >= 1);
-    assert.ok(parsed.hints[0].sentence);
+    assert.equal(parsed.hints.length >= 1, expectHint[i]);
+    if (expectHint[i]) assert.match(parsed.hints[0].sentence, /semicolon/);
     assert.ok(H.boundLog(log).split('\n').every((line) => line.length <= H.MAX_LINE));
   }
   assert.equal(H.boundLog('z'.repeat(H.CAP + 10)).length, H.MAX_LINE);
@@ -364,13 +378,74 @@ test('next error advances the sentence and the raw disclosure stays text', () =>
   assert.match(box._jump.textContent, /pinMod/);
   assert.equal(box._count.textContent, 'Error 2 of 2');
   box._jump.click();
-  assert.ok(doc.getElementById('code').scrollTop >= 0);
+  const code = doc.getElementById('code');
+  assert.ok(code.scrollTop >= 0);
+  assert.equal(code.scrollLeft, 0);
+});
+
+test('the raw log scrolls to the first GCC error and the editor stays at the start of the line', () => {
+  const { doc } = makeDoc('1');
+  const banner = Array.from({ length: 40 }, (_, i) => 'FQBN: esp32:esp32:esp32doit-devkit-v1 note ' + i).join('\n');
+  const log = banner + '\nsketch.ino:12:26: error: expected \';\' before \'}\' token\n   12 |   delay(1000) // wait\n';
+  H.showFailure(log, { doc, code: 'void setup(){ delay(1000); }\n' });
+  const code = doc.getElementById('code');
+  assert.equal(code.scrollLeft, 0);
+  const box = doc.getElementById('compileHints');
+  box._rawBtn.click();
+  const hit = doc.getElementById('compileHintHit');
+  assert.ok(hit);
+  assert.match(hit.textContent, /expected ';' before/);
+  assert.ok(box._raw.scrollTop > 0);
+  assert.match(box._raw.textContent, /FQBN:/);
+  assert.equal(box._raw.children.some((n) => n.tagName === 'IMG' || n.tagName === 'SCRIPT'), false);
+});
+
+test('the same undeclared error is the hint twenty times, and two jobs do not share a sketch', () => {
+  const sketchA = 'void setup(){ ledA(); }\nvoid loop(){}\n';
+  const sketchB = 'void setup(){ ledB(); }\nvoid loop(){}\n';
+  const errA = "sketch.ino.cpp:4:3: error: 'ledA' was not declared in this scope\n";
+  const errB = "sketch.ino.cpp:9:1: error: 'ledB' was not declared in this scope\n";
+  const fqbn = 'FQBN: esp32:esp32:esp32doit-devkit-v1\n';
+  const summary = 'Compilation error: exit status 1\n';
+  const orders = [
+    fqbn + summary + errA,
+    errA + fqbn + summary,
+    summary + fqbn + errA + 'Used library Version\n',
+    'Compiling sketch...\n' + fqbn + errA + summary,
+  ];
+  let sentence = '';
+  for (let i = 0; i < 20; i++) {
+    const parsed = H.parse(orders[i % orders.length], sketchA);
+    assert.equal(parsed.hints.length, 1);
+    assert.equal(parsed.hints[0].kind, 'undeclared');
+    assert.match(parsed.hints[0].sentence, /ledA/);
+    assert.equal(parsed.hints[0].sentence.includes('FQBN'), false);
+    assert.equal(parsed.hints[0].sentence.includes('esp32doit-devkit-v1'), false);
+    if (!sentence) sentence = parsed.hints[0].sentence;
+    assert.equal(parsed.hints[0].sentence, sentence);
+  }
+  const jobA = 'job-a-1111';
+  const jobB = 'job-b-2222';
+  const logA = H.tagLog(jobA, fqbn + errA + summary);
+  const logB = H.tagLog(jobB, summary + fqbn + errB);
+  assert.equal(H.ownsLog(logA, jobA), true);
+  assert.equal(H.ownsLog(logA, jobB), false);
+  assert.equal(H.acceptLog(logB, jobA), '');
+  assert.match(H.acceptLog(logA, jobA), /ledA/);
+  assert.equal(H.parse(H.acceptLog(logB, jobA), sketchA).hints.length, 0);
+  const hintA = H.parse(H.acceptLog(logA, jobA), sketchA).hints[0];
+  const hintB = H.parse(H.acceptLog(logB, jobB), sketchB).hints[0];
+  assert.match(hintA.sentence, /ledA/);
+  assert.match(hintB.sentence, /ledB/);
+  assert.equal(hintA.sentence.includes('ledB'), false);
+  assert.equal(hintB.sentence.includes('ledA'), false);
 });
 
 test('the flag-off failure path in app.js is the build-log path', () => {
   const src = fs.readFileSync(path.join(__dirname, '../js/app.js'), 'utf8');
   assert.match(src, /\$\('#buildDet'\)\.open = true; document\.querySelector\('\[data-tab=build\]'\)\.click\(\); if \(app\.codeview\) app\.codeview\.setLog\(res\.log \|\| ''\); serialAppend\('\\n\[compile failed — see build log in Code tab\]\\n'\); app\.run = null; return;/);
-  assert.match(src, /if \(hintsOn\) \{\s*CompileHints\.showFailure/);
+  assert.match(src, /CompileHints\.showFailure/);
+  assert.match(src, /res\.job && res\.job !== run\.job/);
 });
 
 test('enabled is only the explicit on values', () => {
@@ -390,4 +465,91 @@ test('enabled is only the explicit on values', () => {
   assert.equal(H.enabled(doc(' yes ')), true);
   assert.equal(H.enabled(doc('ON')), true);
   assert.equal(H.enabled(doc('true')), true);
+});
+
+function hintWords(sentence) {
+  return String(sentence).replace(/`[^`]*`/g, ' code ').trim().split(/\s+/).filter(Boolean).length;
+}
+function hintSentences(sentence) {
+  const masked = String(sentence).replace(/`[^`]*`/g, 'code');
+  return masked.split(/[.!?]+/).map((part) => part.trim()).filter(Boolean).length;
+}
+
+test('every hint is at most two sentences and about 25 words', () => {
+  const names = fs.readdirSync(fixDir).filter((name) => name.endsWith('.txt'));
+  const kinds = new Set();
+  for (const name of names) {
+    const source = name === 'scope.txt' ? read('scope.ino') : '';
+    for (const hint of H.parse(read(name), source).hints) {
+      kinds.add(hint.kind);
+      assert.ok(hintSentences(hint.sentence) <= 2, hint.sentence);
+      assert.ok(hintWords(hint.sentence) <= 25, hintWords(hint.sentence) + ' ' + hint.sentence);
+      assert.equal(hint.sentence.includes('//'), false, hint.sentence);
+      assert.equal(hint.sentence.includes('/*'), false, hint.sentence);
+      assert.equal(/allowlist/i.test(hint.sentence), false, hint.sentence);
+    }
+  }
+  for (const kind of ['semicolon', 'undeclared', 'brace', 'paren', 'void-return', 'duplicate', 'type', 'linker']) {
+    assert.equal(kinds.has(kind), true, kind);
+  }
+});
+
+test('a missing ) , a void return, a duplicate, and a type each get their own hint', () => {
+  const paren = first('paren.txt');
+  assert.equal(paren.kind, 'paren');
+  assert.equal(paren.line, 2);
+  assert.match(paren.sentence, /Add `\)`/);
+  const back = first('voidret.txt');
+  assert.equal(back.kind, 'void-return');
+  assert.equal(back.line, 1);
+  assert.match(back.sentence, /`return`/);
+  const dup = first('dup.txt');
+  assert.equal(dup.kind, 'duplicate');
+  assert.equal(dup.line, 2);
+  assert.match(dup.sentence, /`setup`/);
+  assert.match(dup.sentence, /`void setup\(\)`/);
+  const type = first('type.txt');
+  assert.equal(type.kind, 'type');
+  assert.equal(type.line, 1);
+  assert.match(type.sentence, /`Foo`/);
+  assert.match(type.sentence, /`struct Foo`/);
+});
+
+test('an error in helper.h names that file', () => {
+  const hint = first('helper.txt');
+  assert.equal(hint.file, 'helper.h');
+  assert.equal(hint.line, 2);
+  assert.equal(hint.kind, 'type');
+  assert.match(hint.sentence, /`Foo`/);
+});
+
+test('a linker error names the missing symbol and does not quote FQBN', () => {
+  const hint = first('link.txt');
+  assert.equal(hint.kind, 'linker');
+  assert.equal(hint.line, null);
+  assert.match(hint.sentence, /`setup`/);
+  assert.equal(hint.sentence.includes('FQBN'), false);
+  assert.equal(hint.sentence.includes('esp32:esp32'), false);
+});
+
+test('an allowlist rejection names the included library and never the allowlist', () => {
+  const source = '#include <Adafruit_SSD1306.h>\nvoid setup() {}\nvoid loop() {}\n';
+  const log = "Circuit Lab doesn't have a library called Adafruit_SSD1306.h. Check the spelling and capital letters, since names must match exactly, then press Run again.\n";
+  const hint = H.parse(log, source).hints[0];
+  assert.equal(hint.kind, 'library');
+  assert.equal(hint.line, 1);
+  assert.equal(hint.file, 'sketch.ino');
+  assert.match(hint.sentence, /`Adafruit_SSD1306\.h`/);
+  assert.match(hint.sentence, /isn't available/);
+  assert.equal(/allowlist/i.test(hint.sentence), false);
+  assert.equal(hint.sentence.includes('Wire.h'), false);
+  assert.ok(hintSentences(hint.sentence) <= 2);
+  assert.ok(hintWords(hint.sentence) <= 25);
+});
+
+test('a comment inside a string stays, and code after a block comment stays', () => {
+  const str = 'sketch.ino:4:5: error: expected \';\' before \'}\' token\n   4 |   Serial.println("wait // still")\n';
+  const after = 'sketch.ino:4:5: error: expected \';\' before \'}\' token\n   4 |   delay(1000) /* keep */ + 1\n';
+  assert.match(H.parse(str, '').hints[0].sentence, /wait \/\/ still/);
+  assert.match(H.parse(after, '').hints[0].sentence, /delay\(1000\) \/\* keep \*\/ \+ 1/);
 });

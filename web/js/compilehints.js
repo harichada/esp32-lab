@@ -11,8 +11,8 @@
   const ON = { '1': 1, true: 1, yes: 1, on: 1 };
   const TYPES = 'int|char|float|double|bool|boolean|byte|word|auto|String|uint8_t|uint16_t|uint32_t|uint64_t|int8_t|int16_t|int32_t|int64_t|size_t|long|short';
   const KNOWN = ['pinMode', 'digitalWrite', 'digitalRead', 'analogRead', 'analogWrite', 'analogReadMilliVolts', 'delay', 'delayMicroseconds', 'millis', 'micros', 'ledcWrite', 'ledcAttach', 'pulseIn', 'tone', 'noTone', 'attachInterrupt', 'detachInterrupt', 'constrain', 'map', 'println', 'print', 'printf', 'begin', 'available', 'parseInt', 'Serial', 'WiFi', 'Wire', 'SPI', 'HIGH', 'LOW', 'INPUT', 'OUTPUT', 'INPUT_PULLUP', 'INPUT_PULLDOWN', 'LED_BUILTIN', 'setup', 'loop'];
-  const STAGE = /^(?:Building network stack\b.*|Using cached network stack\.\.\.|Compiling sketch\.\.\.|Linking\.\.\.|compiling…|\[\d+(?:\.\d+)?s\] compile\b.*)$/;
-  const DIAG_RE = /(?:^|\/)([^/\s:]+\.(?:ino|h|hpp|c|cpp)):(\d+):(?:(\d+):)?\s*(fatal error|error|warning):\s*(.*)$/;
+  const DIAG_RE = /(?:^|\/)([^/\s:]+\.(?:ino|h|hpp|c|cpp)):(\d+):(\d+):\s*(fatal error|error):\s*(.*)$/;
+  const JOB_RE = /^# job ([A-Za-z0-9_-]{8,64})$/;
 
   function norm(s) {
     return String(s || '').replace(/\u2018|\u2019/g, "'").replace(/\u201C|\u201D/g, '"');
@@ -24,6 +24,24 @@
   }
   function escapeReg(s) {
     return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+  function tagLog(job, text) {
+    return '# job ' + job + '\n' + String(text || '');
+  }
+  function ownsLog(log, job) {
+    if (!job || !/^[A-Za-z0-9_-]{8,64}$/.test(job)) return false;
+    const first = String(log || '').split('\n', 1)[0];
+    const m = JOB_RE.exec(first);
+    return !!(m && m[1] === job);
+  }
+  function untag(log) {
+    return String(log || '').replace(/^# job [A-Za-z0-9_-]+\n/, '');
+  }
+  function acceptLog(log, job) {
+    const text = String(log || '');
+    if (!/^# job /.test(text)) return text;
+    if (!ownsLog(text, job)) return '';
+    return untag(text);
   }
   function enabled(doc) {
     const d = doc || (typeof document !== 'undefined' ? document : null);
@@ -68,16 +86,34 @@
     return parts.join('\n');
   }
   function boundLog(log) {
-    return clipLines(asWindow(log).text);
+    return clipLines(asWindow(untag(log)).text);
   }
-  function firstCompilerLine(text) {
-    const lines = String(text || '').split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      const t = lines[i].trim();
-      if (!t || STAGE.test(t)) continue;
-      return clip(t, 160);
+  function stripTrailingComment(s) {
+    const src = String(s || '');
+    let out = '';
+    let quote = '';
+    for (let i = 0; i < src.length; i++) {
+      const c = src[i];
+      const n = src[i + 1];
+      if (quote) {
+        out += c;
+        if (c === '\\' && i + 1 < src.length) { out += src[++i]; continue; }
+        if (c === quote) quote = '';
+        continue;
+      }
+      if (c === '"' || c === "'") { quote = c; out += c; continue; }
+      if (c === '/' && n === '/') break;
+      if (c === '/' && n === '*') {
+        const end = src.indexOf('*/', i + 2);
+        if (end < 0) break;
+        if (src.slice(end + 2).trim() === '') break;
+        out += src.slice(i, end + 2);
+        i = end + 1;
+        continue;
+      }
+      out += c;
     }
-    return '';
+    return out.replace(/\s+$/, '').trim();
   }
   function snippetAt(rawLines, index, lineNo) {
     for (let i = index + 1; i < rawLines.length && i < index + 10; i++) {
@@ -184,16 +220,19 @@
       return hint('quote', diag, 'Line ' + diag.line + ' is missing the closing ' + q + ' of a string. Add ' + q + ' at the end of the text.');
     }
     if (/expected ';' before/.test(message)) {
-      const shown = diag.snippet ? '`' + clip(diag.snippet, SNIP) + '`' : 'the end of that line';
+      const bare = stripTrailingComment(diag.snippet || '');
+      const shown = bare ? '`' + clip(bare, SNIP) + '`' : 'the end of that line';
       return hint('semicolon', diag, 'Line ' + diag.line + ' is missing a semicolon (;) at the end. Add ; after ' + shown + '.');
     }
     if (/expected '}' at end of input|expected '}' before|function-definition is not allowed here before '\{'/.test(message)) {
       const open = noteLine(rawLines, diag.index, /:(\d+):\d+:\s*note: to match this '\{'/);
-      const where = diag.snippet ? '`' + clip(diag.snippet, SNIP) + '`' : 'this line';
       const sentence = open && open !== diag.line
-        ? 'Line ' + diag.line + ' is missing a closing `}`. The `{` on line ' + open + ' is still open. Add `}` before ' + where + '.'
-        : 'Line ' + diag.line + ' is missing a closing `}`. Add `}` to close the block that is still open.';
+        ? 'Line ' + diag.line + ' is missing a closing `}`. Add `}` before the `{` from line ' + open + '.'
+        : 'Line ' + diag.line + ' is missing a closing `}`. Add `}` to close the open block.';
       return hint('brace', diag, sentence);
+    }
+    if (/expected '\)' before/.test(message)) {
+      return hint('paren', diag, 'Line ' + diag.line + ' is missing a `)`. Add `)` to close the `(` on that line.');
     }
     if ((m = /invalid conversion from '([^']*)' to '([^']*)'|cannot convert '([^']*)' to '([^']*)'/.exec(message))) {
       const from = m[1] || m[3] || 'one type';
@@ -219,6 +258,17 @@
       const name = m[1] || m[2];
       return hint('return-type', diag, 'Line ' + diag.line + ' declares `' + name + '` without a return type. Write `void ' + name + '()`.');
     }
+    if (/return-statement with a value/.test(message)) {
+      return hint('void-return', diag, 'Line ' + diag.line + ' returns a value from a void function. Delete the value after `return`.');
+    }
+    if ((m = /redefinition of '([^']+)'/.exec(message))) {
+      const name = (/\b([A-Za-z_]\w*)\s*\(/.exec(m[1]) || /\b([A-Za-z_]\w*)\s*$/.exec(m[1]) || [])[1] || 'that';
+      const typed = /\(/.test(m[1]) ? ('void ' + name + '()') : name;
+      return hint('duplicate', diag, 'Line ' + diag.line + ' defines `' + name + '` again. Keep one `' + typed + '` and delete the other.');
+    }
+    if ((m = /'([^']*)' does not name a type/.exec(message))) {
+      return hint('type', diag, 'Line ' + diag.line + ' uses the type `' + m[1] + '` before it exists. Declare `struct ' + m[1] + '` above this line.');
+    }
     if ((m = /has no member named '([^']*)'(?:; did you mean '([^']*)')?/.exec(message))) {
       const call = /([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*\(/.exec(diag.snippet || '');
       const obj = call ? call[1] : 'that object';
@@ -233,7 +283,7 @@
       let alt = m[2] || '';
       if (!alt) {
         const closed = scopeClosed(source, name, diag.line);
-        if (closed) return hint('scope', diag, 'Line ' + diag.line + ' uses `' + name + '` outside the block where it was declared (line ' + closed + '). Move the use inside that block, or declare `' + name + '` again on this line.');
+        if (closed) return hint('scope', diag, 'Line ' + diag.line + ' uses `' + name + '` past its block (line ' + closed + '). Move it inside, or write `int ' + name + '` on this line.');
         alt = suggest(name, source) || '';
       }
       const call = isCall(diag.snippet, name);
@@ -242,14 +292,26 @@
       if (alt) return hint('undeclared', diag, 'Line ' + diag.line + ' uses `' + name + '`, which isn\'t defined. Did you mean `' + alt + '`?');
       return hint('undeclared', diag, 'Line ' + diag.line + ' uses `' + name + '`, which isn\'t defined. Check the spelling, or declare it before this line.');
     }
-    return hint('generic', diag, 'Line ' + diag.line + ' failed to compile. The compiler said: `' + clip(message, 160) + '`.');
+    return hint('generic', diag, 'Line ' + diag.line + ' failed to compile. Check the code on that line.');
   }
-  function libraryHint(text) {
-    const m = /library\s+'([^']+)'\s+not found|Library not found:\s*(\S+)|library\s+(\S+)\s+is not installed/i.exec(norm(text));
+  function linkerHint(text) {
+    const m = /undefined reference to [`']([^'`]+)[`']/.exec(String(text || ''));
     if (!m) return null;
-    const name = (m[1] || m[2] || m[3] || '').replace(/[.,;:]+$/, '');
-    if (!name) return null;
-    return { kind: 'library', line: null, column: null, file: '', sentence: 'The library `' + name + '` is not installed. Install it, or remove the #include that asks for it.' };
+    const sym = String(m[1] || '').replace(/\(.*/, '') || m[1];
+    const shown = clip(sym, 32);
+    return { kind: 'linker', line: null, column: null, file: '', sentence: 'The link step can\'t find `' + shown + '`. Define `' + shown + '` or remove the call.' };
+  }
+  function libraryHint(text, source) {
+    const m = /doesn't have a library called ([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)/.exec(String(text || ''));
+    if (!m) return null;
+    const name = m[1];
+    const stem = name.replace(/\.h(?:pp)?$/, '');
+    const lines = String(source || '').split('\n');
+    let line = 1;
+    for (let i = 0; i < lines.length; i++) {
+      if (/#\s*include/.test(lines[i]) && lines[i].indexOf(stem) >= 0) { line = i + 1; break; }
+    }
+    return { kind: 'library', line: line, column: 1, file: 'sketch.ino', sentence: 'Line ' + line + ' includes `' + name + '`, which isn\'t available. Remove that `#include`.' };
   }
   function parse(log, source) {
     const windowed = asWindow(log);
@@ -275,24 +337,12 @@
       diags.push(diag);
       if (diags.length >= MAX_HINTS) break;
     }
+    if (!diags.length) {
+      const extra = linkerHint(text) || libraryHint(text, source);
+      return { hints: extra ? [extra] : [], capped: capped };
+    }
     const hints = [];
     for (let i = 0; i < diags.length && hints.length < MAX_HINTS; i++) hints.push(classify(diags[i], rawLines, source));
-    if (!hints.length) {
-      const lib = libraryHint(text);
-      if (lib) hints.push(lib);
-    }
-    if (!hints.length) {
-      const line = firstCompilerLine(text);
-      hints.push({
-        kind: 'generic',
-        line: null,
-        column: null,
-        file: '',
-        sentence: line
-          ? 'The compiler stopped, and this view doesn\'t have a plainer version of that message yet: `' + line + '`.'
-          : 'The compiler stopped without a message. Press Run again in a moment.',
-      });
-    }
     return { hints: hints, capped: capped };
   }
 
@@ -300,7 +350,7 @@
     const state = box._hintState;
     const hints = state.parsed.hints;
     const h = hints[state.index] || hints[0];
-    box._jump.textContent = h && h.sentence ? h.sentence : 'The compiler stopped without a message. Press Run again in a moment.';
+    box._jump.textContent = h && h.sentence ? h.sentence : '';
     if (hints.length > 1) {
       box._nav.hidden = false;
       box._count.textContent = 'Error ' + (state.index + 1) + ' of ' + hints.length;
@@ -309,8 +359,16 @@
       box._count.textContent = '';
     }
   }
+  function editorFile(name) {
+    const n = String(name || '');
+    if (!n || n === 'sketch' || n === 'sketch.ino' || n === 'sketch.ino.cpp' || /\.ino\.cpp$/.test(n)) return 'sketch';
+    return n;
+  }
   function reveal(ta, item) {
-    if (!ta || !item || !item.line) return;
+    if (!item) return;
+    const app = root.app;
+    if (item.file && app && typeof app.openCodeFile === 'function') app.openCodeFile(editorFile(item.file));
+    if (!ta || !item.line) return;
     const go = () => {
       const value = String(ta.value || '');
       const lines = value.split('\n');
@@ -323,23 +381,17 @@
       if (typeof ta.setSelectionRange === 'function') {
         try { ta.setSelectionRange(pos, pos); } catch (e3) { /* detached */ }
       }
-      let lh = 20, padT = 10, padL = 12, ch = 7.5;
+      let lh = 20, padT = 10;
       try {
         const cs = getComputedStyle(ta);
         const parsed = parseFloat(cs.lineHeight);
         if (parsed > 0) lh = parsed;
         const pt = parseFloat(cs.paddingTop);
         if (pt >= 0) padT = pt;
-        const pl = parseFloat(cs.paddingLeft);
-        if (pl >= 0) padL = pl;
-        const fs = parseFloat(cs.fontSize);
-        if (fs > 0) ch = fs * 0.6;
       } catch (e4) { /* defaults */ }
       const viewH = ta.clientHeight || 0;
       if (viewH) ta.scrollTop = Math.max(0, padT + li * lh - Math.max(8, viewH * 0.28));
-      const viewW = ta.clientWidth || 0;
-      if (item.column && item.column > 1 && viewW) ta.scrollLeft = Math.max(0, padL + col * ch - viewW * 0.25);
-      else ta.scrollLeft = 0;
+      ta.scrollLeft = 0;
       if (typeof ta.dispatchEvent === 'function') {
         try { ta.dispatchEvent(new Event('scroll')); } catch (e5) { /* no Event */ }
       }
@@ -395,10 +447,27 @@
     raw.className = 'compile-hint-raw';
     raw.hidden = true;
     raw.setAttribute('tabindex', '0');
+    const more = doc.createElement('button');
+    more.type = 'button';
+    more.id = 'compileHintMore';
+    more.className = 'compile-hint-more';
+    more.textContent = 'Details';
+    more.setAttribute('aria-expanded', 'false');
+    more.setAttribute('aria-controls', 'compileHintExtra');
+    const extra = doc.createElement('div');
+    extra.id = 'compileHintExtra';
+    extra.className = 'compile-hint-extra';
+    extra.appendChild(nav);
+    extra.appendChild(rawBtn);
+    extra.appendChild(raw);
     box.appendChild(jump);
-    box.appendChild(nav);
-    box.appendChild(rawBtn);
-    box.appendChild(raw);
+    box.appendChild(more);
+    box.appendChild(extra);
+    box._more = more;
+    more.addEventListener('click', () => {
+      const open = box.classList ? box.classList.toggle('open') : false;
+      more.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
     box._jump = jump;
     box._nav = nav;
     box._count = count;
@@ -427,7 +496,31 @@
       rawBtn.textContent = opening ? 'Hide full compiler output' : 'Show full compiler output';
       if (opening) {
         const note = state && state.capped ? 'Showing the last 64 KB of compiler output.\n' : '';
-        raw.textContent = note + (state ? state.log : '');
+        const text = note + (state ? state.log : '');
+        const lines = String(text).split('\n');
+        let hit = -1;
+        for (let i = 0; i < lines.length; i++) {
+          if (DIAG_RE.test(norm(lines[i]))) { hit = i; break; }
+        }
+        raw.textContent = '';
+        for (let i = 0; i < lines.length; i++) {
+          const span = doc.createElement('span');
+          span.textContent = lines[i] + (i + 1 < lines.length ? '\n' : '');
+          if (i === hit) {
+            span.className = 'compile-hint-hit';
+            span.setAttribute('id', 'compileHintHit');
+          }
+          raw.appendChild(span);
+        }
+        raw.scrollTop = hit > 0 ? hit * 18 : 0;
+        if (raw.children) {
+          for (let i = 0; i < raw.children.length; i++) {
+            const child = raw.children[i];
+            if (child && child.id === 'compileHintHit' && typeof child.scrollIntoView === 'function') {
+              try { child.scrollIntoView({ block: 'nearest' }); } catch (e) { /* no layout */ }
+            }
+          }
+        }
       }
     });
     return box;
@@ -446,9 +539,15 @@
     if (!enabled(doc)) return null;
     const source = opts.code != null ? String(opts.code) : (doc && doc.getElementById && doc.getElementById('code') ? doc.getElementById('code').value : '');
     const parsed = parse(log, source);
+    if (!parsed.hints.length) {
+      clear(doc);
+      return parsed;
+    }
     const box = mount(doc);
     if (!box) return parsed;
     box._raw.hidden = true;
+    if (box.classList) box.classList.remove('open');
+    if (box._more) box._more.setAttribute('aria-expanded', 'false');
     box._rawBtn.textContent = 'Show full compiler output';
     box._rawBtn.setAttribute('aria-expanded', 'false');
     box._hintState = { index: 0, parsed: parsed, log: boundLog(log), capped: parsed.capped };
@@ -459,7 +558,10 @@
     return parsed;
   }
 
-  const api = { CAP: CAP, MAX_LINE: MAX_LINE, enabled: enabled, boundLog: boundLog, parse: parse, showFailure: showFailure, clear: clear };
+  const api = {
+    CAP: CAP, MAX_LINE: MAX_LINE, enabled: enabled, boundLog: boundLog, parse: parse,
+    showFailure: showFailure, clear: clear, tagLog: tagLog, ownsLog: ownsLog, acceptLog: acceptLog, untag: untag,
+  };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.CompileHints = api;
 })(typeof window !== 'undefined' ? window : globalThis);
