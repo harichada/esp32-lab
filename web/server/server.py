@@ -1486,19 +1486,35 @@ class Link:
     def __init__(self, sid):
         self.sid = sid; self.ws = None; self.n = 0; self.ring = deque(); self.size = 0; self.q = asyncio.Queue()
         self.detached_at = time.monotonic(); self.pending_req = lambda: []; self.done = False; self.resumes = 0; self.soft = False
+        # GPIO, UART, heartbeats, and the final exit frame share one socket.
+        # Two overlapping send_text calls corrupt it, and the browser then sees
+        # a normal end as a dropped connection.
+        self._send_lock = asyncio.Lock()
     async def send_json(self, m):
         self.n += 1; m = dict(m); m['_n'] = self.n; txt = json.dumps(m, separators=(',', ':'))
         self.ring.append((self.n, m.get('t'), txt)); self.size += len(txt)
         while self.size > RING_BYTES and len(self.ring) > 1: self.size -= len(self.ring.popleft()[2])
-        ws = self.ws
-        if ws is not None:
-            try: await ws.send_text(txt)
-            except Exception: self.detach(ws)
+        await self._transmit(txt)
+    async def _transmit(self, txt):
+        async with self._send_lock:
+            ws = self.ws
+            if ws is None:
+                return
+            try:
+                await ws.send_text(txt)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.detach(ws)
     async def ping(self):   # app-level heartbeat so the browser can detect a half-open tunnel (not stored in the ring)
         ws = self.ws
         if ws is not None:
-            try: await asyncio.wait_for(ws.send_text('{"t":"hb","n":%d}' % self.n), 10)
-            except Exception: self.detach(ws)
+            try:
+                await asyncio.wait_for(self._transmit('{"t":"hb","n":%d}' % self.n), 10)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.detach(ws)
     def detach(self, ws):
         if self.ws is ws and ws is not None:
             self.ws = None; self.detached_at = time.monotonic(); print(f'run {self.sid}: browser detached', flush=True)
@@ -1531,8 +1547,11 @@ class Link:
         finally: self.detach(ws)
     async def receive_json(self): return await self.q.get()
     async def close(self):
-        ws = self.ws; self.ws = None
-        if ws is not None: await _quiet_close(ws)
+        # Wait out an in-flight frame, then close. Closing under a send drops
+        # that frame and the browser reports the run as an error.
+        async with self._send_lock:
+            ws = self.ws; self.ws = None
+            if ws is not None: await _quiet_close(ws)
 async def _quiet_close(ws):
     try: await ws.close()
     except Exception: pass
@@ -2098,11 +2117,18 @@ async def _qemu_session(ws, bid, img, tmp, hold):
     # a "burned" Vref lets ESP-IDF's line-fitting ADC calibration (analogReadMilliVolts) work like on real silicon.
     efuse = tmp / 'efuse.bin'; eb = bytearray(124); eb[16:20] = (EFUSE_VREF_CODE << 8).to_bytes(4, 'little'); efuse.write_bytes(bytes(eb))
     conns = {}
+    # n increments on every accept. A chardev that drops and connects again
+    # must not end the run: the browser would see the websocket close and
+    # report a normal QEMU session as an error.
+    gpio_gen = {'n': 0, 'event': asyncio.Event()}
+    uart_gen = {'n': 0, 'event': asyncio.Event()}
     ready = asyncio.Event()
     async def on_gpio(r, w):
-        conns['g'] = (r, w); ready.set() if 's' in conns else None
+        conns['g'] = (r, w); gpio_gen['n'] += 1; gpio_gen['event'].set()
+        if 's' in conns: ready.set()
     async def on_uart(r, w):
-        conns['s'] = (r, w); ready.set() if 'g' in conns else None
+        conns['s'] = (r, w); uart_gen['n'] += 1; uart_gen['event'].set()
+        if 'g' in conns: ready.set()
     netmode = (img.parent / 'net.txt').read_text().strip() if (img.parent / 'net.txt').exists() else ''
     pending = {}; nid = [0]; hsrvs = []; taps = []; hold['hsrvs'] = hsrvs; hold['taps'] = taps
     nl_on = [NETLOG]; t_run = time.time()
@@ -2254,6 +2280,32 @@ async def _qemu_session(ws, bid, img, tmp, hold):
         await ws.send_json({'t': 'error', 'msg': QEMU_FAIL_MSG, 'reason': 'infra', 'rc': proc.returncode})
         return
     gr, gw = conns['g']; sr, sw = conns['s']
+    # Nested tasks read these. A reconnected chardev replaces the pair in place
+    # so a GPIO reply still reaches the live QEMU socket.
+    sock = {'gr': gr, 'gw': gw, 'sr': sr, 'sw': sw}
+
+    def drop_writer(writer):
+        transport = getattr(writer, 'transport', None)
+        try:
+            if transport is not None:
+                transport.abort()
+            elif writer is not None:
+                writer.close()
+        except Exception:
+            pass
+
+    def write_pipe(which, data):
+        """A dropped chardev must not end the run. The reply is for the live socket."""
+        try:
+            sock[which].write(data)
+        except (ConnectionError, OSError, RuntimeError):
+            pass
+
+    async def drain_pipe(which):
+        try:
+            await sock[which].drain()
+        except (ConnectionError, OSError, RuntimeError):
+            pass
     gc = {'on': GPIO_CACHE, 'cache': {}, 'ep': 0, 'muxver': 0, 'S': None, 'seq': 0, 'pend': {}, 'out': None, 'hits': 0,
           'i2cfast': False, 'i2cack': {}, 'i2cpend': None, 'lastI': (0, 0), 'bwait': False}
     t0 = time.monotonic()
@@ -2285,20 +2337,48 @@ async def _qemu_session(ws, bid, img, tmp, hold):
         async def flush_spi():
             if spib:
                 await ws.send_json({'t': 'spi', 'bus': spib[0][0], 'r': 0, 'hex': ''.join(h for _, h in spib)}); spib.clear()
+        seen_g = gpio_gen['n']
         while True:
-            line = await gr.readline()
-            if not line: break
+            try:
+                line = await sock['gr'].readline()
+            except (ConnectionError, OSError, asyncio.IncompleteReadError):
+                line = b''
+            if not line:
+                # EOF on this socket is not QEMU exiting. Ending the run here
+                # closed the browser websocket before the last frames were read,
+                # and that normal close surfaced as an error.
+                proc._p.poll()
+                if proc.returncode is not None:
+                    break
+                print(f'run {link.sid}: gpio socket closed, qemu still running')
+                while gpio_gen['n'] == seen_g and proc.returncode is None:
+                    gpio_gen['event'].clear()
+                    if gpio_gen['n'] != seen_g:
+                        break
+                    try:
+                        await asyncio.wait_for(gpio_gen['event'].wait(), 0.2)
+                    except asyncio.TimeoutError:
+                        proc._p.poll()
+                if gpio_gen['n'] == seen_g or proc.returncode is not None:
+                    break
+                old = sock['gw']
+                sock['gr'], sock['gw'] = conns['g']
+                seen_g = gpio_gen['n']
+                drop_writer(old)
+                continue
             p = line.decode().split()
+            if not p:
+                continue
             ts = time.monotonic() - t0
             if p[0] == 'J' and gc['i2cfast'] and len(p) > 2 and p[1] == 'W':
                 i2cb.append(int(p[2]))
-                if len(i2cb) < 4096 and len(getattr(gr, '_buffer', b'')) > 0: continue
+                if len(i2cb) < 4096 and len(getattr(sock['gr'], '_buffer', b'')) > 0: continue
                 await flush_i2c(); continue
             await flush_i2c()
             if p[0] == 'U' and p[2] == '0' and len(p) > 3:
                 if spib and spib[0][0] != int(p[1]): await flush_spi()
                 spib.append((int(p[1]), p[3]))
-                if len(spib) < 2000 and len(getattr(gr, '_buffer', b'')) > 0: continue
+                if len(spib) < 2000 and len(getattr(sock['gr'], '_buffer', b'')) > 0: continue
                 await flush_spi(); continue
             await flush_spi()
             if p[0] == 'U':
@@ -2309,7 +2389,7 @@ async def _qemu_session(ws, bid, img, tmp, hold):
                 gc['seq'] += 1; q = m['q'] = gc['seq']; key = (gc['S'], gc['muxver'])
                 hit = gc['cache'].get(key) if gc['on'] else None
                 if hit is not None:
-                    gw.write(f"I {hit[0]} {hit[1]}\n".encode()); gc['lastI'] = hit; m['fast'] = 1; gc['hits'] += 1; gc['out'] = None
+                    write_pipe('gw', f"I {hit[0]} {hit[1]}\n".encode()); gc['lastI'] = hit; m['fast'] = 1; gc['hits'] += 1; gc['out'] = None
                 else:
                     gc['pend'][q] = (key, gc['ep']); gc['out'] = q; gc['outm'] = m
                     if len(gc['pend']) > 512: gc['pend'].clear()
@@ -2325,7 +2405,7 @@ async def _qemu_session(ws, bid, img, tmp, hold):
                 if p[1] == 'S' and gc['i2cfast']:
                     k_ = tuple(p[2:4]); hit = gc['i2cack'].get(k_)
                     if hit is not None:
-                        li = gc['lastI']; gw.write(f"K {hit}\nI {li[0]} {li[1]}\n".encode()); m['fast'] = 1; gc['i2cpend'] = None
+                        li = gc['lastI']; write_pipe('gw', f"K {hit}\nI {li[0]} {li[1]}\n".encode()); m['fast'] = 1; gc['i2cpend'] = None
                     else: gc['i2cpend'] = (k_, gc['ep'])
                 if (p[1] == 'S' and not m.get('fast')) or p[1] == 'R': gc['bwait'] = True   # QEMU now blocks for K/B (+ I)
                 await ws.send_json(m)
@@ -2336,9 +2416,32 @@ async def _qemu_session(ws, bid, img, tmp, hold):
                 await ws.send_json({'t': 'reset', 'ts': ts})
     ubuf = ['']
     async def pump_uart():
+        seen_s = uart_gen['n']
         while True:
-            d = await sr.read(4096)
-            if not d: break
+            try:
+                d = await sock['sr'].read(4096)
+            except (ConnectionError, OSError, asyncio.IncompleteReadError):
+                d = b''
+            if not d:
+                proc._p.poll()
+                if proc.returncode is not None:
+                    break
+                print(f'run {link.sid}: uart socket closed, qemu still running')
+                while uart_gen['n'] == seen_s and proc.returncode is None:
+                    uart_gen['event'].clear()
+                    if uart_gen['n'] != seen_s:
+                        break
+                    try:
+                        await asyncio.wait_for(uart_gen['event'].wait(), 0.2)
+                    except asyncio.TimeoutError:
+                        proc._p.poll()
+                if uart_gen['n'] == seen_s or proc.returncode is not None:
+                    break
+                old = sock['sw']
+                sock['sr'], sock['sw'] = conns['s']
+                seen_s = uart_gen['n']
+                drop_writer(old)
+                continue
             txt = d.decode('latin-1')
             await ws.send_json({'t': 'uart', 'd': txt})
             if nl_on[0]:
@@ -2361,7 +2464,7 @@ async def _qemu_session(ws, bid, img, tmp, hold):
                     if len(gc['cache']) > 4096: gc['cache'].clear()
                     gc['cache'][pe[0]] = v
                 if gc['out'] == int(m['q']) or not gc['on']:
-                    gc['out'] = None; gw.write(f"I {v[0]} {v[1]}\n".encode()); gc['lastI'] = v; await gw.drain()
+                    gc['out'] = None; write_pipe('gw', f"I {v[0]} {v[1]}\n".encode()); gc['lastI'] = v; await drain_pipe('gw')
             elif t == 'inv':
                 gc['ep'] += 1; gc['cache'].clear(); gc['i2cack'].clear(); gc['i2cpend'] = None
                 await ws.send_json({'t': 'invack'})
@@ -2382,7 +2485,7 @@ async def _qemu_session(ws, bid, img, tmp, hold):
                 # sync_wait() would then take it as the answer with the ACK flag still at "NACK" and the byte is lost
                 # (fatal for an HD44780 nibble stream). Prefixing "K 0" makes such a stale answer an ACK (the page's own
                 # answer for that start follows and is equally harmless if it lands on a later wait).
-                gw.write(f"K 0\nI {gc['lastI'][0]} {gc['lastI'][1]}\n".encode()); await gw.drain()
+                write_pipe('gw', f"K 0\nI {gc['lastI'][0]} {gc['lastI'][1]}\n".encode()); await drain_pipe('gw')
             elif t == 'netr':
                 f = pending.pop(int(m.get('id', 0)), None)
                 if f and not f.done(): f.set_result((int(m.get('code', -1)), str(m.get('body', ''))))
@@ -2394,22 +2497,22 @@ async def _qemu_session(ws, bid, img, tmp, hold):
             elif t == 'i2cr':
                 gc['bwait'] = False
                 if 'ack' in m:
-                    gw.write(f"K {int(m['ack'])}\n".encode())
+                    write_pipe('gw', f"K {int(m['ack'])}\n".encode())
                     pe = gc['i2cpend']; gc['i2cpend'] = None
                     if pe and pe[1] == gc['ep'] and gc['i2cfast']: gc['i2cack'][pe[0]] = int(m['ack'])
-                if 'b' in m: gw.write(f"B {int(m['b']) & 0xff}\n".encode())
-                await gw.drain()
+                if 'b' in m: write_pipe('gw', f"B {int(m['b']) & 0xff}\n".encode())
+                await drain_pipe('gw')
             elif t == 'spir':
-                gw.write(f"V {''.join(c for c in str(m.get('hex', '')) if c in '0123456789abcdefABCDEF')[:128]}\n".encode()); await gw.drain()
+                write_pipe('gw', f"V {''.join(c for c in str(m.get('hex', '')) if c in '0123456789abcdefABCDEF')[:128]}\n".encode()); await drain_pipe('gw')
             elif t == 'spicfg':
-                gw.write(f"Z {int(m.get('mask', 0)) & ((1 << 40) - 1)}\n".encode()); await gw.drain()
+                write_pipe('gw', f"Z {int(m.get('mask', 0)) & ((1 << 40) - 1)}\n".encode()); await drain_pipe('gw')
             elif t == 'adc':
                 gc['adcq'] = None; gc['bwait'] = False
-                gw.write(f"A {int(m.get('u', 0))} {int(m.get('ch', 0))} {int(m.get('v', 0)) & 0xffff}\n".encode()); await gw.drain()
+                write_pipe('gw', f"A {int(m.get('u', 0))} {int(m.get('ch', 0))} {int(m.get('v', 0)) & 0xffff}\n".encode()); await drain_pipe('gw')
             elif t == 'uart':
-                sw.write(m.get('d', '').encode('latin-1', errors='replace')); await sw.drain()
+                write_pipe('sw', m.get('d', '').encode('latin-1', errors='replace')); await drain_pipe('sw')
             elif t == 'sync':
-                gw.write(b'Y 1\n' if m.get('on') else b'Y 0\n'); await gw.drain()
+                write_pipe('gw', b'Y 1\n' if m.get('on') else b'Y 0\n'); await drain_pipe('gw')
             elif t == 'netlog':
                 nl_on[0] = NETLOG and bool(m.get('on', True))
             elif t == 'stop' and m.get('why') == 'pagehide':   # tab closing/reloading: short grace instead of an instant kill
@@ -2425,10 +2528,28 @@ async def _qemu_session(ws, bid, img, tmp, hold):
             print(f'run {link.sid}: ended ({["gpio","uart","ws/stop","qemu-exit","watchdog"][tasks.index(t)]}) qemu rc={proc.returncode}')
             if t.exception() and not isinstance(t.exception(), WebSocketDisconnect): print('run error:', repr(t.exception()))
     finally:
-        for t in tasks: t.cancel()
+        # Let an in-flight frame finish, then send exit, then the caller closes
+        # the socket. The exit frame is how a normal end stays an end, not an error.
+        for t in tasks:
+            if t is not pump_task:
+                t.cancel()
         if proc.returncode is None:
-            proc.kill(); await proc.wait()
+            proc.kill()
+            try:
+                await proc.wait()
+            except Exception:
+                pass
+        if not pump_task.done():
+            pump_task.cancel()
+        done, pending = await asyncio.wait(tasks, timeout=2)
+        for t in pending:
+            t.cancel()
+        for t in done:
+            if not t.cancelled():
+                t.exception()
         runs.pop(id(ws), None)
+        drop_writer(sock.get('gw'))
+        drop_writer(sock.get('sw'))
         gsrv.close(); ssrv.close()
         for h_ in hsrvs: h_.close()
         for t_ in taps: t_.close()
@@ -2437,7 +2558,8 @@ async def _qemu_session(ws, bid, img, tmp, hold):
         nlog('wifi', 'session ended: link down')
         try:
             await ws.send_json({'t': 'exit', 'code': proc.returncode})
-        except Exception: pass
+        except Exception:
+            pass
 
 # ---------------- optional server-side project copies (My Projects "server copy") ----------------
 PROJ_DIR = Path(os.environ.get('SIM_PROJECT_DIR', HOME / '.esp32lab/projects')); PROJ_MAX = 500
