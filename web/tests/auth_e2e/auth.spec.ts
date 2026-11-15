@@ -58,9 +58,9 @@ test('Google sign-in at 1280 keeps the project and view and saves local projects
   await page.keyboard.press('Enter');
   const dialog = page.getByRole('dialog', { name: 'Save your 3 projects to your account?' });
   await expect(dialog).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Not now' })).toBeFocused();
+  await expect(dialog.getByRole('button', { name: 'Not now' })).toBeFocused();
   expect(imports).toEqual([]);
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page.getByText('3 projects saved to your account')).toBeVisible();
   expect(imports).toEqual(['POST']);
   await expect(page.locator('#authName')).toHaveText('Ada Lovelace');
@@ -94,8 +94,8 @@ test('Not now leaves the guest projects on this device', async ({ page }) => {
   await signIn(page, 'Google', 1280);
   const dialog = page.getByRole('dialog', { name: 'Save your 3 projects to your account?' });
   await expect(dialog).toBeVisible();
-  const notNow = page.getByRole('button', { name: 'Not now' });
-  const save = page.getByRole('button', { name: 'Save', exact: true });
+  const notNow = dialog.getByRole('button', { name: 'Not now' });
+  const save = dialog.getByRole('button', { name: 'Save', exact: true });
   await expect(notNow).toBeFocused();
   await expect(dialog).toHaveAttribute('aria-modal', 'true');
   await page.keyboard.press('Tab');
@@ -201,7 +201,7 @@ test('sign-in on the IP origin moves projects before the provider', async ({ pag
   await page.locator('#authMenu [data-provider="google"]').click();
   await expect(page.locator('#authName')).toHaveText('Ada Lovelace', { timeout: 30_000 });
   await expect(page.getByRole('dialog', { name: 'Save your 3 projects to your account?' })).toBeVisible();
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Save your 3 projects to your account?' }).getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page.getByText('3 projects saved to your account')).toBeVisible();
   expect(page.url()).toContain('localhost');
   expect(new URL(page.url()).hostname).not.toBe('127.0.0.1');
