@@ -1515,19 +1515,27 @@ def robots_txt():
     raise HTTPException(status_code=404)
 # Site-wide schematic switch. Read on each page load so a restart picks it up
 # with no second request. Only "0" turns it off; the file is served unchanged otherwise.
-SCHEMATIC_META = '<meta name="schmatch" content="0">'
+SCHEMATIC_META = b'<meta name="schmatch" content="0">'
+AUTH_META = b'<meta name="cl-auth" content="1">'
 def schematic_match_enabled(env=None):
     env = os.environ if env is None else env
     return str(env.get('SCHEMATIC_MATCH_LAYOUT', '1')).strip() != '0'
 def lab_page(env=None):
-    """Lab HTML and whether it is the file unchanged. Off injects one meta tag in <head>."""
+    """Lab HTML and whether it is the file unchanged.
+
+    Schematic off injects one meta tag in <head>. Sign-in on injects
+    cl-auth so the page may ask /auth/session. With sign-in off that tag
+    is absent and the script does not make the request.
+    """
     raw = (SITE / 'index.html').read_bytes()
-    if schematic_match_enabled(env):
+    text = raw
+    if not schematic_match_enabled(env) and SCHEMATIC_META not in text and b'<head>' in text:
+        text = text.replace(b'<head>', b'<head>\n' + SCHEMATIC_META, 1)
+    if auth.enabled() and AUTH_META not in text and b'<head>' in text:
+        text = text.replace(b'<head>', b'<head>\n' + AUTH_META, 1)
+    if text == raw:
         return raw, True
-    text = raw.decode('utf-8')
-    if SCHEMATIC_META not in text and '<head>' in text:
-        text = text.replace('<head>', '<head>\n' + SCHEMATIC_META, 1)
-    return text.encode('utf-8'), False
+    return text, False
 def _index_response():
     """The lab page for GET and HEAD of ``/`` and ``/index.html``.
 

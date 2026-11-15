@@ -14,7 +14,13 @@ test('the page has no sign-in entry until a session exists', () => {
   assert.doesNotMatch(html, /id="mSignIn"/);
   assert.doesNotMatch(html, /id="authSlot"/);
   assert.doesNotMatch(html, /id="mAuth"/);
+  assert.doesNotMatch(html, /name="cl-auth"/);
+  assert.match(auth, /function authOn\(\)/);
+  assert.match(auth, /if \(!authOn\(\)\) return/);
   assert.match(auth, /res\.ok \? res\.json\(\) : null/);
   assert.match(auth, /if \(!data \|\| !data\.providers\) return/);
-  assert.match(html, /auth\.js\?v=1/);
+  assert.match(auth, /Save your /);
+  assert.match(auth, /Not now/);
+  assert.match(auth, /role', 'dialog'/);
+  assert.match(html, /auth\.js\?v=2/);
 });

@@ -792,6 +792,20 @@ class AuthTests(unittest.TestCase):
                 self.assertIsNone(_header(got[1], 'set-cookie'))
                 self.assertIsNone(_header(got[1], 'location'))
 
+    def test_flag_off_page_does_not_offer_an_auth_status_check(self):
+        page = (Path(__file__).resolve().parents[1] / 'index.html').read_bytes()
+        self.assertNotIn(b'name="cl-auth"', page)
+        self._enable(AUTH_ENABLED='0')
+        off = self._req('GET', '/')
+        self.assertEqual(off[0], 200)
+        self.assertEqual(off[2], page)
+        self.assertNotIn(b'name="cl-auth"', off[2])
+        self._enable()
+        on = self._req('GET', '/')
+        self.assertEqual(on[0], 200)
+        self.assertIn(b'<meta name="cl-auth" content="1">', on[2])
+        self.assertNotEqual(on[2], page)
+
     def test_restored_account_database_keeps_the_session(self):
         jar, _old, _landed, _body = self._finish('google', '/')
         view, _ = self._session(jar)

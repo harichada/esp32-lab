@@ -256,6 +256,10 @@ body:has(#minimap.off) .hint{max-width:calc(100% - 40px)}
 #bSignIn:focus-visible,#bSignOut:focus-visible,.auth-menu button:focus-visible,.auth-provs button:focus-visible,.auth-go:focus-visible{outline:2px solid #0891b2;outline-offset:2px}
 #bSignIn:disabled,#bSignOut:disabled,.auth-go:disabled,#bSignIn[aria-disabled="true"],#bSignOut[aria-disabled="true"],.auth-go[aria-disabled="true"]{opacity:.45;cursor:not-allowed}
 .auth-note{margin:8px 0;color:var(--txt2);font-size:13px}
+#authSaveDlg .modal-box{width:min(420px,calc(100vw - 16px))}
+#authSaveTitle{margin:0;font-size:16px;font-weight:600;line-height:1.4}
+#authSaveDlg .row{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}
+#authSaveYes,#authSaveNo{min-height:44px;min-width:44px;padding:0 16px}
 .auth-provs{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 8px}
 .dot.warn{background:var(--warn);animation:pulse .8s infinite}
 body.reconnecting #status{border-color:var(--warn);box-shadow:0 0 0 3px rgba(251,191,36,.12)}body.reconnecting #stText{color:var(--warn)}

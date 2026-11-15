@@ -464,7 +464,7 @@ test('the busy Run button is grey, keeps its spinner, and theme.css is cache-bus
   assert.match(css, /#bExamples:active\{transform:translateY\(\.5px\)\}/);
   assert.match(css, /#bExamples:disabled,#bExamples\[aria-disabled="true"\]\{opacity:\.45/);
   const vTheme = html.match(/theme\.css\?v=(\d+)/);
-  assert.equal(vTheme && vTheme[1], '76');
+  assert.equal(vTheme && vTheme[1], '77');
   assert.match(css, /html\.strip-on body:not\(\.m\) #palList,html\.strip-on body:not\(\.m\) \.insp-body\{padding-bottom:calc\(var\(--s3\) \+ var\(--strip-h,0px\)\)\}/);
   assert.match(css, /#compileStrip\{[^}]*background:#1b1f24;[^}]*color:#e8eaed;/);
   assert.match(css, /#compileStrip\{[^}]*white-space:normal;[^}]*overflow:visible;[^}]*text-overflow:clip/);

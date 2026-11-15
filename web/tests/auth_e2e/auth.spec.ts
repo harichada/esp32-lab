@@ -48,21 +48,69 @@ test('Google sign-in at 1280 keeps the project and view and saves local projects
   }, savedProjects());
   await page.goto(origin + '/?view=schematic&p=lamp1');
   await expect(page.locator('body')).toHaveClass(/viewsch/);
+  const imports: string[] = [];
+  page.on('request', (req) => {
+    if (req.url().includes('/auth/projects/import')) imports.push(req.method());
+  });
   await page.locator('#bSignIn').focus();
   await page.keyboard.press('ArrowDown');
   await expect(page.locator('#authMenu')).toBeVisible();
   await page.keyboard.press('Enter');
+  const dialog = page.getByRole('dialog', { name: 'Save your 3 projects to your account?' });
+  await expect(dialog).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Not now' })).toBeFocused();
+  expect(imports).toEqual([]);
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page.getByText('3 projects saved to your account')).toBeVisible();
+  expect(imports).toEqual(['POST']);
   await expect(page.locator('#authName')).toHaveText('Ada Lovelace');
   await expect(page.locator('body')).toHaveClass(/viewsch/);
   expect(page.url()).toContain('p=lamp1');
   expect(page.url()).not.toContain('view=');
   expect(page.url()).not.toContain('auth_error');
   const fresh = await page.context().newPage();
-  const again = fresh.waitForResponse((res) => res.url().includes('/auth/projects/import'));
+  const later: string[] = [];
+  fresh.on('request', (req) => {
+    if (req.url().includes('/auth/projects/import')) later.push(req.method());
+  });
   await fresh.goto(origin + '/');
-  expect((await (await again).json()).imported).toBe(0);
+  await expect(fresh.locator('#authName')).toHaveText('Ada Lovelace');
+  await expect(fresh.getByRole('dialog')).toHaveCount(0);
+  expect(later).toEqual([]);
   await fresh.close();
+});
+
+test('Not now leaves the guest projects on this device', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.addInitScript((saved) => {
+    localStorage.setItem('esp32lab.projects.v1', saved);
+    localStorage.setItem('esp32lab.current.v1', 'lamp1');
+  }, savedProjects());
+  const imports: string[] = [];
+  page.on('request', (req) => {
+    if (req.url().includes('/auth/projects/import')) imports.push(req.method());
+  });
+  await page.goto(origin + '/?p=lamp1');
+  await signIn(page, 'Google', 1280);
+  const dialog = page.getByRole('dialog', { name: 'Save your 3 projects to your account?' });
+  await expect(dialog).toBeVisible();
+  const notNow = page.getByRole('button', { name: 'Not now' });
+  const save = page.getByRole('button', { name: 'Save', exact: true });
+  await expect(notNow).toBeFocused();
+  await expect(dialog).toHaveAttribute('aria-modal', 'true');
+  await page.keyboard.press('Tab');
+  await expect(save).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(notNow).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByText('3 projects saved to your account')).toHaveCount(0);
+  expect(imports).toEqual([]);
+  const kept = await page.evaluate(() => localStorage.getItem('esp32lab.projects.v1'));
+  expect(kept).toContain('Desk lamp');
+  expect(kept).toContain('Porch');
+  expect(kept).toContain('Hall');
+  await expect(page.locator('#authName')).toHaveText('Ada Lovelace');
 });
 
 test('GitHub sign-in at 390 uses the More sheet', async ({ page }) => {
@@ -152,6 +200,8 @@ test('sign-in on the IP origin moves projects before the provider', async ({ pag
   await page.locator('#bSignIn').click();
   await page.locator('#authMenu [data-provider="google"]').click();
   await expect(page.locator('#authName')).toHaveText('Ada Lovelace', { timeout: 30_000 });
+  await expect(page.getByRole('dialog', { name: 'Save your 3 projects to your account?' })).toBeVisible();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page.getByText('3 projects saved to your account')).toBeVisible();
   expect(page.url()).toContain('localhost');
   expect(new URL(page.url()).hostname).not.toBe('127.0.0.1');

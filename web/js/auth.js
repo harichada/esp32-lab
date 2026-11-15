@@ -1,5 +1,6 @@
-/* Sign-in. Does nothing when /auth/session is 404, which is AUTH_ENABLED off.
-   The lab, examples, Run, and local save do not wait on an account. */
+/* Sign-in. With the flag off the page has no cl-auth meta, and this file
+   does not request /auth/session. The lab, examples, Run, and a local save
+   never wait on an account, and sign-in never uploads guest projects. */
 (function (root) {
   const CANCELLED = 'Sign-in cancelled — your work is still here';
   let session = null;
@@ -280,12 +281,78 @@
       toast('Sign-out needs a fresh page. Reload and try again.', true);
     }
   }
+  function saveQuestion(n) {
+    return 'Save your ' + n + (n === 1 ? ' project' : ' projects') + ' to your account?';
+  }
+  function askSave(n) {
+    return new Promise((resolve) => {
+      const d = document.createElement('div');
+      d.className = 'modal';
+      d.id = 'authSaveDlg';
+      const box = document.createElement('div');
+      box.className = 'modal-box';
+      box.setAttribute('role', 'dialog');
+      box.setAttribute('aria-modal', 'true');
+      box.setAttribute('aria-labelledby', 'authSaveTitle');
+      const title = document.createElement('h3');
+      title.id = 'authSaveTitle';
+      title.textContent = saveQuestion(n);
+      const row = document.createElement('div');
+      row.className = 'row';
+      const yes = document.createElement('button');
+      yes.type = 'button';
+      yes.id = 'authSaveYes';
+      yes.textContent = 'Save';
+      const no = document.createElement('button');
+      no.type = 'button';
+      no.id = 'authSaveNo';
+      no.textContent = 'Not now';
+      row.append(yes, no);
+      box.append(title, row);
+      d.appendChild(box);
+      document.body.appendChild(d);
+      let done = false;
+      const finish = (save) => {
+        if (done) return;
+        done = true;
+        window.removeEventListener('keydown', onKey, true);
+        d.remove();
+        resolve(!!save);
+      };
+      const buttons = () => [yes, no];
+      function onKey(e) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          finish(false);
+          return;
+        }
+        if (e.key !== 'Tab') return;
+        const list = buttons();
+        const i = list.indexOf(document.activeElement);
+        e.preventDefault();
+        if (e.shiftKey) list[i <= 0 ? list.length - 1 : i - 1].focus();
+        else list[(i + 1) % list.length].focus();
+      }
+      window.addEventListener('keydown', onKey, true);
+      yes.addEventListener('click', () => finish(true));
+      no.addEventListener('click', () => finish(false));
+      d.addEventListener('mousedown', (e) => { if (e.target === d) e.preventDefault(); });
+      d.addEventListener('click', (e) => { if (e.target === d) finish(false); });
+      no.focus();
+    });
+  }
   async function importLocal() {
     if (!session || !session.signed_in || !session.csrf || !root.Projects) return;
     let projects = [];
     try { projects = new root.Projects.ProjectStore().snapshot(); } catch (e) { return; }
     if (!projects.length) return;
     if (importMark() === session.csrf) return;
+    const save = await askSave(projects.length);
+    if (!save) {
+      setImportMark(session.csrf);
+      return;
+    }
     const res = await fetch(here('auth/projects/import'), {
       method: 'POST',
       credentials: 'same-origin',
@@ -322,10 +389,15 @@
     mountMobile();
     const flag = strip('auth_error');
     if (flag === 'cancelled') toast(CANCELLED);
-    if (session.signed_in) importLocal();
+    if (session.signed_in && flag === 'ok') importLocal();
     continueSignIn();
   }
+  function authOn() {
+    const meta = document.querySelector('meta[name="cl-auth"]');
+    return !!(meta && meta.getAttribute('content') === '1');
+  }
   function boot() {
+    if (!authOn()) return;
     fetch(here('auth/session'), { headers: { accept: 'application/json' }, credentials: 'same-origin' })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
