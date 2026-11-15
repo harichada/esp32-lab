@@ -1,0 +1,6 @@
+sketch.ino:4:5: error: ambiguating new declaration of ‘int loop()’
+    4 | int loop() { return 0; }
+      |     ^~~~
+sketch.ino:2:6: note: old declaration ‘void loop()’
+    2 | void loop();
+      |      ^~~~

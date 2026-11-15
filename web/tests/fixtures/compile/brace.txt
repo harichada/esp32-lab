@@ -1,0 +1,16 @@
+sketch.ino: In function ‘void setup()’:
+sketch.ino:4:13: error: a function-definition is not allowed here before ‘{’ token
+    4 | void loop() {}
+      |             ^
+sketch.ino:4:15: error: expected ‘}’ at end of input
+    4 | void loop() {}
+      |               ^
+sketch.ino:2:10: note: to match this ‘{’
+    2 |   if (1) {
+      |          ^
+sketch.ino:4:15: error: expected ‘}’ at end of input
+    4 | void loop() {}
+      |               ^
+sketch.ino:1:14: note: to match this ‘{’
+    1 | void setup() {
+      |              ^

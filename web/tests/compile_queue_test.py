@@ -57,7 +57,7 @@ class CompileQueueTests(unittest.TestCase):
         self.gates = {}
         self.entered = []
 
-        async def fake(_work, _bdir, key, sketch, _files, _defines, _net, _netmode, _simlibs):
+        async def fake(_work, _bdir, key, sketch, _files, _defines, _net, _netmode, _simlibs, **_kw):
             tag = sketch.rsplit('// ', 1)[-1].strip()
             self.entered.append(tag)
             await self.gates[tag].wait()

@@ -1,0 +1,8 @@
+FQBN: esp32:esp32:esp32doit-devkit-v1
+Compiling sketch...
+sketch.ino.cpp:2:6: error: redefinition of ‘void setup()’
+    2 | void setup() {}
+      |      ^~~~~
+sketch.ino.cpp:1:6: note: ‘void setup()’ previously defined here
+    1 | void setup() {}
+      |      ^~~~~

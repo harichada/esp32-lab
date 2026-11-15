@@ -1,0 +1,10 @@
+FQBN: esp32:esp32:esp32doit-devkit-v1
+Compiling sketch...
+sketch.ino.cpp: In function ‘void setup()’:
+sketch.ino.cpp:2:8: error: expected ‘)’ before ‘{’ token
+    2 |   if (1 {
+      |      ~ ^~
+      |        )
+sketch.ino.cpp:5:1: error: expected primary-expression before ‘}’ token
+    5 | }
+      | ^

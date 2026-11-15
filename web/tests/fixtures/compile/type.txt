@@ -1,0 +1,5 @@
+FQBN: esp32:esp32:esp32doit-devkit-v1
+Compiling sketch...
+sketch.ino.cpp:1:1: error: ‘Foo’ does not name a type
+    1 | Foo reading;
+      | ^~~

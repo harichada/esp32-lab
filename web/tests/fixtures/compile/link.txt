@@ -1,0 +1,5 @@
+FQBN: esp32:esp32:esp32doit-devkit-v1
+Compiling sketch...
+/usr/bin/ld: /tmp/ccM55BR7.o: in function `main':
+sketch.ino.cpp:(.text+0x9): undefined reference to `setup()'
+collect2: error: ld returned 1 exit status

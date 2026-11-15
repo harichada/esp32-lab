@@ -1,0 +1,12 @@
+sketch.ino: In function ‘void setup()’:
+sketch.ino:53:146: error: expected ‘;’ before ‘}’ token
+   53 |   digitalWrite(LED, HIGH + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0 + 0)
+      |                                                                                                                                                  ^
+      |                                                                                                                                                  ;
+   54 | }
+      | ~                                                                                                                                                 
+sketch.ino: In function ‘void loop()’:
+sketch.ino:56:3: error: ‘pinMod’ was not declared in this scope; did you mean ‘pinMode’?
+   56 |   pinMod(LED, OUTPUT);
+      |   ^~~~~~
+      |   pinMode

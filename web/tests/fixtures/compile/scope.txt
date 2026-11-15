@@ -1,0 +1,4 @@
+sketch.ino: In function ‘void setup()’:
+sketch.ino:4:3: error: ‘i’ was not declared in this scope
+    4 |   i = 0;
+      |   ^

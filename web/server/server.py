@@ -29,6 +29,12 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       SCHEMATIC_MATCH_LAYOUT (default 1). 0 puts <meta name="schmatch" content="0"> on the lab page
       so every visitor gets the column schematic. Any other value leaves index.html unchanged,
       and ?schmatch= on that page is then free to choose.
+      COMPILE_HINTS_ENABLED (default 0). 1, true, yes, or on puts <meta name="compilehints" content="1">
+      on the lab page so a failed compile shows a plain-language sentence. Unset, 0, or anything else
+      serves the page with no compilehints tag, and the client then behaves as it does today.
+      STATUS_STRIP_ENABLED (default 0). 1, true, yes, or on puts <meta name="statusstrip" content="1">
+      on the lab page. A compile timeout then says "It's saved." only when this visitor has a copy,
+      and a build server that is down shows one line next to Run. Unset or 0 leaves that behaviour off.
 """
 import asyncio, contextvars, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, argparse
 from email.utils import formatdate
@@ -263,9 +269,8 @@ def sanitize(log):
         log = log.replace(pth, '~')
     return re.sub(r'(/[A-Za-z0-9_.+-]+){2,}/', '.../', log)
 
-@app.get('/api/health')
-@app.get('/health')
 def health():
+    """Live toolchain snapshot. Tests call this directly. The HTTP route does not."""
     ok_q = Path(QEMU).exists(); ok_c = Path(CLI).exists() if CLI else False
     # qemu_ok and sandbox_ok are redone every 60s. Stderr from the qemu probe stays in the log.
     qemu_ok = qemu_ready()
@@ -290,6 +295,33 @@ def health():
     body['degraded'] = stuck
     body['compile_timeout_at'] = _compile_timeout_at
     return body
+
+_health_public = None
+
+def refresh_health_cache():
+    """Fill the public snapshot. Called at startup, never from the request."""
+    global _health_public
+    _health_public = health()
+
+def _public_health():
+    """What /api/health returns. Memory only: no disk, QEMU, or sandbox probe."""
+    body = dict(_health_public) if isinstance(_health_public, dict) else {'ok': False}
+    stuck = _compile_worker_stuck()
+    body['degraded'] = bool(stuck)
+    body['runs'] = len(runs)
+    body['compile_timeout_at'] = _compile_timeout_at
+    if stuck:
+        body['compile_ok'] = False
+    if staging.staging_on():
+        body['staging'] = True
+    else:
+        body.pop('staging', None)
+    return body
+
+@app.get('/api/health')
+@app.get('/health')
+def api_health():
+    return JSONResponse(_public_health(), headers={'Cache-Control': 'no-store'})
 
 def merged_image(outdir: Path) -> Path:
     m = list(outdir.glob('*.ino.merged.bin'))
@@ -387,12 +419,54 @@ def _compiler_log(text: str):
 def _progress_log(rec) -> str:
     return ((rec.get('stages') or '') + (rec.get('compiler') or ''))[-_PROGRESS_CAP:]
 
+def _tag_compile_log(log, pid: str) -> str:
+    """Prefix a compiler log with its server id. The result stays inside the progress cap."""
+    text = log or ''
+    if not pid or not text:
+        return text[-_PROGRESS_CAP:]
+    head = '# job %s\n' % pid
+    if text.startswith(head):
+        return text[-_PROGRESS_CAP:]
+    room = _PROGRESS_CAP - len(head)
+    if room <= 0:
+        return text[-_PROGRESS_CAP:]
+    return head + text[-room:]
+
+def _compiler_log_text(log) -> bool:
+    """Queue and timeout sentences stay as written. Compiler output is tagged."""
+    if not isinstance(log, str) or not log or log.startswith('# job '):
+        return False
+    if ': error:' in log or 'undefined reference' in log or log.startswith('FQBN:'):
+        return True
+    return '\n' in log
+
 def _progress_body(rec, now):
     active = bool(rec.get('active'))
+    pid = rec.get('id') or ''
     return {'active': active,
             'elapsed': round(now - rec['t0'], 1) if active else 0,
-            'log': _progress_log(rec),
+            'log': _tag_compile_log(_progress_log(rec), pid) if pid else _progress_log(rec),
+            'compile_id': pid,
             'stage': rec.get('stage') or ''}
+
+async def _absorb_compile_stream(stream, captured, sketch_prefix=''):
+    """Read one pipe a whole line at a time.
+
+    stdout and stderr are separate pipes. A verbose g++ command is one write
+    larger than PIPE_BUF, so it is not atomic; a diagnostic on the same pipe
+    can land in the middle of that line and stop being ``file:line:col: error:``.
+    A line is kept only while this task still owns the progress record.
+    """
+    if stream is None:
+        return
+    rec = _progress_current()
+    async for ln in stream:
+        if rec is not None and _progress_current() is not rec:
+            continue
+        t = ln.decode(errors='replace') if isinstance(ln, bytes) else str(ln)
+        captured.add(t)
+        _note_compiler_line(t)
+        _compiler_log(sanitize(captured.text()[-4000:]).replace(sketch_prefix, ''))
 
 def _lookup_progress(compile_id: str, client_id: str):
     """This client's record, or None.
@@ -470,6 +544,7 @@ async def _prewarm():
         print('disk startup', summary, flush=True)
     except Exception as e:
         print('disk startup failed:', repr(e), flush=True)
+    refresh_health_cache()
     print(compileguard.startup_banner(), '; qemu net',
           'restricted' if qemu_net_restrict() else 'unrestricted')
     sandbox_error = compileguard.startup_sandbox_error()
@@ -868,6 +943,8 @@ def _stamp_progress(result, response=None):
     if isinstance(result, dict):
         result['compile_id'] = pid
         result['progressId'] = pid
+        if _compiler_log_text(result.get('log')):
+            result['log'] = _tag_compile_log(result['log'], pid)
         return result
     if isinstance(result, JSONResponse):
         try:
@@ -878,6 +955,8 @@ def _stamp_progress(result, response=None):
         if isinstance(payload, dict):
             payload['compile_id'] = pid
             payload['progressId'] = pid
+            if _compiler_log_text(payload.get('log')):
+                payload['log'] = _tag_compile_log(payload['log'], pid)
             headers = {key: value for key, value in result.headers.items()
                        if key.lower() not in ('content-length', 'content-type')}
             headers['X-Compile-Id'] = pid
@@ -1317,7 +1396,7 @@ async def _compile_sandboxed(work, bdir, key, sketch, files, defines, net, netmo
     # bwrap --unshare-all puts the compilers in a pid namespace that ends when bwrap does.
     try:
         p = await asyncio.create_subprocess_exec(
-            *cmd, env=spawn_env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+            *cmd, env=spawn_env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
             pass_fds=seccomp_fds, start_new_session=enforced)
         pid = getattr(p, 'pid', None)
         if pid:
@@ -1330,12 +1409,11 @@ async def _compile_sandboxed(work, bdir, key, sketch, files, defines, net, netmo
     if enforced:
         _compile_worker_begin(timeout)
     captured = compileguard.OutputCap(limits['output_bytes'])
+    prefix = str(sk) + '/'
     async def _pump():
-        async for ln in p.stdout:
-            t = ln.decode(errors='replace')
-            captured.add(t)
-            _note_compiler_line(t)
-            _compiler_log(sanitize(captured.text()[-4000:]).replace(str(sk) + '/', ''))
+        await asyncio.gather(
+            _absorb_compile_stream(getattr(p, 'stdout', None), captured, prefix),
+            _absorb_compile_stream(getattr(p, 'stderr', None), captured, prefix))
         await p.wait()
     wall = compileguard.compile_wall_s()
     # Enforcement on: the 504 deadline and the sandbox wall, whichever is sooner.
@@ -2638,17 +2716,57 @@ def robots_txt():
 # Site-wide schematic switch. Read on each page load so a restart picks it up
 # with no second request. Only "0" turns it off; the file is served unchanged otherwise.
 SCHEMATIC_META = '<meta name="schmatch" content="0">'
+# Compile hints default off. Only an explicit on value injects the meta; the file
+# is otherwise byte-for-byte the one on disk (when the schematic switch is also on).
+COMPILE_HINTS_META = '<meta name="compilehints" content="1">'
+STATUS_STRIP_META = '<meta name="statusstrip" content="1">'
+COMPILE_HINTS_SCRIPT = '<script src="js/compilehints.js?v=2"></script>'
+STATUS_STRIP_SCRIPT = '<script src="js/statusstrip.js?v=6"></script>'
+_COMPILE_HINTS_ON = {'1', 'true', 'yes', 'on'}
 def schematic_match_enabled(env=None):
     env = os.environ if env is None else env
     return str(env.get('SCHEMATIC_MATCH_LAYOUT', '1')).strip() != '0'
+def compile_hints_enabled(env=None):
+    env = os.environ if env is None else env
+    return str(env.get('COMPILE_HINTS_ENABLED', '0')).strip().lower() in _COMPILE_HINTS_ON
+def status_strip_enabled(env=None):
+    env = os.environ if env is None else env
+    return str(env.get('STATUS_STRIP_ENABLED', '0')).strip().lower() in _COMPILE_HINTS_ON
 def lab_page(env=None):
-    """Lab HTML and whether it is the file unchanged. Off injects one meta tag in <head>."""
+    """Lab HTML and whether it is the file unchanged.
+
+    Schematic off injects schmatch=0. Compile hints on injects compilehints=1.
+    The status strip on injects statusstrip=1. The defaults (schematic on, both
+    flags off) return the file bytes unchanged.
+    """
     raw = (SITE / 'index.html').read_bytes()
-    if schematic_match_enabled(env):
+    sch_off = not schematic_match_enabled(env)
+    hints_on = compile_hints_enabled(env)
+    strip_on = status_strip_enabled(env)
+    if not sch_off and not hints_on and not strip_on:
         return raw, True
     text = raw.decode('utf-8')
-    if SCHEMATIC_META not in text and '<head>' in text:
-        text = text.replace('<head>', '<head>\n' + SCHEMATIC_META, 1)
+    inject = []
+    if sch_off and SCHEMATIC_META not in text:
+        inject.append(SCHEMATIC_META)
+    if hints_on and COMPILE_HINTS_META not in text:
+        inject.append(COMPILE_HINTS_META)
+    if strip_on and STATUS_STRIP_META not in text:
+        inject.append(STATUS_STRIP_META)
+    scripts = []
+    if hints_on and 'js/compilehints.js' not in text:
+        scripts.append(COMPILE_HINTS_SCRIPT)
+    if strip_on and 'js/statusstrip.js' not in text:
+        scripts.append(STATUS_STRIP_SCRIPT)
+    changed = False
+    if inject and '<head>' in text:
+        text = text.replace('<head>', '<head>\n' + '\n'.join(inject), 1)
+        changed = True
+    if scripts and '<script src="js/app.js' in text:
+        text = text.replace('<script src="js/app.js', '\n'.join(scripts) + '\n<script src="js/app.js', 1)
+        changed = True
+    if not changed:
+        return raw, True
     return text.encode('utf-8'), False
 @app.get('/')
 @app.get('/index.html')
@@ -2666,6 +2784,7 @@ def index():
     })
 app.mount('/', StaticFiles(directory=str(SITE)), name='site')
 app.add_middleware(staging.StagingMiddleware)
+refresh_health_cache()
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(); ap.add_argument('--port', type=int, default=8765); ap.add_argument('--host', default='127.0.0.1')
