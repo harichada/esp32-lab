@@ -437,6 +437,31 @@ def _blink_failure_detail(info: dict, image: Path) -> str:
     )
 
 
+# A normal websocket close (1000/1001). recv() raises this once the queued
+# frames are gone. It is the end of the stream, not a failed run.
+_STREAM_END = object()
+
+
+async def _run_recv(ws, timeout: float):
+    import websockets
+    try:
+        return await asyncio.wait_for(ws.recv(), timeout=timeout)
+    except asyncio.TimeoutError:
+        return None
+    except websockets.exceptions.ConnectionClosedOK:
+        return _STREAM_END
+
+
+async def _run_send(ws, payload: str) -> bool:
+    """False when the server has already closed the run normally."""
+    import websockets
+    try:
+        await ws.send(payload)
+        return True
+    except websockets.exceptions.ConnectionClosedOK:
+        return False
+
+
 async def _gpio2_toggles(url: str, seconds: float):
     import json
     import websockets
@@ -456,10 +481,11 @@ async def _gpio2_toggles(url: str, seconds: float):
         deadline = origin + seconds
         while asyncio.get_running_loop().time() < deadline:
             remain = deadline - asyncio.get_running_loop().time()
-            try:
-                raw = await asyncio.wait_for(ws.recv(), timeout=min(0.5, max(0.05, remain)))
-            except asyncio.TimeoutError:
+            raw = await _run_recv(ws, min(0.5, max(0.05, remain)))
+            if raw is None:
                 continue
+            if raw is _STREAM_END:
+                break
             msg = json.loads(raw)
             kind = msg.get('t') or '?'
             counts[kind] = counts.get(kind, 0) + 1
@@ -474,6 +500,7 @@ async def _gpio2_toggles(url: str, seconds: float):
                 break
             if kind == 'exit' and rc is None:
                 rc = msg.get('code')
+                break
             if kind == 'uart' and msg.get('d'):
                 uart_chunks.append(msg.get('d'))
             if kind == 'gpio':
@@ -499,13 +526,17 @@ async def _gpio2_toggles(url: str, seconds: float):
             if kind in ('gpio', 'mux', 'rtc') and not msg.get('fast') and 'q' in msg:
                 out = msg.get('out', 0) & msg.get('en', 0)
                 out1 = msg.get('out1', 0) & msg.get('en1', 0)
-                await ws.send(json.dumps({'t': 'in', 'in': out & 0xffffffff, 'in1': out1 & 0xff, 'q': msg['q']}))
+                if not await _run_send(ws, json.dumps({'t': 'in', 'in': out & 0xffffffff, 'in1': out1 & 0xff, 'q': msg['q']})):
+                    continue
             elif kind == 'i2c' and msg.get('op') == 'S' and not msg.get('fast'):
-                await ws.send(json.dumps({'t': 'i2cr', 'ack': 0}))
+                if not await _run_send(ws, json.dumps({'t': 'i2cr', 'ack': 0})):
+                    continue
             elif kind == 'i2c' and msg.get('op') == 'R':
-                await ws.send(json.dumps({'t': 'i2cr', 'b': 255}))
+                if not await _run_send(ws, json.dumps({'t': 'i2cr', 'b': 255})):
+                    continue
             elif kind == 'adcq':
-                await ws.send(json.dumps({'t': 'adc', 'u': msg.get('u', 0), 'ch': msg.get('ch', 0), 'v': 0}))
+                if not await _run_send(ws, json.dumps({'t': 'adc', 'u': msg.get('u', 0), 'ch': msg.get('ch', 0), 'v': 0})):
+                    continue
         try:
             await ws.send(json.dumps({'t': 'stop'}))
         except Exception:
@@ -563,10 +594,11 @@ async def _net_exchange(url: str, seconds: float):
         deadline = origin + seconds
         while asyncio.get_running_loop().time() < deadline:
             remain = deadline - asyncio.get_running_loop().time()
-            try:
-                raw = await asyncio.wait_for(ws.recv(), timeout=min(0.5, max(0.05, remain)))
-            except asyncio.TimeoutError:
+            raw = await _run_recv(ws, min(0.5, max(0.05, remain)))
+            if raw is None:
                 continue
+            if raw is _STREAM_END:
+                break
             msg = json.loads(raw)
             kind = msg.get('t')
             if kind == 'session':
@@ -574,27 +606,34 @@ async def _net_exchange(url: str, seconds: float):
             elif kind == 'error':
                 bad = msg.get('msg') or ''
                 break
+            elif kind == 'exit':
+                break
             elif kind == 'uart' and msg.get('d'):
                 uart.append(msg.get('d'))
             elif kind == 'netlog':
                 logs.append(msg.get('msg') or '')
             elif kind == 'net' and msg.get('k') == 'http':
                 http_codes.append(msg.get('url'))
-                await ws.send(json.dumps({
+                if not await _run_send(ws, json.dumps({
                     't': 'netr', 'id': msg.get('id'), 'code': 200, 'body': '{"ok":true}',
-                }))
+                })):
+                    continue
             elif kind == 'net' and msg.get('k') == 'udp':
                 udp.append(msg)
             elif kind in ('gpio', 'mux', 'rtc') and not msg.get('fast') and 'q' in msg:
                 out = msg.get('out', 0) & msg.get('en', 0)
                 out1 = msg.get('out1', 0) & msg.get('en1', 0)
-                await ws.send(json.dumps({'t': 'in', 'in': out & 0xffffffff, 'in1': out1 & 0xff, 'q': msg['q']}))
+                if not await _run_send(ws, json.dumps({'t': 'in', 'in': out & 0xffffffff, 'in1': out1 & 0xff, 'q': msg['q']})):
+                    continue
             elif kind == 'i2c' and msg.get('op') == 'S' and not msg.get('fast'):
-                await ws.send(json.dumps({'t': 'i2cr', 'ack': 0}))
+                if not await _run_send(ws, json.dumps({'t': 'i2cr', 'ack': 0})):
+                    continue
             elif kind == 'i2c' and msg.get('op') == 'R':
-                await ws.send(json.dumps({'t': 'i2cr', 'b': 255}))
+                if not await _run_send(ws, json.dumps({'t': 'i2cr', 'b': 255})):
+                    continue
             elif kind == 'adcq':
-                await ws.send(json.dumps({'t': 'adc', 'u': msg.get('u', 0), 'ch': msg.get('ch', 0), 'v': 0}))
+                if not await _run_send(ws, json.dumps({'t': 'adc', 'u': msg.get('u', 0), 'ch': msg.get('ch', 0), 'v': 0})):
+                    continue
             if 'NET DONE' in ''.join(uart):
                 break
         try:
@@ -692,6 +731,195 @@ class WrapperPanicTests(unittest.TestCase):
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
+
+
+class NormalRunEndTests(unittest.TestCase):
+    """A run that ends cleanly must not raise on the websocket client.
+
+    ``websockets`` reports a close code 1000 as ``ConnectionClosedOK``. That is
+    the end of the stream. The Blink run hit it under a full suite because the
+    gpio chardev dropped while QEMU was still alive, the server closed the
+    browser socket, and the next recv raised.
+    """
+
+    def test_exit_then_normal_close_is_not_an_error(self):
+        import json
+        import websockets
+
+        async def handler(ws):
+            await ws.send(json.dumps({'t': 'session', 'sid': 's', 'grace_s': 1, 'cap_s': 0}))
+            await ws.send(json.dumps({'t': 'gpio', 'out': 0, 'out1': 0, 'en': 4, 'en1': 0, 'q': 1}))
+            await ws.send(json.dumps({'t': 'exit', 'code': 0}))
+            await ws.close(1000)
+
+        async def main():
+            server_ws = await websockets.serve(handler, '127.0.0.1', 0)
+            port = server_ws.sockets[0].getsockname()[1]
+            try:
+                return await _gpio2_toggles('ws://127.0.0.1:%d/' % port, 5)
+            finally:
+                server_ws.close()
+                await server_ws.wait_closed()
+
+        started, edges, bad, info = asyncio.run(main())
+        self.assertEqual(bad, '')
+        self.assertTrue(started)
+        self.assertEqual(info['rc'], 0)
+        self.assertEqual(edges, [])
+
+    def test_reply_into_a_normal_close_is_not_an_error(self):
+        import json
+        import websockets
+
+        async def handler(ws):
+            await ws.send(json.dumps({'t': 'session', 'sid': 's', 'grace_s': 1, 'cap_s': 0}))
+            await ws.send(json.dumps({
+                't': 'gpio', 'out': 4, 'out1': 0, 'en': 4, 'en1': 0, 'q': 1,
+            }))
+            await ws.close(1000)
+
+        async def main():
+            server_ws = await websockets.serve(handler, '127.0.0.1', 0)
+            port = server_ws.sockets[0].getsockname()[1]
+            try:
+                return await _gpio2_toggles('ws://127.0.0.1:%d/' % port, 5)
+            finally:
+                server_ws.close()
+                await server_ws.wait_closed()
+
+        _started, _edges, bad, info = asyncio.run(main())
+        self.assertEqual(bad, '')
+        self.assertIsNone(info['error'])
+
+    def test_error_frame_is_still_reported(self):
+        import json
+        import websockets
+
+        async def handler(ws):
+            await ws.send(json.dumps({'t': 'session', 'sid': 's', 'grace_s': 1, 'cap_s': 0}))
+            await ws.send(json.dumps({'t': 'error', 'msg': 'qemu failed', 'rc': 1}))
+            await ws.close(1000)
+
+        async def main():
+            server_ws = await websockets.serve(handler, '127.0.0.1', 0)
+            port = server_ws.sockets[0].getsockname()[1]
+            try:
+                return await _gpio2_toggles('ws://127.0.0.1:%d/' % port, 5)
+            finally:
+                server_ws.close()
+                await server_ws.wait_closed()
+
+        _started, _edges, bad, info = asyncio.run(main())
+        self.assertEqual(bad, 'qemu failed')
+        self.assertEqual(info['error'], 'qemu failed')
+        self.assertEqual(info['rc'], 1)
+
+    def test_gpio_reconnect_while_qemu_lives_keeps_the_run(self):
+        import socket
+        import threading
+        import time
+        import uvicorn
+        root = Path(tempfile.mkdtemp(prefix='esp32qemu-'))
+        script = root / 'qemu-system-xtensa'
+        script.write_text(
+            '#!/usr/bin/python3\n'
+            'import sys, socket, time\n'
+            'if "--version" in sys.argv:\n'
+            '    sys.stdout.write("QEMU emulator version 9.2.2\\n")\n'
+            '    raise SystemExit(0)\n'
+            'gpio = uart = None\n'
+            'for arg in sys.argv:\n'
+            '    if "path=" not in arg:\n'
+            '        continue\n'
+            '    path = arg.split("path=", 1)[1].split(",")[0]\n'
+            '    if path.endswith("gpio.sock") or "id=gp" in arg:\n'
+            '        gpio = path\n'
+            '    elif path.endswith("uart.sock") or "id=ser" in arg:\n'
+            '        uart = path\n'
+            'if not gpio or not uart:\n'
+            '    sys.stderr.write("missing chardev\\n")\n'
+            '    raise SystemExit(2)\n'
+            'def connect(path):\n'
+            '    last = None\n'
+            '    for _ in range(100):\n'
+            '        try:\n'
+            '            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n'
+            '            s.connect(path)\n'
+            '            return s\n'
+            '        except OSError as exc:\n'
+            '            last = exc\n'
+            '            time.sleep(0.05)\n'
+            '    raise SystemExit("connect %s: %s" % (path, last))\n'
+            'uart_s = connect(uart)\n'
+            'gpio_s = connect(gpio)\n'
+            'gpio_s.sendall(b"S 0 0 4 0\\n")\n'
+            'gpio_s.close()\n'
+            'time.sleep(0.4)\n'
+            'gpio_s = connect(gpio)\n'
+            'gpio_s.sendall(b"S 4 0 4 0\\nS 0 0 4 0\\n")\n'
+            'sys.stdout.write("gpio-reconnect-fixture\\n")\n'
+            'sys.stdout.flush()\n'
+            'time.sleep(30)\n'
+            'uart_s.close()\n'
+        )
+        script.chmod(0o755)
+        bid = 'cafebabe12345678'
+        image_dir = server.BUILDS / bid
+        image_dir.mkdir(parents=True, exist_ok=True)
+        (image_dir / 'flash.bin').write_bytes(b'\xff' * 64)
+        saved = {
+            'qemu': server.QEMU,
+            'rom': server.ROMDIR,
+            'check': dict(server._qemu_check),
+        }
+        server.QEMU = str(script)
+        server.ROMDIR = str(root)
+        server._qemu_check.update({'done': False, 'ok': False, 'rc': None, 'at': 0.0})
+        sock = socket.socket()
+        sock.bind(('127.0.0.1', 0))
+        port = sock.getsockname()[1]
+        sock.close()
+        uv = uvicorn.Server(uvicorn.Config(
+            server.app, host='127.0.0.1', port=port, log_level='warning', access_log=False))
+        uv.install_signal_handlers = lambda: None
+        thread = threading.Thread(target=uv.run, daemon=True)
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                thread.start()
+                deadline = time.time() + 15
+                while time.time() < deadline:
+                    try:
+                        with socket.create_connection(('127.0.0.1', port), 0.2):
+                            break
+                    except OSError:
+                        time.sleep(0.05)
+                else:
+                    self.fail('run server did not listen')
+                url = 'ws://127.0.0.1:%d/api/run/%s' % (port, bid)
+                if server.TOKEN:
+                    url += '?t=' + server.TOKEN
+                started, edges, bad, info = asyncio.run(_gpio2_toggles(url, 20))
+            log = buf.getvalue()
+            detail = 'bad=%r edges=%s info=%s log=%s' % (bad, edges, info, log[-2000:])
+            self.assertEqual(bad, '', detail)
+            self.assertTrue(started, detail)
+            self.assertGreaterEqual(len(edges), 2, detail)
+            self.assertIn('gpio socket closed, qemu still running', log)
+            self.assertNotIn('ended (gpio)', log)
+            self.assertIsNone(info['error'], detail)
+        finally:
+            uv.should_exit = True
+            thread.join(5)
+            server.QEMU = saved['qemu']
+            server.ROMDIR = saved['rom']
+            server._qemu_check.clear()
+            server._qemu_check.update(saved['check'])
+            shutil.rmtree(root, ignore_errors=True)
+            shutil.rmtree(image_dir, ignore_errors=True)
+            for sid, link in list(server.SESSIONS.items()):
+                link.done = True
+                server.SESSIONS.pop(sid, None)
 
 
 if __name__ == '__main__':
