@@ -191,7 +191,7 @@ test('bloom scripts stay off the default 3D path', () => {
 test('3D hides the 2D zoom readout stylesheet rule', () => {
   const fs = require('fs');
   const path = require('path');
-  const theme = fs.readFileSync(path.join(__dirname, '../css/theme.css'), 'utf8');
+  const theme = fs.readFileSync(path.join(__dirname, '../css/theme-late.css'), 'utf8');
   const mobile = fs.readFileSync(path.join(__dirname, '../css/mobile.css'), 'utf8');
   assert.match(theme, /body\.view3d #zoomPct\{display:none!important\}/);
   assert.match(mobile, /body\.m\.view3d #zoomPct\{display:none!important\}/);

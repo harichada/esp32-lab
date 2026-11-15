@@ -177,10 +177,87 @@ Verify on the live origin: `/api/health` is 200, `/staging/` with the `cl_stage`
 
 Rollback: recreate `esp32lab` from the saved inspect without `SIM_STAGING_UPSTREAM`, or from the v64 image `65ffe4981b43` (main `21340d3`) plus `/home/opc/backup-v64`. Then `docker rm -f esp32lab-staging` and `docker network rm circuitlab-staging`. `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/staging/` is 404.
 
+## Performance and accessibility flags
+
+Server env switches below are **off by default**. With them unset, `/` is the bytes of `index.html` and cache headers stay on the previous policy (HTML is `no-cache, must-revalidate`; versioned `/js` and `/css` except `view3d.js` are immutable; `view3d.js` stays `no-cache, must-revalidate`). The page file itself ships the fast path: every script is `defer`, critical CSS is inlined, 3D is lazy, and the accessibility fixes are in the HTML.
+
+| Switch | Default | Set with | When on |
+|---|---|---|---|
+| `DEFER_SCRIPTS` | `0` | env, or `?defer=1` on `/` and `/index.html` | Adds `defer` to any external script that lacks it, except `storage.js`, `boot-theme.js`, `boot-view.js` and `force2d.js`. The shipped page has one deferred loader instead of those tags. Not `async`. |
+| `COMPRESS_ENABLED` | `0` | env | Serve a sibling `.gz` for `.js` `.css` `.svg` `.wasm` `.json` when `Accept-Encoding` includes gzip. |
+| `CACHE_VERSIONED` | `0` | env | HTML is `Cache-Control: no-cache`. `public, max-age=31536000, immutable` only for those static types when `?v=` is present. Unversioned static files are `no-cache`. |
+| `lazy3d` | on | `?lazy3d=0` rolls it back | Do not prefetch `three.min.js` or `view3d.js`. Load them on the first 3D open. |
+| `idlepal` | on | `?idlepal=0` rolls it back | Build the parts palette after first paint, in short idle slices. Blink still loads inside `init`. |
+| `batchlayout` | on | `?batchlayout=0` rolls it back | Header fit reads layout, then writes. |
+| `a11y` | on | `?a11y=0` skips the JS extras | Viewport, contrast, names, landmarks, one h1, and 14px phone body are in the HTML and CSS. The flag still marks toasts and `#mTicker`. |
+| `JSSKETCH_WORKER` | `0` | env, or `?jssketchworker=1` | Run a JS sketch in a Worker. The page does not call `eval` or `new Function`. |
+| `CSP_REPORT_ENABLED` | `0` | env | `POST /api/csp-report` and a report-only CSP. Off returns 404. |
+| `CSP_ENFORCE` | `0` | env, and only with the report flag | Send `Content-Security-Policy` instead of `Content-Security-Policy-Report-Only`. |
+
+`index.html` has no inline script and no `on*` attribute. The hint (`div.hint`) is in the first HTML, with its final phone sentence, and it uses a local UI font. `css/critical.css` is copied into the `<style>` block (same bytes) and reserves the phone shell: `#main`, the header, the hint, and the toolbars. `theme.css` stays render-blocking. `app.css` (part artwork), `theme-late.css` (the rest of the theme, including the webfonts), and `mobile.css` are not in the first HTML. The only script tag is `js/load.js` (`defer`). After the largest contentful paint it inserts `app.css`, `theme-late.css`, and `mobile.css`, then the other scripts in source order (`script.async = false`, so they do not race). A request that finishes before that paint is counted in the LCP path. The default Blink sketch is already in `#codeHl`, so that text paints with the first HTML. `init` runs in short turns after the scripts, because one long turn was enough to miss the blocking-time budget. Inlining every stylesheet made the uncompressed HTML large enough to slow the hint, so that was not shipped. Nothing is preloaded, and `three.min.js` stays off the first load. `js/boot-theme.js` applies the saved theme, `js/boot-view.js` clears `esp32lab.view`, and `js/force2d.js` is the View · 2D button. A phone `@media (max-width: 820px)` block reserves the same boxes `body.m` applies, so adding that class does not move `#main`. `@font-face` keeps `font-display: swap`. Local fallbacks use `size-adjust` so the swap does not move text.
+
+`?a11y=1` gives `#selExample` an `aria-label` and a label whose text is the selected option (`Examples…`). The `title` tooltip stays, and it is not the control's only name (axe `label-title-only`).
+
+HTML keeps `Cache-Control: no-cache` (`no-cache, must-revalidate` when `CACHE_VERSIONED` is off, exactly `no-cache` when it is on) and answers `If-None-Match` or `If-Modified-Since` with **304** and an empty body. `If-None-Match` wins when both are present. Injected HTML (defer or the worker attribute) is a different ETag and does not honor `If-Modified-Since`, because the file mtime did not change. `/api` never returns 304, including when the client sends `If-None-Match: *`.
+
+`COMPRESS_ENABLED` does not gzip on the fly. The single-core process only sends a file that `server/precompress.py` already wrote:
+
+```
+python3 server/precompress.py
+```
+
+That script uses the stdlib `gzip` module. It skips HTML. It does not walk `/api`. Responses for `/`, `*.html`, `/api/*`, and the 401 auth body are never `Content-Encoding: gzip`, even if a `.gz` sibling is on disk and the client sends `Accept-Encoding: gzip`. A compressed static response sets `Vary: Accept-Encoding`.
+
+The release gate is measured through **Caddy on staging**, which can encode the same static types. Do not enable site-wide `encode gzip`: that would compress HTML and `/api` (BREACH). Use a matcher that is only those extensions and not the API:
+
+```
+@static {
+	path *.js *.css *.svg *.wasm *.json
+	not path /api /api/*
+}
+encode @static {
+	gzip
+}
+header @static {
+	Vary Accept-Encoding
+}
+```
+
+`CACHE_VERSIONED=1` sets `Cache-Control: no-cache` on HTML so a rollback of `index.html` is used on the next load. The year-long immutable cache is only for a `.js` / `.css` / `.svg` / `.wasm` / `.json` URL that has `?v=`. The same URL without `?v=` is `Cache-Control: no-cache`, not immutable. `/api` is not given that cache.
+
+`web/vendor/three.min.js` has no `sourceMappingURL` comment and ships with no `.map` file. There is no invalid source-map reference to remove; the browser is not told to request `three.min.js.map`.
+
+Lazy 3D is the default. Opening 3D shows a skeleton, then requests `view3d.js` and `three.min.js`. If that load fails, the card says "Could not load the 3D view. Retry." and Retry asks for the scripts again (the failed tag is removed). `?lazy3d=0` restores the idle prefetch.
+
+The idle palette is the default and still loads the Blink example inside `init`, before the palette. Run is available without opening Parts. The ~900 part thumbnails are appended in idle slices of about 12 ms instead of one long task. Batched header layout is the default. `?idlepal=0` and `?batchlayout=0` restore the single long task and the unbatched header write.
+
+The viewport has no `maximum-scale`. `--mut` is `#9aa3af` (dark, 7.35:1 on `#101215`) or `#4e5966` (light, 7.13:1 on white) so Parts, `.pcat`, dock tabs, Runtime and -D clear WCAG AA. The code textarea is named "Sketch code". `#selExample` has an `aria-label` and a label whose text is the selected option. `#palette` and `#side` have landmark names. `#palList` is a focusable `role="region"`. There is one visually hidden `h1` ("ESP32 Circuit Lab"). Warnings, the IR heading, and the network log are `h2` (class `side-h`) so they follow that `h1`. Toasts and `#mTicker` are `role="status"` when `a11y` is on (the default). The phone hub's accessible name includes the visible word (`CIRCUIT, open mode dial`). Phone body text is 14px and the small phone chrome is at least 12px. Board silkscreen stays the same drawn size and reports a computed font-size of 12px. `?a11y=0` skips only the scripted extras; the HTML and CSS stay.
+
+`JSSKETCH_WORKER=1` (or `?jssketchworker=1`) runs the sketch in a dedicated Worker. The sketch source is part of the worker script, so neither the page nor the worker calls `eval` or `new Function`. The worker has no DOM. Calls and sleeps are `postMessage` objects checked against `js/jssketch-proto.js`. The page loads that file as a script (it is not inlined) so it can reject a message the worker should not have sent. A sketch that never pauses is terminated, and the serial pane says "The sketch was stopped because it ran too long without a pause." With the flag off, the previous `new Function` path is unchanged. An enforcing `script-src 'self'` (no `unsafe-inline`, no `unsafe-eval`) needs this flag, plus `worker-src 'self' blob:`.
+
+`CSP_REPORT_ENABLED=1` accepts `POST /api/csp-report` and sends a **report-only** policy on HTML:
+
+```
+Content-Security-Policy-Report-Only: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; base-uri 'none'; object-src 'none'; report-uri /api/csp-report; report-to csp
+Reporting-Endpoints: csp="/api/csp-report"
+Report-To: {"group":"csp","max_age":10886400,"endpoints":[{"url":"/api/csp-report"}]}
+```
+
+`script-src` has neither `unsafe-inline` nor `unsafe-eval`. `style-src` keeps `unsafe-inline` because the page sets style properties from script. The endpoint accepts only `application/csp-report` and `application/reports+json` (415 otherwise), refuses a body over 8 KB (413), and returns 429 when a single IP exceeds `CSP_REPORT_PER_IP` (default 30 per minute) or all clients exceed `CSP_REPORT_GLOBAL` (default 300 per minute). It logs one JSON line per report — directive, blocked URL, document path — and returns 204. Query strings and fragments are removed. Cookies and IP addresses are not logged. There is no third-party collector. The flag defaults off, and the route is 404.
+
+Stay on `Content-Security-Policy-Report-Only` until staging has **48 hours with zero** `csp-report` lines. Then set `CSP_ENFORCE=1` (with the report flag still on) so the same policy is sent as `Content-Security-Policy`. Caddy can send the same two headers; do not point `report-to` at a third-party URL.
+
+The viewport allows pinch-zoom. The board keeps `touch-action: none`, so pinch and the zoom buttons still change the circuit scale at 390 in 2D and on the schematic, and a swipe after a selection still pans. The page's visual viewport scale stays put.
+
+Minification is not shipped. A whitespace-and-comment strip of the JavaScript (Python, no new dependency) does not move LCP: the hint paints from the HTML and the critical CSS, and `three.min.js` stays off the first load. The bytes on disk are the source files plus the optional `.gz` siblings.
+
 ## Tests
 - `node --test tests/*.test.js`: solver, JS-sketch runner, remote logic and the network log.
 - `python3 tests/diskkeep_test.py`: firmware-image reclaim, sketch/core LRU eviction, orphan sweep, the low-disk guard, the network-stack cache (it survives sketch cleanup and the orphan sweep, the size cap evicts the oldest entry, a shim-hash change misses, a firmware-cache hit is only the `[0.0s] cached` line, and the startup warm-up uses the browser's `SIM` define so its key matches a browser compile), and the compile-queue flags.
 - `python3 -m unittest tests/compile_queue_test.py` (from `web/`): two clients compile at once and the second waits, the same tab is still rate-limited, the queue cap and the timeout answer 429, a warm-up wait is logged, `SIM_COMPILE_QUEUE=0` restores the old 429, and a cache hit does not wait.
+- `python3 -m unittest tests/csp_report_test.py` (from `web/`): the report flag, 415, the 8 KB cap, per-IP and global 429s, URL stripping, and report-only versus enforcing headers.
+- `python3 -m unittest tests/perf_server_test.py` (from `web/`): HTML and API are not gzipped, an unversioned asset is not immutable, and HTML revalidates with 304 while `/api` does not.
+- `node --test tests/jssketch.test.js`: the in-page runner and `?jssketchworker=1` produce the same Blink edges and button reads. A runaway sketch and a syntax error stay off `new Function`.
 - `python3 -m unittest tests/staging_test.py` (from `web/`): noindex and the page flag only when `SIM_STAGING=1`, the access-token 401 / cookie / redirect, a WebSocket upgrade without the cookie, `/staging` 404 when the upstream is empty, a rejected upstream URL, `http://esp32lab-staging:8765` accepted and a wrong port, a lookalike host, userinfo, `https`, an IP literal, and a path refused, a patched resolver that fails the name, a refused connection, and a blackholed address that times out, each answered with the 502 page (`reason=upstream_unreachable` or `reason=upstream_timeout`), an upstream 302 returned without a second request, prefix stripping, `X-Forwarded-For` / `Forwarded` / `X-Real-IP` / `X-Forwarded-Host` / `X-Forwarded-Proto` / `X-Client-IP` dropped (including mixed case and duplicates) and replaced with one peer `X-Forwarded-For`, a rotating `X-Forwarded-For` that still returns 429, backslash and double-encoded dot paths answered 404 with no upstream request, HEAD and OPTIONS auth plus method forwarding, a chunked body over 200 KiB answered 413, an unauthenticated `/staging` WebSocket refused before the upstream connection, the body limit, a connect failure and a timeout before the first byte both answered 502, and a WebSocket echo (text, binary, close code).
 - `node --test tests/storage.test.js`: the storage prefix is off by default and on in staging, and the app does not touch an unprefixed key in staging mode.
 - `node --test` also covers the project store (`tests/projects.test.js`).

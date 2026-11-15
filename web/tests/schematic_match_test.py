@@ -57,7 +57,8 @@ class SchematicMatchEnvTests(unittest.TestCase):
         self.assertFalse(plain)
         self.assertEqual(body.count(META), 1)
         self.assertIn(b'<head>\n' + META, body)
-        self.assertIn(b'schematic.js?v=', body)
+        self.assertIn(b'js/load.js?v=101', body)
+        self.assertIn(b'schematic.js?v=', (WEB / 'js' / 'load.js').read_bytes())
         self.assertIn(b'Circuit Lab', body)
         for path in ('/', '/index.html'):
             resp = self.client.get(path)

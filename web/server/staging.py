@@ -643,9 +643,9 @@ async def _inject(resp):
     async for chunk in resp.body_iterator:
         chunks.append(chunk)
     html = b''.join(chunks).decode('utf-8')
-    needle = '<html lang="en" data-theme="dark">'
+    needle = '<html lang="en" data-theme="dark" data-a11y="1">'
     if 'data-cl-env="staging"' not in html and needle in html:
-        html = html.replace(needle, '<html lang="en" data-theme="dark" data-cl-env="staging">', 1)
+        html = html.replace(needle, '<html lang="en" data-theme="dark" data-a11y="1" data-cl-env="staging">', 1)
     if 'name="cl-env"' not in html and '<head>' in html:
         html = html.replace('<head>', '<head>\n<meta name="cl-env" content="staging">', 1)
     headers = {k: v for k, v in resp.headers.items() if k.lower() != 'content-length'}

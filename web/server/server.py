@@ -13,16 +13,36 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       SCHEMATIC_MATCH_LAYOUT (default 1). 0 puts <meta name="schmatch" content="0"> on the lab page
       so every visitor gets the column schematic. Any other value leaves index.html unchanged,
       and ?schmatch= on that page is then free to choose.
+      Performance flags (server env vars default off; the page file already defers scripts):
+      DEFER_SCRIPTS (default 0). The shipped index.html has one deferred script, js/load.js, which
+      inserts the rest after the first paint so they are not on the LCP path. 1, or ?defer=1, adds
+      defer to any external script that lacks it, except storage.js, boot-theme.js, boot-view.js and
+      force2d.js (a rollback that puts those tags back without defer keeps them parser-blocking).
+      Never async. No inline script.
+      JSSKETCH_WORKER (default 0). 1 sets data-jssketch-worker="1" on the lab page so a JS sketch
+      runs in a Worker. The page does not need unsafe-eval on that path. ?jssketchworker=1 does the
+      same without this env var.
+      COMPRESS_ENABLED (default 0). 1 serves a sibling .gz (from server/precompress.py) for .js .css
+      .svg .wasm .json only, when Accept-Encoding includes gzip. HTML, /api, and auth responses are
+      never compressed. There is no per-request gzip. Vary: Accept-Encoding is set on those static types.
+      CACHE_VERSIONED (default 0). 1 sends Cache-Control: no-cache for HTML, and
+      public, max-age=31536000, immutable only for those static types when ?v= is present.
+      An unversioned static file is Cache-Control: no-cache (not immutable). /api is left alone.
+      HTML always keeps a no-cache Cache-Control and answers If-None-Match / If-Modified-Since with 304.
+      /api never answers 304.
+      CSP_REPORT_ENABLED (default 0). 1 accepts POST /api/csp-report and sends a report-only CSP plus
+      Reporting-Endpoints. CSP_ENFORCE=1 (still requires the report flag) sends that policy as enforcing.
 """
-import asyncio, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, argparse
-from email.utils import formatdate
+import asyncio, hashlib, json, logging, os, re, shutil, subprocess, sys, tempfile, time, argparse
+from email.utils import formatdate, parsedate_to_datetime
+from urllib.parse import urlsplit, urlunsplit
 import diskkeep
 import staging
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
 import secrets
 from fastapi.responses import PlainTextResponse
-from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
@@ -88,9 +108,316 @@ def _maybe_simtok(request, resp):
     return resp
 staging.configure(max_body=MAX_BODY, sim_authed=_authed)
 staging.apply_env()
+# Static types that may be precompressed or given a year-long ?v= cache.
+# HTML and /api are never in this set (BREACH: do not gzip secrets mixed with attacker-chosen bytes).
+_STATIC_EXT = {'.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.wasm': 'application/wasm', '.json': 'application/json'}
+_SCRIPT_SRC = re.compile(r'<script(\s[^>]*?)src=("|\')([^"\']+)(\2)([^>]*)>', re.I)
+
+def _flag_on(env, name):
+    env = os.environ if env is None else env
+    return str(env.get(name, '0')).strip() == '1'
+
+def compress_enabled(env=None):
+    return _flag_on(env, 'COMPRESS_ENABLED')
+
+def cache_versioned_enabled(env=None):
+    return _flag_on(env, 'CACHE_VERSIONED')
+
+def defer_scripts_enabled(env=None, query=None):
+    if _flag_on(env, 'DEFER_SCRIPTS'):
+        return True
+    if query is None:
+        return False
+    return str(query.get('defer') or '') == '1'
+
+def jssketch_worker_enabled(env=None):
+    return _flag_on(env, 'JSSKETCH_WORKER')
+
+def csp_report_enabled(env=None):
+    return _flag_on(env, 'CSP_REPORT_ENABLED')
+
+def csp_enforce_enabled(env=None):
+    return _flag_on(env, 'CSP_ENFORCE')
+
+def _accepts_gzip(header):
+    for part in str(header or '').split(','):
+        bits = [b.strip() for b in part.split(';') if b.strip()]
+        if not bits or bits[0].lower() != 'gzip':
+            continue
+        q = 1.0
+        for b in bits[1:]:
+            if b.lower().startswith('q='):
+                try:
+                    q = float(b[2:])
+                except ValueError:
+                    q = 0.0
+        return q > 0
+    return False
+
+def _is_html_path(path):
+    return path == '/' or path.endswith('.html') or path.endswith('.htm')
+
+def _compressible_static(path):
+    """js/css/svg/wasm/json data files only. Never HTML, never /api, never an auth body."""
+    if not path or path == '/api' or path.startswith('/api/'):
+        return False
+    if _is_html_path(path):
+        return False
+    return Path(path).suffix.lower() in _STATIC_EXT
+
+def _site_file(url_path):
+    if not url_path or not url_path.startswith('/') or url_path.startswith('//'):
+        return None
+    rel = url_path[1:]
+    if not rel or '\\' in rel or '\x00' in rel:
+        return None
+    parts = rel.split('/')
+    if any(p in ('', '.', '..') for p in parts):
+        return None
+    full = (SITE / rel).resolve()
+    try:
+        full.relative_to(SITE.resolve())
+    except ValueError:
+        return None
+    return full
+
+def _set_vary(resp, name='Accept-Encoding'):
+    existing = resp.headers.get('vary')
+    if not existing:
+        resp.headers['Vary'] = name
+        return
+    parts = [p.strip() for p in existing.split(',') if p.strip()]
+    if not any(p.lower() == name.lower() for p in parts):
+        parts.append(name)
+        resp.headers['Vary'] = ', '.join(parts)
+
+def precompressed_response(request, env=None):
+    """FileResponse of a build-time sibling .gz, or None. Never compresses on the fly."""
+    if not compress_enabled(env) or not _compressible_static(request.url.path):
+        return None
+    if not _accepts_gzip(request.headers.get('accept-encoding', '')):
+        return None
+    src = _site_file(request.url.path)
+    if src is None or not src.is_file():
+        return None
+    gz = Path(str(src) + '.gz')
+    try:
+        gz.resolve().relative_to(SITE.resolve())
+    except ValueError:
+        return None
+    if not gz.is_file():
+        return None
+    media = _STATIC_EXT.get(src.suffix.lower(), 'application/octet-stream')
+    return FileResponse(gz, media_type=media, headers={
+        'Content-Encoding': 'gzip',
+        'Vary': 'Accept-Encoding',
+    })
+
+def apply_asset_cache(request, resp, env=None):
+    """Cache policy. Flag off keeps the previous headers, including the view3d.js exception."""
+    pth = request.url.path
+    if cache_versioned_enabled(env):
+        if _is_html_path(pth):
+            resp.headers['Cache-Control'] = 'no-cache'
+            return
+        if pth == '/api' or pth.startswith('/api/'):
+            return
+        if Path(pth).suffix.lower() in _STATIC_EXT:
+            if request.query_params.get('v'):
+                resp.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+            else:
+                resp.headers['Cache-Control'] = 'no-cache'
+        return
+    if pth == '/' or pth.endswith('.html'):
+        resp.headers['Cache-Control'] = 'no-cache, must-revalidate'   # always revalidate the page so new ?v= asset URLs are picked up
+    elif pth.startswith(('/js/', '/css/')):
+        if pth.endswith('/view3d.js'):
+            resp.headers['Cache-Control'] = 'no-cache, must-revalidate'   # 3D hotfixes must reach phones immediately
+        else:
+            resp.headers['Cache-Control'] = 'public, max-age=31536000, immutable' if request.query_params.get('v') else 'no-cache'
+
+# The shipped page already defers these. apply_defer_scripts will not add defer to
+# them, so a rollback that removes the attribute keeps them parser-blocking.
+_BLOCKING_SCRIPTS = {'storage.js', 'boot-theme.js', 'boot-view.js', 'force2d.js'}
+
+def apply_defer_scripts(html):
+    """Add defer (never async) in source order. Boot scripts are left as written."""
+    def repl(m):
+        before, quote, src, after = m.group(1), m.group(2), m.group(3), m.group(5)
+        path = src.split('?', 1)[0]
+        if path.rsplit('/', 1)[-1] in _BLOCKING_SCRIPTS:
+            return m.group(0)
+        attrs = before + ' ' + after
+        if re.search(r'(?:^|\s)(?:defer|async)(?:\s|=|$)', attrs):
+            return m.group(0)
+        return f'<script{before}src={quote}{src}{quote} defer{after}>'
+    return _SCRIPT_SRC.sub(repl, html)
+
+# Report-only until staging has 48 hours with zero csp-report lines, then CSP_ENFORCE=1.
+# script-src has neither unsafe-inline nor unsafe-eval. style-src keeps unsafe-inline
+# because the UI sets style properties from script and the sprite sheet uses a style attribute.
+CSP_POLICY = (
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; "
+    "base-uri 'none'; object-src 'none'; "
+    "report-uri /api/csp-report; report-to csp"
+)
+CSP_REPORT_TO = '{"group":"csp","max_age":10886400,"endpoints":[{"url":"/api/csp-report"}]}'
+CSP_REPORTING_ENDPOINTS = 'csp="/api/csp-report"'
+CSP_BODY_MAX = 8 * 1024
+CSP_WINDOW_S = 60.0
+_CSP_BARE = {'inline', 'eval', 'self', 'data', 'blob', 'wasm-eval'}
+_csp_log = logging.getLogger('esp32lab.csp')
+_csp_ip_hits = {}
+_csp_global_hits = []
+
+def reset_csp_reports():
+    _csp_ip_hits.clear()
+    _csp_global_hits.clear()
+
+def csp_limits(env=None):
+    env = os.environ if env is None else env
+    try:
+        per_ip = int(env.get('CSP_REPORT_PER_IP', '30'))
+    except ValueError:
+        per_ip = 30
+    try:
+        glob = int(env.get('CSP_REPORT_GLOBAL', '300'))
+    except ValueError:
+        glob = 300
+    return max(1, per_ip), max(1, glob)
+
+def csp_rate_limited(ip, now=None):
+    """True when this IP or the process is over its window. The IP is not logged."""
+    now = time.monotonic() if now is None else now
+    per_ip, glob = csp_limits()
+    fresh = [t for t in _csp_global_hits if now - t < CSP_WINDOW_S]
+    _csp_global_hits[:] = fresh
+    hits = [t for t in _csp_ip_hits.get(ip, []) if now - t < CSP_WINDOW_S]
+    if len(hits) >= per_ip or len(_csp_global_hits) >= glob:
+        _csp_ip_hits[ip] = hits
+        return True
+    hits.append(now)
+    _csp_global_hits.append(now)
+    _csp_ip_hits[ip] = hits
+    return False
+
+def csp_media_type(header):
+    return str(header or '').split(';', 1)[0].strip().lower()
+
+def csp_strip_url(value, path_only=False):
+    """Drop query strings and fragments. Document URLs keep only the path."""
+    text = str(value or '').strip()
+    if not text:
+        return ''
+    if text in _CSP_BARE:
+        return text
+    try:
+        parts = urlsplit(text)
+    except ValueError:
+        return ''
+    if path_only:
+        path = parts.path or '/'
+        if not path.startswith('/'):
+            path = '/' + path.split('/', 1)[-1]
+        return path
+    if parts.scheme or parts.netloc:
+        return urlunsplit((parts.scheme, parts.netloc, parts.path or '/', '', ''))
+    return (parts.path or '/').split('?', 1)[0]
+
+def _csp_directive(rep):
+    for key in ('effective-directive', 'violated-directive', 'effectiveDirective', 'violatedDirective'):
+        val = rep.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip().split()[0][:80]
+    return ''
+
+def _csp_reports(payload, media):
+    if media == 'application/csp-report':
+        inner = payload.get('csp-report') if isinstance(payload, dict) else None
+        return [inner] if isinstance(inner, dict) else []
+    items = payload if isinstance(payload, list) else [payload] if isinstance(payload, dict) else []
+    out = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        body = item.get('body')
+        out.append(body if isinstance(body, dict) else item)
+    return out
+
+def csp_log_report(rep):
+    blocked = ''
+    for key in ('blocked-uri', 'blockedURL', 'blocked-url'):
+        if key in rep:
+            blocked = csp_strip_url(rep.get(key) or '', path_only=False)
+            break
+    document = ''
+    for key in ('document-uri', 'documentURL', 'document-url'):
+        if isinstance(rep.get(key), str):
+            document = csp_strip_url(rep.get(key), path_only=True)
+            break
+    line = json.dumps({
+        'kind': 'csp-report',
+        'directive': _csp_directive(rep),
+        'blocked': blocked,
+        'document': document,
+    }, separators=(',', ':'))
+    _csp_log.info('%s', line)
+
+def apply_csp_headers(request, resp):
+    if not csp_report_enabled() or not _is_html_path(request.url.path):
+        return
+    name = 'Content-Security-Policy' if csp_enforce_enabled() else 'Content-Security-Policy-Report-Only'
+    resp.headers[name] = CSP_POLICY
+    resp.headers['Reporting-Endpoints'] = CSP_REPORTING_ENDPOINTS
+    resp.headers['Report-To'] = CSP_REPORT_TO
+
+def _html_cache_control():
+    if cache_versioned_enabled():
+        return 'no-cache'
+    return 'no-cache, must-revalidate'
+
+def _etag_for(body):
+    return '"' + hashlib.sha256(body).hexdigest() + '"'
+
+def _html_not_modified(request, etag, last_modified, allow_ims):
+    """If-None-Match wins over If-Modified-Since, per RFC 9110."""
+    inm = request.headers.get('if-none-match')
+    if inm is not None:
+        for tag in inm.split(','):
+            token = tag.strip()
+            if token == '*':
+                return True
+            if token.startswith('W/') or token.startswith('w/'):
+                token = token[2:].strip()
+            if token == etag:
+                return True
+        return False
+    if not allow_ims:
+        return False
+    ims = request.headers.get('if-modified-since')
+    if not ims or not last_modified:
+        return False
+    try:
+        return parsedate_to_datetime(ims) >= parsedate_to_datetime(last_modified)
+    except (TypeError, ValueError, OSError):
+        return False
+
+def _drop_conditional_headers(request):
+    """API responses must not be turned into 304s by a conditional validator."""
+    kept = [(k, v) for (k, v) in request.scope.get('headers', []) if k.lower() not in (b'if-none-match', b'if-modified-since')]
+    request.scope['headers'] = kept
+    if hasattr(request, '_headers'):
+        del request._headers
+
 @app.middleware('http')
 async def gate(request: Request, call_next):
-    if request.url.path.startswith('/server'):
+    path = request.url.path
+    if path == '/api/csp-report' and not csp_report_enabled():
+        return PlainTextResponse('not found', 404)
+    if path == '/api' or path.startswith('/api/'):
+        _drop_conditional_headers(request)
+    if path.startswith('/server'):
         return PlainTextResponse('not found', 404)
     if not _authed(request.query_params, request.cookies):
         return PlainTextResponse('unauthorized', 401)
@@ -104,15 +431,14 @@ async def gate(request: Request, call_next):
     proxied = await staging.maybe_proxy(request)
     if proxied is not None:
         return proxied
-    resp = await call_next(request)
-    pth = request.url.path
-    if pth == '/' or pth.endswith('.html'):
-        resp.headers['Cache-Control'] = 'no-cache, must-revalidate'   # always revalidate the page so new ?v= asset URLs are picked up
-    elif pth.startswith(('/js/', '/css/')):
-        if pth.endswith('/view3d.js'):
-            resp.headers['Cache-Control'] = 'no-cache, must-revalidate'   # 3D hotfixes must reach phones immediately
-        else:
-            resp.headers['Cache-Control'] = 'public, max-age=31536000, immutable' if request.query_params.get('v') else 'no-cache'
+    pre = precompressed_response(request)
+    resp = pre if pre is not None else await call_next(request)
+    if (request.url.path == '/api' or request.url.path.startswith('/api/')) and resp.status_code == 304:
+        resp = PlainTextResponse('not modified', 200)
+    apply_asset_cache(request, resp)
+    apply_csp_headers(request, resp)
+    if compress_enabled() and _compressible_static(request.url.path):
+        _set_vary(resp)
     _maybe_simtok(request, resp)
     if staging.staging_on():
         resp = await staging.decorate(request, resp)
@@ -146,6 +472,40 @@ def sanitize(log):
     for pth in sorted({str(BUILDS), str(HOME), tempfile.gettempdir(), str(HERE)}, key=len, reverse=True):
         log = log.replace(pth, '~')
     return re.sub(r'(/[A-Za-z0-9_.+-]+){2,}/', '.../', log)
+
+@app.post('/api/csp-report')
+async def csp_report(request: Request):
+    """Same-origin CSP reports. No cookies, no IP, no third-party collector.
+
+    404 when CSP_REPORT_ENABLED is off (the gate returns that before auth).
+    415 for any type other than application/csp-report or application/reports+json.
+    413 above 8 KB. 429 when the per-IP window or the global window is full.
+    """
+    if not csp_report_enabled():
+        return PlainTextResponse('not found', 404)
+    media = csp_media_type(request.headers.get('content-type', ''))
+    if media not in ('application/csp-report', 'application/reports+json'):
+        return PlainTextResponse('unsupported media type', 415)
+    declared = request.headers.get('content-length')
+    if declared:
+        try:
+            if int(declared) > CSP_BODY_MAX:
+                return PlainTextResponse('too large', 413)
+        except ValueError:
+            return PlainTextResponse('too large', 413)
+    raw = await request.body()
+    if len(raw) > CSP_BODY_MAX:
+        return PlainTextResponse('too large', 413)
+    ip = request.client.host if request.client else 'unknown'
+    if csp_rate_limited(ip):
+        return PlainTextResponse('too many reports', 429)
+    try:
+        payload = json.loads(raw.decode('utf-8') or 'null')
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return PlainTextResponse('bad report', 400)
+    for rep in _csp_reports(payload, media):
+        csp_log_report(rep)
+    return Response(status_code=204)
 
 @app.get('/api/health')
 def health():
@@ -1440,28 +1800,48 @@ SCHEMATIC_META = '<meta name="schmatch" content="0">'
 def schematic_match_enabled(env=None):
     env = os.environ if env is None else env
     return str(env.get('SCHEMATIC_MATCH_LAYOUT', '1')).strip() != '0'
-def lab_page(env=None):
-    """Lab HTML and whether it is the file unchanged. Off injects one meta tag in <head>."""
+def lab_page(env=None, query=None):
+    """Lab HTML and whether it is the file unchanged.
+
+    SCHEMATIC_MATCH_LAYOUT=0 injects one meta tag. DEFER_SCRIPTS=1 or ?defer=1
+    adds defer to external scripts that lack it, except the boot scripts.
+    The file already defers every script, so the flag does not change those bytes.
+    JSSKETCH_WORKER=1 adds data-jssketch-worker="1". Server flags default off, and
+    with them off the bytes are the file.
+    """
     raw = (SITE / 'index.html').read_bytes()
-    if schematic_match_enabled(env):
-        return raw, True
     text = raw.decode('utf-8')
-    if SCHEMATIC_META not in text and '<head>' in text:
-        text = text.replace('<head>', '<head>\n' + SCHEMATIC_META, 1)
+    changed = False
+    if not schematic_match_enabled(env):
+        changed = True
+        if SCHEMATIC_META not in text and '<head>' in text:
+            text = text.replace('<head>', '<head>\n' + SCHEMATIC_META, 1)
+    if jssketch_worker_enabled(env) and 'data-jssketch-worker=' not in text:
+        changed = True
+        text = text.replace('<html lang="en"', '<html lang="en" data-jssketch-worker="1"', 1)
+    if defer_scripts_enabled(env, query):
+        nxt = apply_defer_scripts(text)
+        if nxt != text:
+            text = nxt
+            changed = True
+    if not changed:
+        return raw, True
     return text.encode('utf-8'), False
 @app.get('/')
 @app.get('/index.html')
-def index():
-    body, plain = lab_page()
-    if plain:
-        return FileResponse(SITE / 'index.html')
-    # The off page is the file plus one meta tag, so its validators are over that
-    # body. Last-Modified stays the file's mtime; ETag changes with the injection.
+def index(request: Request):
+    body, plain = lab_page(query=request.query_params)
     stat = (SITE / 'index.html').stat()
-    etag = '"' + hashlib.sha256(body).hexdigest() + '"'
+    etag = _etag_for(body)
+    # The header stays the file mtime so a conditional client has a date. Injected
+    # HTML is not that file, so only the unmodified page honors If-Modified-Since.
+    last_mod = formatdate(stat.st_mtime, usegmt=True)
+    if request.method in ('GET', 'HEAD') and _html_not_modified(request, etag, last_mod, allow_ims=plain):
+        return Response(status_code=304, headers={
+            'ETag': etag, 'Last-Modified': last_mod, 'Cache-Control': _html_cache_control(),
+        })
     return HTMLResponse(body, headers={
-        'ETag': etag,
-        'Last-Modified': formatdate(stat.st_mtime, usegmt=True),
+        'ETag': etag, 'Last-Modified': last_mod, 'Cache-Control': _html_cache_control(),
     })
 app.mount('/', StaticFiles(directory=str(SITE)), name='site')
 app.add_middleware(staging.StagingMiddleware)

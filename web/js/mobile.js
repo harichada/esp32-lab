@@ -3,6 +3,11 @@
 (function () {
   const MQ = window.matchMedia('(max-width: 820px), (pointer: coarse) and (max-height: 520px)');   // phones in portrait, and phones in landscape
   const $ = (s, r) => (r || document).querySelector(s), $$ = (s, r) => [...(r || document).querySelectorAll(s)];
+  function perfOn(name) {
+    if (typeof window.perfOn === 'function') return window.perfOn(name);
+    try { return new URLSearchParams(location.search).get(name) === '1'; } catch (e) { return false; }
+  }
+  function hubLabel(visible) { return perfOn('a11y') ? visible + ', open mode dial' : 'Open mode dial'; }
   const ic = (id) => `<svg class="ic"><use href="#${id}"/></svg>`;
   const ICONS = '<svg width="0" height="0" style="position:absolute" aria-hidden="true">' +
     '<symbol id="m-circuit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><path d="M10 6.5h4a2.5 2.5 0 0 1 2.5 2.5v5"/><circle cx="6.5" cy="17.5" r="2.5"/><path d="M6.5 10v5"/></symbol>' +
@@ -25,7 +30,7 @@
     const si = $('#scopeInst'), ms = $('#mScope');
     if (si && ms) { if (sheet === 'scope') { if (si.parentNode !== ms) ms.appendChild(si); } else if (si.parentNode === ms) $('#tab-scope').appendChild(si); }
     const cur = { scope: ['m-scope', 'SCOPE'], code: ['m-code', 'CODE'], parts: ['m-parts', 'PARTS'], serial: ['m-serial', 'SERIAL'], insp: ['m-sliders', 'INSPECT'], more: ['m-more', 'MORE'], dock: ['m-more', 'PANEL'] }[sheet] || ['m-circuit', 'CIRCUIT'];
-    const hub = $('#mHub'); if (hub) { hub.querySelector('use').setAttribute('href', '#' + cur[0]); hub.querySelector('.m-hub-t').textContent = cur[1]; }
+    const hub = $('#mHub'); if (hub) { hub.querySelector('use').setAttribute('href', '#' + cur[0]); hub.querySelector('.m-hub-t').textContent = cur[1]; if (perfOn('a11y')) hub.setAttribute('aria-label', hubLabel(cur[1])); }
     if (sheet === 'code') dockTab('code'); else if (sheet === 'serial') dockTab('serial');
     if (sheet === 'parts' && window.Mobile_orbit) setTimeout(window.Mobile_orbit, 30);
     if (sheet === 'code') setTimeout(() => app.codeView && app.codeView.refresh && app.codeView.refresh(), 0);
@@ -77,15 +82,15 @@
     document.body.insertAdjacentHTML('afterbegin', ICONS);
     // top bar: overflow + compact stop
     const top = $('header#top');
-    top.insertAdjacentHTML('beforeend', `<button id="mMenu" class="iconbtn m-only" type="button" aria-label="More options" aria-haspopup="dialog" aria-expanded="false" aria-controls="mMore">${ic('m-more')}</button>`);
+    if (!$('#mMenu')) top.insertAdjacentHTML('beforeend', `<button id="mMenu" class="iconbtn m-only" type="button" aria-label="More options" aria-haspopup="dialog" aria-expanded="false" aria-controls="mMore">${ic('m-more')}</button>`);
     $('#mMenu').onclick = () => setSheet(sheet === 'more' ? null : 'more');
     // orbital command dial (bottom centre) + ignition (bottom right) + telemetry ticker
     const modes = [['circuit', 'Circuit', 'm-circuit'], ['code', 'Code', 'm-code'], ['parts', 'Parts', 'm-parts'], ['serial', 'Serial', 'm-serial'], ['insp', 'Inspect', 'm-sliders'], ['scope', 'Scope', 'm-scope'], ['more', 'More', 'm-more']];
     document.body.insertAdjacentHTML('beforeend', `<div id="mScrim" class="m-only"></div>
       <nav id="mDial" class="m-only" aria-label="Mode dial"><div class="m-orbit">${modes.map(([k, n, i], j) => `<button class="m-tab" data-m="${k}" style="--j:${j}" aria-label="${n}">${ic(i)}<span>${n}</span></button>`).join('')}</div>
-        <button id="mHub" aria-label="Open mode dial"><svg class="m-ring" viewBox="0 0 80 80"><circle cx="40" cy="40" r="36"/><circle cx="40" cy="40" r="30" class="m-ring2"/></svg><span class="m-hub-i">${ic('m-circuit')}</span><span class="m-hub-t">CIRCUIT</span></button></nav>
+        <button id="mHub" aria-label="${hubLabel('CIRCUIT')}"><svg class="m-ring" viewBox="0 0 80 80"><circle cx="40" cy="40" r="36"/><circle cx="40" cy="40" r="30" class="m-ring2"/></svg><span class="m-hub-i">${ic('m-circuit')}</span><span class="m-hub-t">CIRCUIT</span></button></nav>
       <button id="mIgnite" class="m-only" aria-label="Run"><svg viewBox="0 0 80 80"><circle cx="40" cy="40" r="34" class="m-ig-bg"/><circle cx="40" cy="40" r="34" class="m-ig-p" pathLength="100"/></svg><span class="m-ig-i">${ic('i-play')}</span><span class="m-ig-t">RUN</span></button>
-      <div id="mTicker" class="m-only"><div id="mTickT"></div></div><div id="mCount" class="m-only"></div><div id="mFlash" class="m-only"></div>`);
+      <div id="mTicker" class="m-only"${perfOn('a11y') ? ' role="status" aria-live="polite" aria-label="Telemetry"' : ''}><div id="mTickT"></div></div><div id="mCount" class="m-only"></div><div id="mFlash" class="m-only"></div>`);
     const dial = $('#mDial'); let dialOpen = false;
     const openDial = (v) => { dialOpen = v; dial.classList.toggle('open', v); document.body.classList.toggle('m-dial', v); haptic(6); };
     $('#mHub').onclick = () => openDial(!dialOpen);
@@ -539,7 +544,21 @@
     if (window.app && window.app.editor) window.app.editor.setHint();
     if (window.app && window.app.syncExampleTip) window.app.syncExampleTip();
   }
-  window.addEventListener('DOMContentLoaded', () => { bindFitPill(); apply(); if (MQ.addEventListener) MQ.addEventListener('change', apply); else MQ.addListener(apply); if (document.body.classList.contains('m')) setTimeout(() => fitIfReady(window.app && window.app.editor, true), 200); });
+  function boot() {
+    bindFitPill();
+    // The hint text is already in the first HTML. This only switches Tap and Click
+    // once the page has painted. Building the phone sheets is a later task.
+    const m = MQ.matches;
+    document.body.classList.toggle('m', m);
+    if (window.app && window.app.editor && window.app.editor.setHint) window.app.editor.setHint();
+    setTimeout(() => {
+      apply();
+      if (MQ.addEventListener) MQ.addEventListener('change', apply); else MQ.addListener(apply);
+      if (document.body.classList.contains('m')) setTimeout(() => fitIfReady(window.app && window.app.editor, true), 200);
+    }, 0);
+  }
+  if (document.readyState === 'loading' || !document.getElementById('stage')) window.addEventListener('DOMContentLoaded', boot);
+  else boot();
   bindFitPill();
   window.Mobile = { setSheet, openDock, fitIfReady, fitFromPill, bindFitPill, applyFitPillFlag, ignitePress, bindIgnite, syncIgnite, sheetHead, syncPhoneChrome };
 })();

@@ -5,6 +5,65 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   const STORE = 'esp32lab.project.v1';
   const store = new Projects.ProjectStore();
   const app = window.app = { store, readOnly: false, netlog: new NetLogMod.NetLog(), proj: null, sim: null, world: new Devices.MockWorld(), run: null, serialText: '', file: 'sketch', irFrames: [], lastBits: null };
+  // Shipped on: lazy 3D, idle palette, batched header, a11y. ?name=0 rolls one back. ?name=1 forces it on.
+  const SHIPPED_ON = { lazy3d: 1, idlepal: 1, batchlayout: 1, a11y: 1 };
+  function perfOn(name) {
+    try {
+      const v = new URLSearchParams(location.search).get(name);
+      if (v === '0') return false;
+      if (v === '1') return true;
+      return SHIPPED_ON[name] === 1;
+    } catch (e) { return SHIPPED_ON[name] === 1; }
+  }
+  window.perfOn = perfOn;
+  function applyA11y() {
+    if (!perfOn('a11y')) return;
+    const root = document.documentElement;
+    if (!root || !root.setAttribute) return;
+    root.setAttribute('data-a11y', '1');
+    const vp = document.querySelector && document.querySelector('meta[name="viewport"]');
+    if (vp && vp.getAttribute && vp.setAttribute) {
+      const parts = String(vp.getAttribute('content') || '').split(',').map((s) => s.trim()).filter((s) => s && !/^maximum-scale\s*=/i.test(s) && !/^user-scalable\s*=/i.test(s));
+      vp.setAttribute('content', parts.join(', '));
+    }
+    if (document.querySelector && !document.querySelector('h1') && document.createElement && document.body && document.body.insertBefore) {
+      const h = document.createElement('h1');
+      h.className = 'sr-only';
+      h.textContent = 'ESP32 Circuit Lab';
+      document.body.insertBefore(h, document.body.firstChild);
+    }
+    const pal = document.getElementById && document.getElementById('palette');
+    if (pal && pal.setAttribute) pal.setAttribute('aria-label', 'Parts');
+    const side = document.getElementById && document.getElementById('side');
+    if (side && side.setAttribute && !side.getAttribute('aria-label')) side.setAttribute('aria-label', 'Inspector');
+    const list = document.getElementById && document.getElementById('palList');
+    if (list && list.setAttribute) {
+      list.setAttribute('tabindex', '0');
+      list.setAttribute('role', 'region');
+      list.setAttribute('aria-label', 'Parts list');
+    }
+    const code = document.getElementById && document.getElementById('code');
+    if (code && code.setAttribute && !code.getAttribute('aria-label')) code.setAttribute('aria-label', 'Sketch code');
+    labelExample();
+  }
+  // axe label-title-only: the select's title must not be its only name.
+  // The name is the visible option text, so it also matches the option.
+  function labelExample() {
+    if (!perfOn('a11y')) return;
+    const sel = document.getElementById && document.getElementById('selExample');
+    if (!sel || !sel.setAttribute) return;
+    const opt = sel.options && sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex] : null;
+    const text = (opt && opt.text) || 'Examples…';
+    sel.setAttribute('aria-label', text);
+    let lab = document.querySelector && document.querySelector('label[for="selExample"]');
+    if (!lab && document.createElement && sel.parentNode) {
+      lab = document.createElement('label');
+      lab.htmlFor = 'selExample';
+      lab.className = 'sr-only';
+      sel.parentNode.insertBefore(lab, sel);
+    }
+    if (lab) lab.textContent = text;
+  }
   // ---------------- project ----------------
   function normalize(p) {
     p.parts = p.parts || []; p.wires = p.wires || []; p.files = p.files || {}; p.mode = p.mode || 'qemu'; p.defines = p.defines || []; p.code = p.code ?? '';
@@ -526,7 +585,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     }
     app.sim.resetState(); uartBuf = ''; app.lastBits = null; app.i2c = {}; app.i2cCur = null; app.spi = {}; app.spiMask = -1;
     if (app.proj.mode === 'js') {
-      const sk = new JsSketchMod.JsSketch(app.proj.code, { sim: app.sim, espPart: esp, serial: serialAppend, onError: (e) => { serialAppend('\n[JS error] ' + e.message + '\n'); setStatus('err', 'error'); } });
+      const sk = new JsSketchMod.JsSketch(app.proj.code, { sim: app.sim, espPart: esp, serial: serialAppend, onError: (e) => { const msg = (e && e.message) || 'The sketch stopped.'; const line = msg.indexOf('The sketch ') === 0 ? msg : ('[JS error] ' + msg); serialAppend('\n' + line + '\n'); setStatus('err', 'error'); } });
       app.run = { kind: 'js', sketch: sk, t0: performance.now() }; setStatus('run', 'running (JS sketch)');
       try { await sk.start(); } catch (e) { return; }
       return;
@@ -1039,13 +1098,73 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     $('#netLog').innerHTML = L.map((e) => `<details class="nl c${e.code}"><summary><span class="pr">${e.proto}</span> ${P.esc(e.summary)}</summary>${e.detail ? `<pre>${P.esc(JSON.stringify(e.detail, null, 1))}</pre>` : ''}</details>`).join('') || '<p class="muted">no traffic yet</p>';
   }
   // ---------------- misc UI ----------------
-  function toast(msg, err) { const t = document.createElement('div'); t.className = 'toast' + (err ? ' err' : ''); t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 2600); }
+  function toast(msg, err) {
+    const t = document.createElement('div'); t.className = 'toast' + (err ? ' err' : ''); t.textContent = msg;
+    if (perfOn('a11y')) { t.setAttribute('role', 'status'); t.setAttribute('aria-live', 'polite'); }
+    document.body.appendChild(t); setTimeout(() => t.remove(), 2600);
+  }
+  function buildPaletteWhenIdle(cats, thumb) {
+    const pal = $('#palList');
+    if (!pal) return;
+    const entries = [];
+    for (const [c, list] of Object.entries(cats)) for (const pair of list) entries.push([c, pair[0], pair[1]]);
+    let i = 0, openCat = null, grid = null;
+    const qnow = () => (($('#palSearch') && $('#palSearch').value) || '').trim().toLowerCase();
+    function finish() {
+      const empty = document.createElement('div');
+      empty.className = 'pal-empty'; empty.hidden = true; empty.textContent = 'No parts match.';
+      pal.appendChild(empty);
+      pal.querySelectorAll('.pcat').forEach((el) => el.onclick = () => { el.classList.toggle('closed'); el.nextElementSibling.classList.toggle('closed'); });
+      $('#palSearch').oninput = (e) => { const q = e.target.value.trim().toLowerCase(); let n = 0;
+        document.querySelectorAll('.pitem').forEach((it) => { const m = !q || it.dataset.q.includes(q); it.hidden = !m; n += m; });
+        document.querySelectorAll('.pgrid').forEach((g) => { const any = [...g.children].some((c) => !c.hidden); g.hidden = !any; g.previousElementSibling.hidden = !any; if (q) g.classList.remove('closed'); });
+        const box = document.querySelector('.pal-empty'); if (box) box.hidden = n > 0; };
+      document.querySelectorAll('.pitem').forEach((el) => {
+        el.addEventListener('dragstart', (ev) => ev.dataTransfer.setData('text/x-part', el.dataset.type));
+        el.addEventListener('click', () => app.editor.addPartInView(el.dataset.type));
+      });
+    }
+    function step(deadline) {
+      const now = () => ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now());
+      const start = now();
+      while (i < entries.length) {
+        const elapsed = now() - start;
+        const remain = deadline && typeof deadline.timeRemaining === 'function' ? deadline.timeRemaining() : 8;
+        if (elapsed > 12 || (i && remain < 4 && elapsed > 6)) break;
+        const [c, k, d] = entries[i++];
+        if (c !== openCat) {
+          const head = document.createElement('div');
+          head.className = 'pcat'; head.dataset.cat = c; head.textContent = c;
+          grid = document.createElement('div'); grid.className = 'pgrid'; grid.dataset.cat = c;
+          pal.appendChild(head); pal.appendChild(grid); openCat = c;
+        }
+        const item = document.createElement('div');
+        item.className = 'pitem'; item.draggable = true; item.dataset.type = k;
+        item.dataset.q = (d.label + ' ' + k + ' ' + c + ' ' + (d.keywords || '')).toLowerCase();
+        item.title = d.label + ' — drag onto the canvas or click to add';
+        item.innerHTML = thumb(k, d) + '<span></span>';
+        const lab = item.querySelector('span'); if (lab) lab.textContent = d.label;
+        const q = qnow(); if (q && item.dataset.q.indexOf(q) < 0) item.hidden = true;
+        grid.appendChild(item);
+      }
+      if (i < entries.length) {
+        const again = (cb) => (window.requestIdleCallback ? requestIdleCallback(cb, { timeout: 200 }) : setTimeout(() => cb({ timeRemaining: () => 8 }), 16));
+        again(step);
+        return;
+      }
+      finish();
+    }
+    const kick = () => step({ timeRemaining: () => 8 });
+    if (window.requestAnimationFrame) requestAnimationFrame(() => { if (window.requestIdleCallback) requestIdleCallback(kick, { timeout: 1500 }); else setTimeout(kick, 1); });
+    else kick();
+  }
   function buildPalette() {
     const cats = {}; for (const [k, d] of Object.entries(P.T)) (cats[d.cat || 'Misc'] = cats[d.cat || 'Misc'] || []).push([k, d]);
     const thumb = (k, d) => { try { const p = { id: 'T', type: k, x: 0, y: 0, rot: 0, props: JSON.parse(JSON.stringify(d.props || {})) }; const sz = d.size(p); const pins = d.pins(p);
         let x0 = 0, y0 = 0, x1 = sz.w, y1 = sz.h; for (const q of pins) { x0 = Math.min(x0, q.x); y0 = Math.min(y0, q.y); x1 = Math.max(x1, q.x); y1 = Math.max(y1, q.y); }
         if (k === 'breadboard') { p.props.cols = 20; x1 = 210; y0 = -14; y1 = 208; }
         const pad = 14; return `<svg viewBox="${x0 - pad} ${y0 - pad - 20} ${x1 - x0 + 2 * pad} ${y1 - y0 + 2 * pad + 20}" preserveAspectRatio="xMidYMid meet">${d.svg(p, null)}</svg>`; } catch (e) { return ''; } };
+    if (perfOn('idlepal')) { buildPaletteWhenIdle(cats, thumb); return; }
     let h = ''; for (const [c, list] of Object.entries(cats)) { h += `<div class="pcat" data-cat="${P.esc(c)}">${c}</div><div class="pgrid" data-cat="${P.esc(c)}">`; for (const [k, d] of list) h += `<div class="pitem" draggable="true" data-type="${k}" data-q="${P.esc((d.label + ' ' + k + ' ' + c + ' ' + (d.keywords || '')).toLowerCase())}" title="${P.esc(d.label)} — drag onto the canvas or click to add">${thumb(k, d)}<span>${P.esc(d.label)}</span></div>`; h += '</div>'; }
     $('#palList').innerHTML = h + '<div class="pal-empty" hidden>No parts match.</div>';
     $('#palList').querySelectorAll('.pcat').forEach((el) => el.onclick = () => { el.classList.toggle('closed'); el.nextElementSibling.classList.toggle('closed'); });
@@ -1272,7 +1391,55 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const edge = Math.min(tr.right, document.documentElement.clientWidth);
     if (Math.max(dr.right, glow) - edge > 0.5) top.classList.add('hdr-tight');
   }
+  function syncHeaderFitBatched() {
+    // One structural write, then the layout reads, then the class writes.
+    // Used only for ?batchlayout=1. The default path below is unchanged.
+    placeProj();
+    syncProjTitle();
+    syncExampleTip();
+    const top = document.getElementById && document.getElementById('top');
+    const crumb = document.querySelector && document.querySelector('#top .crumb');
+    if (crumb && crumb.classList) crumb.classList.remove('crumb-hide');
+    const phone = !!(document.body && document.body.classList.contains('m'));
+    if (!top || typeof top.clientWidth !== 'number' || top.clientWidth < 1) {
+      headerFitKey = '';
+      applyStatusTier(0);
+      syncDocTitle();
+      return;
+    }
+    const title = document.getElementById && document.getElementById('projTitle');
+    const titleText = title ? title.textContent : '';
+    const runLabel = document.querySelector && document.querySelector('#bRun span');
+    const runText = runLabel ? runLabel.textContent : '';
+    const key = top.clientWidth + (phone ? 'p' : 'd') + titleText + '|' + statusWord + '|' + runText;
+    const st = document.getElementById('status');
+    let tier = st && st.classList && st.classList.contains('st-icon') ? 2 : st && st.classList && st.classList.contains('st-short') ? 1 : 0;
+    if (key !== headerFitKey) { tier = 0; applyStatusTier(0); }
+    const overflow = headerOverflows() || titleNeedsRoom();
+    if (overflow && tier < 2) { applyStatusTier(2); tier = 2; }
+    const reset = key !== headerFitKey;
+    if (reset && top.classList) top.classList.remove('hdr-tight');
+    const dot = document.getElementById && document.getElementById('connDot');
+    let tight = false;
+    if (dot && typeof getComputedStyle === 'function') {
+      const cs = getComputedStyle(dot);
+      if (cs.display !== 'none' && cs.visibility !== 'hidden') {
+        const dr = dot.getBoundingClientRect();
+        if (dr.width >= 1) {
+          const tr = top.getBoundingClientRect();
+          const mark = dot.querySelector && dot.querySelector('i');
+          const glow = mark ? mark.getBoundingClientRect().right + 6 : dr.right;
+          const edge = Math.min(tr.right, document.documentElement.clientWidth);
+          tight = Math.max(dr.right, glow) - edge > 0.5;
+        }
+      }
+    }
+    if (tight && top.classList) top.classList.add('hdr-tight');
+    headerFitKey = key;
+    syncDocTitle();
+  }
   function syncHeaderFit() {
+    if (perfOn('batchlayout')) { syncHeaderFitBatched(); return; }
     placeProj();
     syncProjTitle();
     syncExampleTip();
@@ -1418,10 +1585,15 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       warnings: () => renderWarnings(),
       hover, state: (p) => app.sim ? app.sim.partState(p) : null, running: () => !!app.run || !espPart(), press,
     });
-    buildPalette(); about();
+    buildPalette();
+    if (perfOn('idlepal')) {
+      const fillAbout = () => { const box = document.getElementById('aboutBox'); if (box && !box.innerHTML) about(); };
+      if (window.requestIdleCallback) requestIdleCallback(fillAbout, { timeout: 2000 });
+      else setTimeout(fillAbout, 50);
+    } else about();
     { const grp = {}; for (const [k, n, c] of Examples.LIST) (grp[c || 'ESP32 projects'] = grp[c || 'ESP32 projects'] || []).push(`<option value="${k}">${n}</option>`);
       $('#selExample').innerHTML = '<option value="">Examples…</option>' + Object.entries(grp).map(([c, o]) => `<optgroup label="${P.esc(c)}">${o.join('')}</optgroup>`).join(''); }
-    $('#selExample').onchange = (e) => { if (e.target.value) loadExample(e.target.value); e.target.value = ''; };
+    $('#selExample').onchange = (e) => { if (e.target.value) loadExample(e.target.value); e.target.value = ''; labelExample(); };
     $('#selWireColor').innerHTML = ['auto', ...Object.keys(window.WIRE_COLORS)].map((c) => `<option>${c}</option>`).join(''); $('#selWireColor').onchange = (e) => app.editor.setWireColor(e.target.value);
     $('#bRun').onclick = startRun; $('#bStop').onclick = stopRun; $('#bReset').onclick = () => { app.sim.resetState(); app.editor.render(); };
     $('#bUndo').onclick = () => app.editor.undo(); $('#bRedo').onclick = () => app.editor.redo(); $('#bRot').onclick = () => app.editor.rotateSel(); $('#bDel').onclick = () => app.editor.deleteSel();
@@ -1433,6 +1605,9 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     $('#code').addEventListener('input', () => { syncCode(); autosave(); }); $('#inDefines').addEventListener('input', () => { syncDefines(); autosave(); });
     $('#bProjects').onclick = projectsDialog;
     $('#bRestart').onclick = () => { stopRun(); startRun(); };
+    setTimeout(initViews, 0);
+  }
+  function initViews() {
     $('#cbFlow').checked = clStorage.local.getItem('esp32lab.flow') !== '0'; $('#stage').classList.toggle('flow', $('#cbFlow').checked);
     $('#cbFlow').onchange = (e) => { $('#stage').classList.toggle('flow', e.target.checked); clStorage.local.setItem('esp32lab.flow', e.target.checked ? '1' : '0'); };
     if (window.Schematic) {
@@ -1458,6 +1633,9 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     $('#netFilter').oninput = (e) => { app.netlog.filter = e.target.value; app.netlog.dirty = true; app.netlog.render(); };
     $('#bNetClr').onclick = () => app.netlog.clear();
     $('#bNetCopy').onclick = async () => { const t = app.netlog.text(); try { await navigator.clipboard.writeText(t); toast('Network log copied (' + t.split('\n').length + ' lines)'); } catch (e) { const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); toast('Network log copied'); } };
+    setTimeout(initInstruments, 0);
+  }
+  function initInstruments() {
     if (window.Instruments) { Instruments.mount($('#tab-scope'), { app, toast }); Instruments.renderStrip(true); }
     $('#insp').addEventListener('click', (e) => {   // Inspector → probe / pin-to-telemetry buttons
       const b = e.target.closest('[data-probe],[data-watch]'); if (!b || !window.Instruments) return; const pr = JSON.parse(b.dataset.probe || b.dataset.watch);
@@ -1468,6 +1646,9 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     $('#cbWifi').onchange = (e) => { app.world.wifiUp = e.target.checked; };
     $('#bTvPower').onclick = () => { const tv = app.world.tv; tv.power = tv.power === 'on' ? 'off' : 'on'; app.devDirty = true; renderDevices(); };
     $('#cbDiodes').onchange = (e) => { for (const q of app.proj.parts) if (q.type === 'diode') q.props.bypass = !e.target.checked; app.sim.dirty = true; app.editor.render(); toast(e.target.checked ? 'Diodes fitted' : 'Diodes replaced by wires — press 3 keys forming a rectangle corner to see a ghost key'); };
+    setTimeout(initProject, 0);
+  }
+  function initProject() {
     // start-up: ?p=<project> > ?ex=<example, read-only> > last open project > legacy single-slot save > Blink example
     const sp = new URLSearchParams(location.search), q = sp.get('ex'), pid = sp.get('p'), saved = clStorage.local.getItem(STORE);
     if (saved && !store.list().length) { try { const o = JSON.parse(saved); if (!o.example) { o.name = o.name || 'My saved project'; store.importJson(o); } } catch (e) { /* ignore */ } clStorage.local.removeItem(STORE); }
@@ -1479,6 +1660,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     requestAnimationFrame(tick); if (window.UI) window.UI.init(app);
     if (new URLSearchParams(location.search).get('resume') !== '0') setTimeout(() => app.resumeSavedRun(), 300);
     if (new URLSearchParams(location.search).get('tab')) document.querySelector(`[data-tab=${new URLSearchParams(location.search).get('tab')}]`).click();
+    applyA11y();
   }
 
   // ---------------- 2D / 3D view ----------------
@@ -1490,15 +1672,17 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       let abs = src;
       try { abs = new URL(src, document.baseURI).href; } catch (_) {}
       const existing = [...document.scripts].find((s) => s.src === abs);
-      if (existing) {
-        if (existing.dataset.loaded === '1') return res();
-        existing.addEventListener('load', () => res(), { once: true });
-        existing.addEventListener('error', () => rej(new Error('failed to load ' + src)), { once: true });
+      if (existing && existing.dataset.failed === '1' && perfOn('lazy3d')) existing.remove();
+      const again = [...document.scripts].find((s) => s.src === abs);
+      if (again) {
+        if (again.dataset.loaded === '1') return res();
+        again.addEventListener('load', () => res(), { once: true });
+        again.addEventListener('error', () => rej(new Error('failed to load ' + src)), { once: true });
         return;
       }
       const s = document.createElement('script'); s.src = src; s.async = true;
       s.onload = () => { s.dataset.loaded = '1'; res(); };
-      s.onerror = () => rej(new Error('failed to load ' + src));
+      s.onerror = () => { s.dataset.failed = '1'; if (perfOn('lazy3d')) s.remove(); rej(new Error('failed to load ' + src)); };
       document.head.appendChild(s);
     });
   }
@@ -1519,6 +1703,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     finally { window.__3dPrefetching = false; }
   }
   function schedule3dPrefetch() {
+    if (perfOn('lazy3d')) return;
     if (no3dDevice()) return;
     let q = '';
     try { q = location.search || ''; } catch (_) {}
@@ -1570,9 +1755,38 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   let viewSeq = 0;
   const LSV = 'esp32lab.view';
   const lsSet = (k, v) => { try { clStorage.local.setItem(k, v); } catch (_) {} };
+  function reset3dCard(el) {
+    const card = el.querySelector && el.querySelector('.view3d-load-card');
+    if (!card) return;
+    if (!card.querySelector('.view3d-spin')) card.innerHTML = '<span class="view3d-spin" aria-hidden="true"></span><span>Loading 3D view…</span>';
+    if (perfOn('lazy3d') && !card.querySelector('.view3d-skel')) {
+      const sk = document.createElement('span');
+      sk.className = 'view3d-skel'; sk.setAttribute('aria-hidden', 'true');
+      card.insertBefore(sk, card.firstChild);
+    }
+  }
+  function show3dRetry() {
+    const el = $('#view3dLoad');
+    if (!el) return;
+    const card = el.querySelector('.view3d-load-card');
+    el.hidden = false;
+    el.classList.remove('is-skel');
+    el.classList.add('is-fail');
+    el.setAttribute('aria-busy', 'false');
+    if (card) {
+      card.innerHTML = '<p class="view3d-retry-msg" role="status"></p><button type="button" class="view3d-retry">Retry</button>';
+      card.querySelector('.view3d-retry-msg').textContent = 'Could not load the 3D view. Retry.';
+      card.querySelector('.view3d-retry').onclick = () => { el.classList.remove('is-fail'); setViewMode('3d'); };
+    }
+    document.body.classList.remove('view3d-busy');
+  }
   function show3dLoad(on) {
     const el = $('#view3dLoad');
-    if (el) { el.hidden = !on; el.setAttribute('aria-busy', on ? 'true' : 'false'); }
+    if (el) {
+      if (on && perfOn('lazy3d')) { el.classList.remove('is-fail'); reset3dCard(el); el.classList.add('is-skel'); }
+      else if (el.classList) el.classList.remove('is-skel');
+      el.hidden = !on; el.setAttribute('aria-busy', on ? 'true' : 'false');
+    }
     document.body.classList.toggle('view3d-busy', !!on);
     const live = document.getElementById('stLive');
     const st = document.getElementById('status');
@@ -1601,7 +1815,8 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (viewMode !== '3d') { if (app.view3d) try { app.view3d.setActive(false); } catch (_) {} return; }
     viewMode = '2d'; viewSeq++;
     try { if (app.view3d) app.view3d.setActive(false); } catch (_) {}
-    show3dLoad(false);
+    if (perfOn('lazy3d')) show3dRetry();
+    else show3dLoad(false);
     applyViewChrome();
     toast(e && e.camera ? '3D camera failed — back to 2D' : '3D view unavailable (' + ((e && e.message) || 'WebGL error') + ') — back to 2D', true);
   }
@@ -1663,7 +1878,11 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       if (!ok.ok) { const er = new Error(ok.why || 'blank frame'); er.camera = !!ok.camera; throw er; }
       show3dLoad(false);
       if (!quiet) toast('3D view — drag orbit · pinch/wheel zoom · Esc or Back to 2D to exit');
-    } catch (e) { if (seq === viewSeq) view3dFail(e); show3dLoad(false); }
+    } catch (e) {
+      const mine = seq === viewSeq;
+      if (mine) view3dFail(e);
+      if (!(perfOn('lazy3d') && mine)) show3dLoad(false);
+    }
   }
   function setupViewToggle() {
     const b2 = $('#bView2d'), b3 = $('#bView3d'), bs = $('#bViewSch'); if (!b2 || !b3) return;
@@ -1686,7 +1905,9 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   window.addEventListener('keydown', onWindowKeyDown);
   window.addEventListener('keyup', onWindowKeyUp);
   placeProj();
-  window.addEventListener('DOMContentLoaded', init);
+  applyA11y();
+  if (document.readyState === 'loading' || typeof Editor !== 'function' || !document.getElementById('stage')) window.addEventListener('DOMContentLoaded', init);
+  else setTimeout(init, 0);
 })();
 
 ;(function(){const b=document.querySelector('#tabs [data-tab=bom]');if(b)b.addEventListener('click',()=>{try{if(window.Bom&&window.app&&app.proj)Bom.render(document.getElementById('bomView'),app.proj)}catch(e){}});})();
