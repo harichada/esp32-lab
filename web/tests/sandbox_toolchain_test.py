@@ -250,6 +250,123 @@ class FreshSandboxCompileTests(unittest.TestCase):
                 else:
                     os.environ[key] = value
 
+    def test_blink_boots_under_nproc_12_with_the_thread_pool_cap(self):
+        """Blink reaches running and GPIO2 toggles with RLIMIT_NPROC at 12.
+
+        Skipped unless SIM_REQUIRE_TOOLCHAIN_TEST=1. The run uses
+        SIM_SANDBOX_NPROC=12, which is ``prlimit --nproc=12`` around the
+        sandbox. The default thread-pool cap (8) has to keep QEMU from
+        aborting the way an uncapped pool of 64 does.
+        """
+        if os.environ.get('SIM_REQUIRE_TOOLCHAIN_TEST') != '1':
+            self.skipTest('SIM_REQUIRE_TOOLCHAIN_TEST is not 1')
+        _require_or_skip(self)
+        if shutil.which('prlimit') is None:
+            self.fail('prlimit is not on PATH, so SIM_SANDBOX_NPROC would not apply')
+        qemu, rom = _require_qemu(self)
+        import socket
+        import threading
+        import time
+        import uvicorn
+        server.QEMU = str(qemu)
+        server.ROMDIR = str(rom)
+        blink = (Path(__file__).resolve().parents[1] / 'examples' / 'Blink.ino').read_text()
+        sketch = blink + '\n// nproc12 %d\n' % secrets_token()
+        saved = {
+            key: os.environ.get(key)
+            for key in ('SIM_COMPILE_SANDBOX', 'ARDUINO_BUILD_CACHE_PATH', 'SIM_BUILD_CACHE_DIR',
+                        'XDG_CACHE_HOME', 'SIM_ARDUINO_CONFIG_FILE', 'SIM_SANDBOX_NPROC',
+                        'QEMU_THREAD_POOL_CAP_ENABLED', 'SIM_QEMU_THREAD_POOL_MAX')
+        }
+        cache = Path(tempfile.mkdtemp(prefix='esp32cache-'))
+        xdg = Path(tempfile.mkdtemp(prefix='esp32xdg-'))
+        config = Path(tempfile.mkdtemp(prefix='esp32cfg-')) / 'arduino-cli.yaml'
+        data = Path(os.environ.get('ARDUINO_DIRECTORIES_DATA') or Path.home() / '.arduino15')
+        config.write_text(
+            'directories:\n'
+            f'  data: {data}\n'
+            'build_cache:\n'
+            f'  path: {cache}\n')
+        os.environ['SIM_COMPILE_SANDBOX'] = '1'
+        os.environ['ARDUINO_BUILD_CACHE_PATH'] = str(cache)
+        os.environ['SIM_BUILD_CACHE_DIR'] = str(cache)
+        os.environ['XDG_CACHE_HOME'] = str(xdg)
+        os.environ['SIM_ARDUINO_CONFIG_FILE'] = str(config)
+        os.environ.pop('QEMU_THREAD_POOL_CAP_ENABLED', None)
+        os.environ.pop('SIM_QEMU_THREAD_POOL_MAX', None)
+        compileguard._bwrap_ok = None
+        work = Path(tempfile.mkdtemp(prefix='esp32fresh-'))
+        plan = None
+        sock = socket.socket()
+        sock.bind(('127.0.0.1', 0))
+        port = sock.getsockname()[1]
+        sock.close()
+        uv = None
+        thread = None
+        try:
+            plan = server._compile_plan({'sketch': sketch, 'files': {}})
+            self.assertIsInstance(plan, dict, getattr(plan, 'body', plan))
+            shutil.rmtree(plan['bdir'], ignore_errors=True)
+            resp = asyncio.run(server._compile_in(
+                work, plan['bdir'], plan['key'], plan['sketch'], plan['files'],
+                plan['defines'], plan['net'], plan['netmode'], plan['simlibs']))
+            import json
+            if isinstance(resp, dict):
+                payload = resp
+            else:
+                payload = json.loads(resp.body.decode())
+            self.assertTrue(payload.get('ok'), (payload.get('log') or '')[-2000:])
+            image = server.BUILDS / plan['key'] / 'flash.bin'
+            self.assertTrue(image.is_file() and image.stat().st_size > 0)
+            os.environ['SIM_SANDBOX_NPROC'] = '12'
+            self.assertEqual(server.qemu_thread_pool_object(), [
+                '-object', 'main-loop,id=ml,thread-pool-min=0,thread-pool-max=8'])
+            self.assertEqual(compileguard.job_limits()['nproc'], 12)
+            config_uv = uvicorn.Config(
+                server.app, host='127.0.0.1', port=port, log_level='warning', access_log=False)
+            uv = uvicorn.Server(config_uv)
+            uv.install_signal_handlers = lambda: None
+            thread = threading.Thread(target=uv.run, daemon=True)
+            thread.start()
+            deadline = time.time() + 15
+            while time.time() < deadline:
+                try:
+                    with socket.create_connection(('127.0.0.1', port), 0.2):
+                        break
+                except OSError:
+                    time.sleep(0.05)
+            else:
+                self.fail('run server did not listen')
+            url = 'ws://127.0.0.1:%d/api/run/%s' % (port, payload['id'])
+            if server.TOKEN:
+                url += '?t=' + server.TOKEN
+            seconds = _toolchain_run_deadline()
+            started, edges, bad, info = asyncio.run(_gpio2_toggles(url, seconds))
+            detail = _blink_failure_detail(info, image)
+            self.assertEqual(bad, '', detail)
+            self.assertTrue(started, 'the run did not send a session ' + detail)
+            self.assertEqual(info.get('status'), 'qemu started', detail)
+            self.assertGreaterEqual(
+                len(edges), 2,
+                'GPIO2 toggled %d time(s) (edges at %s) %s' % (len(edges), edges, detail))
+        finally:
+            if uv is not None:
+                uv.should_exit = True
+            if thread is not None:
+                thread.join(5)
+            compileguard._bwrap_ok = None
+            shutil.rmtree(work, ignore_errors=True)
+            if plan is not None:
+                shutil.rmtree(plan['bdir'], ignore_errors=True)
+            shutil.rmtree(cache, ignore_errors=True)
+            shutil.rmtree(xdg, ignore_errors=True)
+            shutil.rmtree(config.parent, ignore_errors=True)
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
     def test_lwip_sandbox_reaches_the_mock_tv_and_blocks_the_host(self):
         """DHCP, HTTP via guestfwd, the Eco UDP frame, and both blocked connects.
 

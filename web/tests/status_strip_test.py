@@ -63,7 +63,7 @@ class StatusStripEnvTests(unittest.TestCase):
 
     def test_page_keeps_app_at_93_and_loads_the_strip_only_when_on(self):
         html = PAGE.decode('utf-8')
-        self.assertIn('js/app.js?v=98', html)
+        self.assertIn('js/app.js?v=99', html)
         self.assertNotIn('js/statusstrip.js', html)
         self.assertNotIn('js/compilehints.js', html)
         self.assertNotIn('js/app.js?v=84', html)

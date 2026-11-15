@@ -133,6 +133,8 @@ On this machine the same Blink took 7.8 s with an empty core cache, 4.2 s once `
 | `SIM_SANDBOX_FSIZE_BYTES` | `268435456` | `RLIMIT_FSIZE` for those jobs (256 MiB per file). |
 | `SIM_SANDBOX_OUTPUT_BYTES` | `1048576` | Stdout and stderr kept from those jobs (1 MiB). The rest is dropped with `Output truncated: the sandbox stopped capturing after N bytes.` |
 | `SIM_SANDBOX_NPROC` | `64` | `RLIMIT_NPROC` for those jobs. When the host can create a pids cgroup, the same number is written to `pids.max` for that job only. |
+| `QEMU_THREAD_POOL_CAP_ENABLED` | on | QEMU's block thread pool is capped so a busy flash does not spawn threads until `RLIMIT_NPROC` aborts the run (`qemu_thread_create` / exit 134). On adds `-object main-loop,id=ml,thread-pool-min=0,thread-pool-max=N` to the run command. Only the exact value `0` removes that pair and restores the previous command line. Unset, blank, `1`, and any other value stay on. |
+| `SIM_QEMU_THREAD_POOL_MAX` | `8` | `N` in that object. An integer from 1 to 64. Blank, non-numeric, and out-of-range values use 8. Ignored when the cap flag is `0`. |
 
 Sketches can reach the simulated devices in Circuit Lab, but not the internet, which is blocked for safety. Requests to real websites will fail even if your code is fine.
 

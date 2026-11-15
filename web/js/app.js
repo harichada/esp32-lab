@@ -372,6 +372,7 @@ async function fetchRetry(u, o, n = 4) {
   function sendRun(m) { if (app.run && app.run.ws && app.run.ws.readyState === 1) app.run.ws.send(JSON.stringify(m)); }
   function espPart() { return app.proj.parts.find((q) => q.type === 'esp32'); }
   const OFFLINE = "Can't reach the simulator right now. Your work is saved on this device. Try again in a moment.";
+  const SIM_STOPPED = 'The simulator stopped. Press Run to try again.';
   function statusFace(kind, text) {
     const t = String(text || '').trim();
     if (t === OFFLINE || /can't reach the simulator/i.test(t)) return { short: 'Offline', full: OFFLINE };
@@ -382,6 +383,7 @@ async function fetchRetry(u, o, n = 4) {
     }
     if (!t || /^(idle|stopped)$/i.test(t)) return { short: 'Idle', full: t ? (t === 'idle' || t === 'stopped' ? 'Idle' : t) : 'Idle' };
     if (t === 'error') return { short: 'Run error', full: 'error' };
+    if (t === SIM_STOPPED) return { short: SIM_STOPPED, full: SIM_STOPPED };
     return { short: t, full: t };
   }
   let statusWord = 'Idle';
@@ -1064,7 +1066,7 @@ async function fetchRetry(u, o, n = 4) {
       run.ws = null; ws.onclose = ws.onmessage = null; try { ws.close(); } catch (e) { /* already closed */ }
       // A dropped socket is no longer a compile. The Run control must not stay on Building….
       setCompilePhase('idle');
-      if (run.ended || !run.sid) { setStatus(run.ended ? 'idle' : 'err', run.ended ? 'QEMU exited' : 'connection lost'); document.body.classList.remove('reconnecting'); app.run = null; return; }
+      if (run.ended || !run.sid) { setStatus('err', run.ended ? SIM_STOPPED : 'connection lost'); document.body.classList.remove('reconnecting'); app.run = null; return; }
       if (!run.lostAt || run.tries === 0) run.lostAt = Date.now();
       if (run.grace && Date.now() - run.lostAt > run.grace + 600000) { setStatus('err', 'connection lost'); document.body.classList.remove('reconnecting'); serialAppend('\n[connection lost — run expired on the server]\n'); app.run = null; return; }
       const d = Math.min(8000, 400 * Math.pow(2, run.tries++));
@@ -1112,7 +1114,7 @@ async function fetchRetry(u, o, n = 4) {
           : (m.msg || 'error');
         app.netlog.add({ k: 'info', msg: 'error: ' + shown, ok: false }); serialAppend(`[error] ${shown}\n`); setStatus('err', shown); break;
       }
-      case 'exit': serialAppend(`[qemu exited ${m.code}]\n`); break;
+      case 'exit': serialAppend(`[qemu exited ${m.code}]\n`); setStatus('err', SIM_STOPPED); break;
     }
   }
   // ---------------- servo / NeoPixel / DHT22 (state that the parts render; parts never see the ESP32 runtime) ----------------

@@ -23,6 +23,12 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       SIM_SANDBOX_OUTPUT_BYTES (captured stdout/stderr, default 1 MiB),
       SIM_SANDBOX_NPROC (RLIMIT_NPROC and pids.max when a pids cgroup can be
       created, default 64).
+      QEMU_THREAD_POOL_CAP_ENABLED (default on). Only the exact value 0 leaves
+      the QEMU command line unchanged. Any other value adds
+      -object main-loop,id=ml,thread-pool-min=0,thread-pool-max=N.
+      SIM_QEMU_THREAD_POOL_MAX is that N (default 8, integer 1..64; anything
+      else, including blank or out of range, is 8). The cap stops QEMU's block
+      thread pool from hitting RLIMIT_NPROC and aborting the run.
       SIM_NET_NOTICE (default 1; 0 omits net_blocked_notice on the compile response),
       SIM_ORPHAN_MAX_AGE_S and the matching *_MAX_AGE_S knobs.
       Staging (off unless set): SIM_STAGING, SIM_ACCESS_TOKEN, SIM_STAGING_UPSTREAM, SIM_BASE_PATH.
@@ -2157,6 +2163,44 @@ async def _session_main(ws, bid, img):
         _live_images.discard(safe)
         shutil.rmtree(tmp, ignore_errors=True)
 
+def qemu_thread_pool_enabled(env=None) -> bool:
+    """True unless ``QEMU_THREAD_POOL_CAP_ENABLED`` is exactly ``0``.
+
+    Unset, blank, ``1``, and every other value keep the cap. ``0`` is the
+    only way back to the command line from before the cap.
+    """
+    src = os.environ if env is None else env
+    return str(src.get('QEMU_THREAD_POOL_CAP_ENABLED', '1')).strip() != '0'
+
+
+def qemu_thread_pool_max(env=None) -> int:
+    """Threads in QEMU's block pool. Default 8. Only integers 1..64 are kept."""
+    src = os.environ if env is None else env
+    raw = src.get('SIM_QEMU_THREAD_POOL_MAX')
+    if raw is None or str(raw).strip() == '':
+        return 8
+    try:
+        value = int(str(raw).strip())
+    except ValueError:
+        return 8
+    if 1 <= value <= 64:
+        return value
+    return 8
+
+
+def qemu_thread_pool_object(env=None) -> list[str]:
+    """``-object main-loop,...`` or nothing.
+
+    QEMU 9.2 accepts ``main-loop`` with ``thread-pool-min`` and
+    ``thread-pool-max``. The default pool (64) grows with queued flash
+    reads until ``RLIMIT_NPROC`` makes ``qemu_thread_create`` fail and
+    QEMU aborts. An empty list is the old command line, with no extra token.
+    """
+    if not qemu_thread_pool_enabled(env):
+        return []
+    return ['-object', 'main-loop,id=ml,thread-pool-min=0,thread-pool-max=%d' % qemu_thread_pool_max(env)]
+
+
 def qemu_net_restrict(env=None) -> bool:
     """Slirp ``restrict=on``. Default on. ``SIM_QEMU_NET_RESTRICT=0`` is the old open network."""
     env = os.environ if env is None else env
@@ -2277,7 +2321,8 @@ async def _qemu_session(ws, bid, img, tmp, hold):
         nic = lwip_nic_args(fw, qemu_path, srv_path)
     gsrv = await asyncio.start_unix_server(on_gpio, gsock); hold['gsrv'] = gsrv
     ssrv = await asyncio.start_unix_server(on_uart, ssock); hold['ssrv'] = ssrv
-    args = [QEMU, '-display', 'none', '-machine', 'esp32', '-drive', f'file={flash},if=mtd,format=raw', *nic,
+    args = [QEMU, '-display', 'none', '-machine', 'esp32', *qemu_thread_pool_object(),
+            '-drive', f'file={flash},if=mtd,format=raw', *nic,
             '-chardev', f'socket,id=ser,path={ssock}', '-serial', 'chardev:ser',
             '-chardev', f'socket,id=gp,path={gsock}', '-global', 'driver=esp32.gpio,property=chardev,value=gp',
             '-drive', f'file={efuse},if=none,format=raw,id=efuse', '-global', 'driver=nvram.esp32.efuse,property=drive,value=efuse',

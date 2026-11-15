@@ -573,7 +573,7 @@ test('the busy Run button is grey, keeps its spinner, and theme.css is cache-bus
   const mv = html.match(/mobile\.css\?v=(\d+)/);
   assert.equal(mv && mv[1], '74');
   const av = html.match(/app\.js\?v=(\d+)/);
-  assert.equal(av && av[1], '98');
+  assert.equal(av && av[1], '99');
   const mj = html.match(/mobile\.js\?v=(\d+)/);
   assert.equal(mj && mj[1], '71');
   const ev = html.match(/editor\.js\?v=(\d+)/);
@@ -694,4 +694,27 @@ test('an aborted or timed-out compile fetch leaves Building immediately', async 
     global.fetch = origFetch;
     narrowPhone = false;
   }
+});
+
+test('a QEMU exit keeps the code in the serial log and asks for Run', async () => {
+  wsShouldThrow = false;
+  const pending = gate();
+  compileReply = pending.promise;
+  const flight = app.startRun();
+  pending.resolve(okResponse());
+  await flight;
+  const ws = global.WebSocket.last;
+  ws.readyState = 1;
+  ws.onopen();
+  ws.onmessage({ data: JSON.stringify({ t: 'session', sid: 'sess', grace_s: 30, _n: 1 }) });
+  app.serialText = '';
+  ws.onmessage({ data: JSON.stringify({ t: 'exit', code: 134, _n: 2 }) });
+  assert.match(app.serialText, /\[qemu exited 134\]/);
+  assert.equal(ids.stText.textContent, 'The simulator stopped. Press Run to try again.');
+  assert.equal(ids.stLive.textContent, 'The simulator stopped. Press Run to try again.');
+  assert.doesNotMatch(ids.stText.textContent, /134|QEMU exited/i);
+  ws.onclose();
+  assert.equal(ids.stText.textContent, 'The simulator stopped. Press Run to try again.');
+  assert.match(app.serialText, /\[qemu exited 134\]/);
+  assert.equal(app.run, null);
 });
