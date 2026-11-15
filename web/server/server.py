@@ -1569,7 +1569,7 @@ RUN_EXPIRED_MSG = 'This build has expired. Press Run to build it again.'
 QEMU_FAIL_MSG = "The simulator couldn't start. Try again in a minute."
 # Startup ``qemu-system-xtensa --version`` with the run spawn environment.
 # done is False until that check runs. A failed check makes runs fail fast.
-_qemu_check = {'done': False, 'ok': False, 'rc': None, 'at': 0.0}
+_qemu_check = {'done': False, 'ok': False, 'rc': None, 'at': 0.0, 'bin': ''}
 _dgram_cache: dict[str, bool] = {}
 BAD_BUILD_MSG = "That build id is not valid. Press Run to build it again."
 _BUILD_ID = re.compile(r'[0-9a-f]{16}\Z')
@@ -1776,12 +1776,15 @@ def _check_fresh(at, ok, refresh: bool) -> bool:
 
 
 def qemu_selfcheck_failed() -> bool:
-    return bool(_qemu_check['done'] and not _qemu_check['ok'])
+    """A failed ``--version`` blocks runs of that same binary only."""
+    return bool(
+        _qemu_check['done'] and not _qemu_check['ok'] and _qemu_check.get('bin') == QEMU)
 
 
 def qemu_ready(*, refresh: bool = False) -> bool:
     """``--version`` with the spawn env. A success is reused for 60s; a failure is retried on the next run."""
-    if _qemu_check.get('done') and _check_fresh(_qemu_check.get('at') or 0, _qemu_check.get('ok'), refresh):
+    same = _qemu_check.get('bin') == QEMU
+    if same and _qemu_check.get('done') and _check_fresh(_qemu_check.get('at') or 0, _qemu_check.get('ok'), refresh):
         return bool(_qemu_check['ok'])
     return run_qemu_selfcheck()
 
@@ -1820,6 +1823,7 @@ def run_qemu_selfcheck(qemu_bin=None, romdir=None, env=None) -> bool:
     _qemu_check['ok'] = ok
     _qemu_check['rc'] = rc
     _qemu_check['at'] = time.monotonic()
+    _qemu_check['bin'] = binary
     if not ok:
         flat = ' '.join((err or '').split())
         print('ERROR qemu selfcheck failed rc=%s stderr=%s' % (rc, flat[:500]))
