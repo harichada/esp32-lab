@@ -2687,6 +2687,8 @@ def index():
         'Last-Modified': formatdate(stat.st_mtime, usegmt=True),
     })
 app.mount('/', StaticFiles(directory=str(SITE)), name='site')
+auth.set_logger(print)
+https.set_logger(print)
 auth.apply_env()
 https.apply_env()
 app.add_middleware(auth.AuthMiddleware)
