@@ -13,11 +13,20 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       SCHEMATIC_MATCH_LAYOUT (default 1). 0 puts <meta name="schmatch" content="0"> on the lab page
       so every visitor gets the column schematic. Any other value leaves index.html unchanged,
       and ?schmatch= on that page is then free to choose.
+      Sign-in (off unless set): AUTH_ENABLED, AUTH_GOOGLE, AUTH_GITHUB, AUTH_BASE_URL.
+      Secrets: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GITHUB_CLIENT_ID,
+      GITHUB_CLIENT_SECRET, from the environment or --env-file. See auth.py.
+      Live keeps AUTH_GOOGLE=0 until the Google consent screen is published.
+      Account data is <SIM_PROJECT_DIR>/accounts/ (directory 0700, files 0600).
+      TRUSTED_PROXY_IPS is a comma-separated list of exact IPs. Empty trusts
+      nobody. Production uses 172.30.0.250. See https.py. proxy_headers stays off.
 """
 import asyncio, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, argparse
 from email.utils import formatdate
 import diskkeep
 import staging
+import auth
+import https
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
 import secrets
@@ -1433,30 +1442,39 @@ def robots_txt():
     if found.is_file():
         return FileResponse(found)
     raise HTTPException(status_code=404)
-
 # Site-wide schematic switch. Read on each page load so a restart picks it up
 # with no second request. Only "0" turns it off; the file is served unchanged otherwise.
-SCHEMATIC_META = '<meta name="schmatch" content="0">'
+SCHEMATIC_META = b'<meta name="schmatch" content="0">'
+AUTH_META = b'<meta name="cl-auth" content="1">'
 def schematic_match_enabled(env=None):
     env = os.environ if env is None else env
     return str(env.get('SCHEMATIC_MATCH_LAYOUT', '1')).strip() != '0'
 def lab_page(env=None):
-    """Lab HTML and whether it is the file unchanged. Off injects one meta tag in <head>."""
+    """Lab HTML and whether it is the file unchanged.
+
+    SCHEMATIC_MATCH_LAYOUT=0 adds schmatch. Sign-in on adds cl-auth.
+    schmatch stays the first tag in head. Either change serves this body
+    with an ETag of the injected bytes.
+    """
     raw = (SITE / 'index.html').read_bytes()
-    if schematic_match_enabled(env):
+    if b'<head>' not in raw:
         return raw, True
-    text = raw.decode('utf-8')
-    if SCHEMATIC_META not in text and '<head>' in text:
-        text = text.replace('<head>', '<head>\n' + SCHEMATIC_META, 1)
-    return text.encode('utf-8'), False
-@app.get('/')
-@app.get('/index.html')
+    body = raw
+    if auth.enabled() and AUTH_META not in body:
+        body = body.replace(b'<head>', b'<head>\n' + AUTH_META, 1)
+    if not schematic_match_enabled(env) and SCHEMATIC_META not in body:
+        body = body.replace(b'<head>', b'<head>\n' + SCHEMATIC_META, 1)
+    if body == raw:
+        return raw, True
+    return body, False
+@app.api_route('/', methods=['GET', 'HEAD'])
+@app.api_route('/index.html', methods=['GET', 'HEAD'])
 def index():
     body, plain = lab_page()
     if plain:
         return FileResponse(SITE / 'index.html')
-    # The off page is the file plus one meta tag, so its validators are over that
-    # body. Last-Modified stays the file's mtime; ETag changes with the injection.
+    # Injected bytes, so the validators cover that body. Last-Modified stays
+    # the file's mtime; ETag changes with the injection.
     stat = (SITE / 'index.html').stat()
     etag = '"' + hashlib.sha256(body).hexdigest() + '"'
     return HTMLResponse(body, headers={
@@ -1464,6 +1482,9 @@ def index():
         'Last-Modified': formatdate(stat.st_mtime, usegmt=True),
     })
 app.mount('/', StaticFiles(directory=str(SITE)), name='site')
+auth.apply_env()
+https.apply_env()
+app.add_middleware(auth.AuthMiddleware)
 app.add_middleware(staging.StagingMiddleware)
 
 if __name__ == '__main__':

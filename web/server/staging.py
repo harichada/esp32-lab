@@ -747,6 +747,34 @@ def _legal_ws_close(code, reason):
     return code, text
 
 
+def _websockets_major(version):
+    """Leading integer of websockets.version.version. Anything else is 0."""
+    head = str(version).split('.', 1)[0]
+    return int(head) if head.isdigit() else 0
+
+
+def _ws_connect_kwargs(headers, version):
+    """Keyword arguments for websockets.connect on this major version.
+
+    14 renamed extra_headers to additional_headers. 15 added proxy.
+    The old name on 14 or newer is forwarded to loop.create_connection.
+    """
+    major = _websockets_major(version)
+    kwargs = {
+        'open_timeout': PROXY_TIMEOUT,
+        'max_size': None,
+        'ping_interval': None,
+        'compression': None,
+    }
+    if major >= 14:
+        kwargs['additional_headers'] = headers
+    else:
+        kwargs['extra_headers'] = headers
+    if major >= 15:
+        kwargs['proxy'] = None
+    return kwargs
+
+
 async def _proxy_ws(scope, receive, send):
     if UPSTREAM is None:
         await _ws_http(send, 404, b'not found', b'text/plain; charset=utf-8')
@@ -789,11 +817,9 @@ async def _proxy_ws(scope, receive, send):
         _log('staging_proxy status=502 ms=%d' % _ms(t0))
         await _ws_http(send, 502, DOWN_HTML.encode('utf-8'))
         return
-    kwargs = dict(additional_headers=headers, open_timeout=PROXY_TIMEOUT, max_size=None, ping_interval=None, compression=None)
-    try:
-        connector = websockets.connect(url, proxy=None, **kwargs)
-    except TypeError:
-        connector = websockets.connect(url, **kwargs)
+    connector = websockets.connect(
+        url, **_ws_connect_kwargs(headers, websockets.version.version),
+    )
     try:
         remote = await asyncio.wait_for(connector.__aenter__(), PROXY_TIMEOUT)
     except Exception as exc:

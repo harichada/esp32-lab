@@ -15,7 +15,40 @@ import server
 import staging
 import uvicorn
 import websockets
-from websockets.exceptions import ConnectionClosed, InvalidStatus
+from websockets.exceptions import ConnectionClosed, InvalidStatusCode
+try:
+    from websockets.exceptions import InvalidStatus
+except ImportError:
+    InvalidStatus = InvalidStatusCode
+_WS_REJECTED = (InvalidStatus, InvalidStatusCode)
+
+def _ws_connect(url, **kwargs):
+    """Speak the connect() this websockets major version accepts.
+
+    Below 14 the client takes extra_headers and forwards proxy to the loop.
+    14 renamed the header argument. 15 added proxy.
+    """
+    major = staging._websockets_major(websockets.version.version)
+    headers = kwargs.pop('additional_headers', None)
+    if headers is None:
+        headers = kwargs.pop('extra_headers', None)
+    else:
+        kwargs.pop('extra_headers', None)
+    kwargs.pop('proxy', None)
+    if headers is not None:
+        if major >= 14:
+            kwargs['additional_headers'] = headers
+        else:
+            kwargs['extra_headers'] = headers
+    if major >= 15:
+        kwargs['proxy'] = None
+    return websockets.connect(url, **kwargs)
+
+def _ws_rejection(exc):
+    response = getattr(exc, 'response', None)
+    if response is not None and getattr(response, 'status_code', None) is not None:
+        return response.status_code, getattr(response, 'body', b'') or b''
+    return exc.status_code, b''
 
 def _loopback_target(value):
     """Exact http://127.0.0.1:<port>, or None. Tests use this as the seam, not the env var."""
@@ -116,8 +149,14 @@ class StagingTests(unittest.TestCase):
         cls.http_port = cls.http_server.sockets[0].getsockname()[1]
 
         async def ws_handler(ws):
-            path = ws.request.path
-            headers = {k.lower(): v for k, v in ws.request.headers.items()}
+            req = getattr(ws, 'request', None)
+            if req is not None and getattr(req, 'path', None):
+                path = req.path
+                raw_headers = req.headers
+            else:
+                path = ws.path
+                raw_headers = ws.request_headers
+            headers = {k.lower(): v for k, v in raw_headers.items()}
             cls.ws_log.append({'path': path, 'headers': headers})
             if path.endswith('/bye'):
                 await ws.send('bye')
@@ -165,7 +204,48 @@ class StagingTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.uvicorn.should_exit = True
         cls.serve_thread.join(3)
-        cls.loop.call_soon_threadsafe(cls.loop.stop)
+        cls._stop_mock_loop()
+
+    @classmethod
+    def _stop_mock_loop(cls):
+        """Stop the mock loop, join its thread, and only then close the loop.
+
+        Handlers finish while the loop can still schedule their close. Closing
+        the loop before the thread has exited is what logs "Event loop is closed".
+        """
+        async def drain():
+            current = asyncio.current_task()
+            to_cancel = []
+            for task in list(asyncio.all_tasks()):
+                if task is current:
+                    continue
+                qual = getattr(task.get_coro(), '__qualname__', '')
+                if qual.endswith('.handle') or qual.endswith('.ws_handler'):
+                    to_cancel.append(task)
+            for ws in list(getattr(cls.ws_server, 'websockets', ())):
+                task = getattr(ws, 'handler_task', None)
+                if task is not None and task is not current and not task.done():
+                    to_cancel.append(task)
+            for task in to_cancel:
+                task.cancel()
+            if to_cancel:
+                await asyncio.gather(*to_cancel, return_exceptions=True)
+            cls.http_server.close()
+            cls.ws_server.close()
+            await cls.http_server.wait_closed()
+            await cls.ws_server.wait_closed()
+
+        try:
+            asyncio.run_coroutine_threadsafe(drain(), cls.loop).result(5)
+        except Exception:
+            pass
+        try:
+            cls.loop.call_soon_threadsafe(cls.loop.stop)
+        except RuntimeError:
+            pass
+        cls.loop_thread.join(5)
+        if not cls.loop_thread.is_alive() and not cls.loop.is_closed():
+            cls.loop.close()
 
     def setUp(self):
         self.logs = []
@@ -439,11 +519,15 @@ class StagingTests(unittest.TestCase):
             uvloop = None
 
         async def create_connection(self, protocol_factory, host=None, port=None, **kwargs):
+            kwargs.pop('proxy', None)
             if host == 'esp32lab-staging':
                 if action == 'error':
                     raise socket.gaierror(socket.EAI_NONAME, 'Name or service not known')
                 if action[0] == 'refused':
                     host, port = '127.0.0.1', action[1]
+                elif action[0] == 'blackhole':
+                    await asyncio.sleep(30)
+                    raise TimeoutError('blackhole')
                 else:
                     host = action[1]
             return await real_cc(self, protocol_factory, host, port, **kwargs)
@@ -467,15 +551,15 @@ class StagingTests(unittest.TestCase):
 
             async def ws_status():
                 try:
-                    async with websockets.connect(
+                    async with _ws_connect(
                         'ws://127.0.0.1:%d/staging/api/run/abc' % self.port,
                         open_timeout=3, proxy=None,
                     ) as ws:
                         await ws.recv()
                     return 101, b''
-                except InvalidStatus as exc:
-                    raw = getattr(exc.response, 'body', b'') or b''
-                    return exc.response.status_code, raw
+                except _WS_REJECTED as exc:
+                    status, raw = _ws_rejection(exc)
+                    return status, raw
 
             status, ws_body = asyncio.run(ws_status())
             self.assertEqual(status, 502, action)
@@ -599,17 +683,17 @@ class StagingTests(unittest.TestCase):
         self._env(token=TOKEN)
         async def denied():
             try:
-                async with websockets.connect('ws://127.0.0.1:%d/api/run/abc' % self.port, open_timeout=3, proxy=None) as ws:
+                async with _ws_connect('ws://127.0.0.1:%d/api/run/abc' % self.port, open_timeout=3, proxy=None) as ws:
                     await ws.recv()
                 return 101
-            except InvalidStatus as exc:
-                return exc.response.status_code
+            except _WS_REJECTED as exc:
+                return _ws_rejection(exc)[0]
         self.assertEqual(asyncio.run(denied()), 401)
 
         self._env(upstream='http://127.0.0.1:%d' % self.ws_port)
         async def echo():
             url = 'ws://127.0.0.1:%d/staging/api/run/abc' % self.port
-            async with websockets.connect(
+            async with _ws_connect(
                 url, open_timeout=3, proxy=None,
                 additional_headers={
                     'X-Forwarded-For': '9.9.9.9', 'X-Real-IP': '203.0.113.8',
@@ -637,7 +721,7 @@ class StagingTests(unittest.TestCase):
 
         async def bye():
             url = 'ws://127.0.0.1:%d/staging/api/run/bye' % self.port
-            async with websockets.connect(url, open_timeout=3, proxy=None) as ws:
+            async with _ws_connect(url, open_timeout=3, proxy=None) as ws:
                 self.assertEqual(await ws.recv(), 'bye')
                 try:
                     await ws.recv()
@@ -1055,6 +1139,88 @@ class StagingTests(unittest.TestCase):
         self.assertIsNone(payload)
         self.assertEqual(err.status_code, 413)
 
+    def test_upstream_websocket_kwargs_follow_the_package_version(self):
+        seen = []
+
+        def fake_connect(url, **kwargs):
+            seen.append((str(url), dict(kwargs)))
+
+            class _Stop:
+                async def __aenter__(self):
+                    raise ConnectionError('stop')
+
+                async def __aexit__(self, *args):
+                    return False
+
+            return _Stop()
+
+        real_connect = websockets.connect
+        real_version = websockets.version.version
+        websockets.connect = fake_connect
+        saved_auth = staging._sim_authed
+        staging._sim_authed = None
+        try:
+            staging.set_test_upstream(('127.0.0.1', 9))
+            staging.apply_env({
+                'SIM_STAGING': '0',
+                'SIM_ACCESS_TOKEN': '',
+                'SIM_STAGING_UPSTREAM': '',
+                'SIM_BASE_PATH': '',
+            })
+
+            async def drive():
+                sent = []
+
+                async def receive():
+                    return {'type': 'websocket.connect'}
+
+                async def send(message):
+                    sent.append(message)
+
+                await staging._proxy_ws({
+                    'type': 'websocket',
+                    'path': '/staging/api/run/abc',
+                    'query_string': b'',
+                    'headers': [(b'x-trace', b'zz-ws-header')],
+                    'client': ('127.0.0.1', 1234),
+                }, receive, send)
+
+            cases = (
+                ('10.4', 'extra_headers', False),
+                ('13.1', 'extra_headers', False),
+                ('14.0', 'additional_headers', False),
+                ('14.2.dev1+gabcdef', 'additional_headers', False),
+                ('15.0', 'additional_headers', True),
+                ('17.4', 'additional_headers', True),
+            )
+            for version, header_key, expect_proxy in cases:
+                seen.clear()
+                websockets.version.version = version
+                asyncio.run(drive())
+                self.assertEqual(len(seen), 1, version)
+                url, kwargs = seen[0]
+                self.assertIn('127.0.0.1:9', url, version)
+                other = 'additional_headers' if header_key == 'extra_headers' else 'extra_headers'
+                self.assertIn(header_key, kwargs, version)
+                self.assertNotIn(other, kwargs, version)
+                self.assertEqual(kwargs['open_timeout'], staging.PROXY_TIMEOUT, version)
+                self.assertIsNone(kwargs['max_size'], version)
+                self.assertIsNone(kwargs['ping_interval'], version)
+                self.assertIsNone(kwargs['compression'], version)
+                if expect_proxy:
+                    self.assertIn('proxy', kwargs, version)
+                    self.assertIsNone(kwargs['proxy'], version)
+                else:
+                    self.assertNotIn('proxy', kwargs, version)
+                names = [name for name, _value in kwargs[header_key]]
+                self.assertIn('x-forwarded-for', names, version)
+                self.assertIn('x-trace', names, version)
+        finally:
+            websockets.connect = real_connect
+            websockets.version.version = real_version
+            staging._sim_authed = saved_auth
+            self._env()
+
     def test_staging_websocket_refuses_before_upstream_connect(self):
         self._env(staging='1', token=TOKEN, upstream='http://127.0.0.1:%d' % self.ws_port)
         before = len(self.ws_log)
@@ -1071,16 +1237,15 @@ class StagingTests(unittest.TestCase):
         try:
             async def denied():
                 try:
-                    async with websockets.connect(
+                    async with _ws_connect(
                         'ws://127.0.0.1:%d/staging/api/run/abc' % self.port,
                         open_timeout=3, proxy=None,
                         additional_headers={'X-Trace': 'zz-ws-header'},
                     ) as ws:
                         await ws.recv()
                     return 101, b''
-                except InvalidStatus as exc:
-                    body = getattr(exc.response, 'body', b'') or b''
-                    return exc.response.status_code, body
+                except _WS_REJECTED as exc:
+                    return _ws_rejection(exc)
             status, body = asyncio.run(denied())
         finally:
             websockets.connect = real

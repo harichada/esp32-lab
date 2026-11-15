@@ -144,6 +144,7 @@
       <div class="m-grp"><div class="m-lbl">Feedback</div><div class="m-wire"><label class="m-sw"><input type="checkbox" id="mHap"><span>Haptics</span></label><label class="m-sw"><input type="checkbox" id="mSnd"><span>Sound effects</span></label></div></div>
       <div class="m-legal"><span id="mConn" class="conn"><i></i><span>backend</span></span><a href="notices.html" target="_blank" rel="noopener">Open-source notices</a><small>Simulator for ESP32 · © 2026 Hari Kishore Chada. Not affiliated with Espressif, Arduino or Wokwi.</small></div></div>`;
     document.body.appendChild(more); sheetHead(more, 'More');
+    if (window.clAuth && window.clAuth.mountMobile) window.clAuth.mountMobile();
     // full-screen oscilloscope HUD sheet (the instrument DOM moves here while open)
     const msc = document.createElement('section'); msc.id = 'mScope'; msc.className = 'panel m-sheet m-only'; document.body.appendChild(msc); sheetHead(msc, 'Oscilloscope', '<span class="m-sc-tag">MSO-4 · LIVE</span>');
     if (window.Instruments) { Instruments.onArm = () => { if (document.body.classList.contains('m') && sheet === 'scope') { setSheet(null); app.cmd.toast('Tap a pin or wire to probe'); } }; Instruments.onProbed = () => { if (document.body.classList.contains('m')) setSheet('scope'); }; }
