@@ -357,3 +357,17 @@ html[data-cl-env=staging] body.m .modal{padding-top:calc(54px + var(--stage-offs
   html[data-cl-env=staging] body.m .zoom-tools{top:calc(88px + var(--stage-offset))}
   html[data-cl-env=staging] body.m.viewsch .zoom-tools{top:calc(88px + var(--stage-offset))}
 }
+/* ?a11y=1 only. Body 14px; the small chrome that was under 12px is raised to 12px. */
+html[data-a11y="1"] body.m{font-size:14px}
+html[data-a11y="1"] body.m .pcat,
+html[data-a11y="1"] body.m #mTicker,
+html[data-a11y="1"] body.m .m-hub-t,
+html[data-a11y="1"] body.m #mDial .m-tab,
+html[data-a11y="1"] body.m #status,
+html[data-a11y="1"] body.m #palList .pitem span,
+html[data-a11y="1"] body.m #mTrack .pitem span,
+html[data-a11y="1"] body.m .hint,
+html[data-a11y="1"] body.m .m-lbl,
+html[data-a11y="1"] body.m #mParts,
+html[data-a11y="1"] body.m .chip-tag,
+html[data-a11y="1"] body.m .conn{font-size:12px}

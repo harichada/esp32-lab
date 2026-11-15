@@ -421,3 +421,19 @@ html[data-cl-env=staging] #main{height:calc(100% - 70px - var(--stage-h))}
 @media (max-width:360px){
   html[data-cl-env=staging] #stageBanner{font-size:12px;padding:4px 8px}
 }
+/* ?a11y=1 only. #9aa3af on #101215 is 7.35:1; #4e5966 on #ffffff is 7.13:1. Flag off keeps --mut. */
+html[data-a11y="1"]{--mut:#9aa3af}
+html[data-theme=light][data-a11y="1"]{--mut:#4e5966}
+html[data-a11y="1"] .panel-h,
+html[data-a11y="1"] .pcat,
+html[data-a11y="1"] .tabs button,
+html[data-a11y="1"] .fld{color:var(--mut)}
+html[data-a11y="1"] .tabs button.on{color:var(--txt)}
+.view3d-load.is-skel .view3d-spin{display:none}
+.view3d-skel{display:block;width:148px;height:84px;border-radius:8px;background:linear-gradient(90deg,#14181e 0%,#2c3542 50%,#14181e 100%);background-size:200% 100%;animation:view3dskel 1.1s ease-in-out infinite}
+@keyframes view3dskel{from{background-position:100% 0}to{background-position:-100% 0}}
+.view3d-load.is-fail{background:transparent}
+.view3d-load.is-fail .view3d-load-card{pointer-events:auto;flex-direction:column;align-items:flex-start}
+.view3d-retry-msg{margin:0;color:#e7fbff;font:600 14px/1.35 var(--font,system-ui,sans-serif)}
+.view3d-retry{min-height:36px}
+@media (prefers-reduced-motion:reduce){.view3d-skel{animation:none}}

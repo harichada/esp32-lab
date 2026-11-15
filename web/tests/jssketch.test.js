@@ -1,7 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert');
+const fs = require('fs');
+const path = require('path');
 require('../js/solver.js'); require('../js/parts.js'); require('../js/sim.js'); require('../js/jssketch.js');
-const { Sim } = globalThis.SimCore, { JsSketch, transform } = globalThis.JsSketchMod;
+const { Sim } = globalThis.SimCore, { JsSketch, transform, workerFlag } = globalThis.JsSketchMod;
 
 function rig(extraParts = [], wires = []) {
   const proj = { parts: [{ id: 'esp', type: 'esp32', x: 0, y: 0, rot: 0, props: { power: 'usb' } }, ...extraParts], wires };
@@ -48,4 +50,75 @@ test('analogRead of a potentiometer divider (12-bit)', async () => {
   await sk.start(); await sk.runUntil(0.05, (dt) => sim.advance(dt)); sk.stop();
   v = globalThis.__v;
   assert.ok(Math.abs(v - Math.round((0.75 * 3300 - 142) / (1100 * 196602 / 65536 / 4096))) < 60, 'adc ' + v);   // 75% of 3.3 V through the eFuse-Vref ADC model
+});
+
+const BLINK = 'function setup(){ pinMode(LED_BUILTIN, OUTPUT); }\nfunction loop(){ digitalWrite(LED_BUILTIN, HIGH); delay(500); digitalWrite(LED_BUILTIN, LOW); delay(500); }';
+async function blinkEdges(worker) {
+  const { sim, esp } = rig();
+  const edges = []; let last = null;
+  const sk = new JsSketch(BLINK, { sim, espPart: esp, serial() {}, worker });
+  await sk.start();
+  for (let f = 0; f < 300; f++) {
+    await sk.runUntil((f + 1) * 0.01, (dt) => sim.advance(dt));
+    const level = sim.espRuntime(esp).pins[2].level;
+    if (level !== last) { edges.push([Number(sk.now.toFixed(3)), level]); last = level; }
+  }
+  sk.stop();
+  return { edges, usedEval: sk.usedEval };
+}
+test('worker blink matches the in-page runner without eval', async () => {
+  const off = await blinkEdges(false);
+  const on = await blinkEdges(true);
+  assert.equal(off.usedEval, true);
+  assert.equal(on.usedEval, false);
+  assert.ok(on.edges.length >= 6);
+  assert.deepStrictEqual(on.edges, off.edges);
+});
+test('worker button reads match the in-page runner', async () => {
+  const src = 'function setup(){ pinMode(18, INPUT_PULLUP); Serial.begin(115200); }\nfunction loop(){ Serial.println(digitalRead(18)); delay(100); }';
+  async function vals(worker) {
+    const key = { id: 'k', type: 'key', x: 300, y: 300, rot: 0, props: {} };
+    const { sim, esp } = rig([key], [{ id: 'w1', a: { x: 80, y: 90 }, b: { x: 300, y: 300 } }, { id: 'w2', a: { x: 10, y: 90 }, b: { x: 330, y: 300 } }]);
+    const out = [];
+    const sk = new JsSketch(src, { sim, espPart: esp, serial: (s) => out.push(s), worker });
+    await sk.start();
+    await sk.runUntil(0.25, (dt) => sim.advance(dt));
+    sim.partState(key).pressed = true; sim.dirty = true;
+    await sk.runUntil(0.55, (dt) => sim.advance(dt));
+    sk.stop();
+    return out.join('').split(/\r\n/).filter(Boolean);
+  }
+  assert.deepStrictEqual(await vals(true), await vals(false));
+});
+test('a runaway worker sketch is stopped in plain words', async () => {
+  const { sim, esp } = rig();
+  let err = null;
+  const sk = new JsSketch('function setup(){ while(true){} }', { sim, espPart: esp, serial() {}, worker: true, workerTimeout: 400, onError: (e) => { err = e; } });
+  await assert.rejects(() => sk.start());
+  assert.match(err.message, /ran too long without a pause/);
+  assert.equal(sk.usedEval, false);
+  sk.stop();
+});
+test('a worker syntax error is plain and does not eval', async () => {
+  const { sim, esp } = rig();
+  let err = null;
+  const sk = new JsSketch('function setup( {', { sim, espPart: esp, serial() {}, worker: true, onError: (e) => { err = e; } });
+  await assert.rejects(() => sk.start());
+  assert.match(err.message, /syntax error/);
+  assert.equal(sk.usedEval, false);
+  sk.stop();
+});
+test('the worker schema rejects eval and document, and the harness has neither', () => {
+  const proto = require('../js/jssketch-proto.js');
+  assert.equal(proto.validateWorkerMessage({ v: 1, type: 'call', id: 1, name: 'document', args: [] }), null);
+  assert.equal(proto.validateWorkerMessage({ v: 1, type: 'eval' }), null);
+  assert.equal(proto.validateWorkerMessage({ v: 1, type: 'call', id: 1, name: 'digitalWrite', args: [2, 1] }).name, 'digitalWrite');
+  assert.equal(proto.validateHostMessage({ v: 1, type: 'go' }).type, 'go');
+  const harness = fs.readFileSync(path.join(__dirname, '../js/jssketch-worker.js'), 'utf8');
+  assert.doesNotMatch(harness, /new Function/);
+  assert.doesNotMatch(harness, /eval\s*\(/);
+  assert.doesNotMatch(harness, /document/);
+  assert.equal(workerFlag({}), false);
+  assert.equal(workerFlag({ worker: true }), true);
+  assert.equal(workerFlag({ worker: false }), false);
 });
