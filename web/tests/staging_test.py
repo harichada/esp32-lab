@@ -22,20 +22,26 @@ except ImportError:
     InvalidStatus = InvalidStatusCode
 _WS_REJECTED = (InvalidStatus, InvalidStatusCode)
 
-def _explicit(name):
-    param = inspect.signature(websockets.connect).parameters.get(name)
-    return param is not None and param.kind is not inspect.Parameter.VAR_KEYWORD
-
 def _ws_connect(url, **kwargs):
-    """Speak the connect() this websockets build actually declares.
+    """Speak the connect() this websockets major version accepts.
 
-    The legacy client forwards unknown keywords to loop.create_connection,
-    and uvloop rejects proxy. It also calls extra_headers, not additional_headers.
+    Below 14 the client takes extra_headers and forwards proxy to the loop.
+    14 renamed the header argument. 15 added proxy.
     """
-    if not _explicit('proxy'):
-        kwargs.pop('proxy', None)
-    if 'additional_headers' in kwargs and not _explicit('additional_headers'):
-        kwargs.setdefault('extra_headers', kwargs.pop('additional_headers'))
+    major = staging._websockets_major(websockets.version.version)
+    headers = kwargs.pop('additional_headers', None)
+    if headers is None:
+        headers = kwargs.pop('extra_headers', None)
+    else:
+        kwargs.pop('extra_headers', None)
+    kwargs.pop('proxy', None)
+    if headers is not None:
+        if major >= 14:
+            kwargs['additional_headers'] = headers
+        else:
+            kwargs['extra_headers'] = headers
+    if major >= 15:
+        kwargs['proxy'] = None
     return websockets.connect(url, **kwargs)
 
 def _ws_rejection(exc):
@@ -1113,6 +1119,88 @@ class StagingTests(unittest.TestCase):
         payload, err = asyncio.run(limited())
         self.assertIsNone(payload)
         self.assertEqual(err.status_code, 413)
+
+    def test_upstream_websocket_kwargs_follow_the_package_version(self):
+        seen = []
+
+        def fake_connect(url, **kwargs):
+            seen.append((str(url), dict(kwargs)))
+
+            class _Stop:
+                async def __aenter__(self):
+                    raise ConnectionError('stop')
+
+                async def __aexit__(self, *args):
+                    return False
+
+            return _Stop()
+
+        real_connect = websockets.connect
+        real_version = websockets.version.version
+        websockets.connect = fake_connect
+        saved_auth = staging._sim_authed
+        staging._sim_authed = None
+        try:
+            staging.set_test_upstream(('127.0.0.1', 9))
+            staging.apply_env({
+                'SIM_STAGING': '0',
+                'SIM_ACCESS_TOKEN': '',
+                'SIM_STAGING_UPSTREAM': '',
+                'SIM_BASE_PATH': '',
+            })
+
+            async def drive():
+                sent = []
+
+                async def receive():
+                    return {'type': 'websocket.connect'}
+
+                async def send(message):
+                    sent.append(message)
+
+                await staging._proxy_ws({
+                    'type': 'websocket',
+                    'path': '/staging/api/run/abc',
+                    'query_string': b'',
+                    'headers': [(b'x-trace', b'zz-ws-header')],
+                    'client': ('127.0.0.1', 1234),
+                }, receive, send)
+
+            cases = (
+                ('10.4', 'extra_headers', False),
+                ('13.1', 'extra_headers', False),
+                ('14.0', 'additional_headers', False),
+                ('14.2.dev1+gabcdef', 'additional_headers', False),
+                ('15.0', 'additional_headers', True),
+                ('17.4', 'additional_headers', True),
+            )
+            for version, header_key, expect_proxy in cases:
+                seen.clear()
+                websockets.version.version = version
+                asyncio.run(drive())
+                self.assertEqual(len(seen), 1, version)
+                url, kwargs = seen[0]
+                self.assertIn('127.0.0.1:9', url, version)
+                other = 'additional_headers' if header_key == 'extra_headers' else 'extra_headers'
+                self.assertIn(header_key, kwargs, version)
+                self.assertNotIn(other, kwargs, version)
+                self.assertEqual(kwargs['open_timeout'], staging.PROXY_TIMEOUT, version)
+                self.assertIsNone(kwargs['max_size'], version)
+                self.assertIsNone(kwargs['ping_interval'], version)
+                self.assertIsNone(kwargs['compression'], version)
+                if expect_proxy:
+                    self.assertIn('proxy', kwargs, version)
+                    self.assertIsNone(kwargs['proxy'], version)
+                else:
+                    self.assertNotIn('proxy', kwargs, version)
+                names = [name for name, _value in kwargs[header_key]]
+                self.assertIn('x-forwarded-for', names, version)
+                self.assertIn('x-trace', names, version)
+        finally:
+            websockets.connect = real_connect
+            websockets.version.version = real_version
+            staging._sim_authed = saved_auth
+            self._env()
 
     def test_staging_websocket_refuses_before_upstream_connect(self):
         self._env(staging='1', token=TOKEN, upstream='http://127.0.0.1:%d' % self.ws_port)

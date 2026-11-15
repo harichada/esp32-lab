@@ -9,7 +9,7 @@ SIM_ACCESS_TOKEN      default empty (off). Cookie cl_stage, constant-time compar
 SIM_STAGING_UPSTREAM  default empty (off). Only http://esp32lab-staging:8765.
 SIM_BASE_PATH         cookie and redirect prefix. Defaults to /staging when SIM_STAGING=1.
 """
-import asyncio, hashlib, hmac, html, inspect, os, re, time
+import asyncio, hashlib, hmac, html, os, re, time
 from urllib.parse import parse_qs, unquote, urlencode
 
 PROXY_TIMEOUT = 30.0
@@ -725,6 +725,34 @@ class StagingMiddleware:
         await self.app(scope, receive, send)
 
 
+def _websockets_major(version):
+    """Leading integer of websockets.version.version. Anything else is 0."""
+    head = str(version).split('.', 1)[0]
+    return int(head) if head.isdigit() else 0
+
+
+def _ws_connect_kwargs(headers, version):
+    """Keyword arguments for websockets.connect on this major version.
+
+    14 renamed extra_headers to additional_headers. 15 added proxy.
+    The old name on 14 or newer is forwarded to loop.create_connection.
+    """
+    major = _websockets_major(version)
+    kwargs = {
+        'open_timeout': PROXY_TIMEOUT,
+        'max_size': None,
+        'ping_interval': None,
+        'compression': None,
+    }
+    if major >= 14:
+        kwargs['additional_headers'] = headers
+    else:
+        kwargs['extra_headers'] = headers
+    if major >= 15:
+        kwargs['proxy'] = None
+    return kwargs
+
+
 async def _proxy_ws(scope, receive, send):
     if UPSTREAM is None:
         await _ws_http(send, 404, b'not found', b'text/plain; charset=utf-8')
@@ -767,20 +795,9 @@ async def _proxy_ws(scope, receive, send):
         _log('staging_proxy status=502 ms=%d' % _ms(t0))
         await _ws_http(send, 502, DOWN_HTML.encode('utf-8'))
         return
-    kwargs = dict(open_timeout=PROXY_TIMEOUT, max_size=None, ping_interval=None, compression=None)
-    params = inspect.signature(websockets.connect).parameters
-
-    def _explicit(name):
-        param = params.get(name)
-        return param is not None and param.kind is not inspect.Parameter.VAR_KEYWORD
-
-    if _explicit('additional_headers'):
-        kwargs['additional_headers'] = headers
-    else:
-        kwargs['extra_headers'] = headers
-    if _explicit('proxy'):
-        kwargs['proxy'] = None
-    connector = websockets.connect(url, **kwargs)
+    connector = websockets.connect(
+        url, **_ws_connect_kwargs(headers, websockets.version.version),
+    )
     try:
         remote = await asyncio.wait_for(connector.__aenter__(), PROXY_TIMEOUT)
     except Exception as exc:
