@@ -16,14 +16,17 @@ for (const width of [390, 1280]) {
     await assertNoGoogle(page);
     if (width === 390) {
       await page.getByRole('button', { name: 'More options' }).click();
-      const github = page.getByRole('button', { name: 'Sign in with GitHub' });
-      await expect(github).toBeVisible();
-      const box = await github.boundingBox();
+      const signIn = page.locator('#mSignIn');
+      await expect(signIn).toBeVisible();
+      await expect(signIn).toHaveText('Sign in');
+      await expect(page.locator('#mMore .m-more-b button').first()).toHaveAttribute('id', 'mSignIn');
+      await expect(page.locator('#mMore').getByText('Account', { exact: true })).toHaveCount(0);
+      const box = await signIn.boundingBox();
       expect(box).not.toBeNull();
       expect(box!.width).toBeGreaterThanOrEqual(44);
       expect(box!.height).toBeGreaterThanOrEqual(44);
       await assertNoGoogle(page);
-      await github.click();
+      await signIn.click();
     } else {
       const header = page.locator('#bSignIn');
       await expect(header).toBeVisible();

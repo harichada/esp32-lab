@@ -429,6 +429,7 @@ html[data-cl-env=staging] #main{height:calc(100% - 70px - var(--stage-h))}
 #bSignIn:hover,#bSignOut:hover,.auth-menu button:hover,.auth-provs button:hover,.auth-go:hover{background:var(--l4);border-color:#3a414a}
 #bSignIn:active,#bSignOut:active,.auth-menu button:active,.auth-provs button:active,.auth-go:active{transform:translateY(.5px)}
 #bSignIn:focus-visible,#bSignOut:focus-visible,.auth-menu button:focus-visible,.auth-provs button:focus-visible,.auth-go:focus-visible{outline:2px solid #0891b2;outline-offset:2px}
+#authAccount{margin:0 0 12px}#authAccount h4{margin:0 0 8px;font-size:14px}#authAccount ul{list-style:none;margin:0;padding:0}#authAccount li{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 8px}#authAccount button,#authAccountRetry,#mSignIn,#mSignOut,#mAuthMenu button{min-width:44px;min-height:44px;height:auto}#mAuthMenu[hidden]{display:none}
 #bSignIn:disabled,#bSignOut:disabled,.auth-go:disabled,#bSignIn[aria-disabled="true"],#bSignOut[aria-disabled="true"],.auth-go[aria-disabled="true"]{opacity:.45;cursor:not-allowed}
 .auth-note{margin:8px 0;color:var(--txt2);font-size:13px}
 #authSaveDlg .modal-box{width:min(420px,calc(100vw - 16px))}

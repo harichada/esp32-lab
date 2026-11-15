@@ -1001,6 +1001,40 @@ def import_projects(sid, token, items):
     return _db_call(run)
 
 
+def get_project(sid, project_id):
+    """One account project for this session's user, or None.
+
+    The body stays under PROJECT_CAP. Another user's id is the same as a
+    missing id: nothing is returned.
+    """
+    if not isinstance(project_id, str) or re.fullmatch(r'[A-Za-z0-9_-]{1,40}', project_id) is None:
+        return None
+
+    def run(conn):
+        row = _session_row(conn, sid)
+        if row is None or not row['user_id']:
+            return None
+        found = conn.execute(
+            'SELECT name, body, updated FROM owned_projects WHERE user_id = ? AND project_id = ?',
+            (row['user_id'], project_id),
+        ).fetchone()
+        if found is None:
+            return None
+        raw = found['body'] if isinstance(found['body'], str) else ''
+        if len(raw.encode('utf-8')) > PROJECT_CAP:
+            return None
+        try:
+            proj = json.loads(raw)
+        except ValueError:
+            return None
+        if not isinstance(proj, dict) or not isinstance(proj.get('parts'), list):
+            return None
+        proj['id'] = project_id
+        proj['name'] = found['name']
+        return {'id': project_id, 'name': found['name'], 'updated': found['updated'], 'proj': proj}
+    return _db_call(run)
+
+
 def list_projects(sid):
     def run(conn):
         row = _session_row(conn, sid)
@@ -1379,6 +1413,40 @@ def _not_found():
     })
 
 
+def _account_denied():
+    return _json(
+        {'ok': False, 'error': 'auth', 'message': 'Sign in to see the projects in your account.'},
+        401,
+    )
+
+
+def _account_list(scope):
+    if cross_site(scope):
+        return _cross_site_rejected()
+    sid = _cookies(scope).get(COOKIE, '')
+    if not session_view(sid).get('signed_in'):
+        return _account_denied()
+    return _json({'projects': list_projects(sid)})
+
+
+def _account_one(scope, raw_id):
+    if cross_site(scope):
+        return _cross_site_rejected()
+    sid = _cookies(scope).get(COOKIE, '')
+    if not session_view(sid).get('signed_in'):
+        return _account_denied()
+    project_id = urllib.parse.unquote(raw_id or '')
+    if '/' in project_id or project_id == 'import':
+        return _not_found()
+    found = get_project(sid, project_id)
+    if not found:
+        return _json(
+            {'ok': False, 'error': 'missing', 'message': 'That project is not in your account.'},
+            404,
+        )
+    return _json(found)
+
+
 def _dispatch(method, path, scope, receive):
     named = _provider_prefix(path)
     if named and not provider_on(named):
@@ -1387,8 +1455,9 @@ def _dispatch(method, path, scope, receive):
         sid = _cookies(scope).get(COOKIE, '')
         return _json(session_view(sid))
     if path == '/auth/projects' and method == 'GET':
-        sid = _cookies(scope).get(COOKIE, '')
-        return _json({'projects': list_projects(sid)})
+        return _account_list(scope)
+    if path.startswith('/auth/projects/') and path != '/auth/projects/import' and method == 'GET':
+        return _account_one(scope, path[len('/auth/projects/'):])
     if path == '/auth/google' and method == 'GET':
         return _handle_start('google', scope)
     if path == '/auth/github' and method == 'GET':
@@ -1439,6 +1508,7 @@ class AuthMiddleware:
             return
         wait = rate_limit(scope)
         if wait:
+            _log(https.rate_limit_log(scope))
             page = _page(
                 'Too many sign-in attempts. Wait a moment and try again.',
                 status=429, link_href='/', link_label='Back',

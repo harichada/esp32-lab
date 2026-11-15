@@ -163,6 +163,28 @@ function notifyStorageFull(root, err) {
       else delete p.schLayout;
       return JSON.stringify(p, null, 1);
     }
+    // A project from the signed-in account becomes a new local copy. The same
+    // id and body opens the local one. A different body, or the same name on
+    // another project, keeps both: the local project is not replaced.
+    adoptAccount(proj) {
+      if (!proj || !Array.isArray(proj.parts)) throw new Error('not a project JSON (no parts)');
+      const incoming = clone(proj);
+      delete incoming.example; delete incoming.readOnly; delete incoming.draftId; delete incoming.schLayout;
+      const id = typeof incoming.id === 'string' ? incoming.id : '';
+      const local = id ? this.get(id) : null;
+      const shape = (p) => JSON.stringify({ name: p.name || '', code: p.code || '', parts: p.parts, wires: p.wires || [] });
+      if (local && shape(local) === shape(incoming)) return local;
+      const names = new Set(this.list().map((e) => e.name));
+      let n = incoming.name || 'Untitled';
+      if (names.has(n)) {
+        const base = n.replace(/\s*\(copy( \d+)?\)$/, '') + ' (copy)';
+        n = base; let i = 2; while (names.has(n)) n = base.replace(/\)$/, ` ${i++})`);
+      }
+      incoming.name = n;
+      incoming.id = newId();
+      this.save(incoming);
+      return this.get(incoming.id);
+    }
     importJson(text) {
       const o = typeof text === 'string' ? JSON.parse(text) : text;
       if (!o || !Array.isArray(o.parts)) throw new Error('not a project JSON (no parts)');

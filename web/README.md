@@ -226,6 +226,8 @@ Account data is `<SIM_PROJECT_DIR>/accounts/auth.sqlite` (directory `0700`, data
 
 After sign-in, if this device has N guest projects, the page asks "Save your N projects to your account?". Save uploads them. Not now, and Escape, leave them on the device. Not now is focused.
 
+`GET /auth/projects` lists that account's projects (name and last saved). `GET /auth/projects/<id>` returns one of them. Both are 401 when signed out, and neither returns another user's project. Opening one in My Projects saves a local copy and does not replace a different local project. At 390, More shows Sign in (or the signed-in name and Sign out) first, with no Account section. A sign-out cancelled by navigation is ignored. A 429 from the sign-in rate limit logs one line, `auth rate_limit status=429 client=<prefix> source=peer|forwarded`, with IPv4 cut to /24 and IPv6 cut to /48. `TRUSTED_PROXY_IPS` logs one warning at startup when a value is not an exact IP, and that warning does not include the value.
+
 Rollback: set `AUTH_ENABLED=0` and restart. The database file stays on the projects volume and is not read.
 
 ## Tests

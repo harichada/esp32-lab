@@ -28,7 +28,11 @@ async function setMode(page: Page, mode: string) {
 async function signIn(page: Page, provider: 'Google' | 'GitHub', width: number) {
   if (width <= 820) {
     await page.getByRole('button', { name: 'More options' }).click();
-    await page.getByRole('button', { name: 'Sign in with ' + provider }).click();
+    const signInBtn = page.locator('#mSignIn');
+    await expect(signInBtn).toBeVisible();
+    await signInBtn.click();
+    const named = page.getByRole('button', { name: 'Sign in with ' + provider });
+    if (await named.count()) await named.click();
     return;
   }
   await page.locator('#bSignIn').click();
@@ -116,12 +120,21 @@ test('GitHub sign-in at 390 uses the More sheet', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 800 });
   await page.goto(origin + '/');
   await page.getByRole('button', { name: 'More options' }).click();
-  const github = page.getByRole('button', { name: 'Sign in with GitHub' });
-  await expect(github).toBeVisible();
-  const box = await github.boundingBox();
+  const signInBtn = page.locator('#mSignIn');
+  await expect(signInBtn).toBeVisible();
+  await expect(page.locator('#mMore .m-more-b button').first()).toHaveAttribute('id', 'mSignIn');
+  await expect(page.locator('#mMore').getByText('Account', { exact: true })).toHaveCount(0);
+  const box = await signInBtn.boundingBox();
   expect(box).not.toBeNull();
   expect(box!.width).toBeGreaterThanOrEqual(44);
   expect(box!.height).toBeGreaterThanOrEqual(44);
+  await signInBtn.click();
+  const github = page.getByRole('button', { name: 'Sign in with GitHub' });
+  await expect(github).toBeVisible();
+  const gitBox = await github.boundingBox();
+  expect(gitBox).not.toBeNull();
+  expect(gitBox!.width).toBeGreaterThanOrEqual(44);
+  expect(gitBox!.height).toBeGreaterThanOrEqual(44);
   await github.click();
   await expect(page.locator('#authName')).toHaveText('Ada Lovelace');
   await page.getByRole('button', { name: 'More options' }).click();
@@ -179,4 +192,49 @@ test('logout invalidates the session on the server', async ({ page, request }) =
     headers: { cookie: 'cl_session=' + session!.value },
   });
   expect((await res.json()).signed_in).toBe(false);
+});
+
+test('account projects list, open, signed-out 401, and another user', async ({ page, request }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.addInitScript((saved) => {
+    localStorage.setItem('esp32lab.projects.v1', saved);
+    localStorage.setItem('esp32lab.current.v1', 'lamp1');
+  }, savedProjects());
+  await page.goto(origin + '/?p=lamp1');
+  await signIn(page, 'GitHub', 1280);
+  const dialog = page.getByRole('dialog', { name: 'Save your 3 projects to your account?' });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByText('3 projects saved to your account')).toBeVisible();
+  await page.locator('#bProjects').click();
+  const account = page.locator('#authAccount');
+  await expect(account.getByRole('heading', { name: 'In your account' })).toBeVisible();
+  await expect(account.getByText('Desk lamp')).toBeVisible();
+  await expect(account.getByText('Porch')).toBeVisible();
+  const open = account.getByRole('button', { name: 'Open Desk lamp' });
+  const openBox = await open.boundingBox();
+  expect(openBox).not.toBeNull();
+  expect(openBox!.width).toBeGreaterThanOrEqual(44);
+  expect(openBox!.height).toBeGreaterThanOrEqual(44);
+  await open.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#projBanner')).toContainText('Desk lamp');
+  const signedOut = await request.get(origin + '/auth/projects');
+  expect(signedOut.status()).toBe(401);
+  await page.request.post(info().mock + '/control', { data: { sub: 'other-person-9', mode: 'ok' } });
+  const other = await page.context().browser()!.newContext();
+  const otherPage = await other.newPage();
+  await otherPage.setViewportSize({ width: 390, height: 800 });
+  await otherPage.goto(origin + '/');
+  await signIn(otherPage, 'Google', 390);
+  await otherPage.getByRole('button', { name: 'More options' }).click();
+  await otherPage.locator('#mMore button[data-a="projects"]').click();
+  await expect(otherPage.locator('#authAccount')).toBeVisible();
+  await expect(otherPage.locator('#authAccountStatus')).toHaveText('No projects saved to your account yet.');
+  await expect(otherPage.locator('#authAccount')).not.toContainText('Desk lamp');
+  const outBox = await otherPage.locator('#mSignOut').boundingBox();
+  expect(outBox).not.toBeNull();
+  expect(outBox!.height).toBeGreaterThanOrEqual(44);
+  await other.close();
+  await page.request.post(info().mock + '/control', { data: { sub: 'google-sub-1001', mode: 'ok' } });
 });

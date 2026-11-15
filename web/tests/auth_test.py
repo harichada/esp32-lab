@@ -817,6 +817,7 @@ class AuthTests(unittest.TestCase):
             ('GET', '/auth/google/callback'),
             ('GET', '/auth/github/callback?code=abc&state=abc'),
             ('GET', '/auth/projects'),
+            ('GET', '/auth/projects/lamp1'),
             ('POST', '/auth/logout'),
             ('POST', '/auth/projects/import'),
             ('POST', '/auth/google'),
@@ -884,6 +885,93 @@ class AuthTests(unittest.TestCase):
         )
         self.assertEqual(status, 200, body)
         self.assertFalse(self._session(jar)[0]['signed_in'])
+
+    def test_account_projects_stay_with_their_user(self):
+        jar, _old, _landed, _body = self._finish('github', '/')
+        view, _pairs = self._session(jar)
+        item = {
+            'id': 'desk', 'name': 'Desk lamp',
+            'proj': {'id': 'desk', 'name': 'Desk lamp', 'parts': [{'id': 'r1'}], 'wires': []},
+        }
+        headers = {
+            'Cookie': self._jar_header(jar),
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': view['csrf'],
+        }
+        status, _pairs, body = self._req(
+            'POST', '/auth/projects/import', headers=headers,
+            body=json.dumps({'csrf': view['csrf'], 'projects': [item]}).encode(),
+        )
+        self.assertEqual(status, 200, body)
+        status, _pairs, body = self._req('GET', '/auth/projects', headers={'Cookie': self._jar_header(jar)})
+        self.assertEqual(status, 200, body)
+        rows = json.loads(body)['projects']
+        self.assertEqual([row['name'] for row in rows], ['Desk lamp'])
+        self.assertIn('updated', rows[0])
+        status, _pairs, body = self._req('GET', '/auth/projects/desk', headers={'Cookie': self._jar_header(jar)})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)['proj']['parts'], [{'id': 'r1'}])
+        status, _pairs, body = self._req('GET', '/auth/projects')
+        self.assertEqual(status, 401, body)
+        self.assertIn('Sign in', body.decode('utf-8'))
+        status, _pairs, body = self._req('GET', '/auth/projects/desk')
+        self.assertEqual(status, 401, body)
+        self.idp.github_id = 999001
+        try:
+            other, _old, _landed, _body = self._finish('github', '/')
+            status, _pairs, body = self._req('GET', '/auth/projects', headers={'Cookie': self._jar_header(other)})
+            self.assertEqual(status, 200, body)
+            self.assertEqual(json.loads(body)['projects'], [])
+            status, _pairs, body = self._req('GET', '/auth/projects/desk', headers={'Cookie': self._jar_header(other)})
+            self.assertEqual(status, 404, body)
+            self.assertNotIn(b'Desk lamp', body)
+        finally:
+            self.idp.github_id = 4242
+
+    def test_rate_limit_log_uses_a_prefix(self):
+        self.assertEqual(https.network_label('203.0.113.10'), '203.0.113.0/24')
+        self.assertEqual(https.network_label('203.0.113.255'), '203.0.113.0/24')
+        self.assertEqual(https.network_label('2001:db8:abcd:1234::5'), '2001:db8:abcd::/48')
+        self.assertNotIn('203.0.113.10', https.network_label('203.0.113.10'))
+        self.assertNotIn('1234', https.network_label('2001:db8:abcd:1234::5'))
+        notes = []
+        https.set_logger(lambda msg: notes.append(str(msg)))
+        try:
+            https.apply_env({'TRUSTED_PROXY_IPS': '172.30.0.0/24'})
+            self.assertEqual(notes, ['warning TRUSTED_PROXY_IPS ignored: a value is not an exact IP'])
+            self.assertNotIn('172.30.0.0', notes[0])
+            self.assertEqual(https.PROXY_IPS, frozenset())
+            notes.clear()
+            https.apply_env({'TRUSTED_PROXY_IPS': 'not-an-ip'})
+            self.assertEqual(notes, ['warning TRUSTED_PROXY_IPS ignored: a value is not an exact IP'])
+            self.assertNotIn('not-an-ip', notes[0])
+            notes.clear()
+            https.apply_env({'TRUSTED_PROXY_IPS': '127.0.0.1'})
+            self.assertEqual(notes, [])
+            self._enable(AUTH_RATE_MAX='1')
+            self.logs.clear()
+            self._req('GET', '/auth/session', headers={'X-Forwarded-For': '203.0.113.10'})
+            status, _pairs, body = self._req('GET', '/auth/session', headers={'X-Forwarded-For': '203.0.113.10'})
+            self.assertEqual(status, 429, body)
+            lines = [line for line in self.logs if line.startswith('auth rate_limit')]
+            self.assertEqual(lines, ['auth rate_limit status=429 client=203.0.113.0/24 source=forwarded'])
+            joined = '\n'.join(self.logs)
+            self.assertNotIn('203.0.113.10', joined)
+            self.assertNotIn('@', joined)
+            https.apply_env({'TRUSTED_PROXY_IPS': ''})
+            self._enable(AUTH_RATE_MAX='1')
+            self.logs.clear()
+            self._req('GET', '/auth/session', headers={'X-Forwarded-For': '198.51.100.20'})
+            status, _pairs, body = self._req('GET', '/auth/session', headers={'X-Forwarded-For': '198.51.100.20'})
+            self.assertEqual(status, 429, body)
+            peer = [line for line in self.logs if line.startswith('auth rate_limit')]
+            self.assertEqual(peer, ['auth rate_limit status=429 client=127.0.0.0/24 source=peer'])
+            self.assertNotIn('127.0.0.1', '\n'.join(self.logs))
+            self.assertNotIn('198.51.100', '\n'.join(self.logs))
+        finally:
+            https.set_logger(lambda msg: None)
+            https.apply_env({})
+            self._enable()
 
 
 if __name__ == '__main__':

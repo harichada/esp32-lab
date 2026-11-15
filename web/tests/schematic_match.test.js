@@ -67,9 +67,9 @@ test('the match flag defaults on and ?schmatch=0 is the off switch', () => {
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
   const css = fs.readFileSync(path.join(__dirname, '../css/theme.css'), 'utf8');
   const mobile = fs.readFileSync(path.join(__dirname, '../css/mobile.css'), 'utf8');
-  assert.match(html, /schematic\.js\?v=74/);
+  assert.match(html, /schematic\.js\?v=75/);
   assert.match(html, /pinch\.js\?v=62/);
-  assert.match(html, /theme\.css\?v=69/);
+  assert.match(html, /theme\.css\?v=70/);
   assert.match(html, /mobile\.css\?v=73/);
   for (const state of [':hover', ':active', ':focus-visible', ':disabled']) {
     assert.match(css, new RegExp('\\.sch-lay' + state));

@@ -92,3 +92,22 @@ test('a 429 holds the next projects request until Retry-After', async () => {
   assert.strictEqual(calls.length, 2);
   assert.ok(calls[1] - calls[0] >= 180, 'second request left after ' + (calls[1] - calls[0]) + 'ms');
 });
+test('an account project opens as a local copy and keeps a different local project', () => {
+  const s = new ProjectStore(mem(), null);
+  const local = s.copy(ex());
+  local.name = 'Desk lamp';
+  local.code = 'local-sketch';
+  s.save(local);
+  const same = s.adoptAccount({ id: local.id, name: 'Desk lamp', code: 'local-sketch', parts: local.parts, wires: [] });
+  assert.strictEqual(same.id, local.id);
+  assert.strictEqual(s.list().length, 1);
+  const other = s.adoptAccount({ id: local.id, name: 'Desk lamp', code: 'account-sketch', parts: [{ id: 'r1', type: 'resistor' }], wires: [] });
+  assert.notStrictEqual(other.id, local.id);
+  assert.strictEqual(other.name, 'Desk lamp (copy)');
+  assert.strictEqual(s.get(local.id).code, 'local-sketch');
+  assert.strictEqual(s.get(other.id).code, 'account-sketch');
+  assert.strictEqual(s.list().length, 2);
+  const named = s.adoptAccount({ id: 'fresh', name: 'Desk lamp', code: 'third', parts: [{ id: 'r2' }], wires: [] });
+  assert.strictEqual(named.name, 'Desk lamp (copy 2)');
+  assert.strictEqual(s.get(local.id).name, 'Desk lamp');
+});

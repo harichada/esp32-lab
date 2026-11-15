@@ -25,25 +25,42 @@ def apply_env(env=None):
 
 
 def _parse_proxy_ips(raw):
-    """Exact IP addresses. A slash or an unparseable token trusts nobody."""
+    """Exact IP addresses. Anything else trusts nobody and logs one warning.
+
+    The warning does not include the setting. A full address, a prefix, or a
+    token that is not an IP must not land in the log.
+    """
     text = str(raw or '').strip()
     if not text:
         return frozenset()
-    if '/' in text:
-        _log("TRUSTED_PROXY_IPS rejected (%s contains '/'); trusting nobody" % text)
-        return frozenset()
     found = []
-    for part in text.split(','):
-        token = part.strip()
-        if not token:
-            _log('TRUSTED_PROXY_IPS rejected (empty address); trusting nobody')
-            return frozenset()
-        try:
-            found.append(str(ipaddress.ip_address(token)))
-        except ValueError:
-            _log('TRUSTED_PROXY_IPS rejected (%s is not an IP address); trusting nobody' % token)
-            return frozenset()
+    bad = '/' in text
+    if not bad:
+        for part in text.split(','):
+            token = part.strip()
+            if not token:
+                bad = True
+                break
+            try:
+                found.append(str(ipaddress.ip_address(token)))
+            except ValueError:
+                bad = True
+                break
+    if bad:
+        _log('warning TRUSTED_PROXY_IPS ignored: a value is not an exact IP')
+        return frozenset()
     return frozenset(found)
+
+
+def network_label(ip):
+    """The counted client as a prefix: IPv4 /24, IPv6 /48. Never the full address."""
+    try:
+        addr = ipaddress.ip_address(str(ip or '').strip())
+    except ValueError:
+        return 'unknown'
+    bits = 24 if addr.version == 4 else 48
+    net = ipaddress.ip_network((addr, bits), strict=False)
+    return '%s/%d' % (net.network_address, bits)
 
 
 def _peer_ip(scope):
@@ -75,37 +92,51 @@ def _forwarded_values(scope, name):
     return found
 
 
-def client_ip(scope):
-    """Address for the sign-in rate limit.
+def client_view(scope):
+    """(address, source) for the sign-in rate limit.
 
-    The TCP peer is the address. A peer outside TRUSTED_PROXY_IPS cannot
-    change it with X-Forwarded-For. A trusted peer may name the client as
-    the rightmost address in that header that is not itself a trusted proxy.
-    A missing, repeated, or malformed header keeps the peer.
+    source is 'peer' for the TCP peer and 'forwarded' when a trusted proxy's
+    X-Forwarded-For supplied the counted address. A peer outside
+    TRUSTED_PROXY_IPS cannot change the address with that header. A trusted
+    peer may name the client as the rightmost address that is not itself a
+    trusted proxy. A missing, repeated, or malformed header keeps the peer.
     """
     peer = _peer_ip(scope) or 'unknown'
     if peer not in PROXY_IPS:
-        return peer
+        return peer, 'peer'
     values = _forwarded_values(scope, b'x-forwarded-for')
     if len(values) != 1:
-        return peer
+        return peer, 'peer'
     text = values[0]
     if text != text.strip() or not text or any(c in text for c in '\t\r\n'):
-        return peer
+        return peer, 'peer'
     parts = [part.strip() for part in text.split(',')]
     if not parts or any(not part for part in parts):
-        return peer
+        return peer, 'peer'
     for part in reversed(parts):
         if part.startswith('[') and part.endswith(']'):
             part = part[1:-1]
         try:
             ip = str(ipaddress.ip_address(part))
         except ValueError:
-            return peer
+            return peer, 'peer'
         if ip in PROXY_IPS:
             continue
-        return ip
-    return peer
+        return ip, 'forwarded'
+    return peer, 'peer'
+
+
+def client_ip(scope):
+    """Address for the sign-in rate limit. See client_view."""
+    return client_view(scope)[0]
+
+
+def rate_limit_log(scope):
+    """One structured 429 line. The address is a prefix, never a full IP."""
+    ip, source = client_view(scope)
+    if source not in ('peer', 'forwarded'):
+        source = 'peer'
+    return 'auth rate_limit status=429 client=%s source=%s' % (network_label(ip), source)
 
 
 def request_secure(scope):

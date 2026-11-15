@@ -169,11 +169,6 @@
       more.insertBefore(box, more.firstChild);
     }
     box.textContent = '';
-    const label = document.createElement('div');
-    label.className = 'm-lbl';
-    label.textContent = 'Account';
-    const list = document.createElement('div');
-    list.className = 'm-list';
     if (session.signed_in) {
       const name = document.createElement('p');
       name.className = 'auth-who';
@@ -184,20 +179,121 @@
       out.id = 'mSignOut';
       out.textContent = 'Sign out';
       out.addEventListener('click', () => signOut(out));
-      list.appendChild(out);
-      box.append(label, name, list);
+      box.append(name, out);
       return;
     }
     const choices = menuButtons();
     if (!choices.length) { box.remove(); return; }
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.id = 'mSignIn';
+    btn.textContent = 'Sign in';
+    if (choices.length === 1) {
+      btn.addEventListener('click', () => begin(choices[0][0], btn));
+      box.appendChild(btn);
+      return;
+    }
+    const menu = document.createElement('div');
+    menu.id = 'mAuthMenu';
+    menu.hidden = true;
+    menu.setAttribute('role', 'group');
+    menu.setAttribute('aria-label', 'Sign in');
     choices.forEach(([id, text]) => {
       const b = providerButton(id, 'Sign in with ' + text);
-      b.id = choices.length === 1 ? 'mSignIn' : '';
-      if (!b.id) b.id = 'mSignIn' + text;
-      list.appendChild(b);
+      menu.appendChild(b);
     });
-    if (choices.length === 1) list.querySelector('button').id = 'mSignIn';
-    box.append(label, list);
+    btn.setAttribute('aria-expanded', 'false');
+    btn.setAttribute('aria-controls', 'mAuthMenu');
+    btn.addEventListener('click', () => {
+      const open = menu.hidden;
+      menu.hidden = !open;
+      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (open) {
+        const first = menu.querySelector('button');
+        if (first) first.focus();
+      }
+    });
+    box.append(btn, menu);
+  }
+  function accountWhen(updated) {
+    const t = Number(updated);
+    if (!Number.isFinite(t) || t <= 0) return 'Last saved';
+    const ms = t < 1e12 ? t * 1000 : t;
+    try { return 'Last saved ' + new Date(ms).toLocaleString(); }
+    catch (e) { return 'Last saved'; }
+  }
+  function showAccountError(group, status) {
+    status.textContent = "Couldn't load the projects in your account.";
+    let again = group.querySelector('#authAccountRetry');
+    if (!again) {
+      again = document.createElement('button');
+      again.type = 'button';
+      again.id = 'authAccountRetry';
+      again.textContent = 'Try again';
+      group.appendChild(again);
+    }
+    again.hidden = false;
+    again.onclick = () => { again.hidden = true; loadAccount(group, status); };
+  }
+  async function openAccount(id, btn) {
+    setBusy(btn, true);
+    try {
+      const res = await fetch(here('auth/projects/' + encodeURIComponent(id)), {
+        credentials: 'same-origin', headers: { accept: 'application/json' },
+      });
+      if (!res.ok) throw new Error('load');
+      const data = await res.json();
+      if (!data || !data.proj || !root.Projects) throw new Error('load');
+      const saved = new root.Projects.ProjectStore().adoptAccount(data.proj);
+      const dlg = document.getElementById('projDlg');
+      if (dlg) dlg.hidden = true;
+      if (root.app && root.app.openProject) root.app.openProject(saved.id);
+    } catch (e) {
+      setBusy(btn, false);
+      toast("Couldn't open that project. Try again.", true);
+    }
+  }
+  async function loadAccount(group, status) {
+    const old = group.querySelector('.auth-account');
+    if (old) old.remove();
+    status.textContent = 'Loading projects saved to your account.';
+    let res;
+    try {
+      res = await fetch(here('auth/projects'), {
+        credentials: 'same-origin', headers: { accept: 'application/json' },
+      });
+    } catch (e) { showAccountError(group, status); return; }
+    if (res.status === 401) {
+      status.textContent = 'Sign in to see the projects in your account.';
+      return;
+    }
+    if (!res.ok) { showAccountError(group, status); return; }
+    let data = {};
+    try { data = await res.json(); } catch (e) { showAccountError(group, status); return; }
+    const rows = Array.isArray(data.projects) ? data.projects : [];
+    if (!rows.length) {
+      status.textContent = 'No projects saved to your account yet.';
+      return;
+    }
+    status.textContent = '';
+    const list = document.createElement('ul');
+    list.className = 'auth-account';
+    rows.forEach((row) => {
+      const li = document.createElement('li');
+      const name = document.createElement('span');
+      name.textContent = row.name || 'Untitled';
+      const when = document.createElement('span');
+      when.className = 'muted';
+      when.textContent = accountWhen(row.updated);
+      const open = document.createElement('button');
+      open.type = 'button';
+      open.textContent = 'Open';
+      open.setAttribute('aria-label', 'Open ' + (row.name || 'Untitled'));
+      open.addEventListener('click', () => openAccount(row.id, open));
+      li.append(name, when, open);
+      list.appendChild(li);
+    });
+    group.appendChild(list);
   }
   function fillProjects(dialog) {
     const box = dialog && dialog.querySelector('#authProj');
@@ -205,13 +301,17 @@
     box.textContent = '';
     if (!session) return;
     if (session.signed_in) {
-      const p = document.createElement('p');
-      p.className = 'auth-note';
-      p.append('Signed in as ');
-      const b = document.createElement('b');
-      b.textContent = session.display_name || 'Signed in';
-      p.append(b);
-      box.appendChild(p);
+      const group = document.createElement('section');
+      group.id = 'authAccount';
+      group.setAttribute('aria-labelledby', 'authAccountTitle');
+      const title = document.createElement('h4');
+      title.id = 'authAccountTitle';
+      title.textContent = 'In your account';
+      const status = document.createElement('p');
+      status.id = 'authAccountStatus';
+      group.append(title, status);
+      box.appendChild(group);
+      loadAccount(group, status);
       return;
     }
     const choices = menuButtons();
@@ -226,6 +326,12 @@
     group.setAttribute('aria-labelledby', 'authProjNote');
     choices.forEach(([id, text]) => group.appendChild(providerButton(id, 'Sign in with ' + text)));
     box.append(note, group);
+  }
+  function signOutCancelled(err) {
+    if (!err) return false;
+    if (err.name === 'AbortError') return true;
+    const msg = String(err.message || err);
+    return /aborted|abort|cancelled|canceled|NS_BINDING_ABORTED/i.test(msg);
   }
   async function signOut(btn) {
     if (!session || !session.csrf) return;
@@ -242,9 +348,12 @@
         toast('Sign-out needs a fresh page. Reload and try again.', true);
         return;
       }
+      try { await res.json(); }
+      catch (e) { if (signOutCancelled(e)) return; }
       setImportMark('');
       location.reload();
     } catch (e) {
+      if (signOutCancelled(e)) return;
       setBusy(btn, false);
       toast('Sign-out needs a fresh page. Reload and try again.', true);
     }
@@ -374,13 +483,18 @@
       })
       .catch(() => { /* the lab keeps working with no account */ });
   }
+  function useSession(next) { session = next; }
   const api = {
     fillProjects: fillProjects,
     mountMobile: mountMobile,
     begin: begin,
     returnTarget: returnTarget,
+    signOutCancelled: signOutCancelled,
+    useSession: useSession,
   };
   root.clAuth = api;
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  if (typeof document === 'undefined') return;
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
   else boot();
 })(typeof window !== 'undefined' ? window : globalThis);
