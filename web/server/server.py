@@ -13,11 +13,12 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       SCHEMATIC_MATCH_LAYOUT (default 1). 0 puts <meta name="schmatch" content="0"> on the lab page
       so every visitor gets the column schematic. Any other value leaves index.html unchanged,
       and ?schmatch= on that page is then free to choose.
-      Performance flags (all default off; the page and cache headers stay as they are until set):
-      DEFER_SCRIPTS (default 0). 1, or ?defer=1 on / and /index.html, adds defer to every external
-      script except js/storage.js, js/boot-theme.js, js/boot-view.js and js/force2d.js. Those stay
-      blocking so the theme and the 2D button are ready before first paint. defer (not async) keeps
-      document order. The HTML file has no inline script.
+      Performance flags (server env vars default off; the page file already defers scripts):
+      DEFER_SCRIPTS (default 0). The shipped index.html has one deferred script, js/load.js, which
+      inserts the rest after the first paint so they are not on the LCP path. 1, or ?defer=1, adds
+      defer to any external script that lacks it, except storage.js, boot-theme.js, boot-view.js and
+      force2d.js (a rollback that puts those tags back without defer keeps them parser-blocking).
+      Never async. No inline script.
       JSSKETCH_WORKER (default 0). 1 sets data-jssketch-worker="1" on the lab page so a JS sketch
       runs in a Worker. The page does not need unsafe-eval on that path. ?jssketchworker=1 does the
       same without this env var.
@@ -235,12 +236,12 @@ def apply_asset_cache(request, resp, env=None):
         else:
             resp.headers['Cache-Control'] = 'public, max-age=31536000, immutable' if request.query_params.get('v') else 'no-cache'
 
-# These run during parse. storage.js feeds the theme script; the theme and the
-# view clear must finish before first paint; force2d.js binds the button it follows.
+# The shipped page already defers these. apply_defer_scripts will not add defer to
+# them, so a rollback that removes the attribute keeps them parser-blocking.
 _BLOCKING_SCRIPTS = {'storage.js', 'boot-theme.js', 'boot-view.js', 'force2d.js'}
 
 def apply_defer_scripts(html):
-    """Add defer (never async) in source order. Boot scripts stay blocking."""
+    """Add defer (never async) in source order. Boot scripts are left as written."""
     def repl(m):
         before, quote, src, after = m.group(1), m.group(2), m.group(3), m.group(5)
         path = src.split('?', 1)[0]
@@ -1803,9 +1804,10 @@ def lab_page(env=None, query=None):
     """Lab HTML and whether it is the file unchanged.
 
     SCHEMATIC_MATCH_LAYOUT=0 injects one meta tag. DEFER_SCRIPTS=1 or ?defer=1
-    adds defer to external scripts except the blocking boot scripts.
-    JSSKETCH_WORKER=1 adds data-jssketch-worker="1". All default off, and with
-    them off the bytes are the file.
+    adds defer to external scripts that lack it, except the boot scripts.
+    The file already defers every script, so the flag does not change those bytes.
+    JSSKETCH_WORKER=1 adds data-jssketch-worker="1". Server flags default off, and
+    with them off the bytes are the file.
     """
     raw = (SITE / 'index.html').read_bytes()
     text = raw.decode('utf-8')

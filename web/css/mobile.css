@@ -218,7 +218,7 @@ body.m .pal-empty{flex:0 0 100%;text-align:center}
 body.m #mIgnite.m-only{display:flex!important}
 #mIgnite>svg{position:absolute;inset:-6px;width:88px;height:88px;transform:rotate(-90deg);pointer-events:none}
 .m-ig-bg{fill:none;stroke:rgba(34,211,238,.15);stroke-width:3}.m-ig-p{fill:none;stroke:var(--acc);stroke-width:3;stroke-linecap:round;stroke-dasharray:100;stroke-dashoffset:100;filter:drop-shadow(0 0 4px var(--acc))}
-.m-ig-i .ic{width:22px;height:22px}.m-ig-t{font:700 9px var(--mono);letter-spacing:.22em}
+.m-ig-i .ic{width:22px;height:22px}.m-ig-t{font:700 12px var(--mono);letter-spacing:.16em}
 #mIgnite.arming{transform:scale(.94);transition:transform .15s}
 #mIgnite.live{border-color:var(--err);color:#ffd9d9;background:radial-gradient(circle at 50% 35%,rgba(248,113,113,.35),rgba(12,3,3,.95) 72%);box-shadow:0 0 34px rgba(248,113,113,.45);animation:mLive 1.6s ease-in-out infinite}
 @keyframes mLive{50%{box-shadow:0 0 14px rgba(248,113,113,.25)}}
@@ -250,7 +250,7 @@ body.m #mCount.on{display:grid!important;animation:mCnt .23s ease-out infinite}
 @media (prefers-reduced-motion:reduce){body.m *,body.m *::before,body.m *::after{animation:none!important;transition-duration:.01ms!important}}
 body.m.m-dial #mIgnite{opacity:0;pointer-events:none}#mIgnite{transition:opacity .2s,transform .15s}
 body.m .canvas-tools,body.m .zoom-tools{border-radius:6px;background:rgba(4,8,14,.7);border-color:var(--hudl)}
-body.m .hint{left:12px;right:12px;width:auto;max-width:none!important;transform:none;font-family:var(--mono);font-size:11px;letter-spacing:.06em;border-radius:4px;border-color:var(--hudl);background:rgba(4,8,14,.6);white-space:normal;overflow:visible;text-align:center;line-height:1.35}
+body.m .hint{left:12px;right:12px;width:auto;max-width:none!important;transform:none;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;letter-spacing:.06em;border-radius:4px;border-color:var(--hudl);background:rgba(4,8,14,.6);white-space:normal;overflow:hidden;text-align:center;line-height:1.35;height:48px;min-height:48px;box-sizing:border-box}
 body.m .projbanner #bCopy{background:rgba(34,211,238,.1);color:var(--acc);border:1px solid var(--hud);box-shadow:0 0 18px rgba(34,211,238,.18);border-radius:6px;font-family:var(--mono);font-size:12px;letter-spacing:.12em;text-transform:uppercase}
 body.m #mSel{border-radius:8px;background:rgba(4,8,14,.82);border-color:var(--hudl)}
 body.m #mCount:not(.on),body.m #mFlash:not(.on){display:none!important}
@@ -371,3 +371,36 @@ html[data-a11y="1"] body.m .m-lbl,
 html[data-a11y="1"] body.m #mParts,
 html[data-a11y="1"] body.m .chip-tag,
 html[data-a11y="1"] body.m .conn{font-size:12px}
+/* Phone shell before body.m. mobile.js adds that class on DOMContentLoaded; these
+   boxes match it so #main and the hint do not move. Same numbers as body.m #main / .hint. */
+@media (max-width:820px){
+  body{font-size:14px}
+  header#top{position:fixed!important;left:0!important;right:0!important;top:0!important;height:calc(54px + env(safe-area-inset-top))!important;z-index:40;display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;grid-template-rows:auto auto;align-content:center}
+  header#top .brand-t,header#top .tb,header#top .runctl,header#top .crumb-sep,header#top #projKind,header#top #bRestart,header#top #bReset{display:none!important}
+  header#top .brand{grid-column:1;grid-row:1/3}
+  header#top .crumb{grid-column:2;grid-row:1;display:flex}
+  header#top #status{grid-column:2;grid-row:2}
+  header#top #bForce2d,header#top .runctl{grid-column:3;grid-row:1/3}
+  #main{position:fixed!important;left:0!important;right:0!important;top:calc(54px + env(safe-area-inset-top))!important;bottom:env(safe-area-inset-bottom)!important;height:auto!important;display:block!important}
+  #center,#stageWrap{position:absolute!important;inset:0!important}
+  #stage{width:100%;height:100%;display:block}
+  #palette,#side,#dock{position:fixed!important;left:0!important;right:0!important;bottom:0!important;max-height:calc(100% - 54px);transform:translateY(calc(100% + env(safe-area-inset-bottom) + 8px))!important;visibility:hidden}
+  .hint{position:absolute!important;left:12px!important;right:12px!important;bottom:calc(176px + env(safe-area-inset-bottom))!important;width:auto!important;max-width:none!important;height:48px!important;min-height:48px!important;box-sizing:border-box;transform:none!important;overflow:hidden;font-size:12px;line-height:1.35;padding:7px 14px;text-align:center;font-family:ui-monospace,Menlo,Consolas,monospace!important}
+  #dockResizer,#sideResizer,.reopen,#minimap,#legalFoot,#tabs,.panel-h,.zoom-tools #bMap,.canvas-tools :is(.vsep,#bRot,#bDel,select,.tgl,.wire-color){display:none!important}
+  .canvas-tools,.zoom-tools{position:absolute!important;display:flex;width:max-content;z-index:4;bottom:calc(112px + env(safe-area-inset-bottom))!important;padding:4px;gap:8px}
+  .canvas-tools{left:max(12px,env(safe-area-inset-left))!important;height:54px!important;overflow:hidden;flex-wrap:nowrap;align-items:center}
+  .zoom-tools{right:max(12px,env(safe-area-inset-right))!important}
+  .canvas-tools .iconbtn,.zoom-tools .iconbtn{width:44px;height:44px;min-width:44px;min-height:44px}
+  #bFitPill{display:inline-flex!important;width:44px;min-width:44px;height:44px;min-height:44px}
+  .brand .logo{width:30px;height:30px}
+  #bForce2d{width:44px!important;height:32px!important;min-height:32px;min-width:44px;max-width:44px;margin:0;overflow:hidden}
+  #mMenu{display:inline-flex!important;width:44px;height:44px;min-width:44px;min-height:44px}
+  .view-toggle{display:inline-flex!important}
+  .view-toggle .seg{height:44px;min-width:44px;min-height:44px;padding:0 10px}
+}
+@media (max-width:430px){
+  .zoom-tools{top:88px!important;bottom:auto!important;right:max(8px,env(safe-area-inset-right))!important;left:auto!important;flex-direction:column;gap:6px;padding:4px;z-index:14;width:54px!important;height:204px!important;overflow:hidden}
+  body.viewsch .zoom-tools{flex-direction:row!important;flex-wrap:nowrap!important;width:max-content!important;height:auto!important;max-width:calc(100% - 16px)!important;overflow:hidden}
+  .zoom-tools #bFit{display:none!important}
+  .zoom-tools #bZoomOut,.zoom-tools #bZoomIn,.zoom-tools #zoomPct,.zoom-tools #bFitPill{display:inline-flex!important;width:44px;min-width:44px;height:44px;min-height:44px}
+}

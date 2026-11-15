@@ -82,7 +82,7 @@
     document.body.insertAdjacentHTML('afterbegin', ICONS);
     // top bar: overflow + compact stop
     const top = $('header#top');
-    top.insertAdjacentHTML('beforeend', `<button id="mMenu" class="iconbtn m-only" type="button" aria-label="More options" aria-haspopup="dialog" aria-expanded="false" aria-controls="mMore">${ic('m-more')}</button>`);
+    if (!$('#mMenu')) top.insertAdjacentHTML('beforeend', `<button id="mMenu" class="iconbtn m-only" type="button" aria-label="More options" aria-haspopup="dialog" aria-expanded="false" aria-controls="mMore">${ic('m-more')}</button>`);
     $('#mMenu').onclick = () => setSheet(sheet === 'more' ? null : 'more');
     // orbital command dial (bottom centre) + ignition (bottom right) + telemetry ticker
     const modes = [['circuit', 'Circuit', 'm-circuit'], ['code', 'Code', 'm-code'], ['parts', 'Parts', 'm-parts'], ['serial', 'Serial', 'm-serial'], ['insp', 'Inspect', 'm-sliders'], ['scope', 'Scope', 'm-scope'], ['more', 'More', 'm-more']];
@@ -544,7 +544,21 @@
     if (window.app && window.app.editor) window.app.editor.setHint();
     if (window.app && window.app.syncExampleTip) window.app.syncExampleTip();
   }
-  window.addEventListener('DOMContentLoaded', () => { bindFitPill(); apply(); if (MQ.addEventListener) MQ.addEventListener('change', apply); else MQ.addListener(apply); if (document.body.classList.contains('m')) setTimeout(() => fitIfReady(window.app && window.app.editor, true), 200); });
+  function boot() {
+    bindFitPill();
+    // The hint text is already in the first HTML. This only switches Tap and Click
+    // once the page has painted. Building the phone sheets is a later task.
+    const m = MQ.matches;
+    document.body.classList.toggle('m', m);
+    if (window.app && window.app.editor && window.app.editor.setHint) window.app.editor.setHint();
+    setTimeout(() => {
+      apply();
+      if (MQ.addEventListener) MQ.addEventListener('change', apply); else MQ.addListener(apply);
+      if (document.body.classList.contains('m')) setTimeout(() => fitIfReady(window.app && window.app.editor, true), 200);
+    }, 0);
+  }
+  if (document.readyState === 'loading' || !document.getElementById('stage')) window.addEventListener('DOMContentLoaded', boot);
+  else boot();
   bindFitPill();
   window.Mobile = { setSheet, openDock, fitIfReady, fitFromPill, bindFitPill, applyFitPillFlag, ignitePress, bindIgnite, syncIgnite, sheetHead, syncPhoneChrome };
 })();

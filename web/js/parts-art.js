@@ -23,7 +23,15 @@
   if (typeof document !== 'undefined') { if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', injectDefs); else injectDefs(); }
   // generic male header row: black plastic + gold pin tops
   const header = (xs, y) => xs.map((x) => `<rect x="${x - 4.6}" y="${y - 4.6}" width="9.2" height="9.2" rx=".8" fill="#17181b" stroke="#000" stroke-width=".4"/><rect x="${x - 2}" y="${y - 2}" width="4" height="4" rx=".5" fill="url(#aGold)"/>`).join('');
-  const silk = (x, y, t, sz = 4.2, anchor = 'middle', rot) => `<text x="${x}" y="${y}" font-size="${sz}" fill="#f2f2f2" font-family="ui-monospace,Menlo,monospace" text-anchor="${anchor}"${rot !== undefined ? ` transform="rotate(${rot} ${x} ${y})"` : ''} pointer-events="none">${esc(t)}</text>`;
+  // Computed font-size is 12px (Lighthouse counts that, not the scaled ink).
+  // The scale around the anchor keeps the silkscreen the same size on the board.
+  const silk = (x, y, t, sz = 4.2, anchor = 'middle', rot) => {
+    const s = Number(sz) || 4.2;
+    const k = Math.round((s / 12) * 10000) / 10000;
+    const spin = rot !== undefined ? ` rotate(${rot})` : '';
+    const tf = `translate(${x} ${y})${spin} scale(${k}) translate(${-x} ${-y})`;
+    return `<text x="${x}" y="${y}" font-size="12" fill="#f2f2f2" font-family="ui-monospace,Menlo,monospace" text-anchor="${anchor}" transform="${tf}" pointer-events="none">${esc(t)}</text>`;
+  };
   const hole = (x, y, r = 2.6) => `<circle cx="${x}" cy="${y}" r="${r + 1}" fill="url(#aGold)"/><circle cx="${x}" cy="${y}" r="${r}" fill="#0d0f12"/>`;
 
   // ---------- ESP32 DevKit V1 ----------

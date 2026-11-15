@@ -14,17 +14,33 @@ const theme = fs.readFileSync(path.join(web, 'css/theme.css'), 'utf8');
 const phone = fs.readFileSync(path.join(web, 'css/mobile.css'), 'utf8');
 const three = fs.readFileSync(path.join(web, 'vendor/three.min.js'));
 
-test('the shipped page does not defer scripts or drop maximum-scale', () => {
-  assert.match(html, /maximum-scale=1/);
-  assert.doesNotMatch(html, /<script[^>]*\sdefer[\s>]/);
+test('the shipped page defers every script and allows zoom', () => {
+  assert.doesNotMatch(html, /maximum-scale\s*=/);
+  assert.doesNotMatch(html, /user-scalable\s*=/);
+  assert.match(html, /<h1 class="sr-only">ESP32 Circuit Lab<\/h1>/);
+  assert.match(html, /id="code"[^>]*aria-label="Sketch code"/);
+  assert.match(html, /id="palette"[^>]*aria-label="Parts"/);
+  assert.match(html, /id="palList"[^>]*tabindex="0"/);
+  assert.match(html, /id="palList"[^>]*role="region"/);
+  assert.doesNotMatch(html, /css\/app\.css/);
+  assert.match(html, /css\/theme\.css\?v=102/);
+  assert.doesNotMatch(html, /css\/mobile\.css/);
+  const load = fs.readFileSync(path.join(web, 'js/load.js'), 'utf8');
+  assert.match(html, /js\/load\.js\?v=101" defer/);
+  assert.match(load, /js\/app\.js\?v=86/);
+  assert.match(load, /js\/mobile\.js\?v=98/);
+  assert.match(load, /s\.async = false/);
+  assert.match(html, /<link rel="stylesheet" href="css\/theme\.css\?v=102">/);
+  assert.match(load, /css\/app\.css\?v=97/);
+  assert.match(load, /css\/theme-late\.css\?v=103/);
+  assert.match(load, /css\/mobile\.css\?v=96/);
   assert.doesNotMatch(html, /<script[^>]*\sasync[\s>]/);
-  assert.match(html, /theme\.css\?v=75/);
-  assert.match(html, /mobile\.css\?v=79/);
-  assert.match(html, /app\.js\?v=86/);
-  assert.match(html, /mobile\.js\?v=80/);
-  assert.doesNotMatch(html, /<h1[\s>]/);
-  assert.doesNotMatch(html, /id="code"[^>]*aria-label/);
-  assert.doesNotMatch(html, /id="palette"[^>]*aria-label/);
+  const scripts = [...html.matchAll(/<script\b([^>]*)>/gi)];
+  assert.ok(scripts.length > 0);
+  for (const match of scripts) assert.match(match[1], /\sdefer(?:\s|>|$)/);
+  const style = html.match(/<style>([\s\S]*?)<\/style>/);
+  const crit = fs.readFileSync(path.join(web, 'css/critical.css'), 'utf8').trim();
+  assert.equal(style[1].trim(), crit);
 });
 
 test('app.js gates lazy 3D, idle palette, batched layout, and a11y', () => {
@@ -59,14 +75,16 @@ test('index.html has a description, no inline script, and no on* attribute', () 
     assert.equal(match[2].trim(), '');
   }
   assert.doesNotMatch(html, /\son[a-zA-Z]+\s*=/);
-  assert.match(html, /js\/boot-theme\.js\?v=90/);
-  assert.match(html, /js\/boot-view\.js\?v=91/);
-  assert.match(html, /js\/force2d\.js\?v=92/);
-  assert.match(html, /js\/jssketch\.js\?v=46/);
-  assert.match(html, /js\/app\.js\?v=86/);
-  assert.doesNotMatch(html, /js\/app\.js\?v=(84|85|87|88|89)/);
-  assert.doesNotMatch(html, /js\/projects\.js\?v=48/);
-  assert.doesNotMatch(html, /js\/schematic\.js\?v=71/);
+  const listed = fs.readFileSync(path.join(web, 'js/load.js'), 'utf8');
+  assert.match(listed, /js\/boot-theme\.js\?v=90/);
+  assert.match(listed, /js\/parts-art\.js\?v=100/);
+  assert.match(listed, /js\/boot-view\.js\?v=91/);
+  assert.match(listed, /js\/force2d\.js\?v=92/);
+  assert.match(listed, /js\/jssketch\.js\?v=46/);
+  assert.match(listed, /js\/app\.js\?v=86/);
+  assert.doesNotMatch(listed, /js\/app\.js\?v=(84|85|87|88|89)/);
+  assert.doesNotMatch(listed, /js\/projects\.js\?v=48/);
+  assert.doesNotMatch(listed, /js\/schematic\.js\?v=71/);
 });
 
 test('three.min.js has no source map reference', () => {

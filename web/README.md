@@ -179,22 +179,22 @@ Rollback: recreate `esp32lab` from the saved inspect without `SIM_STAGING_UPSTRE
 
 ## Performance and accessibility flags
 
-Every switch below is **off by default**. With them unset, `/` is the bytes of `index.html`, scripts keep today's schedule, and cache headers stay on the previous policy (HTML is `no-cache, must-revalidate`; versioned `/js` and `/css` except `view3d.js` are immutable; `view3d.js` stays `no-cache, must-revalidate`).
+Server env switches below are **off by default**. With them unset, `/` is the bytes of `index.html` and cache headers stay on the previous policy (HTML is `no-cache, must-revalidate`; versioned `/js` and `/css` except `view3d.js` are immutable; `view3d.js` stays `no-cache, must-revalidate`). The page file itself ships the fast path: every script is `defer`, critical CSS is inlined, 3D is lazy, and the accessibility fixes are in the HTML.
 
 | Switch | Default | Set with | When on |
 |---|---|---|---|
-| `DEFER_SCRIPTS` | `0` | env, or `?defer=1` on `/` and `/index.html` | `defer` on every external script except `storage.js`, `boot-theme.js`, `boot-view.js` and `force2d.js`, in source order. Not `async`. |
+| `DEFER_SCRIPTS` | `0` | env, or `?defer=1` on `/` and `/index.html` | Adds `defer` to any external script that lacks it, except `storage.js`, `boot-theme.js`, `boot-view.js` and `force2d.js`. The shipped page has one deferred loader instead of those tags. Not `async`. |
 | `COMPRESS_ENABLED` | `0` | env | Serve a sibling `.gz` for `.js` `.css` `.svg` `.wasm` `.json` when `Accept-Encoding` includes gzip. |
 | `CACHE_VERSIONED` | `0` | env | HTML is `Cache-Control: no-cache`. `public, max-age=31536000, immutable` only for those static types when `?v=` is present. Unversioned static files are `no-cache`. |
-| `lazy3d` | off | `?lazy3d=1` | Do not prefetch `three.min.js` or `view3d.js`. Load them on the first 3D open. |
-| `idlepal` | off | `?idlepal=1` | Build the parts palette after first paint, in short idle slices. Blink still loads inside `init`. |
-| `batchlayout` | off | `?batchlayout=1` | Header fit reads layout, then writes. |
-| `a11y` | off | `?a11y=1` | Viewport, contrast, names, landmarks, one h1, 14px phone body. |
+| `lazy3d` | on | `?lazy3d=0` rolls it back | Do not prefetch `three.min.js` or `view3d.js`. Load them on the first 3D open. |
+| `idlepal` | on | `?idlepal=0` rolls it back | Build the parts palette after first paint, in short idle slices. Blink still loads inside `init`. |
+| `batchlayout` | on | `?batchlayout=0` rolls it back | Header fit reads layout, then writes. |
+| `a11y` | on | `?a11y=0` skips the JS extras | Viewport, contrast, names, landmarks, one h1, and 14px phone body are in the HTML and CSS. The flag still marks toasts and `#mTicker`. |
 | `JSSKETCH_WORKER` | `0` | env, or `?jssketchworker=1` | Run a JS sketch in a Worker. The page does not call `eval` or `new Function`. |
 | `CSP_REPORT_ENABLED` | `0` | env | `POST /api/csp-report` and a report-only CSP. Off returns 404. |
 | `CSP_ENFORCE` | `0` | env, and only with the report flag | Send `Content-Security-Policy` instead of `Content-Security-Policy-Report-Only`. |
 
-`index.html` has no inline script and no `on*` attribute. `js/boot-theme.js` applies the saved theme, `js/boot-view.js` clears `esp32lab.view`, and `js/force2d.js` is the View · 2D button. Those three, plus `js/storage.js`, stay parser-blocking so the theme is set before first paint and the button works as soon as it is parsed. Later scripts depend on earlier globals, so they use `defer` (document order, before `DOMContentLoaded`) and never `async`.
+`index.html` has no inline script and no `on*` attribute. The hint (`div.hint`) is in the first HTML, with its final phone sentence, and it uses a local UI font. `css/critical.css` is copied into the `<style>` block (same bytes) and reserves the phone shell: `#main`, the header, the hint, and the toolbars. `theme.css` stays render-blocking. `app.css` (part artwork), `theme-late.css` (the rest of the theme, including the webfonts), and `mobile.css` are not in the first HTML. The only script tag is `js/load.js` (`defer`). After the largest contentful paint it inserts `app.css`, `theme-late.css`, and `mobile.css`, then the other scripts in source order (`script.async = false`, so they do not race). A request that finishes before that paint is counted in the LCP path. The default Blink sketch is already in `#codeHl`, so that text paints with the first HTML. `init` runs in short turns after the scripts, because one long turn was enough to miss the blocking-time budget. Inlining every stylesheet made the uncompressed HTML large enough to slow the hint, so that was not shipped. Nothing is preloaded, and `three.min.js` stays off the first load. `js/boot-theme.js` applies the saved theme, `js/boot-view.js` clears `esp32lab.view`, and `js/force2d.js` is the View · 2D button. A phone `@media (max-width: 820px)` block reserves the same boxes `body.m` applies, so adding that class does not move `#main`. `@font-face` keeps `font-display: swap`. Local fallbacks use `size-adjust` so the swap does not move text.
 
 `?a11y=1` gives `#selExample` an `aria-label` and a label whose text is the selected option (`Examples…`). The `title` tooltip stays, and it is not the control's only name (axe `label-title-only`).
 
@@ -227,11 +227,11 @@ header @static {
 
 `web/vendor/three.min.js` has no `sourceMappingURL` comment and ships with no `.map` file. There is no invalid source-map reference to remove; the browser is not told to request `three.min.js.map`.
 
-`?lazy3d=1` leaves the idle prefetch off. Opening 3D shows a skeleton, then requests `view3d.js` and `three.min.js`. If that load fails, the card says "Could not load the 3D view. Retry." and Retry asks for the scripts again (the failed tag is removed). Without the flag, the idle prefetch is unchanged.
+Lazy 3D is the default. Opening 3D shows a skeleton, then requests `view3d.js` and `three.min.js`. If that load fails, the card says "Could not load the 3D view. Retry." and Retry asks for the scripts again (the failed tag is removed). `?lazy3d=0` restores the idle prefetch.
 
-`?idlepal=1` still loads the Blink example inside `init`, before the palette. Run is available without opening Parts. The ~900 part thumbnails are appended in idle slices of about 12 ms instead of one long task. `?batchlayout=1` is the header measurement path that reads, then writes. Neither flag changes the functions used when it is absent.
+The idle palette is the default and still loads the Blink example inside `init`, before the palette. Run is available without opening Parts. The ~900 part thumbnails are appended in idle slices of about 12 ms instead of one long task. Batched header layout is the default. `?idlepal=0` and `?batchlayout=0` restore the single long task and the unbatched header write.
 
-`?a11y=1` removes `maximum-scale=1` from the viewport, sets `--mut` to `#9aa3af` (dark, 7.35:1 on `#101215`) or `#4e5966` (light, 7.13:1 on white) so Parts, `.pcat`, dock tabs, Runtime and -D clear WCAG AA, names the code textarea ("Sketch code") and `#selExample` (its visible option text), gives `#palette` and `#side` unique landmark names, makes `#palList` a focusable `role="region"`, adds one visually hidden `h1`, and marks toasts and `#mTicker` as `role="status"`. The phone hub's accessible name includes the visible word (`CIRCUIT, open mode dial`). Phone body text is 14px and the small phone chrome in `mobile.css` is at least 12px. None of that is in the DOM when the flag is off.
+The viewport has no `maximum-scale`. `--mut` is `#9aa3af` (dark, 7.35:1 on `#101215`) or `#4e5966` (light, 7.13:1 on white) so Parts, `.pcat`, dock tabs, Runtime and -D clear WCAG AA. The code textarea is named "Sketch code". `#selExample` has an `aria-label` and a label whose text is the selected option. `#palette` and `#side` have landmark names. `#palList` is a focusable `role="region"`. There is one visually hidden `h1` ("ESP32 Circuit Lab"). Warnings, the IR heading, and the network log are `h2` (class `side-h`) so they follow that `h1`. Toasts and `#mTicker` are `role="status"` when `a11y` is on (the default). The phone hub's accessible name includes the visible word (`CIRCUIT, open mode dial`). Phone body text is 14px and the small phone chrome is at least 12px. Board silkscreen stays the same drawn size and reports a computed font-size of 12px. `?a11y=0` skips only the scripted extras; the HTML and CSS stay.
 
 `JSSKETCH_WORKER=1` (or `?jssketchworker=1`) runs the sketch in a dedicated Worker. The sketch source is part of the worker script, so neither the page nor the worker calls `eval` or `new Function`. The worker has no DOM. Calls and sleeps are `postMessage` objects checked against `js/jssketch-proto.js`. The page loads that file as a script (it is not inlined) so it can reject a message the worker should not have sent. A sketch that never pauses is terminated, and the serial pane says "The sketch was stopped because it ran too long without a pause." With the flag off, the previous `new Function` path is unchanged. An enforcing `script-src 'self'` (no `unsafe-inline`, no `unsafe-eval`) needs this flag, plus `worker-src 'self' blob:`.
 
@@ -247,9 +247,9 @@ Report-To: {"group":"csp","max_age":10886400,"endpoints":[{"url":"/api/csp-repor
 
 Stay on `Content-Security-Policy-Report-Only` until staging has **48 hours with zero** `csp-report` lines. Then set `CSP_ENFORCE=1` (with the report flag still on) so the same policy is sent as `Content-Security-Policy`. Caddy can send the same two headers; do not point `report-to` at a third-party URL.
 
-`?a11y=1` removes `maximum-scale` from the viewport. The board keeps `touch-action: none`, so pinch and the zoom buttons still change the circuit scale at 390 in 2D and on the schematic, and a swipe after a selection still pans. The page's visual viewport scale stays put.
+The viewport allows pinch-zoom. The board keeps `touch-action: none`, so pinch and the zoom buttons still change the circuit scale at 390 in 2D and on the schematic, and a swipe after a selection still pans. The page's visual viewport scale stays put.
 
-Minification is not done. There is no stdlib minifier in this tree, and adding one would be a new build dependency. The bytes on disk are the source files plus the optional `.gz` siblings.
+Minification is not shipped. A whitespace-and-comment strip of the JavaScript (Python, no new dependency) does not move LCP: the hint paints from the HTML and the critical CSS, and `three.min.js` stays off the first load. The bytes on disk are the source files plus the optional `.gz` siblings.
 
 ## Tests
 - `node --test tests/*.test.js`: solver, JS-sketch runner, remote logic and the network log.

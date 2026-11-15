@@ -213,7 +213,7 @@ document.documentElement.appendChild(document.body);
 global.document = document;
 global.window = global;
 global.addEventListener = () => {};
-global.location = { protocol: 'http:', host: 'localhost', pathname: '/', search: '', href: 'http://localhost/' };
+global.location = { protocol: 'http:', host: 'localhost', pathname: '/', search: '?idlepal=0', href: 'http://localhost/?idlepal=0' };
 function memStorage() {
   const m = new Map();
   return { getItem: (k) => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k) };

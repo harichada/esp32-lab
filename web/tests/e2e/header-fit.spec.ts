@@ -384,11 +384,11 @@ async function checkExamples(page: Page, id: string, failures: string[]) {
 }
 
 async function checkExampleLabel(page: Page, id: string, failures: string[]) {
-  const count = await page.getByLabel('Examples').count();
+  const count = await page.getByLabel('Examples', { exact: true }).count();
   if (count === 1) return true;
   fs.mkdirSync(shots, { recursive: true });
   await page.screenshot({ path: path.join(shots, id + '.png') });
-  const names = await page.getByLabel('Examples').evaluateAll((els) => els.map((el) => el.id || el.getAttribute('aria-label') || el.tagName));
+  const names = await page.getByLabel('Examples', { exact: true }).evaluateAll((els) => els.map((el) => el.id || el.getAttribute('aria-label') || el.tagName));
   failures.push(id + ' getByLabel(Examples) count ' + count + ' ' + JSON.stringify(names));
   return false;
 }

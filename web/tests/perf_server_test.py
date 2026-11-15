@@ -112,7 +112,12 @@ class PerfServerTests(unittest.TestCase):
         body, plain = server.lab_page()
         self.assertTrue(plain)
         self.assertEqual(body, PAGE)
-        self.assertIsNone(re.search(br'<script[^>]*\sdefer[\s>]', body))
+        self.assertIsNotNone(re.search(br'<script src="js/load\.js\?v=101" defer>', body))
+        self.assertIsNone(re.search(br'<script[^>]*\sasync[\s>]', body))
+        listed = (WEB / 'js' / 'load.js').read_bytes()
+        self.assertLess(listed.find(b'js/storage.js?v=1'), listed.find(b'js/boot-theme.js?v=90'))
+        self.assertLess(listed.find(b'js/boot-theme.js?v=90'), listed.find(b'js/force2d.js?v=92'))
+        self.assertIn(b's.async = false', listed)
         code, headers, payload = raw_get('/')
         self.assertEqual(code, 200)
         self.assertEqual(payload, PAGE)
@@ -120,25 +125,29 @@ class PerfServerTests(unittest.TestCase):
         self.assertNotIn('content-encoding', headers)
 
     def test_defer_keeps_storage_blocking_and_source_order(self):
+        # The file already defers every script, including the boot set, so the
+        # hint can paint before JavaScript. DEFER_SCRIPTS=1 does not rewrite it
+        # and never adds async. A boot script that lost its defer stays blocking.
         os.environ['DEFER_SCRIPTS'] = '1'
         body, plain = server.lab_page()
-        self.assertFalse(plain)
+        self.assertTrue(plain)
         text = body.decode('utf-8')
-        self.assertNotRegex(text, r'storage\.js\?v=\d+" defer')
-        self.assertRegex(text, r'<script src="js/app\.js\?v=86" defer></script>')
-        self.assertRegex(text, r'<script src="js/mobile\.js\?v=80" defer></script>')
-        self.assertNotRegex(text, r'boot-theme\.js\?v=\d+" defer')
-        self.assertNotRegex(text, r'boot-view\.js\?v=\d+" defer')
-        self.assertNotRegex(text, r'force2d\.js\?v=\d+" defer')
+        self.assertRegex(text, r'<script src="js/load\.js\?v=101" defer></script>')
         self.assertNotRegex(text, r'<script[^>]*\sasync[\s>]')
-        srcs = re.findall(r'<script\s[^>]*src="([^"]+)"', text)
-        self.assertTrue(srcs[0].startswith('js/storage.js'))
-        self.assertLess(srcs.index(next(s for s in srcs if 'solver.js' in s)), srcs.index(next(s for s in srcs if '/app.js' in s or s.startswith('js/app.js'))))
-        self.assertLess(srcs.index(next(s for s in srcs if s.startswith('js/app.js'))), srcs.index(next(s for s in srcs if s.startswith('js/mobile.js'))))
+        listed = (WEB / 'js' / 'load.js').read_text(encoding='utf-8')
+        srcs = re.findall(r"'js/[^']+'", listed)
+        self.assertTrue(srcs[0].startswith("'js/storage.js"))
+        self.assertLess(srcs.index(next(s for s in srcs if 'solver.js' in s)), srcs.index(next(s for s in srcs if s.startswith("'js/app.js"))))
+        self.assertLess(srcs.index(next(s for s in srcs if s.startswith("'js/app.js"))), srcs.index(next(s for s in srcs if s.startswith("'js/mobile.js"))))
+        sample = '<script src="js/storage.js?v=1"></script><script src="js/app.js?v=86"></script>'
+        self.assertEqual(
+            server.apply_defer_scripts(sample),
+            '<script src="js/storage.js?v=1"></script><script src="js/app.js?v=86" defer></script>')
         os.environ.pop('DEFER_SCRIPTS', None)
         via_query, plain_q = server.lab_page(query={'defer': '1'})
-        self.assertFalse(plain_q)
-        self.assertIn(b'<script src="js/solver.js?v=40" defer></script>', via_query)
+        self.assertTrue(plain_q)
+        self.assertEqual(via_query, PAGE)
+        self.assertIn(b"'js/solver.js?v=40'", (WEB / 'js' / 'load.js').read_bytes())
         off, plain_off = server.lab_page(query={'defer': '0'})
         self.assertTrue(plain_off)
         self.assertEqual(off, PAGE)

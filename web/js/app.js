@@ -5,10 +5,15 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   const STORE = 'esp32lab.project.v1';
   const store = new Projects.ProjectStore();
   const app = window.app = { store, readOnly: false, netlog: new NetLogMod.NetLog(), proj: null, sim: null, world: new Devices.MockWorld(), run: null, serialText: '', file: 'sketch', irFrames: [], lastBits: null };
-  // Every behaviour change in this file is off unless the matching query is 1.
+  // Shipped on: lazy 3D, idle palette, batched header, a11y. ?name=0 rolls one back. ?name=1 forces it on.
+  const SHIPPED_ON = { lazy3d: 1, idlepal: 1, batchlayout: 1, a11y: 1 };
   function perfOn(name) {
-    try { return new URLSearchParams(location.search).get(name) === '1'; }
-    catch (e) { return false; }
+    try {
+      const v = new URLSearchParams(location.search).get(name);
+      if (v === '0') return false;
+      if (v === '1') return true;
+      return SHIPPED_ON[name] === 1;
+    } catch (e) { return SHIPPED_ON[name] === 1; }
   }
   window.perfOn = perfOn;
   function applyA11y() {
@@ -1600,6 +1605,9 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     $('#code').addEventListener('input', () => { syncCode(); autosave(); }); $('#inDefines').addEventListener('input', () => { syncDefines(); autosave(); });
     $('#bProjects').onclick = projectsDialog;
     $('#bRestart').onclick = () => { stopRun(); startRun(); };
+    setTimeout(initViews, 0);
+  }
+  function initViews() {
     $('#cbFlow').checked = clStorage.local.getItem('esp32lab.flow') !== '0'; $('#stage').classList.toggle('flow', $('#cbFlow').checked);
     $('#cbFlow').onchange = (e) => { $('#stage').classList.toggle('flow', e.target.checked); clStorage.local.setItem('esp32lab.flow', e.target.checked ? '1' : '0'); };
     if (window.Schematic) {
@@ -1625,6 +1633,9 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     $('#netFilter').oninput = (e) => { app.netlog.filter = e.target.value; app.netlog.dirty = true; app.netlog.render(); };
     $('#bNetClr').onclick = () => app.netlog.clear();
     $('#bNetCopy').onclick = async () => { const t = app.netlog.text(); try { await navigator.clipboard.writeText(t); toast('Network log copied (' + t.split('\n').length + ' lines)'); } catch (e) { const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); toast('Network log copied'); } };
+    setTimeout(initInstruments, 0);
+  }
+  function initInstruments() {
     if (window.Instruments) { Instruments.mount($('#tab-scope'), { app, toast }); Instruments.renderStrip(true); }
     $('#insp').addEventListener('click', (e) => {   // Inspector → probe / pin-to-telemetry buttons
       const b = e.target.closest('[data-probe],[data-watch]'); if (!b || !window.Instruments) return; const pr = JSON.parse(b.dataset.probe || b.dataset.watch);
@@ -1635,6 +1646,9 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     $('#cbWifi').onchange = (e) => { app.world.wifiUp = e.target.checked; };
     $('#bTvPower').onclick = () => { const tv = app.world.tv; tv.power = tv.power === 'on' ? 'off' : 'on'; app.devDirty = true; renderDevices(); };
     $('#cbDiodes').onchange = (e) => { for (const q of app.proj.parts) if (q.type === 'diode') q.props.bypass = !e.target.checked; app.sim.dirty = true; app.editor.render(); toast(e.target.checked ? 'Diodes fitted' : 'Diodes replaced by wires — press 3 keys forming a rectangle corner to see a ghost key'); };
+    setTimeout(initProject, 0);
+  }
+  function initProject() {
     // start-up: ?p=<project> > ?ex=<example, read-only> > last open project > legacy single-slot save > Blink example
     const sp = new URLSearchParams(location.search), q = sp.get('ex'), pid = sp.get('p'), saved = clStorage.local.getItem(STORE);
     if (saved && !store.list().length) { try { const o = JSON.parse(saved); if (!o.example) { o.name = o.name || 'My saved project'; store.importJson(o); } } catch (e) { /* ignore */ } clStorage.local.removeItem(STORE); }
@@ -1892,7 +1906,8 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   window.addEventListener('keyup', onWindowKeyUp);
   placeProj();
   applyA11y();
-  window.addEventListener('DOMContentLoaded', init);
+  if (document.readyState === 'loading' || typeof Editor !== 'function' || !document.getElementById('stage')) window.addEventListener('DOMContentLoaded', init);
+  else setTimeout(init, 0);
 })();
 
 ;(function(){const b=document.querySelector('#tabs [data-tab=bom]');if(b)b.addEventListener('click',()=>{try{if(window.Bom&&window.app&&app.proj)Bom.render(document.getElementById('bomView'),app.proj)}catch(e){}});})();

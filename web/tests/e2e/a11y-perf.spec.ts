@@ -62,18 +62,30 @@ async function contrastOf(page: Page, selector: string) {
   }, selector);
 }
 
-test('flag off keeps the viewport, has no h1, and still prefetches 3D on desktop', async ({ page }) => {
+test('the shipped page allows zoom, has one h1, and does not prefetch 3D', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await install(page);
+  const urls: string[] = [];
+  page.on('request', (req) => urls.push(req.url()));
+  await page.goto('/?ex=blink');
+  await expect(page.locator('#stText')).toHaveText('Idle');
+  await page.waitForTimeout(1500);
+  const vp = await page.locator('meta[name="viewport"]').getAttribute('content');
+  expect(vp || '').not.toMatch(/maximum-scale\s*=/);
+  await expect(page.locator('h1')).toHaveCount(1);
+  await expect(page.locator('h1')).toHaveText('ESP32 Circuit Lab');
+  await expect(page.locator('#code')).toHaveAttribute('aria-label', 'Sketch code');
+  await expect(page.locator('#palette')).toHaveAttribute('aria-label', 'Parts');
+  await expect(page.locator('#palList .pitem').first()).toBeAttached();
+  expect(urls.some((u) => u.includes('three.min.js') || u.includes('view3d.js'))).toBe(false);
+});
+
+test('lazy3d=0 restores the 3D prefetch', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await install(page);
   const three = page.waitForRequest((req) => req.url().includes('three.min.js'), { timeout: 20000 });
-  await page.goto('/?ex=blink');
+  await page.goto('/?lazy3d=0&ex=blink');
   await expect(page.locator('#stText')).toHaveText('Idle');
-  const vp = await page.locator('meta[name="viewport"]').getAttribute('content');
-  expect(vp || '').toContain('maximum-scale=1');
-  expect(await page.locator('h1').count()).toBe(0);
-  await expect(page.locator('#code')).not.toHaveAttribute('aria-label', /.+/);
-  await expect(page.locator('#palette')).not.toHaveAttribute('aria-label', /.+/);
-  await expect(page.locator('#palList .pitem').first()).toBeAttached();
   await three;
 });
 
@@ -116,6 +128,7 @@ for (const vp of [
     const errors = watchErrors(page);
     await page.goto(`/?a11y=1&lazy3d=1&idlepal=1&batchlayout=1&ex=blink`);
     await expect(page.locator('#stText')).toHaveText('Idle');
+    await expect(page.locator('#selExample option')).not.toHaveCount(0);
     await expect(page.locator('h1')).toHaveCount(1);
     await expect(page.locator('h1')).toHaveText('ESP32 Circuit Lab');
     const vpMeta = await page.locator('meta[name="viewport"]').getAttribute('content');

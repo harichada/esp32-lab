@@ -52,6 +52,10 @@ test('View · 2D works under an enforcing CSP with no unsafe-eval', async ({ pag
   expect(CSP.split('style-src')[0]).not.toContain('unsafe-inline');
   await page.goto('/?lazy3d=1&idlepal=1&ex=blink');
   await expect(page.locator('#stText')).toHaveText('Idle');
+  await page.waitForFunction(() => {
+    const app = (window as unknown as { app?: { cmd?: { viewSch?: () => void } } }).app;
+    return !!(app && app.cmd && app.cmd.viewSch);
+  });
   await page.evaluate(() => (window as unknown as { app: { cmd: { viewSch: () => void } } }).app.cmd.viewSch());
   await expect(page.locator('body')).toHaveClass(/viewsch/);
   await page.locator('#bForce2d').click();

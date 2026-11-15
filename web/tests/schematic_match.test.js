@@ -65,12 +65,13 @@ function textsClear(model, label) {
 test('the match flag defaults on and ?schmatch=0 is the off switch', () => {
   assert.equal(S.SCHEMATIC_MATCH_LAYOUT, true);
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
-  const css = fs.readFileSync(path.join(__dirname, '../css/theme.css'), 'utf8');
+  const listed = fs.readFileSync(path.join(__dirname, '../js/load.js'), 'utf8');
+  const css = fs.readFileSync(path.join(__dirname, '../css/theme-late.css'), 'utf8');
   const mobile = fs.readFileSync(path.join(__dirname, '../css/mobile.css'), 'utf8');
-  assert.match(html, /schematic\.js\?v=66/);
-  assert.match(html, /pinch\.js\?v=62/);
-  assert.match(html, /theme\.css\?v=75/);
-  assert.match(html, /mobile\.css\?v=79/);
+  assert.match(listed, /schematic\.js\?v=66/);
+  assert.match(listed, /pinch\.js\?v=62/);
+  assert.match(html, /theme\.css\?v=102/);
+  assert.match(listed, /mobile\.css\?v=96/);
   for (const state of [':hover', ':active', ':focus-visible', ':disabled']) {
     assert.match(css, new RegExp('\\.sch-lay' + state));
   }
