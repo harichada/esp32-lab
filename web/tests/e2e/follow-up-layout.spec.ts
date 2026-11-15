@@ -29,7 +29,7 @@ test('schematic toolbar and canvas fit at 768 and 1000', async ({ page }) => {
   for (const width of [768, 1000]) {
     await page.setViewportSize({ width, height: 800 });
     await page.evaluate(() => (window as unknown as { app: { cmd: { viewSch: () => void } } }).app.cmd.viewSch());
-    await page.waitForTimeout(50);
+    await expect(page.locator('html')).toHaveAttribute('data-example-ready', 'blink');
     const box = await page.evaluate(() => {
       const client = document.documentElement.clientWidth;
       const wrap = document.getElementById('stageWrap')!;

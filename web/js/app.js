@@ -30,6 +30,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (window.Bom) Bom.render(document.getElementById('bomView'), app.proj);
     if (app.view3d) app.view3d.setProject(app.proj);
     if (app.schematic) { app.schematic.sel = null; app.schematic.setProject(app.proj); }
+    markExampleReady();
   }
   async function loadExample(k) {
     const ex = Examples.EX[k](); ex.example = k;
@@ -1039,7 +1040,42 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     $('#netLog').innerHTML = L.map((e) => `<details class="nl c${e.code}"><summary><span class="pr">${e.proto}</span> ${P.esc(e.summary)}</summary>${e.detail ? `<pre>${P.esc(JSON.stringify(e.detail, null, 1))}</pre>` : ''}</details>`).join('') || '<p class="muted">no traffic yet</p>';
   }
   // ---------------- misc UI ----------------
-  function toast(msg, err) { const t = document.createElement('div'); t.className = 'toast' + (err ? ' err' : ''); t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 2600); }
+  function placeToasts() {
+    const all = [...document.querySelectorAll('.toast')];
+    let lift = 0;
+    for (let i = all.length - 1; i >= 0; i--) {
+      all[i].style.marginBottom = lift ? (lift + 'px') : '';
+      lift += all[i].offsetHeight + 8;
+    }
+  }
+  function toast(msg, err) {
+    const t = document.createElement('div');
+    t.className = 'toast' + (err ? ' err' : '');
+    t.textContent = msg;
+    document.body.appendChild(t);
+    placeToasts();
+    setTimeout(() => { t.remove(); placeToasts(); }, 2600);
+  }
+  function filesReady(proj) {
+    if (!proj || !proj.example) return false;
+    const spec = proj.fetch;
+    if (!spec || typeof spec !== 'object') return true;
+    for (const name of Object.keys(spec)) {
+      if (name === 'sketch') { if (typeof proj.code !== 'string' || !proj.code) return false; }
+      else if (!proj.files || typeof proj.files[name] !== 'string') return false;
+    }
+    return true;
+  }
+  // Stays set after the schematic toast has gone. Tests wait on this, not on the toast.
+  function markExampleReady() {
+    const root = document.documentElement;
+    const proj = app.proj;
+    const sch = app.schematic;
+    const drawn = !!(sch && sch.active && sch.model && sch.svg && sch.svg.classList.contains('on') && sch.svg.querySelector('.sch-hit'));
+    const nets = !!(proj && proj.netlist && Array.isArray(proj.netlist.nets) && proj.netlist.nets.length);
+    if (proj && filesReady(proj) && nets && drawn) root.dataset.exampleReady = proj.example;
+    else delete root.dataset.exampleReady;
+  }
   function buildPalette() {
     const cats = {}; for (const [k, d] of Object.entries(P.T)) (cats[d.cat || 'Misc'] = cats[d.cat || 'Misc'] || []).push([k, d]);
     const thumb = (k, d) => { try { const p = { id: 'T', type: k, x: 0, y: 0, rot: 0, props: JSON.parse(JSON.stringify(d.props || {})) }; const sz = d.size(p); const pins = d.pins(p);
@@ -1644,6 +1680,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (viewMode === '2d') {
       try { clStorage.local.removeItem(LSV); } catch (_) {}
       leaveSchematic();
+      markExampleReady();
       try { app.editor && app.editor.render && app.editor.render(); } catch (_) {}
       const z = $('#zoomPct'); if (z && app.editor) z.textContent = Math.round(app.editor.view.s * 100) + '%';
       return;
@@ -1652,10 +1689,12 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       try { clStorage.local.removeItem(LSV); } catch (_) {}
       app.schematic.setProject(app.proj);
       app.schematic.setActive(true);
+      markExampleReady();
       if (!quiet) toast('Schematic — view only · select a part to inspect · pan and zoom · edit in 2D');
       return;
     }
     leaveSchematic();
+    markExampleReady();
     show3dLoad(true);
     preload3dScripts();
     try {
