@@ -34,12 +34,14 @@ The job stops after 8 minutes so a stuck check cannot sit on the server.
 State is an open GitHub issue labeled `uptime`. Nothing is stored outside the repository.
 
 1. **Ok.** Every target passes and no `uptime` issue is open. The run succeeds.
-2. **One failure.** A target fails, no `uptime` issue is open, and the previous scheduled run of this workflow that actually finished did not fail. The run fails. No issue is opened.
-3. **Two failures.** A target fails, no `uptime` issue is open, and that previous scheduled run's conclusion is `failure` or `timed_out`. The workflow opens an issue titled `Site down: <target>` using the first failing URL. The body lists the failing targets, the HTTP status, connect / start / total seconds, and links to this run and the previous scheduled run. A `cancelled` run is ignored when looking for that previous result.
+2. **One failure.** A target fails and no `uptime` issue is open, and there is no previous scheduled failure inside the window below. The run fails. No issue is opened.
+3. **Two failures.** A target fails, no `uptime` issue is open, and the previous scheduled run that actually finished has conclusion `failure` or `timed_out` and its `run_started_at` is inside `UPTIME_FAILURE_WINDOW_MIN` minutes (default 20). The workflow opens an issue titled `Site down: <target>` using the first failing URL. The body lists the failing targets, the HTTP status, connect / start / total seconds, and links to this run and the previous scheduled run. A `cancelled` run is ignored when looking for that previous result. A failure that started before the window — a kill-switch pause, or a long gap in the schedule — does not count, so one blip after that pause opens nothing.
 4. **Still down.** A target fails and an `uptime` issue is already open. The workflow adds a comment with the same details, at most once per hour, measured from the issue or its latest comment. It does not open a second issue.
 5. **Recovered.** Every target passes and an `uptime` issue is open. The workflow comments `Recovered` and closes the issue.
 
-The runs lookup uses `gh api`. The job token only has `contents: read` and `issues: write`, so that call can be denied. The repository is public, and the same GET is then tried without the token. If the runs API still cannot be read, no issue is opened. The run is still a failure, so a later check can see it once the API answers.
+`UPTIME_FAILURE_WINDOW_MIN` is set in the workflow (default `20`). It is the age, in minutes, of `run_started_at` on that previous failed run. A failure older than the window is not a prior failure for this rule.
+
+The runs lookup is `gh api` with the job's `GH_TOKEN` only. The token has `actions: read` and `issues: write`. There is no unauthenticated call. If the lookup fails, or the previous failed run has no `run_started_at`, the log contains an error and the state is `unknown`. That is not a clean previous run, and it does not open an issue. The run still fails.
 
 A green `workflow_dispatch` closes an open issue. It does not erase a previous scheduled failure: the next scheduled failure still looks at that scheduled run.
 

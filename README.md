@@ -28,7 +28,7 @@ Large binaries (QEMU build, arduino cores/toolchains, caches) are not committed 
 
 ## Uptime
 
-UptimeRobot is the primary monitor. `.github/workflows/uptime.yml` is a free fallback: every five minutes it GETs the public homepage and `/api/health` (DuckDNS and the IP), one URL at a time, and opens an `uptime` issue only when a check fails and the previous scheduled run failed too. GitHub may delay or skip that schedule. Set the repository variable `UPTIME_CHECK_ENABLED` to `0` to turn the job off, or delete the workflow. Details: [docs/ops.md](docs/ops.md).
+UptimeRobot is the primary monitor. `.github/workflows/uptime.yml` is a free fallback: every five minutes it GETs the public homepage and `/api/health` (DuckDNS and the IP), one URL at a time, and opens an `uptime` issue only when a check fails and a previous scheduled run failed within the last 20 minutes (`UPTIME_FAILURE_WINDOW_MIN`). GitHub may delay or skip that schedule. Set the repository variable `UPTIME_CHECK_ENABLED` to `0` to turn the job off, or delete the workflow. Details: [docs/ops.md](docs/ops.md).
 
 ## Android APK
 ```

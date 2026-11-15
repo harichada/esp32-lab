@@ -10,6 +10,9 @@
 #
 # UPTIME_TARGETS below is the only target list. GET only, one URL at a time.
 # The job does not call the compiler. It reads no repository secret.
+# Run history uses the job token (actions: read). A failed lookup is unknown,
+# not a clean previous run. A previous failure counts only if that run started
+# within UPTIME_FAILURE_WINDOW_MIN (default 20).
 
 name: Uptime
 
@@ -19,7 +22,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  actions: read
   issues: write
 
 # One list, at the top, so the URLs are easy to change.
@@ -30,6 +33,7 @@ env:
     http://129.158.200.25/api/health
     http://129.158.200.25/
   UPTIME_HOME_MARKER: "ESP32 Circuit Lab — real-firmware ESP32 + electronics simulator"
+  UPTIME_FAILURE_WINDOW_MIN: "20"
 
 # One run at a time. A second run waits, so the single-core server never sees
 # two checks at once. A cancelled wait is not a site failure.
@@ -60,25 +64,26 @@ jobs:
           import subprocess
           import sys
           import tempfile
-          import urllib.error
-          import urllib.request
           from datetime import datetime, timedelta, timezone
           from urllib.parse import urlsplit
 
           # State, with no store outside this repo:
           #   every target ok, no open `uptime` issue -> nothing
           #   every target ok, issue open -> comment Recovered and close it
-          #   a target failed, no issue, previous scheduled run did not fail -> hold
-          #   a target failed, no issue, previous scheduled run failed -> open
+          #   a target failed, no issue, no qualifying previous failure -> hold
+          #   a target failed, no issue, a previous failure started inside the window -> open
+          #   a target failed, no issue, the runs lookup failed -> unknown
           #   a target failed, issue open -> comment at most once per hour
-          # The job exits 1 when a target failed, or when alerting itself failed.
-          # The job token is contents:read and issues:write only. The runs query
-          # uses `gh api` and, on 401/403, the same public GET with no token.
-          # If that query cannot be read, no issue is opened.
+          # The job exits 1 when a target failed, the history is unknown, or alerting failed.
+          # The job token is actions:read and issues:write. Run history is only
+          # `gh api` with GH_TOKEN. There is no unauthenticated fallback.
 
           REAL_CONCLUSIONS = {'success', 'failure', 'timed_out'}
           FAILED_CONCLUSIONS = {'failure', 'timed_out'}
 
+
+          class HistoryUnknown(Exception):
+              pass
 
           def targets():
               found = []
@@ -289,26 +294,24 @@ jobs:
               return datetime.now(timezone.utc) - when < timedelta(hours=1)
 
 
-          def fetch_runs_public(repo):
-              url = (
-                  'https://api.github.com/repos/%s/actions/workflows/uptime.yml/runs'
-                  '?event=schedule&status=completed&per_page=20' % repo
-              )
-              req = urllib.request.Request(url, headers={
-                  'Accept': 'application/vnd.github+json',
-                  'User-Agent': 'esp32-lab-uptime',
-                  'X-GitHub-Api-Version': '2022-11-28',
-              })
+          def failure_window():
+              raw = os.environ.get('UPTIME_FAILURE_WINDOW_MIN', '20').strip()
               try:
-                  with urllib.request.urlopen(req, timeout=20) as resp:
-                      return json.loads(resp.read().decode('utf-8'))
-              except urllib.error.HTTPError as exc:
-                  detail = clip(exc.read().decode('utf-8', errors='replace'), 300)
-                  raise RuntimeError('public workflow runs API HTTP %s: %s' % (exc.code, detail)) from exc
+                  minutes = int(raw)
+              except ValueError as exc:
+                  raise RuntimeError(
+                      'UPTIME_FAILURE_WINDOW_MIN is not an integer (%s)' % raw
+                  ) from exc
+              if minutes <= 0:
+                  raise RuntimeError('UPTIME_FAILURE_WINDOW_MIN must be positive, got %s' % minutes)
+              return timedelta(minutes=minutes)
 
 
           def fetch_runs():
-              repo = os.environ['GH_REPO']
+              # gh reads GH_TOKEN from the environment and sends it. No public fallback.
+              token = os.environ.get('GH_TOKEN') or os.environ.get('GITHUB_TOKEN')
+              if not token:
+                  raise RuntimeError('GH_TOKEN is missing; refusing an unauthenticated runs lookup')
               endpoint = (
                   'repos/{owner}/{repo}/actions/workflows/uptime.yml/runs'
                   '?event=schedule&status=completed&per_page=20'
@@ -322,27 +325,32 @@ jobs:
                   capture_output=True, text=True, timeout=30,
               )
               blob = ((proc.stderr or '') + '\n' + (proc.stdout or '')).strip()
-              if proc.returncode == 0 and (proc.stdout or '').strip():
+              if proc.returncode != 0 or not (proc.stdout or '').strip():
+                  raise RuntimeError(clip(blob, 500) or 'gh api exit %s' % proc.returncode)
+              try:
                   return json.loads(proc.stdout)
-              denied = proc.returncode != 0 and (
-                  '401' in blob or '403' in blob or 'Resource not accessible' in blob
-              )
-              if denied:
-                  print('workflow runs API denied the job token; retrying without it', file=sys.stderr)
-                  return fetch_runs_public(repo)
-              raise RuntimeError(clip(blob, 500) or 'gh api exit %s' % proc.returncode)
+              except json.JSONDecodeError as exc:
+                  raise RuntimeError('workflow runs API returned non-JSON') from exc
 
 
           def earlier_scheduled_failure():
+              window = failure_window()
               try:
                   payload = fetch_runs()
               except Exception as exc:
-                  print('::warning::workflow runs API unavailable; not opening an issue (%s)' % exc, file=sys.stderr)
-                  return None
+                  print(
+                      '::error::workflow runs lookup failed; history is unknown (%s)' % exc,
+                      file=sys.stderr,
+                  )
+                  raise HistoryUnknown(str(exc))
               runs = payload.get('workflow_runs') if isinstance(payload, dict) else None
               if not isinstance(runs, list):
-                  print('::warning::workflow runs API returned no list; not opening an issue', file=sys.stderr)
-                  return None
+                  print(
+                      '::error::workflow runs lookup failed; history is unknown '
+                      '(response has no workflow_runs list)',
+                      file=sys.stderr,
+                  )
+                  raise HistoryUnknown('response has no workflow_runs list')
               current = int(os.environ['RUN_ID'])
               prev = None
               for run in runs:
@@ -363,9 +371,27 @@ jobs:
                   return None
               conclusion = prev.get('conclusion')
               print('previous scheduled run %s conclusion=%s' % (prev.get('id'), conclusion))
-              if conclusion in FAILED_CONCLUSIONS:
-                  return prev
-              return None
+              if conclusion not in FAILED_CONCLUSIONS:
+                  return None
+              started = parse_time(prev.get('run_started_at') or '')
+              if started is None:
+                  print(
+                      '::error::previous failed run %s has no run_started_at; history is unknown'
+                      % prev.get('id'),
+                      file=sys.stderr,
+                  )
+                  raise HistoryUnknown('previous failed run has no run_started_at')
+              age = datetime.now(timezone.utc) - started
+              if age > window:
+                  minutes_ago = int(age.total_seconds() // 60)
+                  limit = int(window.total_seconds() // 60)
+                  print(
+                      'previous scheduled run %s failed but started %s minutes ago, '
+                      'outside the %s minute window; not counting it'
+                      % (prev.get('id'), minutes_ago, limit)
+                  )
+                  return None
+              return prev
 
 
           def failing_lines(rows):
@@ -470,7 +496,12 @@ jobs:
                       print('state=failure action=comment issue=%s' % number)
                       comment(number, body)
                   return
-              prev = earlier_scheduled_failure()
+              try:
+                  prev = earlier_scheduled_failure()
+              except HistoryUnknown:
+                  # The lookup error is already on stderr. This is not a clean run.
+                  print('state=failure action=unknown')
+                  return
               if not prev:
                   print('state=failure action=hold')
                   return
