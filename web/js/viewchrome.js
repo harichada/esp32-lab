@@ -5,15 +5,18 @@
   function viewChipState(mode, opts) {
     const compact = !!(opts && opts.compact);
     if (mode === '3d') {
-      const aria = 'Current view: 3D. Click to return to the 2D editor';
-      return { text: compact ? '3D · ↩' : '3D · ↩ 2D', title: aria, aria: aria };
+      const text = compact ? '3D · ↩' : '3D · ↩ 2D';
+      const aria = text + '. Current view: 3D. Click to return to the 2D editor';
+      return { text: text, title: aria, aria: aria };
     }
     if (mode === 'schematic') {
-      const aria = 'Current view: schematic. Click to return to the 2D editor';
-      return { text: compact ? 'Sch · ↩' : 'Schematic · ↩ 2D', title: aria, aria: aria };
+      const text = compact ? 'Sch · ↩' : 'Schematic · ↩ 2D';
+      const aria = text + '. Current view: schematic. Click to return to the 2D editor';
+      return { text: text, title: aria, aria: aria };
     }
-    const aria = 'Current view: 2D editor';
-    return { text: compact ? '2D' : 'View · 2D', title: aria, aria: aria };
+    const text = compact ? '2D' : 'View · 2D';
+    const aria = text + '. Current view: 2D editor';
+    return { text: text, title: aria, aria: aria };
   }
 
   // Touch-first phones stay on the 2D hotfix. A narrow desktop window (phone width,

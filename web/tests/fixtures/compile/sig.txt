@@ -1,0 +1,6 @@
+sketch.ino:3:5: error: ambiguating new declaration of ‘int setup()’
+    3 | int setup() { return 0; }
+      |     ^~~~~
+sketch.ino:1:6: note: old declaration ‘void setup()’
+    1 | void setup();
+      |      ^~~~~

@@ -1,0 +1,7 @@
+sketch.ino: In function ‘void setup()’:
+sketch.ino:3:8: error: too many arguments to function ‘void delay(long unsigned int)’
+    3 |   delay(100, 200);
+      |   ~~~~~^~~~~~~~~~
+sketch.ino:1:6: note: declared here
+    1 | void delay(unsigned long ms);
+      |      ^~~~~

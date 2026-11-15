@@ -43,7 +43,7 @@ _PAGE_CSS = (
     "a:focus-visible{outline:2px solid #fff4d4;outline-offset:3px;}"
     "a:active{color:#fff4d4;background:#241500;}"
 )
-PAGE_CSP = "default-src 'none'; style-src 'unsafe-inline'"
+PAGE_CSP = "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'"
 
 
 def _static_page(title, paragraphs):
@@ -52,7 +52,7 @@ def _static_page(title, paragraphs):
     return (
         '<!doctype html>\n'
         '<html lang="en"><head><meta charset="utf-8">'
-        '<link rel="icon" href="data:,">'
+        '<link rel="icon" href="/favicon.ico">'
         '<title>' + _esc(title) + '</title><style>' + _PAGE_CSS + '</style></head>\n'
         '<body>' + body + '</body></html>\n'
     )
@@ -60,11 +60,11 @@ def _static_page(title, paragraphs):
 
 PRIVATE_HTML = _static_page('Private test copy', [
     _esc('This is a private test copy of Circuit Lab.'),
-    _esc('Looking for Circuit Lab? ') + _main_link('Go to the main site') + _esc('.'),
+    _esc('Looking for Circuit Lab? ') + _main_link('Go to the main site.'),
 ])
 DOWN_HTML = _static_page('Test copy', [
     _esc("The test copy isn't running right now."),
-    _esc('Try again in a few minutes, or ') + _main_link('use the main site') + _esc('.'),
+    _esc('Try again in a few minutes, or ') + _main_link('use the main site.'),
 ])
 _HOP = {
     'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'proxy-connection',
@@ -240,6 +240,9 @@ def _html(html, status):
 def access_gate(request):
     """None if the request may proceed. Otherwise a 401 or a redirect that drops ?t=."""
     if not ACCESS:
+        return None
+    # The lock-page icon is not secret. A 401 here shows up as a second console error.
+    if (request.url.path or '/') == '/favicon.ico':
         return None
     from starlette.responses import RedirectResponse
     presented = request.query_params.get('t') if 't' in request.query_params else None
@@ -530,11 +533,15 @@ async def _read_head(reader, started=None):
         chunk = await reader.read(4096)
         if not chunk:
             break
-        if started is not None:
-            started['ok'] = True
         buf += chunk
         if len(buf) > 65536:
             raise OSError('upstream headers')
+    # A partial header block is not a response. Leave started unset so the
+    # caller logs a 502 instead of treating a cut-off status line as 200.
+    if b'\r\n\r\n' not in buf:
+        raise OSError('upstream headers')
+    if started is not None:
+        started['ok'] = True
     raw = bytes(buf)
     head, _, rest = raw.partition(b'\r\n\r\n')
     lines = head.split(b'\r\n')
@@ -725,6 +732,49 @@ class StagingMiddleware:
         await self.app(scope, receive, send)
 
 
+_NO_WS_CLOSE = {1004, 1005, 1006, 1015}
+
+
+def _legal_ws_close(code, reason):
+    """A close the browser can honor. 1005, 1006 and 1015 cannot be sent."""
+    text = (reason or '')[:123]
+    try:
+        code = int(code)
+    except Exception:
+        code = 1012
+    if code in _NO_WS_CLOSE or code < 1000 or code > 4999:
+        return 1012, text or 'upstream restart'
+    return code, text
+
+
+def _websockets_major(version):
+    """Leading integer of websockets.version.version. Anything else is 0."""
+    head = str(version).split('.', 1)[0]
+    return int(head) if head.isdigit() else 0
+
+
+def _ws_connect_kwargs(headers, version):
+    """Keyword arguments for websockets.connect on this major version.
+
+    14 renamed extra_headers to additional_headers. 15 added proxy.
+    The old name on 14 or newer is forwarded to loop.create_connection.
+    """
+    major = _websockets_major(version)
+    kwargs = {
+        'open_timeout': PROXY_TIMEOUT,
+        'max_size': None,
+        'ping_interval': None,
+        'compression': None,
+    }
+    if major >= 14:
+        kwargs['additional_headers'] = headers
+    else:
+        kwargs['extra_headers'] = headers
+    if major >= 15:
+        kwargs['proxy'] = None
+    return kwargs
+
+
 async def _proxy_ws(scope, receive, send):
     if UPSTREAM is None:
         await _ws_http(send, 404, b'not found', b'text/plain; charset=utf-8')
@@ -767,11 +817,9 @@ async def _proxy_ws(scope, receive, send):
         _log('staging_proxy status=502 ms=%d' % _ms(t0))
         await _ws_http(send, 502, DOWN_HTML.encode('utf-8'))
         return
-    kwargs = dict(additional_headers=headers, open_timeout=PROXY_TIMEOUT, max_size=None, ping_interval=None, compression=None)
-    try:
-        connector = websockets.connect(url, proxy=None, **kwargs)
-    except TypeError:
-        connector = websockets.connect(url, **kwargs)
+    connector = websockets.connect(
+        url, **_ws_connect_kwargs(headers, websockets.version.version),
+    )
     try:
         remote = await asyncio.wait_for(connector.__aenter__(), PROXY_TIMEOUT)
     except Exception as exc:
@@ -812,6 +860,7 @@ async def _proxy_ws(scope, receive, send):
 
     async def remote_to_client():
         code = 1000
+        reason = ''
         try:
             async for message in remote:
                 if isinstance(message, str):
@@ -819,23 +868,30 @@ async def _proxy_ws(scope, receive, send):
                 else:
                     await send({'type': 'websocket.send', 'bytes': bytes(message)})
             code = int(getattr(remote, 'close_code', None) or 1000)
+            reason = getattr(remote, 'close_reason', None) or ''
         except Exception as exc:
             rcvd = getattr(exc, 'rcvd', None)
-            raw = getattr(rcvd, 'code', None)
+            raw = getattr(rcvd, 'code', None) if rcvd is not None else None
             if raw is None:
                 raw = getattr(exc, 'code', None)
             if raw is None:
                 raw = getattr(remote, 'close_code', None)
             try:
-                code = int(raw or 1000)
+                code = int(raw) if raw is not None else 1006
             except Exception:
-                code = 1000
-        if code < 1000 or code > 4999:
-            code = 1000
+                code = 1006
+            if rcvd is not None:
+                reason = getattr(rcvd, 'reason', '') or ''
+            if not reason:
+                reason = getattr(exc, 'reason', '') or ''
+        code, reason = _legal_ws_close(code, reason)
         try:
-            await send({'type': 'websocket.close', 'code': code, 'reason': ''})
+            await send({'type': 'websocket.close', 'code': code, 'reason': reason})
         except Exception:
-            pass
+            try:
+                await send({'type': 'websocket.close', 'code': 1001, 'reason': reason or 'upstream restart'})
+            except Exception:
+                pass
 
     tasks = [asyncio.ensure_future(client_to_remote()), asyncio.ensure_future(remote_to_client())]
     try:
@@ -852,6 +908,6 @@ async def _proxy_ws(scope, receive, send):
             if not task.done():
                 task.cancel()
         try:
-            await connector.__aexit__(None, None, None)
+            await asyncio.wait_for(connector.__aexit__(None, None, None), 1)
         except Exception:
             pass

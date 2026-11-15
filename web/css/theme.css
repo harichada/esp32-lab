@@ -8,7 +8,7 @@
   --s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:24px;
   --bg:#08090b;--l0:#0b0d10;--l1:#101215;--l2:#15181c;--l3:#1b1f24;--l4:#23282f;
   --line:#22262c;--line2:#2c3138;--hair:rgba(255,255,255,.06);
-  --txt:#e6e8eb;--txt2:#a9afb8;--mut:#6c737d;
+  --txt:#e6e8eb;--txt2:#a9afb8;--mut:#8b939e;
   --acc:#22d3ee;--acc-d:#0e7490;--acc-bg:rgba(34,211,238,.10);--acc2:#22d3ee;
   --ok:#34d399;--warn:#fbbf24;--err:#f87171;--panel:var(--l1);--panel2:var(--l2);
   --r1:4px;--r2:6px;--r3:10px;
@@ -19,7 +19,7 @@
   --dockH:300px;--sideW:300px;--palW:232px;
   font-family:var(--font);font-feature-settings:'cv11','ss01';-webkit-font-smoothing:antialiased;color-scheme:dark;
 }
-[data-theme=light]{--bg:#eef0f3;--l0:#f6f7f9;--l1:#ffffff;--l2:#f4f5f7;--l3:#eceef1;--l4:#e2e5e9;--line:#dfe2e6;--line2:#cfd4da;--hair:rgba(0,0,0,.06);--txt:#15181c;--txt2:#4b525c;--mut:#7c848f;--acc:#0891b2;--acc-d:#0e7490;--acc-bg:rgba(8,145,178,.10);--canvas:#f7f8fa;--grid:#d5d9df;--grid2:#c3c9d1;--sh2:0 8px 24px rgba(16,24,40,.12),0 0 0 1px var(--line);--sh3:0 24px 64px rgba(16,24,40,.2),0 0 0 1px var(--line);color-scheme:light}
+[data-theme=light]{--bg:#eef0f3;--l0:#f6f7f9;--l1:#ffffff;--l2:#f4f5f7;--l3:#eceef1;--l4:#e2e5e9;--line:#dfe2e6;--line2:#cfd4da;--hair:rgba(0,0,0,.06);--txt:#15181c;--txt2:#4b525c;--mut:#5c6570;--warn:#92400e;--acc:#0891b2;--acc-d:#0e7490;--acc-bg:rgba(8,145,178,.10);--canvas:#f7f8fa;--grid:#d5d9df;--grid2:#c3c9d1;--sh2:0 8px 24px rgba(16,24,40,.12),0 0 0 1px var(--line);--sh3:0 24px 64px rgba(16,24,40,.2),0 0 0 1px var(--line);color-scheme:light}
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);font-size:13px;line-height:1.45;overflow:hidden}
 ::selection{background:rgba(34,211,238,.3)}
@@ -69,6 +69,12 @@ html[data-theme=light] #bRun.spinning:active{background:#d5d9df;border-color:#3d
 #compileStrip{position:fixed;top:var(--strip-top,0px);left:0;right:0;z-index:12;margin:0;padding:8px 16px;box-sizing:border-box;background:#1b1f24;color:#e8eaed;border-bottom:1px solid #9aa3af;font-size:13.5px;line-height:1.45;font-weight:500;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;pointer-events:none}
 #compileStrip[hidden]{display:none!important}
 html[data-theme=light] #compileStrip{background:#eceef1;color:#2c333c;border-bottom-color:#3d4550}
+/* Build-server line. Fixed, so it does not grow the header. One sentence, wrapping, no ellipsis. */
+.status-strip{position:fixed;top:48px;left:var(--palW);right:var(--sideW);z-index:12;margin:0;padding:8px 16px;box-sizing:border-box;background:#1b1f24;color:#e8eaed;border-bottom:1px solid #9aa3af;font-size:13.5px;line-height:1.45;font-weight:500;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;pointer-events:none}
+.status-strip[hidden]{display:none!important}
+html[data-theme=light] .status-strip{background:#eceef1;color:#2c333c;border-bottom-color:#3d4550}
+html.backend-down body:not(.m) #center{padding-top:var(--status-h,0px)}
+body.c-palette .status-strip{left:0}body.c-side .status-strip{right:0}
 /* Push the canvas down while the strip is up. Transform is not layout, so CLS stays 0. */
 html.strip-on #stage,html.strip-on #projBanner,html.strip-on #mParts,html.strip-on #mWireBar{transform:translateY(var(--strip-h,0px))}
 html.strip-on body:not(.m) #palette,html.strip-on body:not(.m) #side{transform:translateY(var(--strip-h,0px))}
@@ -102,6 +108,7 @@ body.running .runctl .run{background:var(--l3);color:var(--ok);border-color:rgba
 .tb-lab{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 .cmdk{color:var(--mut);background:var(--l1);min-width:190px;justify-content:flex-start}.cmdk span{flex:1;text-align:left;font-weight:400}.cmdk:hover{color:var(--txt2)}
 .conn{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--mut);padding:0 4px}.conn i{width:6px;height:6px;border-radius:50%;background:var(--mut)}.conn.ok i{background:var(--ok);box-shadow:0 0 6px var(--ok)}.conn.bad i{background:var(--err)}
+header#top.hdr-tight{gap:6px;padding-right:8px}header#top.hdr-tight .tb{gap:4px}header#top.hdr-tight .conn{padding-right:0}
 /* main layout */
 #main{display:grid;grid-template-columns:var(--palW) minmax(0,1fr) 4px var(--sideW);height:calc(100% - 70px);position:relative}
 body.c-palette #main{grid-template-columns:0 minmax(0,1fr) 4px var(--sideW)}body.c-side #main{grid-template-columns:var(--palW) minmax(0,1fr) 0 0}body.c-palette.c-side #main{grid-template-columns:0 minmax(0,1fr) 0 0}
@@ -185,7 +192,8 @@ canvas{width:100%;background:var(--l0);border:1px solid var(--line);border-radiu
 @keyframes toastIn{from{opacity:0;transform:translate(-50%,8px)}}
 /* modals, menus, command palette */
 .modal{position:fixed;inset:0;background:rgba(3,4,6,.6);backdrop-filter:blur(3px);z-index:60;display:flex;align-items:flex-start;justify-content:center;padding-top:10vh;animation:fade 150ms}.modal[hidden]{display:none}@keyframes fade{from{opacity:0}}
-.modal-box{background:var(--l1);border-radius:12px;padding:var(--s4);width:min(760px,94vw);max-height:76vh;overflow:auto;display:flex;flex-direction:column;gap:var(--s3);box-shadow:var(--sh3)}.modal-box h3{font-size:15px;font-weight:600}
+.modal-box{background:var(--l1);border-radius:12px;padding:var(--s4);width:min(760px,calc(100vw - 16px));max-width:calc(100vw - 16px);max-height:76vh;overflow:auto;display:flex;flex-direction:column;gap:var(--s3);box-shadow:var(--sh3)}.modal-box h3{font-size:15px;font-weight:600}
+.modal-box>.row{flex-wrap:wrap;row-gap:8px}
 /* "+ New blank" chooser (Basic circuit vs ESP32) */
 .nb-modal{z-index:70}.nb-box{width:min(600px,94vw)}.nb-sub{margin:0;color:var(--txt2)}
 .nb-opts{display:grid;grid-template-columns:1fr 1fr;gap:var(--s3)}
@@ -195,7 +203,7 @@ canvas{width:100%;background:var(--l0);border:1px solid var(--line);border-radiu
 .nb-d{grid-column:1/-1;font-size:12.5px;font-weight:400;line-height:1.5;color:var(--txt2)}
 .nb-foot{justify-content:flex-end}
 @media (max-width:540px){.nb-opts{grid-template-columns:1fr}.nb-opt{min-height:0}}
-.projs{width:100%;border-collapse:collapse}.projs td{padding:10px 8px;border-top:1px solid var(--line);vertical-align:middle}.projs tr:hover td{background:var(--l2)}.projs td:last-child{text-align:right;white-space:nowrap}.projs td button{margin-left:4px;height:26px;padding:0 8px;font-size:12px}.projs .pn{font-weight:550}.projs tr.cur .pn{color:var(--acc)}
+.projs{width:100%;border-collapse:collapse;table-layout:fixed}.projs td{padding:10px 8px;border-top:1px solid var(--line);vertical-align:middle;min-width:0;overflow-wrap:anywhere}.projs tr:hover td{background:var(--l2)}.projs td:last-child{text-align:right;white-space:normal}.projs td button{margin:3px 4px 3px 0;height:26px;padding:0 8px;font-size:12px}.projs .pn{font-weight:550;min-width:0;overflow-wrap:anywhere}.projs tr.cur .pn{color:var(--acc)}
 .ctxmenu{position:absolute;z-index:30;background:var(--l2);border-radius:10px;padding:5px;display:flex;flex-direction:column;gap:1px;min-width:180px;box-shadow:var(--sh3);animation:fade 120ms}.ctxmenu button{justify-content:flex-start;background:none;border-color:transparent;height:28px}.ctxmenu button:hover{background:var(--l4)}
 .ctx-colors{display:flex;flex-wrap:wrap;gap:5px;padding:7px 8px 4px;border-top:1px solid var(--line);margin-top:3px}.ctx-colors span{width:16px;height:16px;border-radius:50%;cursor:pointer;box-shadow:inset 0 0 0 1px rgba(0,0,0,.4);transition:transform var(--t)}.ctx-colors span:hover{transform:scale(1.2)}
 .cmdk-box{width:min(620px,94vw);background:var(--l1);border-radius:14px;box-shadow:var(--sh3);overflow:hidden}
@@ -262,7 +270,7 @@ body.reconnecting #status{border-color:var(--warn);box-shadow:0 0 0 3px rgba(251
 .lbl-hit{cursor:move}
 .espp{cursor:crosshair}
 
-#legalFoot{height:22px;line-height:22px;font-size:11px;padding:0 10px;color:var(--muted,#888);border-top:1px solid var(--line,rgba(127,127,127,.2));display:flex;gap:12px;justify-content:space-between;overflow:hidden;white-space:nowrap}#legalFoot span{overflow:hidden;text-overflow:ellipsis}#legalFoot a{color:inherit;text-decoration:underline;flex:none}
+#legalFoot{height:22px;line-height:22px;font-size:11px;padding:0 10px;color:var(--mut);border-top:1px solid var(--line,rgba(127,127,127,.2));display:flex;gap:12px;justify-content:space-between;overflow:hidden;white-space:nowrap}#legalFoot span{overflow:hidden;text-overflow:ellipsis}#legalFoot a{color:inherit;text-decoration:underline;flex:none}
 
 /* ---- 3D view ---- */
 .view-toggle{display:inline-flex;border:1px solid var(--line);border-radius:var(--r2);overflow:hidden;background:var(--l2)}
@@ -282,9 +290,14 @@ body.view3d .canvas-tools .tgl:has(#cbOrtho),body.view3d .wire-color,body.view3d
 #stageSch.stage-sch.on{display:block}
 body.viewsch #stage{visibility:hidden;pointer-events:none}
 body.viewsch #minimap{display:none}
-body.viewsch .canvas-tools .tgl:has(#cbOrtho),body.viewsch .wire-color,body.viewsch #bRot,body.viewsch #bDel,body.viewsch #iRot,body.viewsch #iDel{opacity:.35;pointer-events:none}
+body.viewsch .canvas-tools .tgl:has(#cbOrtho),body.viewsch .wire-color,body.viewsch #bRot,body.viewsch #bDel,body.viewsch #iRot,body.viewsch #iDel{display:none}
 body.viewsch .canvas-tools,body.viewsch .zoom-tools{z-index:12}
-body.viewsch .hint{z-index:5;opacity:1;max-width:min(760px,calc(100% - 28px))}
+body.viewsch .canvas-tools,body.viewsch .zoom-tools{flex-wrap:nowrap;align-items:flex-start;overflow:hidden}
+body.viewsch .view-toggle,body.viewsch .sch-layout{flex:0 0 auto;border-width:0;box-shadow:inset 0 0 0 1px var(--line)}
+body.viewsch .canvas-tools{max-width:calc(100% - 280px)}
+body.viewsch .zoom-tools{max-width:calc(100% - 16px)}
+body.viewsch .hint{z-index:5;opacity:1;bottom:120px;max-width:min(760px,calc(100% - 28px))}
+body.viewsch .toast{bottom:168px}
 #stageSch .sch-stroke{fill:none;stroke:var(--txt);stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
 #stageSch .sch-wire{fill:none;stroke:var(--acc);stroke-width:1.55;stroke-linejoin:round;pointer-events:none}
 #stageSch .sch-hitnet{fill:none;stroke:transparent;stroke-width:12}
@@ -303,6 +316,27 @@ body.viewsch .hint{z-index:5;opacity:1;max-width:min(760px,calc(100% - 28px))}
 #stageSch .sch-sym.sel .sch-body{fill:var(--acc-bg)}
 #stageSch .sch-glow{pointer-events:none}
 #stageSch .sch-nc{fill:none;stroke:var(--mut);stroke-width:1.25;stroke-linecap:round}
+/* Like breadboard / Tidy, in the bottom view toolbar beside 2D/Sch.
+   Hidden with display:none outside the schematic, so the canvas does not move. */
+.sch-layout{display:inline-flex;align-items:stretch;flex:none;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--l2)}
+.sch-layout[hidden]{display:none!important}
+body:not(.viewsch) .sch-layout{display:none!important}
+.sch-layout .sch-lay{appearance:none;margin:0;border:0;background:transparent;color:var(--txt2);min-width:44px;min-height:44px;padding:0 12px;cursor:pointer;font:600 13px/1 var(--sans,system-ui,sans-serif);white-space:nowrap;text-overflow:clip}
+.sch-layout .sch-lay + .sch-lay{border-left:1px solid var(--line)}
+.sch-layout .sch-lay:hover{background:var(--l3);color:var(--txt)}
+.sch-layout .sch-lay:active{background:var(--l4);transform:translateY(.5px)}
+.sch-layout .sch-lay:focus{outline:none}
+.sch-layout .sch-lay:focus-visible{outline:2px solid #0891b2;outline-offset:2px;z-index:1}
+.sch-layout .sch-lay[aria-pressed="true"]{background:linear-gradient(180deg,rgba(34,211,238,.18),rgba(34,211,238,.06));color:var(--acc);box-shadow:inset 0 0 0 1px rgba(34,211,238,.35)}
+.sch-layout .sch-lay:disabled,.sch-layout .sch-lay[aria-disabled="true"]{opacity:.45;cursor:not-allowed;box-shadow:none}
+.sch-fitall{appearance:none;margin:0;border:0;border-radius:8px;background:var(--l2);color:var(--txt);min-width:44px;min-height:44px;padding:0 12px;cursor:pointer;font:600 13px/1 var(--sans,system-ui,sans-serif)}
+.sch-fitall[hidden]{display:none!important}
+body:not(.viewsch) .sch-fitall{display:none!important}
+.sch-fitall:hover{background:var(--l3)}
+.sch-fitall:active{background:var(--l4);transform:translateY(.5px)}
+.sch-fitall:focus{outline:none}
+.sch-fitall:focus-visible{outline:2px solid #0891b2;outline-offset:2px}
+.sch-fitall:disabled,.sch-fitall[aria-disabled="true"]{opacity:.45;cursor:not-allowed}
 #stage.flow.live .wire .w-flow{opacity:var(--wo,.55);animation-duration:var(--wd,.9s);animation-direction:var(--wdir,normal)}
 @media (prefers-reduced-motion:reduce){
   #stage.flow.live .w-flow{animation:none!important;opacity:.35}
@@ -393,3 +427,46 @@ html[data-cl-env=staging] #main{height:calc(100% - 70px - var(--stage-h))}
 @media (max-width:360px){
   html[data-cl-env=staging] #stageBanner{font-size:12px;padding:4px 8px}
 }
+.auth-slot{display:inline-flex;align-items:center;gap:6px;position:relative}
+.auth-who{max-width:14ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-weight:600}
+.auth-menu{position:absolute;top:calc(100% + 6px);right:0;z-index:50;min-width:220px;display:flex;flex-direction:column;gap:4px;padding:6px;background:var(--l2);border:1px solid var(--line2);border-radius:10px;box-shadow:var(--sh3)}
+.auth-menu[hidden]{display:none}
+.auth-menu button,.auth-provs button,#bSignIn,#bSignOut{min-height:28px}
+#bSignIn:hover,#bSignOut:hover,.auth-menu button:hover,.auth-provs button:hover,.auth-go:hover{background:var(--l4);border-color:#3a414a}
+#bSignIn:active,#bSignOut:active,.auth-menu button:active,.auth-provs button:active,.auth-go:active{transform:translateY(.5px)}
+#bSignIn:focus-visible,#bSignOut:focus-visible,.auth-menu button:focus-visible,.auth-provs button:focus-visible,.auth-go:focus-visible{outline:2px solid #0891b2;outline-offset:2px}
+#authAccount{margin:0 0 12px}#authAccount h4{margin:0 0 8px;font-size:14px}#authAccount ul{list-style:none;margin:0;padding:0}#authAccount li{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 8px}#authAccount button,#authAccountRetry,#mSignIn,#mSignOut,#mAuthMenu button{min-width:44px;min-height:44px;height:auto}#mAuthMenu[hidden]{display:none}
+#bSignIn:disabled,#bSignOut:disabled,.auth-go:disabled,#bSignIn[aria-disabled="true"],#bSignOut[aria-disabled="true"],.auth-go[aria-disabled="true"]{opacity:.45;cursor:not-allowed}
+.auth-note{margin:8px 0;color:var(--txt2);font-size:13px}
+#authSaveDlg .modal-box{width:min(420px,calc(100vw - 16px))}
+#authSaveTitle{margin:0;font-size:16px;font-weight:600;line-height:1.4}
+#authSaveDlg .row{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}
+#authSaveYes,#authSaveNo{min-height:44px;min-width:44px;padding:0 16px}
+.auth-provs{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 8px}
+/* Compile hint. The card stays in the code tab so it does not cover the editor. */
+#tab-code.hint-on{position:relative}
+.compile-hint{position:relative;flex:none;z-index:6;display:flex;flex-direction:row;flex-wrap:wrap;align-items:center;gap:6px;box-sizing:border-box;max-width:100%;margin:0;padding:4px 8px;background:#1b1f24;color:#e8eaed;border:1px solid #9aa3af;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.35);font:500 13.5px/1.45 system-ui,-apple-system,'Segoe UI',sans-serif}
+.compile-hint.open{flex-direction:column;align-items:stretch}
+.compile-hint button{height:auto;min-height:44px;min-width:44px;box-sizing:border-box;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;word-break:break-word;text-align:left;justify-content:flex-start;font:inherit;line-height:1.45;color:#e8eaed;background:#2a3038;border:1px solid #9aa3af;border-radius:8px;padding:6px 10px;cursor:pointer}
+.compile-hint-jump{padding-top:4px;padding-bottom:4px}
+.compile-hint-jump{flex:1;min-width:0;min-height:0;max-height:2.9em;overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2}
+.compile-hint-more{flex:none}
+.compile-hint.open .compile-hint-jump{max-height:none;-webkit-line-clamp:unset;display:block}
+.compile-hint-extra{display:none;width:100%}
+.compile-hint.open .compile-hint-extra{display:flex;flex-direction:column;gap:6px}
+.compile-hint-rawbtn,.compile-hint.open .compile-hint-jump{width:100%}
+/* The code dock is 300px. Grow it while a hint is up, but stay inside the
+   center column so focusing a hint button cannot scroll the header away. */
+body:not(.m) #dock:has(#compileHints){height:min(560px,calc(100vh - 220px))}
+body:not(.m) #tab-code.hint-on .codewrap{min-height:340px}
+.compile-hint-nav{display:flex;align-items:center;gap:8px;min-width:0}
+.compile-hint-nav[hidden]{display:none!important}
+#compileHintCount{flex:1;min-width:0;overflow-wrap:anywhere;font-weight:600}
+.compile-hint-next{flex:none}
+.compile-hint-raw{margin:0;max-height:9.5em;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;font:12px/1.45 ui-monospace,SFMono-Regular,monospace;background:#0c0e12;color:#e8eaed;border-radius:8px;padding:8px 10px;box-sizing:border-box;max-width:100%}
+.compile-hint-hit{display:block;background:rgba(248,113,113,.22);box-shadow:inset 3px 0 0 #f87171}
+.compile-hint-raw[hidden]{display:none!important}
+.compile-hint button:focus,.compile-hint button:focus-visible,.compile-hint-raw:focus,.compile-hint-raw:focus-visible{outline:2px solid #67e8f9;outline-offset:2px}
+html[data-theme=light] .compile-hint{background:#eceef1;color:#15181c;border-color:#3d4550}
+html[data-theme=light] .compile-hint button{background:#fff;color:#15181c;border-color:#3d4550}
+html[data-theme=light] .compile-hint-raw{background:#fff;color:#15181c}

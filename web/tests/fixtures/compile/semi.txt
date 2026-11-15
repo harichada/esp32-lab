@@ -1,0 +1,7 @@
+sketch.ino: In function ‘void setup()’:
+sketch.ino:12:26: error: expected ‘;’ before ‘}’ token
+   12 |   digitalWrite(LED, HIGH)
+      |                          ^
+      |                          ;
+   13 | }
+      | ~                         

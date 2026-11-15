@@ -1,0 +1,6 @@
+FQBN: esp32:esp32:esp32doit-devkit-v1
+Compiling sketch...
+sketch.ino.cpp: In function ‘void setup()’:
+sketch.ino.cpp:1:23: error: return-statement with a value, in function returning ‘void’ [-fpermissive]
+    1 | void setup() { return 1; }
+      |                       ^
