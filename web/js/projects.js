@@ -1,5 +1,9 @@
 /* User projects ("My Projects"): examples stay pristine; editing one makes a copy that is saved here.
  * Storage: localStorage (always) + optional server copy (/api/projects, token-gated) when enabled. Pure logic, no DOM. */
+function notifyStorageFull(root, err) {
+  try { if (root && typeof root.onStorageFull === 'function') root.onStorageFull(err); }
+  catch (e) { /* the page notice is best-effort; the failed write still throws */ }
+}
 (function (root) {
   const KEY = 'esp32lab.projects.v1', CUR = 'esp32lab.current.v1', SRV = 'esp32lab.serverSync';
   const clone = (o) => JSON.parse(JSON.stringify(o));
@@ -66,7 +70,8 @@
     }
     _setLayout(id, mode) {
       if (id == null || String(id) === '' || (mode !== 'board' && mode !== 'tidy')) return;
-      try { this.ls.setItem('esp32lab.schLayout.' + String(id), mode); } catch (e) { /* storage off */ }
+      try { this.ls.setItem('esp32lab.schLayout.' + String(id), mode); }
+      catch (e) { notifyStorageFull(root, e); }
     }
     _readLayout(proj) {
       if (!proj) return '';
@@ -82,18 +87,48 @@
       }
       return proj.schLayout === 'board' || proj.schLayout === 'tidy' ? proj.schLayout : '';
     }
-    // strip runtime-only fields; returns the stored project id
+    // strip runtime-only fields; returns the stored project id.
+    // setItem is all-or-nothing: a quota error leaves the previous blob and the
+    // on-screen project id untouched, then the caller is told.
     save(proj) {
-      const draftId = proj && proj.draftId;
-      if (!proj.id) proj.id = newId();
-      const all = this._all(); const p = clone(proj); delete p.readOnly; delete p.draftId; delete p.schLayout;
-      all[p.id] = { id: p.id, name: p.name || 'Untitled', updated: Date.now(), from: p.copiedFrom || '', proj: p }; this._put(all);
-      this.ls.setItem(CUR, p.id);
+      if (!proj) throw new Error('no project');
+      const draftId = proj.draftId;
+      const id = proj.id || newId();
+      const all = this._all();
+      const p = clone(proj);
+      p.id = id;
+      delete p.readOnly; delete p.draftId; delete p.schLayout;
+      all[id] = { id: id, name: p.name || 'Untitled', updated: Date.now(), from: p.copiedFrom || '', proj: p };
+      const prevKey = this.ls.getItem(KEY);
+      const prevCur = this.ls.getItem(CUR);
+      let wroteKey = false;
+      try {
+        this._put(all);
+        wroteKey = true;
+        this.ls.setItem(CUR, id);
+      } catch (e) {
+        if (wroteKey) {
+          try {
+            if (prevKey == null) this.ls.removeItem(KEY);
+            else this.ls.setItem(KEY, prevKey);
+          } catch (_) { /* the new blob did not fit; the previous one still does */ }
+          try {
+            if (this.ls.getItem(CUR) !== prevCur) {
+              if (prevCur == null) this.ls.removeItem(CUR);
+              else this.ls.setItem(CUR, prevCur);
+            }
+          } catch (_) { /* current pointer stays where the failed write left it */ }
+        }
+        notifyStorageFull(root, e);
+        throw e;
+      }
+      if (!proj.id) proj.id = id;
       if (draftId && root.Schematic && root.Schematic.migrateDraftLayout) {
-        try { root.Schematic.migrateDraftLayout(proj, this.ls); } catch (e) { /* the draft key stays until the next save */ }
+        try { root.Schematic.migrateDraftLayout(proj, this.ls); }
+        catch (e) { notifyStorageFull(root, e); }
       }
       if (this.serverSync) this.pushServer(p).catch(() => {});
-      return p.id;
+      return id;
     }
     // copy any project (example or user project) into a new user project
     copy(proj, name) {

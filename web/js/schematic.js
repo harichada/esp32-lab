@@ -309,6 +309,10 @@
     if (!Array.isArray(list)) return [];
     return list.filter((id) => DRAFT_ID.test(String(id || '')));
   }
+  function reportStorageFull(err) {
+    try { if (typeof root.onStorageFull === 'function') root.onStorageFull(err); }
+    catch (e) { /* the notice must not hide the failed write */ }
+  }
   function writeIndex(store, list) {
     try {
       if (!list.length) {
@@ -316,7 +320,7 @@
         if (cur == null || cur === '[]') return;
       }
       store.setItem(DRAFT_INDEX, JSON.stringify(list));
-    } catch (e) { /* storage off */ }
+    } catch (e) { reportStorageFull(e); }
   }
   function noteDraft(id, store) {
     if (!store || !DRAFT_ID.test(String(id || ''))) return;
@@ -359,7 +363,7 @@
         if (cur == null || cur === '[]') return;
       }
       s.setItem(TAB_DRAFTS, JSON.stringify(list));
-    } catch (e) { /* storage off */ }
+    } catch (e) { reportStorageFull(e); }
   }
   function claimDraft(id, session) {
     if (!DRAFT_ID.test(String(id || ''))) return;
@@ -401,7 +405,7 @@
       if (draft) noteDraft(ensureDraftId(proj), s);
       const value = draft ? JSON.stringify({ mode: mode, lastSeen: Date.now() }) : mode;
       s.setItem(layoutStoreKey(proj), value);
-    } catch (e) { /* keep the choice in this view */ }
+    } catch (e) { reportStorageFull(e); }
   }
   // Refresh this tab's draft heartbeats. Skips a key touched less than a minute ago.
   function touchOwned(now, local, session) {
@@ -417,7 +421,7 @@
       const rec = decodeLayout(raw);
       if (rec.mode !== 'board' && rec.mode !== 'tidy') continue;
       if (rec.lastSeen && t - rec.lastSeen < DRAFT_HEARTBEAT_MS) continue;
-      try { loc.setItem(key, JSON.stringify({ mode: rec.mode, lastSeen: t })); } catch (e) { /* storage off */ }
+      try { loc.setItem(key, JSON.stringify({ mode: rec.mode, lastSeen: t })); } catch (e) { reportStorageFull(e); }
     }
   }
   // Copy an explicit board/tidy choice onto another project. A missing choice
@@ -448,7 +452,7 @@
     try { raw = s.getItem(LAYOUT_STORE + '.draft.' + id) || ''; } catch (e) { raw = ''; }
     const mode = decodeLayout(raw).mode;
     if ((mode === 'board' || mode === 'tidy') && s.setItem) {
-      try { s.setItem(LAYOUT_STORE + '.' + String(proj.id), mode); } catch (e) { /* keep the draft key */ return; }
+      try { s.setItem(LAYOUT_STORE + '.' + String(proj.id), mode); } catch (e) { reportStorageFull(e); return; }
     }
     if (!dropDraftKey(s, id)) return;
     delete proj.draftId;

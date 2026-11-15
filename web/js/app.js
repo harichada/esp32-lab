@@ -79,17 +79,48 @@ async function fetchRetry(u, o, n = 4) {
   Examples.EX.remote = ((f) => () => { const e = f(); e.files = {}; return e; })(Examples.EX.remote);
   // ---------------- projects: examples are read-only, edits go to a copy in My Projects ----------------
   function setUrl(o) { const u = new URL(location.href); u.searchParams.delete('ex'); u.searchParams.delete('p'); u.searchParams.delete('t'); for (const k in o) u.searchParams.set(k, o[k]); history.replaceState(null, '', u); }
+  const STORAGE_FULL_MSG = "Couldn't save. Your browser storage is full. Export this project to keep it, then delete old projects in My Projects to free up space.";
+  function showStorageFull() {
+    const doc = document;
+    if (!doc || !doc.body || !doc.getElementById || !doc.createElement) return;
+    let box = doc.getElementById('storageFull');
+    if (!box) {
+      if (!doc.head) return;
+      const css = doc.createElement('style');
+      css.id = 'storageFullStyle';
+      css.textContent = '#storageFull{position:fixed;z-index:100;left:50%;top:50%;transform:translate(-50%,-50%);width:min(480px,calc(100vw - 16px));max-height:calc(100vh - 16px);box-sizing:border-box;margin:0;padding:12px;background:#15181c;color:#e6e8eb;border:1px solid #2c3138;border-radius:10px;box-shadow:0 24px 64px rgba(0,0,0,.6);overflow:auto}#storageFull p{margin:0 0 12px;white-space:normal;overflow-wrap:anywhere;line-height:1.4;font-size:14px}#storageFull .storage-full-actions{display:flex;flex-wrap:wrap;gap:8px}#storageFull button{min-width:44px;min-height:44px;height:auto;white-space:normal;padding:8px 14px;box-sizing:border-box}';
+      doc.head.appendChild(css);
+      box = doc.createElement('div');
+      box.id = 'storageFull';
+      box.setAttribute('role', 'alert');
+      box.setAttribute('aria-live', 'assertive');
+      box.innerHTML = '<p id="storageFullMsg"></p><div class="storage-full-actions"><button type="button" id="storageFullExport" class="primary">Export</button><button type="button" id="storageFullProjects">Open My Projects</button><button type="button" id="storageFullDismiss">Dismiss</button></div>';
+      doc.body.appendChild(box);
+      box.querySelector('#storageFullExport').onclick = () => { try { download(); } catch (e) { /* the JSON is built in memory */ } };
+      box.querySelector('#storageFullProjects').onclick = () => { try { projectsDialog(); } catch (e) { /* the list stays closed */ } };
+      box.querySelector('#storageFullDismiss').onclick = () => { box.hidden = true; };
+    }
+    const msg = doc.getElementById('storageFullMsg');
+    if (msg) msg.textContent = STORAGE_FULL_MSG;
+    box.hidden = false;
+  }
+  window.onStorageFull = showStorageFull;
   function makeCopy(auto) {
     syncDefines(); syncCode(); const was = app.proj.name;
     let carried = '';
     try { if (window.Schematic && Schematic.storedLayout) carried = Schematic.storedLayout(app.proj) || ''; } catch (e) { carried = ''; }
-    const c = store.copy(app.proj); Object.assign(app.proj, { id: c.id, name: c.name, copiedFrom: c.copiedFrom }); delete app.proj.example;
+    let c;
+    try { c = store.copy(app.proj); }
+    catch (e) { showStorageFull(); return null; }
+    Object.assign(app.proj, { id: c.id, name: c.name, copiedFrom: c.copiedFrom }); delete app.proj.example;
     if (app.proj.draftId && window.Schematic && Schematic.releaseDraft) {
       try { Schematic.releaseDraft(app.proj); } catch (e) { delete app.proj.draftId; }
     }
-    app.readOnly = false; store.save(app.proj);
+    app.readOnly = false;
+    try { store.save(app.proj); }
+    catch (e) { showStorageFull(); return app.proj; }
     if (carried && window.Schematic && Schematic.writeLayout) {
-      try { Schematic.writeLayout(app.proj, carried); } catch (e) { /* the copy still opens on Tidy */ }
+      try { Schematic.writeLayout(app.proj, carried); } catch (e) { /* the copy still opens on Tidy; writeLayout reports a full disk */ }
     }
     setUrl({ p: app.proj.id }); renderBanner();
     toast(auto ? `Examples are read-only — your change is in a copy: “${app.proj.name}” (My Projects)` : `Copied “${was}” to My Projects as “${app.proj.name}”`);
@@ -97,9 +128,23 @@ async function fetchRetry(u, o, n = 4) {
   }
   function beforeEdit() { if (app.readOnly) makeCopy(true); }
   let saveT = 0;
-  function autosave() { if (app.readOnly || !app.proj) return; clearTimeout(saveT); saveT = setTimeout(() => { syncCode(); store.save(app.proj); renderBanner(true); }, 600); }
+  function autosave() {
+    if (app.readOnly || !app.proj) return;
+    clearTimeout(saveT);
+    saveT = setTimeout(() => {
+      try { syncCode(); store.save(app.proj); }
+      catch (e) { showStorageFull(); return; }
+      renderBanner(true);
+    }, 600);
+  }
   function syncDefines() { if (app.proj) app.proj.defines = $('#inDefines').value.split(',').map((x) => x.trim()).filter(Boolean); }
-  function openProject(id) { const p = store.get(id); if (!p) { toast('Project not found', true); return false; } setProject(p); setUrl({ p: id }); store.save(app.proj); return true; }
+  function openProject(id) {
+    const p = store.get(id); if (!p) { toast('Project not found', true); return false; }
+    setProject(p); setUrl({ p: id });
+    try { store.save(app.proj); }
+    catch (e) { showStorageFull(); }
+    return true;
+  }
   function setProjectTitle(name) {
     const el = document.getElementById && document.getElementById('projTitle');
     if (!el) return;
@@ -120,7 +165,15 @@ async function fetchRetry(u, o, n = 4) {
     const bc = $('#bCopy'); if (bc) bc.onclick = () => makeCopy(false);
     const pn = $('#pbName'); if (pn) pn.onclick = () => { const n = prompt('Rename project', app.proj.name); if (n) { app.proj.name = n; store.rename(app.proj.id, n); renderBanner(true); } };
   }
-  function save() { syncCode(); syncDefines(); if (app.readOnly) { makeCopy(false); return; } store.save(app.proj); renderBanner(true); toast('Saved “' + app.proj.name + '” to My Projects' + (store.serverSync ? ' (+ server copy)' : '')); }
+  function save() {
+    syncCode(); syncDefines();
+    try {
+      if (app.readOnly) { makeCopy(false); return; }
+      store.save(app.proj);
+    } catch (e) { showStorageFull(); return; }
+    renderBanner(true);
+    toast('Saved “' + app.proj.name + '” to My Projects' + (store.serverSync ? ' (+ server copy)' : ''));
+  }
   function projectsDialog() {
     let d = $('#projDlg'); if (!d) { d = document.createElement('div'); d.id = 'projDlg'; d.className = 'modal'; document.body.appendChild(d); }
     const L = store.list();

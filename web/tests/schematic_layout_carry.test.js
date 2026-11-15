@@ -251,6 +251,24 @@ test('Download carries schLayout the same way Export does, and Import restores i
   assert.equal(plain.schLayout, undefined);
 });
 
+test('a draft write that cannot be stored is reported and not written', () => {
+  const ls = mem();
+  const notes = [];
+  const prev = global.onStorageFull;
+  global.onStorageFull = (e) => notes.push(e.name || e.message);
+  ls.setItem = () => { const e = new Error('quota'); e.name = 'QuotaExceededError'; throw e; };
+  const draft = {};
+  S.writeLayout(draft, 'board', ls);
+  assert.equal(notes[0], 'QuotaExceededError');
+  assert.equal(ls.getItem(S.layoutStoreKey(draft)), null);
+  notes.length = 0;
+  ls.setItem = () => { const e = new Error('disk'); e.name = 'disk'; throw e; };
+  S.writeLayout({ id: 'p1' }, 'tidy', ls);
+  assert.equal(notes[0], 'disk');
+  assert.equal(ls.getItem('esp32lab.schLayout.p1'), null);
+  global.onStorageFull = prev;
+});
+
 test('leaving an unsaved draft drops its key and leaves the other draft', () => {
   const ls = mem();
   const a = {};
