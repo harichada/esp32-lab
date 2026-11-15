@@ -293,21 +293,52 @@ function makeDoc(metaContent) {
 
 test('compiler text is textContent, so an img and a script tag are not created', () => {
   const { doc, nodes } = makeDoc('1');
-  const log = 'sketch.ino:4:2: error: <img src=x onerror=alert(1)>\n</pre><script>alert(1)</script>\n';
+  const payload = '<img src=x onerror=alert(1)> </script>';
+  const log = 'sketch.ino:4:2: error: ' + payload + '\n';
+  let ran = 0;
+  const prev = global.alert;
+  global.alert = () => { ran++; };
   const before = nodes.length;
-  const parsed = H.showFailure(log, { doc, code: 'void setup(){}\nvoid loop(){}\n' });
-  assert.ok(parsed);
-  assert.match(parsed.hints[0].sentence, /<img src=x onerror=alert\(1\)>/);
-  const box = doc.getElementById('compileHints');
-  assert.ok(box);
-  assert.match(box._jump.textContent, /<img src=x onerror=alert\(1\)>/);
-  box._rawBtn.click();
-  assert.match(box._raw.textContent, /<img src=x onerror=alert\(1\)>/);
-  assert.match(box._raw.textContent, /<\/pre><script>/);
-  const created = nodes.slice(before).map((n) => n.tagName);
-  assert.deepEqual(created.filter((t) => t === 'IMG' || t === 'SCRIPT' || t === 'IFRAME'), []);
-  assert.ok(created.includes('BUTTON'));
-  assert.ok(created.includes('PRE'));
+  try {
+    const parsed = H.showFailure(log, { doc, code: 'void setup(){}\nvoid loop(){}\n' });
+    assert.ok(parsed);
+    assert.match(parsed.hints[0].sentence, /<img src=x onerror=alert\(1\)>/);
+    assert.match(parsed.hints[0].sentence, /<\/script>/);
+    const box = doc.getElementById('compileHints');
+    assert.ok(box);
+    assert.match(box._jump.textContent, /<img src=x onerror=alert\(1\)>/);
+    assert.match(box._jump.textContent, /<\/script>/);
+    box._rawBtn.click();
+    assert.match(box._raw.textContent, /<img src=x onerror=alert\(1\)>/);
+    assert.match(box._raw.textContent, /<\/script>/);
+    const created = nodes.slice(before);
+    assert.deepEqual(created.filter((n) => n.tagName === 'IMG' || n.tagName === 'SCRIPT' || n.tagName === 'IFRAME'), []);
+    for (const n of created) {
+      assert.equal(n.children.filter((c) => c.tagName === 'IMG' || c.tagName === 'SCRIPT').length, 0);
+    }
+    assert.equal(ran, 0);
+  } finally {
+    global.alert = prev;
+  }
+});
+
+test('a 1 MB log, invalid bytes, and a very long line finish quickly', () => {
+  const tail = 'sketch.ino:12:26: error: expected \';\' before \'}\' token\n   12 |   digitalWrite(LED, HIGH)\n';
+  const cases = [
+    'y'.repeat(1024 * 1024) + '\n' + tail,
+    Buffer.concat([Buffer.alloc(1024 * 1024, 0xff), Buffer.from(tail)]),
+    'sketch.ino:8:1: error: ' + 'A'.repeat(200000) + '\n',
+  ];
+  for (const log of cases) {
+    const t0 = performance.now();
+    const parsed = H.parse(log, '');
+    const ms = performance.now() - t0;
+    assert.ok(ms < 200, 'parse took ' + ms + 'ms');
+    assert.ok(parsed.hints.length >= 1);
+    assert.ok(parsed.hints[0].sentence);
+    assert.ok(H.boundLog(log).split('\n').every((line) => line.length <= H.MAX_LINE));
+  }
+  assert.equal(H.boundLog('z'.repeat(H.CAP + 10)).length, H.MAX_LINE);
 });
 
 test('the flag-off path does not create hint markup', () => {

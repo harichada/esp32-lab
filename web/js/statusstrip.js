@@ -2,6 +2,8 @@
  * <meta name="statusstrip" content="1"> is present. Text only. */
 (function (root) {
   const LINE = "Can't reach the build server right now. Your work is safe; Run will work again when it's back.";
+  const HEALTH_MIN_MS = 5000;
+  const HEALTH_MAX_MS = 60000;
   const COMPILE_TIMEOUT_BASE = 'The compile timed out. Press Run again.';
   const ON = { '1': 1, 'true': 1, 'yes': 1, 'on': 1 };
 
@@ -77,9 +79,58 @@
       if (run && run.parentNode) run.parentNode.insertBefore(el, run.nextSibling);
       else if (doc.body) doc.body.appendChild(el);
     }
-    el.textContent = LINE;
+    if (el.textContent !== LINE) el.textContent = LINE;
     el.hidden = false;
     return el;
+  }
+  function nextDelay(prev) {
+    const n = Number(prev);
+    if (!Number.isFinite(n) || n < HEALTH_MIN_MS) return HEALTH_MIN_MS;
+    const doubled = n * 2;
+    return doubled > HEALTH_MAX_MS ? HEALTH_MAX_MS : doubled;
+  }
+  function watchHealth(opts) {
+    opts = opts || {};
+    const isHidden = opts.hidden || (() => false);
+    const setTimer = opts.setTimer || ((fn, ms) => setTimeout(fn, ms));
+    const clearTimer = opts.clearTimer || ((id) => clearTimeout(id));
+    let delay = HEALTH_MIN_MS;
+    let timer = null;
+    let wasDown = false;
+    let primed = false;
+    async function tick() {
+      if (isHidden()) return;
+      let down = true;
+      let health = null;
+      try {
+        health = await opts.fetch();
+        down = !(health && health.ok);
+      } catch (e) { down = true; health = null; }
+      if (isHidden()) return;
+      if (down) {
+        if (!wasDown && opts.onDown) opts.onDown(health);
+        wasDown = true;
+      } else {
+        const tell = wasDown || !primed;
+        wasDown = false;
+        if (tell && opts.onUp) opts.onUp(health);
+      }
+      primed = true;
+      arm();
+    }
+    function arm() {
+      if (timer != null) { clearTimer(timer); timer = null; }
+      if (isHidden()) return;
+      const wait = delay < HEALTH_MIN_MS ? HEALTH_MIN_MS : (delay > HEALTH_MAX_MS ? HEALTH_MAX_MS : delay);
+      timer = setTimer(() => { timer = null; tick(); }, wait);
+      delay = nextDelay(wait);
+    }
+    function onVisibility() {
+      if (timer != null) { clearTimer(timer); timer = null; }
+      if (isHidden()) return;
+      return tick();
+    }
+    return { start: tick, onVisibility: onVisibility };
   }
 
   function hideDown(doc) {
@@ -104,7 +155,11 @@
 
   const api = {
     LINE: LINE,
+    HEALTH_MIN_MS: HEALTH_MIN_MS,
+    HEALTH_MAX_MS: HEALTH_MAX_MS,
     COMPILE_TIMEOUT_BASE: COMPILE_TIMEOUT_BASE,
+    nextDelay: nextDelay,
+    watchHealth: watchHealth,
     enabled: enabled,
     hasUserCopy: hasUserCopy,
     timeoutSentence: timeoutSentence,

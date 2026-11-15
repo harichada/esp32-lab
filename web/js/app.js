@@ -481,32 +481,31 @@ async function fetchRetry(u, o, n = 4) {
     if (root.style && root.style.setProperty) root.style.setProperty('--status-h', (h || 0) + 'px');
     root.classList.add('backend-down');
   }
+  function paintBackend(down, health) {
+    if (health) app.health = health;
+    app.backendDown = down;
+    const dot = $('#connDot');
+    if (dot) {
+      dot.className = 'conn ' + (down ? 'bad' : 'ok');
+      dot.title = down ? StatusStrip.LINE : 'Backend connected: arduino-cli + QEMU ready';
+    }
+    if (down) StatusStrip.showDown(document);
+    else StatusStrip.hideDown(document);
+    syncStatusStrip();
+  }
   function watchBackend() {
     if (document.body && document.body.classList) document.body.classList.add('strip-flag');
-    const tick = async () => {
-      let down = true;
-      try {
+    const watch = StatusStrip.watchHealth({
+      hidden: () => !!document.hidden,
+      fetch: async () => {
         const r = await fetch('api/health');
-        const h = await r.json();
-        app.health = h;
-        down = !(h && h.ok);
-        const dot = $('#connDot');
-        if (dot) {
-          dot.className = 'conn ' + (down ? 'bad' : 'ok');
-          dot.title = down ? StatusStrip.LINE : 'Backend connected: arduino-cli + QEMU ready';
-        }
-      } catch (e) {
-        down = true;
-        const dot = $('#connDot');
-        if (dot) { dot.className = 'conn bad'; dot.title = StatusStrip.LINE; }
-      }
-      app.backendDown = down;
-      if (down) StatusStrip.showDown(document);
-      else StatusStrip.hideDown(document);
-      syncStatusStrip();
-    };
-    tick();
-    setInterval(tick, 1500);
+        return r.json();
+      },
+      onDown: (h) => paintBackend(true, h),
+      onUp: (h) => paintBackend(false, h),
+    });
+    document.addEventListener('visibilitychange', () => watch.onVisibility());
+    watch.start();
   }
   let stripObserver = null;
   function watchStripChrome() {

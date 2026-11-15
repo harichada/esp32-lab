@@ -106,6 +106,61 @@ test('the build-server line is one sentence, and a repeat writes it again', asyn
   assert.equal(doc.getElementById('statusStrip'), null);
 });
 
+test('health checks wait 5s, double up to 60s, and pause while the tab is hidden', async () => {
+  assert.equal(S.HEALTH_MIN_MS, 5000);
+  assert.equal(S.HEALTH_MAX_MS, 60000);
+  assert.equal(S.nextDelay(undefined), 5000);
+  assert.equal(S.nextDelay(0), 5000);
+  assert.equal(S.nextDelay(4999), 5000);
+  let wait = 5000;
+  const waits = [wait];
+  for (let i = 0; i < 6; i++) { wait = S.nextDelay(wait); waits.push(wait); }
+  assert.deepEqual(waits, [5000, 10000, 20000, 40000, 60000, 60000, 60000]);
+
+  let hidden = false;
+  let ok = false;
+  let timer = null;
+  const calls = [];
+  let downN = 0;
+  let upN = 0;
+  const watch = S.watchHealth({
+    hidden: () => hidden,
+    fetch: async () => { calls.push(hidden ? 'hidden' : 'shown'); return { ok: ok }; },
+    setTimer: (fn, ms) => { timer = { fn: fn, ms: ms }; return timer; },
+    clearTimer: () => { timer = null; },
+    onDown: () => { downN++; },
+    onUp: () => { upN++; },
+  });
+  hidden = true;
+  await watch.start();
+  assert.equal(calls.length, 0);
+  assert.equal(timer, null);
+  hidden = false;
+  await watch.onVisibility();
+  assert.equal(calls.length, 1);
+  assert.equal(downN, 1);
+  assert.equal(upN, 0);
+  assert.equal(timer.ms, 5000);
+  await timer.fn();
+  assert.equal(calls.length, 2);
+  assert.equal(downN, 1);
+  assert.equal(timer.ms, 10000);
+  await timer.fn();
+  assert.equal(timer.ms, 20000);
+  hidden = true;
+  watch.onVisibility();
+  assert.equal(timer, null);
+  const paused = calls.length;
+  hidden = false;
+  await watch.onVisibility();
+  assert.equal(calls.length, paused + 1);
+  assert.equal(downN, 1);
+  ok = true;
+  await timer.fn();
+  assert.equal(upN, 1);
+  assert.equal(downN, 1);
+});
+
 test('the module never builds HTML from a log', () => {
   const src = fs.readFileSync(path.join(__dirname, '../js/statusstrip.js'), 'utf8');
   assert.doesNotMatch(src, /innerHTML|insertAdjacentHTML|DOMParser|document\.write/);

@@ -5,6 +5,7 @@
  */
 (function (root) {
   const CAP = 64 * 1024;
+  const MAX_LINE = 512;
   const MAX_HINTS = 30;
   const SNIP = 48;
   const ON = { '1': 1, true: 1, yes: 1, on: 1 };
@@ -32,10 +33,42 @@
     const v = String(meta.getAttribute('content') || '').trim().toLowerCase();
     return !!ON[v];
   }
+  function asWindow(log) {
+    if (log == null) return { text: '', capped: false };
+    if (typeof log === 'string') {
+      const capped = log.length > CAP;
+      return { text: capped ? log.slice(-CAP) : log, capped: capped };
+    }
+    let bytes = null;
+    if (typeof Buffer !== 'undefined' && Buffer.isBuffer && Buffer.isBuffer(log)) bytes = log;
+    else if (typeof Uint8Array !== 'undefined' && log instanceof Uint8Array) bytes = log;
+    if (bytes) {
+      const capped = bytes.length > CAP;
+      const view = capped ? bytes.subarray(bytes.length - CAP) : bytes;
+      let text = '';
+      try { text = new TextDecoder('utf-8', { fatal: false }).decode(view); }
+      catch (e) {
+        const parts = [];
+        for (let i = 0; i < view.length; i += 8192) parts.push(String.fromCharCode.apply(null, view.subarray(i, i + 8192)));
+        text = parts.join('');
+      }
+      return { text: text, capped: capped };
+    }
+    const s = String(log);
+    const capped = s.length > CAP;
+    return { text: capped ? s.slice(-CAP) : s, capped: capped };
+  }
+  function clipLines(s) {
+    if (!s) return '';
+    if (s.indexOf('\n') < 0) return s.length > MAX_LINE ? s.slice(0, MAX_LINE) : s;
+    const parts = s.split('\n');
+    for (let i = 0; i < parts.length; i++) {
+      if (parts[i].length > MAX_LINE) parts[i] = parts[i].slice(0, MAX_LINE);
+    }
+    return parts.join('\n');
+  }
   function boundLog(log) {
-    const s = String(log == null ? '' : log);
-    if (s.length <= CAP) return s;
-    return s.slice(-CAP);
+    return clipLines(asWindow(log).text);
   }
   function firstCompilerLine(text) {
     const lines = String(text || '').split('\n');
@@ -219,9 +252,9 @@
     return { kind: 'library', line: null, column: null, file: '', sentence: 'The library `' + name + '` is not installed. Install it, or remove the #include that asks for it.' };
   }
   function parse(log, source) {
-    const original = String(log == null ? '' : log);
-    const capped = original.length > CAP;
-    const text = capped ? original.slice(-CAP) : original;
+    const windowed = asWindow(log);
+    const capped = windowed.capped;
+    const text = clipLines(windowed.text);
     const rawLines = text.split('\n');
     const diags = [];
     const seen = new Set();
@@ -426,7 +459,7 @@
     return parsed;
   }
 
-  const api = { CAP: CAP, enabled: enabled, boundLog: boundLog, parse: parse, showFailure: showFailure, clear: clear };
+  const api = { CAP: CAP, MAX_LINE: MAX_LINE, enabled: enabled, boundLog: boundLog, parse: parse, showFailure: showFailure, clear: clear };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.CompileHints = api;
 })(typeof window !== 'undefined' ? window : globalThis);

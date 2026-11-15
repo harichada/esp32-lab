@@ -189,24 +189,35 @@ for (const view of WIDTHS) {
 
 test('compiler output stays text when the log contains markup', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
-  const evil = 'sketch.ino:4:2: error: <img src=x onerror=alert(1)>\n</pre><script>alert(1)</script>\n';
+  await page.addInitScript(() => {
+    (window as unknown as { __xss?: number }).__xss = 0;
+    window.alert = () => { (window as unknown as { __xss: number }).__xss++; };
+  });
+  const evil = 'sketch.ino:4:2: error: <img src=x onerror=alert(1)> </script>\n';
   const errors = await install(page, true, evil);
   let dialog = '';
   page.on('dialog', (d) => { dialog = d.message(); d.dismiss(); });
   await page.locator('#bRun').click();
   const jump = page.locator('#compileHintJump');
-  await expect(jump).toContainText(/<img src=x onerror=alert\(1\)>/);
+  await expect(jump).toContainText('<img src=x onerror=alert(1)>');
+  await expect(jump).toContainText('</script>');
+  await expect(jump.locator('img, script')).toHaveCount(0);
   await expect(page.locator('img[src="x"]')).toHaveCount(0);
   await page.locator('#compileHintRawBtn').click();
   const raw = page.locator('#compileHintRaw');
-  await expect(raw).toContainText(/<img src=x onerror=alert\(1\)>/);
-  await expect(raw).toContainText('</pre><script>');
+  await expect(raw).toContainText('<img src=x onerror=alert(1)>');
+  await expect(raw).toContainText('</script>');
   await expect(raw.locator('img, script')).toHaveCount(0);
+  const build = page.locator('#buildLog');
+  await expect(build).toContainText('<img src=x onerror=alert(1)>');
+  await expect(build).toContainText('</script>');
+  await expect(build.locator('img, script')).toHaveCount(0);
   const leaked = await page.evaluate(() => ({
     img: document.querySelectorAll('img[src="x"]').length,
     script: [...document.scripts].filter((s) => /alert\(1\)/.test(s.text || '')).length,
+    ran: (window as unknown as { __xss?: number }).__xss || 0,
   }));
-  expect(leaked).toEqual({ img: 0, script: 0 });
+  expect(leaked).toEqual({ img: 0, script: 0, ran: 0 });
   expect(dialog).toBe('');
   expect(errors, errors.join('\n')).toEqual([]);
 });

@@ -161,6 +161,35 @@ test.describe('build server line', () => {
     });
   }
 
+  test('a stopped backend shows the line once, holds it, then clears when health returns', async ({ page }) => {
+    const times: number[] = [];
+    const gate = await install(page, { strip: true, health: 'down' });
+    await page.route('**/api/health', async (route) => {
+      times.push(Date.now());
+      await route.fallback();
+    });
+    await openLab(page, 1280);
+    const strip = page.locator('#statusStrip');
+    await expect(strip).toHaveText(LINE);
+    const mark = await strip.evaluate((el) => {
+      el.setAttribute('data-born', '1');
+      let n = 0;
+      const obs = new MutationObserver(() => { n++; });
+      obs.observe(el, { childList: true, characterData: true, subtree: true, attributes: true });
+      (window as unknown as { __stripChanges?: () => number }).__stripChanges = () => n;
+      return el.getAttribute('data-born');
+    });
+    await page.waitForTimeout(7000);
+    await expect(strip).toHaveText(LINE);
+    expect(await strip.getAttribute('data-born')).toBe(mark);
+    expect(await page.locator('#statusStrip')).toHaveCount(1);
+    expect(await page.evaluate(() => (window as unknown as { __stripChanges: () => number }).__stripChanges())).toBe(0);
+    expect(times.length).toBeGreaterThanOrEqual(2);
+    for (let i = 1; i < times.length; i++) expect(times[i] - times[i - 1]).toBeGreaterThanOrEqual(4500);
+    gate.setHealth('ok');
+    await expect(page.locator('#statusStrip')).toHaveCount(0);
+  });
+
   test('a degraded backend uses the same line and a recovery removes it', async ({ page }) => {
     const gate = await install(page, { strip: true, health: 'bad' });
     await openLab(page, 1280);
