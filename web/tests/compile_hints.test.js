@@ -9,6 +9,20 @@ const fixDir = path.join(__dirname, 'fixtures/compile');
 const read = (name) => fs.readFileSync(path.join(fixDir, name), 'utf8');
 const first = (name, source) => H.parse(read(name), source || '').hints[0];
 
+test('a missing semicolon is the earlier line when gcc names the next token', () => {
+  const h = first('semi-next.txt');
+  assert.equal(h.kind, 'semicolon');
+  assert.equal(h.line, 12);
+  assert.equal(h.sentence, 'Line 12 is missing a semicolon (;) at the end. Add ; after `digitalWrite(LED, HIGH)`.');
+  const source = new Array(11).fill('// pad');
+  source.push('  digitalWrite(LED, HIGH)');
+  source.push('  delay(1000);');
+  const bare = 'sketch.ino:13:3: error: expected \';\' before \'delay\'\n';
+  const fromSource = H.parse(bare, source.join('\n')).hints[0];
+  assert.equal(fromSource.line, 12);
+  assert.match(fromSource.sentence, /digitalWrite\(LED, HIGH\)/);
+});
+
 test('missing semicolon names the line and the statement', () => {
   const h = first('semi.txt');
   assert.equal(h.kind, 'semicolon');

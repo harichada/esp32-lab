@@ -6,6 +6,40 @@ const path = require('path');
 
 const WEB = path.join(__dirname, '..');
 
+test('under /staging/ every auth link stays on /staging/', () => {
+  const { here } = require('../js/auth.js');
+  global.location = {
+    href: 'https://lab.example/staging/?ex=blink',
+    origin: 'https://lab.example',
+    pathname: '/staging/',
+    search: '?ex=blink',
+    hash: '',
+  };
+  global.document = {
+    querySelector(sel) {
+      if (sel === 'meta[name="cl-auth-base"]') return { getAttribute: () => '/staging' };
+      return null;
+    },
+  };
+  for (const path of ['auth/google', 'auth/github', 'auth/session', 'auth/logout', 'auth/projects', 'auth/projects/import', 'auth/google/callback']) {
+    const url = here(path);
+    assert.equal(url.origin, 'https://lab.example');
+    assert.ok(url.pathname.startsWith('/staging/'), url.href);
+    assert.equal(url.pathname.startsWith('/staging/auth/'), true, url.href);
+  }
+  global.document = {
+    querySelector() { return null; },
+  };
+  global.location = {
+    href: 'https://lab.example/staging',
+    origin: 'https://lab.example',
+    pathname: '/staging',
+    search: '',
+    hash: '',
+  };
+  assert.equal(here('auth/google').pathname, '/staging/auth/google');
+});
+
 test('the page has no sign-in entry until a session exists', () => {
   const html = fs.readFileSync(path.join(WEB, 'index.html'), 'utf8');
   const auth = fs.readFileSync(path.join(WEB, 'js/auth.js'), 'utf8');
@@ -22,7 +56,7 @@ test('the page has no sign-in entry until a session exists', () => {
   assert.match(auth, /Save your /);
   assert.match(auth, /Not now/);
   assert.match(auth, /role', 'dialog'/);
-  assert.match(html, /auth\.js\?v=4/);
+  assert.match(html, /auth\.js\?v=5/);
 });
 
 test('a cancelled sign-out stays quiet and a real failure still has a message', () => {

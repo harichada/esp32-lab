@@ -123,6 +123,12 @@ body.c-palette #palette,body.c-side #side,body.c-side #sideResizer{display:none}
 .pitem{display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 4px 6px;border-radius:var(--r2);border:1px solid var(--line);background:var(--l2);cursor:grab;transition:border-color var(--t),background var(--t),transform var(--t);overflow:hidden}
 .pitem:hover{border-color:var(--acc-d);background:var(--l3);transform:translateY(-1px)}.pitem:active{cursor:grabbing}
 .pitem svg{width:100%;height:46px;pointer-events:none}.pitem span{font-size:11px;color:var(--txt2);text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.pitem-locked{cursor:pointer}
+.pitem-locked svg.lock{width:14px;height:14px;flex:none}
+.pitem-lock{display:flex;align-items:flex-start;justify-content:center;gap:4px;max-width:100%;color:var(--txt);font-size:10px;line-height:1.3;white-space:normal;text-align:left}
+.pitem-lock span{white-space:normal;overflow:visible;text-overflow:clip;color:var(--txt);font-size:10px;line-height:1.3;text-align:left}
+.pitem-locked:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.ex-locked{opacity:.85}
 .pal-empty{padding:var(--s4);text-align:center;color:var(--mut);font-size:12px}
 #center{display:flex;flex-direction:column;min-width:0;min-height:0}
 #stageWrap{position:relative;overflow:hidden;background:var(--canvas);flex:1;min-height:120px}

@@ -205,6 +205,9 @@ body.m #palList .pitem svg{height:86px}
 body.m #palList .pitem span{font-family:var(--mono);font-size:11.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--txt)}
 body.m #palList .pitem.m-focus{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc),0 0 34px rgba(34,211,238,.35),inset 0 0 24px rgba(34,211,238,.12)}
 body.m #palList .pitem.m-focus::after{content:'TAP TO DEPLOY';position:absolute;bottom:-18px;font:600 9.5px var(--mono);letter-spacing:.2em;color:var(--acc)}
+body.m #palList .pitem-locked.m-focus::after{content:none}
+body.m .pitem svg.lock,body.m #palList .pitem svg.lock,body.m #mTrack .pitem svg.lock{width:14px;height:14px}
+body.m #palList .pitem span.pitem-lock,body.m #mTrack .pitem span.pitem-lock,body.m .pitem span.pitem-lock{text-transform:none;letter-spacing:0;font-size:10px;white-space:normal;display:flex;-webkit-line-clamp:unset;font-family:var(--sans,system-ui,sans-serif)}
 body.m #palList .pitem{position:relative;overflow:visible}
 body.m .pal-empty{flex:0 0 100%;text-align:center}
 /* orbital command dial */
@@ -284,6 +287,7 @@ body.m #mTrack .pitem svg{height:86px;width:100%}
 body.m #mTrack .pitem span{font-family:var(--mono);font-size:11.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--txt);text-align:center}
 body.m #mTrack .pitem.m-focus{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc),0 0 34px rgba(34,211,238,.35),inset 0 0 24px rgba(34,211,238,.12)}
 body.m #mTrack .pitem.m-focus::after{content:'TAP TO DEPLOY';position:absolute;bottom:-18px;font:600 9.5px var(--mono);letter-spacing:.2em;color:var(--acc)}
+body.m #mTrack .pitem-locked.m-focus::after{content:none}
 #mParts{position:absolute;right:max(12px,env(safe-area-inset-right));top:36px;z-index:7;height:44px;padding:0 16px 0 12px;gap:6px;border-radius:6px;background:rgba(34,211,238,.12);border:1px solid var(--hud);color:var(--acc);font:700 12px var(--mono);letter-spacing:.16em;box-shadow:0 0 22px rgba(34,211,238,.25);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
 body.m #mParts.m-only{display:inline-flex!important}#mParts .ic{width:18px;height:18px}
 body.m.m-wiring #mParts{opacity:0;pointer-events:none}

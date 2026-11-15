@@ -115,6 +115,47 @@
     }
     return out.replace(/\s+$/, '').trim();
   }
+  function sourceLine(source, line) {
+    const lines = String(source || '').split('\n');
+    if (!(line > 0) || line > lines.length) return '';
+    return lines[line - 1].replace(/\s+$/, '');
+  }
+  function startsWithToken(snippet, token) {
+    const s = stripTrailingComment(snippet).replace(/^\s+/, '');
+    const t = String(token || '').trim();
+    if (!s || !t) return false;
+    if (t === '}' || t === '{' || t === ')' || t === '(') return s.charAt(0) === t;
+    return new RegExp('^' + escapeReg(t) + '\\b').test(s);
+  }
+  function semicolonSite(diag, rawLines, source) {
+    // The line gcc numbers is where it saw the next token. The insertion
+    // caret, and the fix-it ';', belong to the statement that lacks one.
+    const lines = rawLines || [];
+    let numbered = null;
+    let numberedText = '';
+    let numberedRaw = '';
+    for (let i = diag.index + 1; i < lines.length && i < diag.index + 16; i++) {
+      const src = /^\s*(\d+)\s+\|(.*)$/.exec(lines[i]);
+      if (src) {
+        numbered = Number(src[1]);
+        numberedRaw = src[2].replace(/\s+$/, '');
+        numberedText = numberedRaw.trim();
+        continue;
+      }
+      const fix = /^\s*\|\s+;\s*$/.exec(lines[i]);
+      const caret = /^\s*\|\s+\^\s*$/.exec(lines[i]);
+      if ((fix || caret) && numbered && numbered !== diag.line) {
+        return { line: numbered, snippet: numberedText, column: numberedRaw.length + 1 };
+      }
+    }
+    const token = /before '([^']*)'/.exec(norm(diag.message));
+    const reported = sourceLine(source, diag.line);
+    if (token && reported && startsWithToken(reported, token[1]) && diag.line > 1) {
+      const prev = sourceLine(source, diag.line - 1).trim();
+      if (prev) return { line: diag.line - 1, snippet: prev, column: prev.length + 1 };
+    }
+    return null;
+  }
   function snippetAt(rawLines, index, lineNo) {
     for (let i = index + 1; i < rawLines.length && i < index + 10; i++) {
       const m = /^\s*(\d+)\s+\|(.*)$/.exec(rawLines[i]);
@@ -220,9 +261,15 @@
       return hint('quote', diag, 'Line ' + diag.line + ' is missing the closing ' + q + ' of a string. Add ' + q + ' at the end of the text.');
     }
     if (/expected ';' before/.test(message)) {
-      const bare = stripTrailingComment(diag.snippet || '');
+      // gcc often reports the next token's line. The fix-it ';' sits under the
+      // statement that is actually missing it. Keep gcc's line when that is
+      // already the statement (the caret and the ';' are on diag.line).
+      const site = semicolonSite(diag, rawLines, source);
+      const moved = site && site.line && site.line !== diag.line;
+      const use = moved ? Object.assign({}, diag, { line: site.line, column: site.column || diag.column, snippet: site.snippet || diag.snippet }) : diag;
+      const bare = stripTrailingComment(use.snippet || '');
       const shown = bare ? '`' + clip(bare, SNIP) + '`' : 'the end of that line';
-      return hint('semicolon', diag, 'Line ' + diag.line + ' is missing a semicolon (;) at the end. Add ; after ' + shown + '.');
+      return hint('semicolon', use, 'Line ' + use.line + ' is missing a semicolon (;) at the end. Add ; after ' + shown + '.');
     }
     if (/expected '}' at end of input|expected '}' before|function-definition is not allowed here before '\{'/.test(message)) {
       const open = noteLine(rawLines, diag.index, /:(\d+):\d+:\s*note: to match this '\{'/);

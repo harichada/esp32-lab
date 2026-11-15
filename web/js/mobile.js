@@ -116,7 +116,15 @@
     track.addEventListener('scroll', () => { if (!cr) cr = requestAnimationFrame(orbit); }, { passive: true });
     window.Mobile_orbit = () => requestAnimationFrame(orbit);
     $('#palSearch').addEventListener('input', () => { track.scrollLeft = 0; const any = $$('.pitem', track).some((x) => !x.hidden && !x.classList.contains('m-off')); track.classList.toggle('m-empty', !any); requestAnimationFrame(orbit); });
-    track.addEventListener('click', (e) => { const it = e.target.closest('.pitem'); if (!it) return; setSheet(null); app.cmd.toast('Added ' + it.querySelector('span').textContent + ' · drag to place'); }, true);
+    track.addEventListener('click', (e) => {
+      const it = e.target.closest('.pitem'); if (!it) return;
+      if (it.getAttribute('data-guest-locked') === '1' || (window.GuestParts && GuestParts.blocks(it.dataset.type))) {
+        e.preventDefault(); e.stopPropagation();
+        if (window.GuestParts) GuestParts.prompt();
+        return;
+      }
+      setSheet(null); app.cmd.toast('Added ' + it.querySelector('span').textContent + ' · drag to place');
+    }, true);
     const dock = $('#dock'); dock.classList.add('m-sheet'); sheetHead(dock, 'Code');
     const side = $('#side'); side.classList.add('m-sheet'); sheetHead(side, 'Properties');
     // symbol bar for the code editor

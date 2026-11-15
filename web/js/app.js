@@ -45,6 +45,7 @@ async function fetchRetry(u, o, n = 4) {
     serialClear(); app.irFrames = [];
     serialAppend(`— ${app.proj.name || 'project'} —\n${app.proj.notes ? app.proj.notes + '\n' : ''}`);
     app.devDirty = true; setStatus('idle', 'idle'); renderBanner();
+    if (window.GuestParts && GuestParts.projectBlocked(app.proj)) setStatus('warn', GuestParts.SENTENCE);
     if (window.Bom) Bom.render(document.getElementById('bomView'), app.proj);
     if (app.view3d) app.view3d.setProject(app.proj);
     if (app.schematic) { app.schematic.sel = null; app.schematic.setProject(app.proj); }
@@ -65,7 +66,13 @@ async function fetchRetry(u, o, n = 4) {
     if (filesReady && netReady && drawn) root.setAttribute('data-example-ready', String(proj.example));
     else root.removeAttribute('data-example-ready');
   }
-  async function loadExample(k) {
+  async function loadExample(k, opts) {
+    // A click on a locked example opens sign-in and leaves the current circuit
+    // alone. A shared link (?ex=) still draws the circuit; Run stays blocked.
+    if (!(opts && opts.keepLocked) && window.GuestParts && GuestParts.exampleLocked(k)) {
+      GuestParts.prompt();
+      return;
+    }
     const ex = Examples.EX[k](); ex.example = k;
     if (ex.fetch) {
       for (const [name, url] of Object.entries(ex.fetch)) {
@@ -493,6 +500,7 @@ async function fetchRetry(u, o, n = 4) {
   const BUILDING_TEXT = 'Building your code… the first build takes longer.';
   const COMPILE_TIMEOUT_TEXT = "Your sketch took too long to build. It's saved. Try Run again, and if it keeps happening, make the sketch smaller.";
   const SIMULATOR_STATUS = "The simulator couldn't start. Try again in a minute. Your sketch is fine and saved.";
+  const SIM_STOPPED = 'The simulator stopped. Press Run to try again.';
   const QUEUE_FALLBACK = 'Waiting for another build to finish…';
   // One phase for the Run button and the status line: idle, queued, building, running.
   // A 429, a 504 compile timeout, a compile error, an aborted fetch, and a dropped socket return to idle.
@@ -769,6 +777,13 @@ async function fetchRetry(u, o, n = 4) {
     return Number.isFinite(n) && n > 0 && n < 120 ? n : 3;
   }
   async function startRun() {
+    if (window.GuestParts && GuestParts.projectBlocked(app.proj)) {
+      GuestParts.prompt();
+      setCompilePhase('idle');
+      setStatus('err', GuestParts.SENTENCE);
+      serialAppend('\n[' + GuestParts.SENTENCE + ']\n');
+      return;
+    }
     if (compileBusy) return;
     syncCode(); stopRun(); app.proj.defines = $('#inDefines').value.split(',').map((s) => s.trim()).filter(Boolean);
     const esp = espPart();
@@ -839,9 +854,27 @@ async function fetchRetry(u, o, n = 4) {
       };
       run.poll = setInterval(poll, 400);
       poll();
-      const r = await fetchRetry('api/compile', { method: 'POST', headers: { 'content-type': 'application/json', ...progressHeaders('') }, body: JSON.stringify({ sketch: app.proj.code, files: app.proj.files, defines: app.proj.defines, job: run.job }) });
+      const compileBody = { sketch: app.proj.code, files: app.proj.files, defines: app.proj.defines, job: run.job };
+      if (window.GuestParts && GuestParts.enabled()) compileBody.parts = GuestParts.partTypes(app.proj);
+      const r = await fetchRetry('api/compile', { method: 'POST', headers: { 'content-type': 'application/json', ...progressHeaders('') }, body: JSON.stringify(compileBody) });
       clearInterval(run.poll); run.poll = null;
-      if (r.status === 504) {
+      if (r.status === 403) {
+        let body = {};
+        try { body = await r.json(); } catch (e) { /* a bare 403 still uses the sentence */ }
+        if (body && body.error === 'guest_parts') {
+          if (window.GuestParts) GuestParts.prompt();
+          const sentence = (body.message) || (window.GuestParts && GuestParts.SENTENCE) || 'Sign in free to use this part';
+          setCompilePhase('idle');
+          setStatus('err', sentence);
+          serialAppend('\n[' + sentence + ']\n');
+          app.run = null;
+          return;
+        }
+        setCompilePhase('idle');
+        setStatus('err', 'Sign in free to use this part');
+        app.run = null;
+        return;
+      } else if (r.status === 504) {
         let body = {};
         try { body = await r.json(); } catch (e) { /* a bare 504 still uses the sentence below */ }
         const fromServer = body && typeof body.log === 'string' ? body.log.trim() : '';
@@ -1035,7 +1068,11 @@ async function fetchRetry(u, o, n = 4) {
   // timeouts, network blips). We reconnect with backoff and resume the same session from the last message we saw.
   function connectRun(run) {
     const resume = !!run.sid;
-    const q = resume ? `?sid=${run.sid}&since=${run.lastN}` : '';
+    let q = resume ? `?sid=${run.sid}&since=${run.lastN}` : '';
+    if (window.GuestParts && GuestParts.enabled() && !GuestParts.signedIn()) {
+      const named = GuestParts.partTypes(app.proj).join(',');
+      q += (q ? '&' : '?') + 'parts=' + encodeURIComponent(named);
+    }
     let ws;
     try { ws = run.ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + location.pathname.replace(/[^/]*$/, '') + 'api/run/' + run.bid + q); }
     catch (e) { setCompilePhase('idle'); setStatus('err', 'connection lost'); app.run = null; return; }
@@ -1064,6 +1101,12 @@ async function fetchRetry(u, o, n = 4) {
       run.ws = null; ws.onclose = ws.onmessage = null; try { ws.close(); } catch (e) { /* already closed */ }
       // A dropped socket is no longer a compile. The Run control must not stay on Building….
       setCompilePhase('idle');
+      if (run.stopped) {
+        setStatus('err', SIM_STOPPED);
+        document.body.classList.remove('reconnecting');
+        app.run = null;
+        return;
+      }
       if (run.ended || !run.sid) { setStatus(run.ended ? 'idle' : 'err', run.ended ? 'QEMU exited' : 'connection lost'); document.body.classList.remove('reconnecting'); app.run = null; return; }
       if (!run.lostAt || run.tries === 0) run.lostAt = Date.now();
       if (run.grace && Date.now() - run.lostAt > run.grace + 600000) { setStatus('err', 'connection lost'); document.body.classList.remove('reconnecting'); serialAppend('\n[connection lost — run expired on the server]\n'); app.run = null; return; }
@@ -1107,12 +1150,36 @@ async function fetchRetry(u, o, n = 4) {
       case 'invack': onInvAck(); break;
       case 'status': serialAppend(`[qemu] ${m.msg}\n`); break;
       case 'error': {
+        if (m.reason === 'guest_parts' || m.error === 'guest_parts') {
+          const shown = m.message || (window.GuestParts && GuestParts.SENTENCE) || 'Sign in free to use this part';
+          if (window.GuestParts) GuestParts.prompt();
+          app.netlog.add({ k: 'info', msg: shown, ok: false });
+          serialAppend('\n[' + shown + ']\n');
+          setStatus('err', shown);
+          if (app.run) app.run.ended = true;
+          break;
+        }
+        if (m.unexpected || /qemu_thread_create|resource temporarily unavailable/i.test(m.msg || '')) {
+          if (app.run) app.run.stopped = true;
+          app.netlog.add({ k: 'info', msg: SIM_STOPPED, ok: false });
+          serialAppend('\n[' + SIM_STOPPED + ']\n');
+          setStatus('err', SIM_STOPPED);
+          break;
+        }
         const shown = (m.reason === 'unknown' || m.msg === 'unknown build id')
           ? 'This build has expired. Press Run to build it again.'
           : (m.msg || 'error');
         app.netlog.add({ k: 'info', msg: 'error: ' + shown, ok: false }); serialAppend(`[error] ${shown}\n`); setStatus('err', shown); break;
       }
-      case 'exit': serialAppend(`[qemu exited ${m.code}]\n`); break;
+      case 'exit':
+        if (m.unexpected) {
+          if (app.run) app.run.stopped = true;
+          serialAppend('\n[' + SIM_STOPPED + ']\n');
+          setStatus('err', SIM_STOPPED);
+          break;
+        }
+        serialAppend(`[qemu exited ${m.code}]\n`);
+        break;
     }
   }
   // ---------------- servo / NeoPixel / DHT22 (state that the parts render; parts never see the ESP32 runtime) ----------------
@@ -1497,9 +1564,26 @@ async function fetchRetry(u, o, n = 4) {
       document.querySelectorAll('.pgrid').forEach((g) => { const any = [...g.children].some((c) => !c.hidden); g.hidden = !any; g.previousElementSibling.hidden = !any; if (q) g.classList.remove('closed'); });
       document.querySelector('.pal-empty').hidden = n > 0; };
     document.querySelectorAll('.pitem').forEach((el) => {
-      el.addEventListener('dragstart', (ev) => ev.dataTransfer.setData('text/x-part', el.dataset.type));
-      el.addEventListener('click', () => app.editor.addPartInView(el.dataset.type));
+      el.addEventListener('dragstart', (ev) => {
+        if (window.GuestParts && GuestParts.blocks(el.dataset.type)) {
+          ev.preventDefault();
+          GuestParts.prompt();
+          return;
+        }
+        ev.dataTransfer.setData('text/x-part', el.dataset.type);
+      });
+      el.addEventListener('click', () => {
+        if (window.GuestParts && GuestParts.blocks(el.dataset.type)) { GuestParts.prompt(); return; }
+        app.editor.addPartInView(el.dataset.type);
+      });
+      el.addEventListener('keydown', (ev) => {
+        if (ev.key !== 'Enter' && ev.key !== ' ') return;
+        if (!(window.GuestParts && GuestParts.blocks(el.dataset.type))) return;
+        ev.preventDefault();
+        GuestParts.prompt();
+      });
     });
+    if (window.GuestParts) GuestParts.markPalette(document);
   }
   app.buildPalette = buildPalette;
   function about() {
@@ -1786,9 +1870,16 @@ async function fetchRetry(u, o, n = 4) {
         const item = document.createElement('button');
         item.type = 'button';
         item.setAttribute('role', 'option');
+        const locked = window.GuestParts && GuestParts.exampleLocked(opt.value);
         item.textContent = opt.textContent;
+        if (locked) {
+          item.className = 'ex-locked';
+          item.setAttribute('aria-disabled', 'true');
+          item.setAttribute('aria-label', opt.textContent);
+        }
         item.addEventListener('click', (ev) => {
           ev.stopPropagation();
+          if (locked) { if (window.GuestParts) GuestParts.prompt(); closeExamples(); return; }
           sel.value = opt.value;
           sel.dispatchEvent(new Event('change'));
           closeExamples();
@@ -1846,6 +1937,27 @@ async function fetchRetry(u, o, n = 4) {
   app.syncHeaderFit = syncHeaderFit;
   app.syncExampleTip = syncExampleTip;
   app.setProjectTitle = setProjectTitle;
+  function fillExamples() {
+    const sel = document.getElementById('selExample');
+    if (!sel || !window.Examples) return;
+    const grp = {};
+    for (const [k, n, c] of Examples.LIST) {
+      const locked = window.GuestParts && GuestParts.exampleLocked(k);
+      const label = locked ? (n + ' — ' + GuestParts.SENTENCE) : n;
+      const row = `<option value="${P.esc(k)}"${locked ? ' data-locked="1"' : ''}>${P.esc(label)}</option>`;
+      (grp[c || 'ESP32 projects'] = grp[c || 'ESP32 projects'] || []).push(row);
+    }
+    sel.innerHTML = '<option value="">Examples…</option>' + Object.entries(grp).map(([c, o]) => `<optgroup label="${P.esc(c)}">${o.join('')}</optgroup>`).join('');
+    const mobile = document.getElementById('mSelExample');
+    if (mobile) mobile.innerHTML = sel.innerHTML;
+  }
+  function refreshGuestParts() {
+    if (typeof buildPalette === 'function') buildPalette();
+    fillExamples();
+    if (app.proj && window.GuestParts && GuestParts.projectBlocked(app.proj)) setStatus('warn', GuestParts.SENTENCE);
+  }
+  app.fillExamples = fillExamples;
+  app.refreshGuestParts = refreshGuestParts;
   function init() {
     watchStripChrome();
     wireHeaderChrome();
@@ -1862,9 +1974,14 @@ async function fetchRetry(u, o, n = 4) {
       hover, state: (p) => app.sim ? app.sim.partState(p) : null, running: () => !!app.run || !espPart(), press,
     });
     buildPalette(); about();
-    { const grp = {}; for (const [k, n, c] of Examples.LIST) (grp[c || 'ESP32 projects'] = grp[c || 'ESP32 projects'] || []).push(`<option value="${k}">${n}</option>`);
-      $('#selExample').innerHTML = '<option value="">Examples…</option>' + Object.entries(grp).map(([c, o]) => `<optgroup label="${P.esc(c)}">${o.join('')}</optgroup>`).join(''); }
-    $('#selExample').onchange = (e) => { if (e.target.value) loadExample(e.target.value); e.target.value = ''; };
+    fillExamples();
+    $('#selExample').onchange = (e) => {
+      const value = e.target.value;
+      e.target.value = '';
+      if (!value) return;
+      if (window.GuestParts && GuestParts.exampleLocked(value)) { GuestParts.prompt(); return; }
+      loadExample(value);
+    };
     // The Examples button replaces the select once the top bar is narrow.
     // Hide that select from the accessibility tree while the button is on
     // screen, so the name "Examples" belongs to one control.
@@ -1944,7 +2061,7 @@ async function fetchRetry(u, o, n = 4) {
     const sp = new URLSearchParams(location.search), q = sp.get('ex'), pid = sp.get('p'), saved = clStorage.local.getItem(STORE);
     if (saved && !store.list().length) { try { const o = JSON.parse(saved); if (!o.example) { o.name = o.name || 'My saved project'; store.importJson(o); } } catch (e) { /* ignore */ } clStorage.local.removeItem(STORE); }
     if (pid && store.get(pid)) openProject(pid);
-    else if (q && Examples.EX[q]) loadExample(q);
+    else if (q && Examples.EX[q]) loadExample(q, { keepLocked: true });
     else if (store.current() && store.get(store.current())) openProject(store.current());
     else loadExample('blink');
     try {

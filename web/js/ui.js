@@ -158,7 +158,7 @@
       ['2D breadboard view', 'View', () => app.cmd.view2d()], ['Schematic view', 'View', () => app.cmd.viewSch && app.cmd.viewSch()], ['3D view', 'View', () => app.cmd.view3d()],
       ['Fit circuit to view', 'View', () => (app.schematic && app.schematic.active ? app.schematic.fit() : ed.fit())], ['Zoom in', 'View', () => zoomBy(1.25)], ['Zoom out', 'View', () => zoomBy(0.8)], ['Toggle minimap', 'View', () => $('#bMap').click()], ['Toggle light / dark theme', 'View', () => $('#bTheme').click()],
       ['Toggle current-flow animation', 'View', () => $('#cbFlow').click()], ['Toggle right-angle wires', 'Edit', () => $('#cbOrtho').click()], ['Undo', 'Edit', () => ed.undo()], ['Redo', 'Edit', () => ed.redo()], ['Keyboard shortcuts', 'Help', showKeys],
-      ...root.Examples.LIST.map(([k, n]) => [`Open example: ${n}`, 'Example', () => app.cmd.loadExample(k)]),
+      ...root.Examples.LIST.map(([k, n]) => [`Open example: ${n}`, 'Example', () => { if (root.GuestParts && root.GuestParts.exampleLocked(k)) { root.GuestParts.prompt(); return; } app.cmd.loadExample(k); }]),
       ...Object.entries(root.Parts.T).map(([k, d]) => [`Add part: ${d.label}`, 'Part', () => ed.addPartInView(k)]),
     ];
     const ck = $('#cmdk'), inp = $('#cmdkIn'), list = $('#cmdkList'); let items = [], sel = 0;

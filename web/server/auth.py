@@ -326,6 +326,35 @@ def cookie_path():
     return path
 
 
+def mount_path():
+    """Path prefix of AUTH_BASE_URL, or '' when sign-in is mounted at the origin."""
+    path = urllib.parse.urlparse(BASE).path if BASE else ''
+    if not path or path == '/':
+        return ''
+    return path.rstrip('/')
+
+
+def public_href(path):
+    """A root-relative URL under the AUTH_BASE_URL path.
+
+    ``/auth/google`` on a staging mount is ``/staging/auth/google``. A path
+    that already starts with the mount is left alone. With no mount this is
+    the path unchanged, so a lab at the origin keeps today's links.
+    """
+    base = mount_path()
+    if not isinstance(path, str) or not path:
+        path = '/'
+    if not path.startswith('/'):
+        path = '/' + path
+    if not base:
+        return path
+    if path == base or path.startswith(base + '/') or path.startswith(base + '?'):
+        return path
+    if path == '/':
+        return base + '/'
+    return base + path
+
+
 def _urls():
     if TEST_IDP:
         root = TEST_IDP
@@ -1205,12 +1234,14 @@ def _clear_cookie(response, scope):
 
 
 def _again(provider, nxt):
-    target = nxt if safe_next(nxt) else '/'
-    return '/auth/%s?next=%s' % (provider, urllib.parse.quote(target, safe=''))
+    target = nxt if safe_next(nxt) else public_href('/')
+    target = public_href(target)
+    return public_href('/auth/%s' % provider) + '?next=' + urllib.parse.quote(target, safe='')
 
 
 def _with_flag(nxt, flag):
-    target = nxt if safe_next(nxt) else '/'
+    target = nxt if safe_next(nxt) else public_href('/')
+    target = public_href(target)
     parts = urllib.parse.urlsplit(target)
     query = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
     query = [(k, v) for k, v in query if k not in ('auth_error', 'signin')]
@@ -1238,15 +1269,15 @@ async def _read_body(receive, limit):
 
 def _handle_start(provider, scope):
     if not provider_on(provider):
-        return _page('That sign-in option is not available.', status=404, link_href='/', link_label='Back')
+        return _page('That sign-in option is not available.', status=404, link_href=public_href('/'), link_label='Back')
     params = _query(scope)
     nxt = safe_next(_one(params, 'next') or '/')
     if nxt is None:
-        return _page('That return address was rejected.', status=400, link_href='/', link_label='Back to the lab')
+        return _page('That return address was rejected.', status=400, link_href=public_href('/'), link_label='Back to the lab')
     sid = _cookies(scope).get(COOKIE, '')
     started = begin_login(provider, nxt, sid)
     if not started:
-        return _page('Sign-in could not be started. Your work is still on this device.', link_href='/', link_label='Back')
+        return _page('Sign-in could not be started. Your work is still on this device.', link_href=public_href('/'), link_label='Back')
     from starlette.responses import RedirectResponse
     resp = RedirectResponse(started['url'], status_code=302, headers={
         'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer',
@@ -1270,7 +1301,7 @@ def _cancel_or_error(provider, pending, error):
 
 def _handle_callback(provider, scope):
     if not provider_on(provider):
-        return _page('That sign-in option is not available.', status=404, link_href='/', link_label='Back')
+        return _page('That sign-in option is not available.', status=404, link_href=public_href('/'), link_label='Back')
     params = _query(scope)
     error = _one(params, 'error')
     state = _one(params, 'state')
@@ -1356,7 +1387,7 @@ async def _handle_logout(scope, receive):
         return _cross_site_rejected()
     body = await _read_body(receive, 8192)
     if body is False:
-        return _page('That sign-out was too large.', link_href='/', link_label='Back')
+        return _page('That sign-out was too large.', link_href=public_href('/'), link_label='Back')
     token = _header(scope, 'x-csrf-token')
     if body:
         ctype = _header(scope, 'content-type').split(';', 1)[0].strip().lower()
@@ -1382,7 +1413,7 @@ async def _handle_import(scope, receive):
     if body is None:
         return _json({'ok': False, 'error': 'closed'}, 400)
     if body is False:
-        return _page('That is too many projects to save at once.', link_href='/', link_label='Back')
+        return _page('That is too many projects to save at once.', link_href=public_href('/'), link_label='Back')
     if _header(scope, 'content-type').split(';', 1)[0].strip().lower() != 'application/json':
         return _json({'ok': False, 'error': 'type'}, 415)
     parsed = _json_bytes(body)
@@ -1391,6 +1422,15 @@ async def _handle_import(scope, receive):
     token = _csrf_from(_header(scope, 'x-csrf-token'), parsed.get('csrf'))
     items = parsed.get('projects')
     sid = _cookies(scope).get(COOKIE, '')
+    # A guest account-save that names a locked part is refused before any row
+    # is written. A signed-in save, and a guest save that names no locked part,
+    # keep the existing checks (including the sign-in requirement).
+    import guestparts
+    if guestparts.blocks(
+        guestparts.named_types(parsed),
+        signed_in=bool(session_view(sid).get('signed_in')),
+    ):
+        return guestparts.denied_response()
     imported = import_projects(sid, token, items)
     if imported is None:
         return _json({'ok': False, 'error': 'csrf', 'message': 'Sign-in is needed before projects can be saved to the account.'}, 403)
@@ -1471,15 +1511,15 @@ def _dispatch(method, path, scope, receive):
     if path == '/auth/projects/import' and method == 'POST':
         return _handle_import(scope, receive)
     if path in ('/auth/google', '/auth/github', '/auth/google/callback', '/auth/github/callback', '/auth/session', '/auth/projects') and method != 'GET':
-        return _page('That action is not available.', status=405, link_href='/', link_label='Back')
+        return _page('That action is not available.', status=405, link_href=public_href('/'), link_label='Back')
     if path == '/auth/logout' and method != 'POST':
-        return _page('Sign out is a button on this site.', status=405, link_href='/', link_label='Back')
+        return _page('Sign out is a button on this site.', status=405, link_href=public_href('/'), link_label='Back')
     if path == '/auth/projects/import' and method != 'POST':
-        return _page('That action is not available.', status=405, link_href='/', link_label='Back')
+        return _page('That action is not available.', status=405, link_href=public_href('/'), link_label='Back')
     provider = path.split('/')[2] if path.startswith('/auth/') and path.count('/') >= 2 else ''
     if provider and provider not in ('google', 'github', 'session', 'logout', 'projects'):
-        return _page('That sign-in option is not available.', status=404, link_href='/', link_label='Back')
-    return _page('That page is not part of sign-in.', status=404, link_href='/', link_label='Back')
+        return _page('That sign-in option is not available.', status=404, link_href=public_href('/'), link_label='Back')
+    return _page('That page is not part of sign-in.', status=404, link_href=public_href('/'), link_label='Back')
 
 
 class AuthMiddleware:
@@ -1511,7 +1551,7 @@ class AuthMiddleware:
             _log(https.rate_limit_log(scope))
             page = _page(
                 'Too many sign-in attempts. Wait a moment and try again.',
-                status=429, link_href='/', link_label='Back',
+                status=429, link_href=public_href('/'), link_label='Back',
             )
             page.headers['Retry-After'] = str(wait)
             await page(scope, receive, send)

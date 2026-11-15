@@ -12,8 +12,58 @@
   function savedSentence(n) {
     return n + (n === 1 ? ' project saved to your account' : ' projects saved to your account');
   }
+  function originOf() {
+    if (location && location.origin) return location.origin;
+    try { return new URL(location.href).origin; } catch (e) { return 'http://localhost'; }
+  }
+  function authBase() {
+    // AUTH_BASE_URL's path, injected as cl-auth-base. Otherwise the directory
+    // of this page, so /staging and /staging/ both stay on the staging mount.
+    try {
+      const meta = document.querySelector('meta[name="cl-auth-base"]');
+      if (meta) {
+        let value = String(meta.getAttribute('content') || '');
+        if (value.charAt(0) === '/' && value.indexOf('//') !== 0 && value.indexOf('\\') < 0) {
+          value = value.replace(/\/+$/, '');
+          return value === '/' ? '' : value;
+        }
+      }
+    } catch (e) { /* no document yet */ }
+    let path = (location && location.pathname) || '/';
+    if (path.charAt(0) !== '/' || path.indexOf('//') === 0 || path.indexOf('\\') !== -1) path = '/';
+    if (path.charAt(path.length - 1) !== '/') {
+      const last = path.slice(path.lastIndexOf('/') + 1);
+      if (last.indexOf('.') < 0) path += '/';
+    }
+    const slash = path.lastIndexOf('/');
+    return slash <= 0 ? '' : path.slice(0, slash);
+  }
   function here(path) {
-    return new URL(path, location.href);
+    const rel = String(path || '').replace(/^\/+/, '');
+    const base = authBase();
+    const root = originOf() + (base ? base + '/' : '/');
+    return new URL(rel, root);
+  }
+  function openMenu() {
+    const phone = document.body && document.body.classList && document.body.classList.contains('m');
+    if (phone && root.Mobile && typeof root.Mobile.setSheet === 'function') {
+      root.Mobile.setSheet('more');
+      const btn = document.querySelector('#mAuth button');
+      if (btn && typeof btn.focus === 'function') btn.focus();
+      return true;
+    }
+    const header = document.getElementById('bSignIn');
+    if (header && typeof header.click === 'function') {
+      header.click();
+      return true;
+    }
+    const account = document.querySelector('#mAuth button');
+    if (account) {
+      if (root.Mobile && typeof root.Mobile.setSheet === 'function') root.Mobile.setSheet('more');
+      if (typeof account.focus === 'function') account.focus();
+      return true;
+    }
+    return false;
   }
   function sessionBag() {
     return root.clStorage && root.clStorage.session;
@@ -460,15 +510,21 @@
       .then((data) => {
         if (!data || !data.providers) return;
         session = data;
+        if (root.GuestParts && typeof root.GuestParts.noteSession === 'function') root.GuestParts.noteSession(session);
         mount();
       })
       .catch(() => { /* the lab keeps working with no account */ });
   }
-  function useSession(next) { session = next; }
+  function useSession(next) {
+    session = next;
+    if (root.GuestParts && typeof root.GuestParts.noteSession === 'function') root.GuestParts.noteSession(session);
+  }
   const api = {
     fillProjects: fillProjects,
     mountMobile: mountMobile,
     begin: begin,
+    here: here,
+    openMenu: openMenu,
     returnTarget: returnTarget,
     signOutCancelled: signOutCancelled,
     useSession: useSession,

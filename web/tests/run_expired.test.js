@@ -10,7 +10,7 @@ test('an unknown build id is shown as an expired build', () => {
   const sentence = 'This build has expired. Press Run to build it again.';
   const at = src.indexOf("case 'error'");
   assert.ok(at > 0);
-  const block = src.slice(at, at + 800);
+  const block = src.slice(at, at + 1800);
   assert.ok(block.includes(sentence), block);
   assert.ok(block.includes("m.reason === 'unknown'"));
   assert.ok(block.includes("m.msg === 'unknown build id'"));
