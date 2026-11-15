@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """The uptime workflow is valid YAML and matches the fallback contract.
 
+Needs PyYAML (`pip install pyyaml`). `web/setup.sh` installs it with the server packages.
+
     python3 -m unittest tests/uptime_workflow_test.py
 """
 import ast

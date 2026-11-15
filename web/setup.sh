@@ -64,9 +64,9 @@ if ! [ -x "$PREFIX/qemu/bin/qemu-system-xtensa" ]; then
   cd "$HERE"
 fi
 
-log "Python venv (fastapi, uvicorn)"
+log "Python venv (fastapi, uvicorn, PyYAML)"
 [ -d "$PREFIX/venv" ] || python3 -m venv "$PREFIX/venv"
-"$PREFIX/venv/bin/pip" install -q fastapi 'uvicorn[standard]' websockets
+"$PREFIX/venv/bin/pip" install -q fastapi 'uvicorn[standard]' websockets PyYAML
 
 log "Done. Next time just run: $0 --start"
 start
