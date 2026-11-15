@@ -30,6 +30,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (window.Bom) Bom.render(document.getElementById('bomView'), app.proj);
     if (app.view3d) app.view3d.setProject(app.proj);
     if (app.schematic) { app.schematic.sel = null; app.schematic.setProject(app.proj); }
+    markExampleReady();
   }
   async function loadExample(k) {
     const ex = Examples.EX[k](); ex.example = k;
@@ -83,7 +84,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const L = store.list();
     d.innerHTML = `<div class="modal-box"><div class="row"><h3 style="flex:1;margin:0">My Projects</h3><button data-a="close">✕</button></div>
       <div class="row"><button data-a="new">＋ New blank</button><label class="btn">⤒ Import JSON / diagram.json<input type="file" id="projImp" accept=".json,application/json" hidden></label>
-      <label title="Also keep a copy of each project on the simulator server"><input type="checkbox" id="cbSrv" ${store.serverSync ? 'checked' : ''}> server copy</label><button data-a="srv">From server…</button></div>
+      <label title="Also keep a copy of each project on the simulator server"><input type="checkbox" id="cbSrv" ${store.serverSync ? 'checked' : ''}> server copy</label><button type="button" data-a="srv" id="bFromServer">From server…</button></div>
       <table class="projs">${L.map((e) => `<tr data-id="${e.id}" class="${app.proj && app.proj.id === e.id ? 'cur' : ''}"><td class="pn">${P.esc(e.name)}<br><small class="muted">${new Date(e.updated).toLocaleString()}${e.from ? ' · from ' + P.esc(e.from) : ''}</small></td>
         <td><button data-a="open">Open</button><button data-a="ren">Rename</button><button data-a="dup">Duplicate</button><button data-a="exp">Export</button><button data-a="del">Delete</button></td></tr>`).join('') || '<tr><td class="muted">No projects yet. Open an example and press “Make a copy” (or just start editing it).</td></tr>'}</table><div id="srvList"></div></div>`;
     d.hidden = false;
@@ -232,8 +233,10 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   // ---------------- runtimes ----------------
   function sendRun(m) { if (app.run && app.run.ws && app.run.ws.readyState === 1) app.run.ws.send(JSON.stringify(m)); }
   function espPart() { return app.proj.parts.find((q) => q.type === 'esp32'); }
+  const OFFLINE = "Can't reach the simulator right now. Your work is saved on this device. Try again in a moment.";
   function statusFace(kind, text) {
     const t = String(text || '').trim();
+    if (t === OFFLINE || /can't reach the simulator/i.test(t)) return { short: 'Offline', full: OFFLINE };
     if (kind === 'run' || /^running\b/i.test(t)) return { short: 'Running', full: t || 'Running' };
     if (kind === 'busy') {
       const queued = app.compilePhase === 'queued' || /\bqueued\b|ahead of yours|position \d|waiting for another build/i.test(t);
@@ -250,6 +253,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (word === 'Running') return 'Run';
     if (word === 'Idle') return 'Idle';
     if (word === 'Run error') return 'Error';
+    if (word === 'Offline') return 'Offline';
     const one = String(word || '').split(/\s+/)[0] || 'Status';
     return one.length > 8 ? one.slice(0, 8) : one;
   }
@@ -581,7 +585,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       res = await r.json();
       run.settled = true;
       holdBuilding = !!(res && res.ok && app.run === run);
-    } catch (e) { clearInterval(run.poll); run.poll = null; setCompilePhase('idle'); setStatus('err', 'backend unreachable'); serialAppend('\n[backend] cannot reach /api/compile — start server/server.py (see README) or switch to JS sketch mode.\n'); app.run = null; return; }
+    } catch (e) { clearInterval(run.poll); run.poll = null; setCompilePhase('idle'); setStatus('err', OFFLINE); serialAppend('\n' + OFFLINE + '\n'); app.run = null; return; }
     finally { if (!holdBuilding || app.run !== run) setCompilePhase('idle'); }
     if (app.run !== run) return;
     $('#buildLog').textContent = res.cached ? cachedCompileLog(res.log) : (res.log || ''); if (app.codeview) app.codeview.setLog(res.ok ? '' : (res.log || ''));
@@ -1036,7 +1040,42 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     $('#netLog').innerHTML = L.map((e) => `<details class="nl c${e.code}"><summary><span class="pr">${e.proto}</span> ${P.esc(e.summary)}</summary>${e.detail ? `<pre>${P.esc(JSON.stringify(e.detail, null, 1))}</pre>` : ''}</details>`).join('') || '<p class="muted">no traffic yet</p>';
   }
   // ---------------- misc UI ----------------
-  function toast(msg, err) { const t = document.createElement('div'); t.className = 'toast' + (err ? ' err' : ''); t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 2600); }
+  function placeToasts() {
+    const all = [...document.querySelectorAll('.toast')];
+    let lift = 0;
+    for (let i = all.length - 1; i >= 0; i--) {
+      all[i].style.marginBottom = lift ? (lift + 'px') : '';
+      lift += all[i].offsetHeight + 8;
+    }
+  }
+  function toast(msg, err) {
+    const t = document.createElement('div');
+    t.className = 'toast' + (err ? ' err' : '');
+    t.textContent = msg;
+    document.body.appendChild(t);
+    placeToasts();
+    setTimeout(() => { t.remove(); placeToasts(); }, 2600);
+  }
+  function filesReady(proj) {
+    if (!proj || !proj.example) return false;
+    const spec = proj.fetch;
+    if (!spec || typeof spec !== 'object') return true;
+    for (const name of Object.keys(spec)) {
+      if (name === 'sketch') { if (typeof proj.code !== 'string' || !proj.code) return false; }
+      else if (!proj.files || typeof proj.files[name] !== 'string') return false;
+    }
+    return true;
+  }
+  // Stays set after the schematic toast has gone. Tests wait on this, not on the toast.
+  function markExampleReady() {
+    const root = document.documentElement;
+    const proj = app.proj;
+    const sch = app.schematic;
+    const drawn = !!(sch && sch.active && sch.model && sch.svg && sch.svg.classList.contains('on') && sch.svg.querySelector('.sch-hit'));
+    const nets = !!(proj && proj.netlist && Array.isArray(proj.netlist.nets) && proj.netlist.nets.length);
+    if (proj && filesReady(proj) && nets && drawn) root.dataset.exampleReady = proj.example;
+    else delete root.dataset.exampleReady;
+  }
   function buildPalette() {
     const cats = {}; for (const [k, d] of Object.entries(P.T)) (cats[d.cat || 'Misc'] = cats[d.cat || 'Misc'] || []).push([k, d]);
     const thumb = (k, d) => { try { const p = { id: 'T', type: k, x: 0, y: 0, rot: 0, props: JSON.parse(JSON.stringify(d.props || {})) }; const sz = d.size(p); const pins = d.pins(p);
@@ -1252,6 +1291,23 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (!top || top.clientWidth < 1) return false;
     return top.scrollWidth > top.clientWidth + 0.5;
   }
+  // The connection dot, including its glow, stays inside the header. A tighter
+  // gap is applied only when the measured edge would cross the bar or the viewport.
+  function pinConnDot(reset) {
+    const top = document.getElementById && document.getElementById('top');
+    const dot = document.getElementById && document.getElementById('connDot');
+    if (!top || !dot || !top.classList || typeof getComputedStyle !== 'function') return;
+    if (reset) top.classList.remove('hdr-tight');
+    const cs = getComputedStyle(dot);
+    if (cs.display === 'none' || cs.visibility === 'hidden') return;
+    const dr = dot.getBoundingClientRect();
+    if (dr.width < 1) return;
+    const tr = top.getBoundingClientRect();
+    const mark = dot.querySelector && dot.querySelector('i');
+    const glow = mark ? mark.getBoundingClientRect().right + 6 : dr.right;
+    const edge = Math.min(tr.right, document.documentElement.clientWidth);
+    if (Math.max(dr.right, glow) - edge > 0.5) top.classList.add('hdr-tight');
+  }
   function syncHeaderFit() {
     placeProj();
     syncProjTitle();
@@ -1284,6 +1340,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     }
     if ((headerOverflows() || titleNeedsRoom()) && tier < 1) { applyStatusTier(1); tier = 1; }
     if ((headerOverflows() || titleNeedsRoom()) && tier < 2) { applyStatusTier(2); tier = 2; }
+    pinConnDot(key !== headerFitKey);
     headerFitKey = key;
     syncDocTitle();
   }
@@ -1449,6 +1506,14 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     $('#cbDiodes').onchange = (e) => { for (const q of app.proj.parts) if (q.type === 'diode') q.props.bypass = !e.target.checked; app.sim.dirty = true; app.editor.render(); toast(e.target.checked ? 'Diodes fitted' : 'Diodes replaced by wires — press 3 keys forming a rectangle corner to see a ghost key'); };
     // start-up: ?p=<project> > ?ex=<example, read-only> > last open project > legacy single-slot save > Blink example
     const sp = new URLSearchParams(location.search), q = sp.get('ex'), pid = sp.get('p'), saved = clStorage.local.getItem(STORE);
+    try {
+      const movedN = sp.get('moved');
+      if (movedN && /^[0-9]+$/.test(movedN)) {
+        toast('Your projects moved with you (' + movedN + ')');
+        sp.delete('moved');
+        history.replaceState(null, '', location.pathname + (sp.toString() ? '?' + sp.toString() : '') + location.hash);
+      }
+    } catch (e) { /* history or the address bar is unavailable */ }
     if (saved && !store.list().length) { try { const o = JSON.parse(saved); if (!o.example) { o.name = o.name || 'My saved project'; store.importJson(o); } } catch (e) { /* ignore */ } clStorage.local.removeItem(STORE); }
     if (pid && store.get(pid)) openProject(pid);
     else if (q && Examples.EX[q]) loadExample(q);
@@ -1553,6 +1618,11 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const el = $('#view3dLoad');
     if (el) { el.hidden = !on; el.setAttribute('aria-busy', on ? 'true' : 'false'); }
     document.body.classList.toggle('view3d-busy', !!on);
+    const live = document.getElementById('stLive');
+    const st = document.getElementById('status');
+    if (!live) return;
+    if (on) live.textContent = 'Loading 3D view…';
+    else if (live.textContent === 'Loading 3D view…') live.textContent = (st && st.getAttribute('title')) || statusWord || 'Idle';
   }
   function paintFrame() { return new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res))); }
   function applyViewChrome() {
@@ -1610,6 +1680,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (viewMode === '2d') {
       try { clStorage.local.removeItem(LSV); } catch (_) {}
       leaveSchematic();
+      markExampleReady();
       try { app.editor && app.editor.render && app.editor.render(); } catch (_) {}
       const z = $('#zoomPct'); if (z && app.editor) z.textContent = Math.round(app.editor.view.s * 100) + '%';
       return;
@@ -1618,10 +1689,12 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       try { clStorage.local.removeItem(LSV); } catch (_) {}
       app.schematic.setProject(app.proj);
       app.schematic.setActive(true);
+      markExampleReady();
       if (!quiet) toast('Schematic — view only · select a part to inspect · pan and zoom · edit in 2D');
       return;
     }
     leaveSchematic();
+    markExampleReady();
     show3dLoad(true);
     preload3dScripts();
     try {

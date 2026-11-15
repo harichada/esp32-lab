@@ -10,17 +10,27 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       SIM_COMPILE_QUEUE, SIM_COMPILE_QUEUE_MAX, SIM_COMPILE_QUEUE_TIMEOUT_S,
       SIM_ORPHAN_MAX_AGE_S and the matching *_MAX_AGE_S knobs.
       Staging (off unless set): SIM_STAGING, SIM_ACCESS_TOKEN, SIM_STAGING_UPSTREAM, SIM_BASE_PATH.
+      SCHEMATIC_MATCH_LAYOUT (default 1). 0 puts <meta name="schmatch" content="0"> on the lab page
+      so every visitor gets the column schematic. Any other value leaves index.html unchanged,
+      and ?schmatch= on that page is then free to choose.
+      HTTPS (off unless set): HTTPS_ENABLED, HTTPS_HOST, HSTS_ENABLED, HSTS_SECONDS,
+      ALLOWED_HOSTS, TRUSTED_PROXY_IPS.
+      See https.py. The documented host is esp32lab.duckdns.org; the default is empty.
+      Caddy terminates TLS. proxy_headers stays off. Forwarding headers are honored
+      only from an address in TRUSTED_PROXY_IPS. The documented address is 172.30.0.250.
+      STAGING_PROXY_ENABLED defaults to 0. /staging on this process is then 502.
 """
 import asyncio, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, argparse
+from email.utils import formatdate, parsedate
 import diskkeep
+import https
 import staging
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
 import secrets
 from fastapi.responses import PlainTextResponse
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
-import uvicorn
 
 HERE = Path(__file__).resolve().parent
 SITE = HERE.parent
@@ -61,6 +71,7 @@ STOP_ON_1001 = os.environ.get('SIM_STOP_ON_1001', '0') == '1'   # old behaviour:
 import builtins as _b, datetime as _dt
 def print(*a, **k): _b.print(_dt.datetime.now().strftime('%F %T'), *a, **{**k, 'flush': True})  # keep QEMU alive this long after the browser websocket drops
 staging.set_logger(print)
+https.set_logger(print)
 RING_BYTES = 48 * 1024 * 1024
 MAX_RUNS = min(MAX_RUNS, int(os.environ.get('SIM_MAX_RUNS_HARD', '6')))
 CLOSED_GRACE = float(os.environ.get('SIM_CLOSED_GRACE', '90'))  # tab closed/reloaded (pagehide): keep QEMU this long for a reload to re-attach
@@ -84,6 +95,7 @@ def _maybe_simtok(request, resp):
     return resp
 staging.configure(max_body=MAX_BODY, sim_authed=_authed)
 staging.apply_env()
+https.apply_env()
 @app.middleware('http')
 async def gate(request: Request, call_next):
     if request.url.path.startswith('/server'):
@@ -112,7 +124,70 @@ async def gate(request: Request, call_next):
     _maybe_simtok(request, resp)
     if staging.staging_on():
         resp = await staging.decorate(request, resp)
+    if request.method == 'GET':
+        fresh = _conditional_get(request, resp)
+        if fresh is not None:
+            resp = fresh
+    if request.method == 'HEAD':
+        resp = await _blank_head(resp)
     return resp
+def _conditional_get(request, resp):
+    """304 for a static GET whose validator matches. API responses stay 200.
+
+    If-None-Match wins over If-Modified-Since. A spoofed validator on /api/
+    is ignored. The 304 has no body.
+    """
+    if getattr(resp, 'status_code', None) != 200:
+        return None
+    path = request.url.path or '/'
+    if path == '/api' or path.startswith('/api/'):
+        return None
+    inm = request.headers.get('if-none-match')
+    if inm is not None:
+        if inm.strip() != '*':
+            etag = resp.headers.get('etag')
+            if not etag:
+                return None
+            tags = [tag.strip().removeprefix('W/') for tag in inm.split(',')]
+            if etag not in tags:
+                return None
+    else:
+        ims = request.headers.get('if-modified-since')
+        lm = resp.headers.get('last-modified')
+        if not ims or not lm:
+            return None
+        ims_t = parsedate(ims)
+        lm_t = parsedate(lm)
+        if ims_t is None or lm_t is None or ims_t < lm_t:
+            return None
+    keep = ('cache-control', 'etag', 'last-modified', 'expires', 'vary', 'content-location')
+    headers = {key: value for key, value in resp.headers.items() if key.lower() in keep}
+    return Response(status_code=304, headers=headers)
+async def _blank_head(resp):
+    """HEAD keeps the headers of the rendered response and sends no body.
+
+    Middleware above the route sees the GET body (so a staging inject can
+    change Content-Length). The bytes are then dropped. Content-Length stays
+    the length of that rendered body.
+    """
+    iterator = getattr(resp, 'body_iterator', None)
+    raw_body = getattr(resp, 'body', None)
+    if iterator is not None and not isinstance(raw_body, (bytes, bytearray, memoryview)):
+        chunks = []
+        async for chunk in iterator:
+            if isinstance(chunk, (bytes, bytearray)):
+                chunks.append(bytes(chunk))
+        raw = list(resp.raw_headers)
+        if not any(name.lower() == b'content-length' for name, _value in raw):
+            raw.append((b'content-length', str(sum(len(part) for part in chunks)).encode('ascii')))
+        empty = Response(content=b'', status_code=resp.status_code, background=getattr(resp, 'background', None))
+        empty.raw_headers = raw
+        return empty
+    raw = list(getattr(resp, 'raw_headers', []) or [])
+    empty = Response(content=b'', status_code=resp.status_code, background=getattr(resp, 'background', None))
+    if raw:
+        empty.raw_headers = raw
+    return empty
 def _index_headers():
     names = set(); roots = [HOME / '.arduino15/packages', HOME / 'Arduino/libraries', SHIMS]
     for r in roots:
@@ -1389,6 +1464,38 @@ def proj_del(pid: str):
     if i and (PROJ_DIR / f'{i}.json').exists(): (PROJ_DIR / f'{i}.json').unlink()
     return {'ok': True}
 
+_NOT_FOUND_PAGE = (
+    '<!doctype html>\n'
+    '<html lang="en"><head><meta charset="utf-8">'
+    '<meta name="viewport" content="width=device-width, initial-scale=1">'
+    '<title>Page not found — Circuit Lab</title>'
+    '<style>html,body{margin:0;background:#08090b;color:#e6e8eb;'
+    "font-family:system-ui,-apple-system,'Segoe UI',sans-serif}"
+    'main{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;'
+    'text-align:center;padding:24px;box-sizing:border-box}'
+    'h1{font-size:22px;font-weight:650;margin:0 0 8px}'
+    'p{margin:0 0 18px;line-height:1.45}'
+    'a{display:inline-block;box-sizing:border-box;min-height:36px;line-height:36px;padding:0 16px;'
+    'border-radius:8px;background:#22d3ee;color:#04161a;font-weight:650;text-decoration:none}'
+    'a:focus-visible{outline:2px solid #fff4d4;outline-offset:3px}'
+    '</style></head><body><main>'
+    '<h1>Page not found</h1>'
+    "<p>That page isn't part of Circuit Lab.</p>"
+    '<a href="/">Go to Circuit Lab</a>'
+    '</main></body></html>\n'
+)
+_NOT_FOUND_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'"
+
+@app.exception_handler(404)
+async def page_not_found(request: Request, exc):
+    path = request.url.path or '/'
+    if path == '/api' or path.startswith('/api/'):
+        return JSONResponse({'error': 'not found'}, status_code=404)
+    resp = HTMLResponse(_NOT_FOUND_PAGE, status_code=404)
+    resp.headers['Content-Security-Policy'] = _NOT_FOUND_CSP
+    resp.headers['X-Content-Type-Options'] = 'nosniff'
+    return resp
+
 @app.get('/robots.txt')
 def robots_txt():
     if staging.staging_on():
@@ -1397,13 +1504,58 @@ def robots_txt():
     if found.is_file():
         return FileResponse(found)
     raise HTTPException(status_code=404)
-@app.get('/')
-def index(): return FileResponse(SITE / 'index.html')
+# Site-wide schematic switch. Read on each page load so a restart picks it up
+# with no second request. Only "0" turns it off; the file is served unchanged otherwise.
+SCHEMATIC_META = '<meta name="schmatch" content="0">'
+def schematic_match_enabled(env=None):
+    env = os.environ if env is None else env
+    return str(env.get('SCHEMATIC_MATCH_LAYOUT', '1')).strip() != '0'
+def lab_page(env=None):
+    """Lab HTML and whether it is the file unchanged. Off injects one meta tag in <head>."""
+    raw = (SITE / 'index.html').read_bytes()
+    if schematic_match_enabled(env):
+        return raw, True
+    text = raw.decode('utf-8')
+    if SCHEMATIC_META not in text and '<head>' in text:
+        text = text.replace('<head>', '<head>\n' + SCHEMATIC_META, 1)
+    return text.encode('utf-8'), False
+def _index_response():
+    """The lab page for GET and HEAD of ``/`` and ``/index.html``.
+
+    HEAD must hit this route. The static mount treats ``/`` as a directory.
+    The full body is returned so later middleware can inject, then blank HEAD.
+    Unchanged HTML uses FileResponse's mtime-size ETag. The schematic-off page
+    uses a hash of the injected body and keeps the file's Last-Modified.
+    """
+    body, plain = lab_page()
+    st = (SITE / 'index.html').stat()
+    if plain:
+        etag_base = str(st.st_mtime) + '-' + str(st.st_size)
+        etag = '"%s"' % hashlib.md5(etag_base.encode(), usedforsecurity=False).hexdigest()
+        headers = {
+            'accept-ranges': 'bytes',
+            'last-modified': formatdate(st.st_mtime, usegmt=True),
+            'etag': etag,
+        }
+    else:
+        etag = '"' + hashlib.sha256(body).hexdigest() + '"'
+        headers = {
+            'last-modified': formatdate(st.st_mtime, usegmt=True),
+            'etag': etag,
+        }
+    return Response(content=body, media_type='text/html', headers=headers)
+@app.api_route('/', methods=['GET', 'HEAD'])
+@app.api_route('/index.html', methods=['GET', 'HEAD'])
+def index():
+    return _index_response()
 app.mount('/', StaticFiles(directory=str(SITE)), name='site')
 app.add_middleware(staging.StagingMiddleware)
+app.add_middleware(https.HttpsMiddleware)
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(); ap.add_argument('--port', type=int, default=8765); ap.add_argument('--host', default='127.0.0.1')
     a = ap.parse_args()
     print(f'QEMU={QEMU}\nROMDIR={ROMDIR}\nCLI={CLI}\nFQBN={FQBN}')
-    uvicorn.run(app, host=a.host, port=a.port, log_level='warning', proxy_headers=False, forwarded_allow_ips='')
+    # HTTP on --port (8765 in the container). Caddy terminates TLS.
+    # proxy_headers=False and forwarded_allow_ips='' are set in https.py.
+    https.serve_forever(app, a.host, a.port)

@@ -16,3 +16,24 @@ test('save/get/rename/duplicate/remove/export/import persist', () => {
   const i = s2.importJson(s2.exportJson(c.id)); assert.strictEqual(s2.get(i.id).code, s2.get(c.id).code);
   s2.remove(d.id); assert.strictEqual(s2.list().length, 2); assert.throws(() => s2.importJson('{"x":1}'));
 });
+test('a 429 holds the next projects request until Retry-After', async () => {
+  const calls = [];
+  let n = 0;
+  const fetchFn = async () => {
+    calls.push(Date.now());
+    n += 1;
+    if (n === 1) {
+      return { ok: false, status: 429, headers: { get: (k) => (k.toLowerCase() === 'retry-after' ? '0.2' : null) }, json: async () => [] };
+    }
+    return { ok: true, status: 200, headers: { get: () => null }, json: async () => [{ id: 's1', name: 'Server' }] };
+  };
+  const s = new ProjectStore(mem(), fetchFn);
+  const first = s.listServer();
+  const second = s.listServer();
+  await new Promise((r) => setTimeout(r, 40));
+  assert.strictEqual(calls.length, 1);
+  await first;
+  await second;
+  assert.strictEqual(calls.length, 2);
+  assert.ok(calls[1] - calls[0] >= 180, 'second request left after ' + (calls[1] - calls[0]) + 'ms');
+});

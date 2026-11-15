@@ -78,6 +78,11 @@ def _http_app(record):
                     + payload)
                 await writer.drain()
                 return
+            if target.startswith('/partial'):
+                writer.write(b'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n')
+                await writer.drain()
+                writer.close()
+                return
             if target.startswith('/hang'):
                 await asyncio.sleep(30)
                 return
@@ -117,6 +122,14 @@ class StagingTests(unittest.TestCase):
             if path.endswith('/bye'):
                 await ws.send('bye')
                 await ws.close(4002)
+                return
+            if path.endswith('/drop'):
+                await ws.send('up')
+                transport = getattr(ws, 'transport', None)
+                if transport is not None:
+                    transport.abort()
+                else:
+                    await ws.close()
                 return
             async for message in ws:
                 await ws.send(message)
@@ -162,8 +175,12 @@ class StagingTests(unittest.TestCase):
         self.http_log.clear()
         self.ws_log.clear()
 
-    def _env(self, staging='0', token='', upstream='', base=''):
-        """Apply flags. A loopback URL is the test seam, not the env var."""
+    def _env(self, staging='0', token='', upstream='', base='', proxy='1'):
+        """Apply flags. A loopback URL is the test seam, not the env var.
+
+        ``proxy`` defaults to ``1`` so these tests keep today's pass-through.
+        Production defaults ``STAGING_PROXY_ENABLED`` to ``0``.
+        """
         staging_mod = sys.modules['staging']
         local = None
         env_upstream = upstream or ''
@@ -177,6 +194,7 @@ class StagingTests(unittest.TestCase):
             'SIM_ACCESS_TOKEN': token,
             'SIM_STAGING_UPSTREAM': env_upstream,
             'SIM_BASE_PATH': base,
+            'STAGING_PROXY_ENABLED': proxy,
         })
 
     def fetch(self, path, headers=None, data=None, method=None, timeout=5):
@@ -257,7 +275,8 @@ class StagingTests(unittest.TestCase):
         self.assertIn('<html lang="en">', text)
         self.assertRegex(text, r'<title>[^<]+</title>')
         self.assertNotIn('<script', low)
-        self.assertIn('<link rel="icon" href="data:,">', text)
+        self.assertIn('<link rel="icon" href="/favicon.ico">', text)
+        self.assertNotIn('data:,', text)
         self.assertEqual(low.count('<link'), 1)
         self.assertNotIn('stylesheet', low)
         self.assertNotIn('@import', low)
@@ -275,13 +294,13 @@ class StagingTests(unittest.TestCase):
     def _assert_private(self, body):
         self._assert_static(
             body, PRIVATE,
-            'Looking for Circuit Lab? <a href="/">Go to the main site</a>.',
+            'Looking for Circuit Lab? <a href="/">Go to the main site.</a>',
         )
 
     def _assert_down(self, body):
         self._assert_static(
             body, DOWN,
-            'Try again in a few minutes, or <a href="/">use the main site</a>.',
+            'Try again in a few minutes, or <a href="/">use the main site.</a>',
         )
 
     def test_flags_off_do_not_change_headers(self):
@@ -300,6 +319,40 @@ class StagingTests(unittest.TestCase):
         self.assertIn(server.MAX_BODY, (200 * 1024,))
         self.assertEqual(staging.MAX_BODY, server.MAX_BODY)
         self.assertEqual(staging.PROXY_TIMEOUT, 30.0)
+
+    def test_proxy_flag_off_is_502_with_no_upstream_and_flag_on_matches_today(self):
+        self.http_log.clear()
+        self._env(upstream='http://127.0.0.1:%d' % self.http_port, proxy='0')
+        self.assertFalse(staging.PROXY_ENABLED)
+        public = 'https://esp32lab.duckdns.org/staging/'
+        for path in ('/staging', '/staging/', '/staging/api/health', '/staging/foo?x=1'):
+            code, _, body = self.fetch(path)
+            self.assertEqual(code, 502, path)
+            text = body.decode('utf-8')
+            self.assertIn('Staging is only available at %s.' % public, text)
+            self.assertNotIn('esp32lab-staging', text)
+            self.assertNotIn('172.', text)
+            self.assertNotIn('127.0.0.1', text)
+            self.assertNotIn('test123', text)
+        self.assertEqual(self.http_log, [])
+        get_code, get_headers, get_body = self.fetch('/staging/')
+        self.assertEqual(get_code, 502)
+        self.assertIn(b'Staging is only available at', get_body)
+        for head_path in ('/staging', '/staging/'):
+            code, head_headers, body = self.fetch(head_path, method='HEAD')
+            self.assertEqual(code, 502, head_path)
+            self.assertEqual(body, b'', head_path)
+            for name in ('Cache-Control', 'Content-Security-Policy', 'Content-Type', 'X-Robots-Tag'):
+                self.assertEqual(head_headers.get(name), get_headers.get(name), head_path + ' ' + name)
+            self.assertEqual(head_headers.get('Content-Security-Policy'), staging.PAGE_CSP, head_path)
+        self.assertEqual(self.http_log, [])
+        self._env(upstream='http://127.0.0.1:%d' % self.http_port, proxy='1')
+        self.assertTrue(staging.PROXY_ENABLED)
+        code, _, body = self.fetch('/staging/api/health')
+        self.assertEqual(code, 200)
+        self.assertEqual(body, b'upstream-ok')
+        self.assertEqual(len(self.http_log), 1)
+        self.assertEqual(self.http_log[0]['target'].split('?', 1)[0], '/api/health')
 
     def test_noindex_only_when_staging(self):
         self._env(staging='1')
@@ -384,6 +437,7 @@ class StagingTests(unittest.TestCase):
             staging.apply_env({
                 'SIM_STAGING': '0', 'SIM_ACCESS_TOKEN': '',
                 'SIM_STAGING_UPSTREAM': value, 'SIM_BASE_PATH': '',
+                'STAGING_PROXY_ENABLED': '1',
             })
             code, _, _ = self.fetch('/staging/api/health')
             self.assertEqual(code, 404, value)
@@ -506,7 +560,7 @@ class StagingTests(unittest.TestCase):
         self.assertTrue(any(line.startswith('staging_proxy status=200 ms=') for line in self.logs))
         self.assertFalse(any('?' in line or '1.2.3.4' in line or '8.8.8.8' in line or '9.9.9.9' in line or 'abc' in line for line in self.logs))
         slash, slh, _ = self.fetch('/staging?z=1')
-        self.assertEqual(slash, 302)
+        self.assertEqual(slash, 301)
         self.assertTrue(slh['Location'].endswith('/staging/?z=1') or slh['Location'] == '/staging/?z=1')
 
     def test_body_limit_reuses_live_constant(self):
@@ -543,6 +597,11 @@ class StagingTests(unittest.TestCase):
         self.assertEqual(code, 401)
         self._assert_private(body)
         self.assertTrue(any(line == 'stage_auth=denied' for line in self.logs))
+        icon_code, icon_headers, icon = self.fetch('/favicon.ico')
+        self.assertEqual(icon_code, 200)
+        self.assertIn('image/', icon_headers['content-type'])
+        self.assertEqual(icon, (Path(__file__).resolve().parents[1] / 'favicon.ico').read_bytes())
+        self.assertNotIn(b'private test copy', icon.lower())
         self.assertFalse(any(TOKEN in line for line in self.logs))
         self.logs.clear()
         code, _, body = self.fetch('/?t=wrong')
@@ -557,9 +616,17 @@ class StagingTests(unittest.TestCase):
         self.assertNotIn(TOKEN, cookie)
         low = cookie.lower()
         self.assertIn('httponly', low)
-        self.assertIn('samesite=strict', low)
+        self.assertIn('samesite=lax', low)
         self.assertIn('path=/staging/', low)
         self.assertNotIn('domain=', low)
+        self.assertIn('secure', low)
+        bare, bare_headers, bare_body = self.fetch('/staging?z=1&t=%s' % TOKEN)
+        self.assertEqual(bare, 301, bare_body[:200])
+        self.assertEqual(bare_headers['Location'], '/staging/?z=1&t=%s' % TOKEN)
+        self.assertNotIn('Set-Cookie', bare_headers)
+        still, _, still_body = self.fetch('/staging/')
+        self.assertEqual(still, 401)
+        self._assert_private(still_body)
         self.assertTrue(any(line == 'stage_auth=ok' for line in self.logs))
         self.assertFalse(any(TOKEN in line for line in self.logs))
         pair = cookie.split(';', 1)[0]
@@ -575,6 +642,9 @@ class StagingTests(unittest.TestCase):
         self.assertRegex(off_cookie, r'path=/(;|$)')
         self.assertNotIn('path=/staging', off_cookie)
         self.assertNotIn('domain=', off_cookie)
+        self.assertNotIn('secure', off_cookie)
+        self.assertIn('samesite=lax', off_cookie)
+        self.assertIn('httponly', off_cookie)
 
     def test_websocket_requires_cookie_and_proxy_echoes(self):
         self._env(token=TOKEN)
@@ -790,10 +860,11 @@ class StagingTests(unittest.TestCase):
         self.assertFalse(self.uvicorn.config.proxy_headers)
         self.assertEqual(self.uvicorn.config.forwarded_allow_ips, '')
         src = Path(server.__file__).read_text()
-        self.assertIn(
-            "uvicorn.run(app, host=a.host, port=a.port, log_level='warning', proxy_headers=False, forwarded_allow_ips='')",
-            src,
-        )
+        https_src = (Path(server.__file__).resolve().parent / 'https.py').read_text()
+        self.assertIn("proxy_headers=False, forwarded_allow_ips=''", https_src)
+        self.assertNotIn('proxy_headers=True', https_src)
+        self.assertNotIn('proxy_headers=True', src)
+        self.assertIn('https.serve_forever(app, a.host, a.port)', src)
         seen = {}
         orig = server._client_id_from
 
@@ -994,7 +1065,7 @@ class StagingTests(unittest.TestCase):
             ])
             self.assertEqual(status, 401, method)
             self.assertEqual(headers.get('cache-control'), 'no-store')
-            self.assertEqual(headers.get('content-security-policy'), "default-src 'none'; style-src 'unsafe-inline'")
+            self.assertEqual(headers.get('content-security-policy'), "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'")
             self.assertIn('text/html', headers.get('content-type', ''))
             if method != 'HEAD':
                 self._assert_private(body)
@@ -1134,7 +1205,7 @@ class StagingTests(unittest.TestCase):
             self.assertIn('min-height:30px', page)
             self.assertIn('a:focus-visible{', page)
             self.assertIn('a:hover{', page)
-        self.assertEqual(staging.PAGE_CSP, "default-src 'none'; style-src 'unsafe-inline'")
+        self.assertEqual(staging.PAGE_CSP, "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'")
         marker = 'zz-secret-path-9f3'
         header = 'zz-header-9f3'
         upstream = '127.0.0.1:%d' % self.http_port
@@ -1169,12 +1240,74 @@ class StagingTests(unittest.TestCase):
 
     def _assert_guard_page(self, headers, body, path, header, upstream):
         self.assertEqual(headers['Cache-Control'], 'no-store')
-        self.assertEqual(headers['Content-Security-Policy'], "default-src 'none'; style-src 'unsafe-inline'")
+        self.assertEqual(headers['Content-Security-Policy'], "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'")
         self.assertNotIn(path.encode(), body)
         self.assertNotIn(header.encode(), body)
         self.assertNotIn(upstream.encode(), body)
         self.assertNotIn(b'http://', body)
         self.assertNotIn(b'https://', body)
+
+    def test_partial_upstream_headers_are_502_and_logged(self):
+        self._env(upstream='http://127.0.0.1:%d' % self.http_port)
+        status, headers, body = self.fetch('/staging/partial')
+        self.assertIn(status, (500, 502))
+        self.assertNotEqual(status, 200)
+        self.assertIn(b"isn't running", body)
+        self.assertTrue(any('status=%d' % status in line or 'status=502' in line for line in self.logs))
+        self.assertTrue(any(line.startswith('staging_proxy status=') for line in self.logs))
+        self.assertNotIn(b'upstream-ok', body)
+        self.assertEqual(headers['Content-Security-Policy'], staging.PAGE_CSP)
+
+    def test_websocket_close_on_upstream_drop_can_reconnect(self):
+        self._env(upstream='http://127.0.0.1:%d' % self.ws_port)
+
+        async def dropped():
+            url = 'ws://127.0.0.1:%d/staging/api/run/drop' % self.port
+            async with websockets.connect(url, open_timeout=3, proxy=None) as ws:
+                self.assertEqual(await ws.recv(), 'up')
+                try:
+                    await asyncio.wait_for(ws.recv(), 3)
+                except ConnectionClosed as exc:
+                    rcvd = getattr(exc, 'rcvd', None)
+                    return (
+                        getattr(rcvd, 'code', None),
+                        getattr(rcvd, 'reason', '') or '',
+                    )
+            return None, ''
+
+        code, reason = asyncio.run(dropped())
+        self.assertEqual(code, 1012)
+        self.assertIn('upstream restart', reason)
+
+        async def again():
+            url = 'ws://127.0.0.1:%d/staging/api/run/abc' % self.port
+            async with websockets.connect(url, open_timeout=3, proxy=None) as ws:
+                await ws.send('back')
+                return await asyncio.wait_for(ws.recv(), 3)
+
+        self.assertEqual(asyncio.run(again()), 'back')
+
+    def test_unknown_page_is_html_and_api_stays_json(self):
+        status, headers, body = self.fetch('/no-such-lab-page')
+        self.assertEqual(status, 404)
+        text = body.decode()
+        self.assertIn('<html lang="en">', text)
+        self.assertRegex(text, r'<title>[^<]+</title>')
+        self.assertIn('<h1>Page not found</h1>', text)
+        self.assertIn("That page isn't part of Circuit Lab.", text)
+        self.assertIn('<a href="/">Go to Circuit Lab</a>', text)
+        self.assertNotIn('<script', text.lower())
+        self.assertIn('text/html', headers['Content-Type'])
+        self.assertIn("style-src 'unsafe-inline'", headers['Content-Security-Policy'])
+        self.assertNotIn('data:,', text)
+        api_status, api_headers, api_body = self.fetch('/api/does-not-exist')
+        self.assertEqual(api_status, 404)
+        self.assertIn('application/json', api_headers['Content-Type'])
+        self.assertEqual(json.loads(api_body), {'error': 'not found'})
+        proj_status, proj_headers, proj_body = self.fetch('/api/projects/missingid')
+        self.assertEqual(proj_status, 404)
+        self.assertIn('json', proj_headers['Content-Type'])
+        self.assertEqual(json.loads(proj_body), {'error': 'not found'})
 
 
 def _contrast(fg, bg):

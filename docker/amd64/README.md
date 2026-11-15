@@ -15,13 +15,13 @@ arduino-cli core update-index && arduino-cli core install esp32:esp32@3.3.12
 1. Install Docker CE (get.docker.com / docker apt repo).
 2. Load/build image, then:
 ```
-docker run -d --name esp32lab -p 80:8765 -p 8765:8765 --restart unless-stopped \
+docker run -d --name esp32lab -p 80:8765 --restart unless-stopped \
   -v esp32lab-data:/home/sim/.esp32lab -v esp32lab-cache:/home/sim/.cache/arduino esp32-lab:local
 ```
+Do not publish container port 8765. The app does not publish 443. Caddy (`circuitlab-caddy`) terminates TLS. See `web/README.md` and `docs/https.md`.
 3. Oracle images ship restrictive iptables; open ports (and persist):
 ```
 sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 80 -j ACCEPT
-sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 8765 -j ACCEPT
 sudo netfilter-persistent save
 ```
-Also allow 80/8765 in the VCN security list.
+Do not open 8765. Port 443 on the host is Caddy's. The app container does not publish it. Allow 80 in the security list.

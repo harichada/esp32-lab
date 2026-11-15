@@ -35,7 +35,37 @@
     undo() { if (!this.undoS.length) return; this.redoS.push(this.snapshot()); this._restore(this.undoS.pop()); }
     redo() { if (!this.redoS.length) return; this.undoS.push(this.snapshot()); this._restore(this.redoS.pop()); }
     // ---------- coordinates ----------
-    applyView() { const r = this.svg.getBoundingClientRect(); this.svg.setAttribute('viewBox', `${this.view.x} ${this.view.y} ${r.width / this.view.s} ${r.height / this.view.s}`); }
+    applyView() {
+      const r = this.svg.getBoundingClientRect();
+      this.svg.setAttribute('viewBox', `${this.view.x} ${this.view.y} ${r.width / this.view.s} ${r.height / this.view.s}`);
+      this._scaleBoardLabels();
+    }
+    // Part values on the breadboard use the same viewBox zoom as the schematic.
+    // Keep them at least 11 screen px, and never larger than their natural size when zoomed in.
+    _scaleBoardLabels() {
+      if (!this.svg || !this.svg.querySelectorAll) return;
+      let scale = this.view.s > 0 ? this.view.s : 1;
+      try {
+        const m = this.svg.getScreenCTM && this.svg.getScreenCTM();
+        if (m) {
+          const s = Math.hypot(m.a, m.b);
+          if (s > 0.02 && isFinite(s)) scale = s;
+        }
+      } catch (e) { /* keep the view zoom */ }
+      const target = (natural) => (scale >= 1 ? Math.max(11, Math.min(natural, natural * scale)) : Math.max(11, natural * scale));
+      this.svg.querySelectorAll('text.plbl:not(.small)').forEach((el) => {
+        if (!el.dataset.natural) {
+          let n = 8;
+          try {
+            const f = parseFloat((root.getComputedStyle ? root.getComputedStyle(el) : getComputedStyle(el)).fontSize);
+            if (f > 0 && f < 11.5 && isFinite(f)) n = f;
+          } catch (e2) { /* 8 */ }
+          el.dataset.natural = String(n);
+        }
+        const n = +el.dataset.natural || 8;
+        el.style.fontSize = (target(n) / scale) + 'px';
+      });
+    }
     toWorld(ev) { const r = this.svg.getBoundingClientRect(); return { x: this.view.x + (ev.clientX - r.left) / this.view.s, y: this.view.y + (ev.clientY - r.top) / this.view.s }; }
     markUserView() { this._autoFit = false; }
     fit() {

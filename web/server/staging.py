@@ -5,9 +5,14 @@ responses. HTTP forwarding uses asyncio streams (stdlib). WebSocket forwarding
 uses the ``websockets`` package already installed with uvicorn. No new dependency.
 
 SIM_STAGING           default 0. 1 adds noindex, robots.txt, and the page flag.
-SIM_ACCESS_TOKEN      default empty (off). Cookie cl_stage, constant-time compare.
+SIM_ACCESS_TOKEN      default empty (off). Cookie cl_stage is HttpOnly and SameSite=Lax.
+                      When SIM_STAGING=1 the cookie is always Secure, because that
+                      process is only reached over https through Caddy. A spoofed
+                      X-Forwarded-Proto does not decide the flag.
 SIM_STAGING_UPSTREAM  default empty (off). Only http://esp32lab-staging:8765.
 SIM_BASE_PATH         cookie and redirect prefix. Defaults to /staging when SIM_STAGING=1.
+STAGING_PROXY_ENABLED default 0. Only ``1`` forwards /staging. Off answers 502 and
+                      does not open an upstream connection. Caddy is the way in.
 """
 import asyncio, hashlib, hmac, html, os, re, time
 from urllib.parse import parse_qs, unquote, urlencode
@@ -43,7 +48,7 @@ _PAGE_CSS = (
     "a:focus-visible{outline:2px solid #fff4d4;outline-offset:3px;}"
     "a:active{color:#fff4d4;background:#241500;}"
 )
-PAGE_CSP = "default-src 'none'; style-src 'unsafe-inline'"
+PAGE_CSP = "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'"
 
 
 def _static_page(title, paragraphs):
@@ -52,7 +57,7 @@ def _static_page(title, paragraphs):
     return (
         '<!doctype html>\n'
         '<html lang="en"><head><meta charset="utf-8">'
-        '<link rel="icon" href="data:,">'
+        '<link rel="icon" href="/favicon.ico">'
         '<title>' + _esc(title) + '</title><style>' + _PAGE_CSS + '</style></head>\n'
         '<body>' + body + '</body></html>\n'
     )
@@ -60,11 +65,15 @@ def _static_page(title, paragraphs):
 
 PRIVATE_HTML = _static_page('Private test copy', [
     _esc('This is a private test copy of Circuit Lab.'),
-    _esc('Looking for Circuit Lab? ') + _main_link('Go to the main site') + _esc('.'),
+    _esc('Looking for Circuit Lab? ') + _main_link('Go to the main site.'),
 ])
 DOWN_HTML = _static_page('Test copy', [
     _esc("The test copy isn't running right now."),
-    _esc('Try again in a few minutes, or ') + _main_link('use the main site') + _esc('.'),
+    _esc('Try again in a few minutes, or ') + _main_link('use the main site.'),
+])
+# Public address only. No container name, address, or token.
+CLOSED_HTML = _static_page('Staging', [
+    _esc('Staging is only available at https://esp32lab.duckdns.org/staging/.'),
 ])
 _HOP = {
     'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'proxy-connection',
@@ -90,6 +99,7 @@ _BASE_RE = re.compile(r'^/[A-Za-z0-9][A-Za-z0-9._/-]{0,80}$')
 
 STAGING = False
 ACCESS = ''
+PROXY_ENABLED = False
 UPSTREAM = None  # ('host', port) or None. Off never proxies.
 # Tests only. Production leaves this None, so the env var is the only switch.
 TEST_UPSTREAM = None
@@ -172,10 +182,11 @@ def _base_path(raw, staging):
 
 def apply_env(env=None):
     """Read the flags. Called at process start and by tests."""
-    global STAGING, ACCESS, UPSTREAM, BASE_PATH, COOKIE_PATH
+    global STAGING, ACCESS, UPSTREAM, BASE_PATH, COOKIE_PATH, PROXY_ENABLED
     env = os.environ if env is None else env
     STAGING = env.get('SIM_STAGING', '0') == '1'
     ACCESS = env.get('SIM_ACCESS_TOKEN', '') or ''
+    PROXY_ENABLED = str(env.get('STAGING_PROXY_ENABLED', '0')).strip() == '1'
     parsed = parse_upstream(env.get('SIM_STAGING_UPSTREAM', ''))
     # The test seam wins so a unit test can point at 127.0.0.1 without the env var.
     UPSTREAM = TEST_UPSTREAM if TEST_UPSTREAM is not None else parsed
@@ -237,9 +248,44 @@ def _html(html, status):
     return seal(resp)
 
 
+def _cookie_secure(request):
+    """Secure on every staging cookie. Otherwise only a real https request.
+
+    Staging is published only through Caddy, so SIM_STAGING=1 always sets
+    Secure. X-Forwarded-Proto is not consulted here. A spoofed proto cannot
+    add or remove the flag. When staging is off, Secure follows the scheme
+    left after untrusted forwarding headers have been ignored.
+    """
+    if STAGING:
+        return True
+    return request.url.scheme == 'https'
+
+
+def _bare_base_redirect(request):
+    """301 from <base> to <base>/ so the slash form is what asks for the cookie.
+
+    The query is kept, including ?t=, so the next request can still sign in.
+    """
+    base = BASE_PATH
+    path = request.url.path or '/'
+    if not base or path != base:
+        return None
+    dest = base + '/'
+    if request.url.query:
+        dest += '?' + request.url.query
+    from starlette.responses import RedirectResponse
+    return seal(RedirectResponse(dest, status_code=301))
+
+
 def access_gate(request):
     """None if the request may proceed. Otherwise a 401 or a redirect that drops ?t=."""
     if not ACCESS:
+        return None
+    bare = _bare_base_redirect(request)
+    if bare is not None:
+        return bare
+    # The lock-page icon is not secret. A 401 here shows up as a second console error.
+    if (request.url.path or '/') == '/favicon.ico':
         return None
     from starlette.responses import RedirectResponse
     presented = request.query_params.get('t') if 't' in request.query_params else None
@@ -250,7 +296,8 @@ def access_gate(request):
             resp = RedirectResponse(_redirect_target(request), status_code=302)
             resp.set_cookie(
                 'cl_stage', cookie_value(ACCESS),
-                max_age=86400 * 7, httponly=True, samesite='strict', path=COOKIE_PATH,
+                max_age=86400 * 7, httponly=True, samesite='lax', path=COOKIE_PATH,
+                secure=_cookie_secure(request),
             )
             return seal(resp)
         return None
@@ -273,6 +320,22 @@ def _too_large():
 def _not_found():
     from starlette.responses import PlainTextResponse
     return seal(PlainTextResponse('not found', status_code=404))
+
+
+def _proxy_closed(method):
+    """502 with the public staging URL. HEAD sends that status and no body.
+
+    Nothing here is an upstream call. The body names only the public https URL.
+    HEAD keeps the same security headers as GET, including the page CSP.
+    """
+    resp = _html(CLOSED_HTML, 502)
+    if (method or 'GET').upper() != 'HEAD':
+        return resp
+    from starlette.responses import Response
+    body = resp.body if isinstance(getattr(resp, 'body', None), (bytes, bytearray)) else b''
+    headers = [(key, value) for key, value in resp.headers.items() if key.lower() != 'content-length']
+    headers.append(('content-length', str(len(body))))
+    return Response(content=b'', status_code=resp.status_code, headers=dict(headers))
 
 
 def _staging_kind(path):
@@ -436,16 +499,20 @@ def _ms(t0):
 
 
 async def maybe_proxy(request):
-    """Proxy /staging/*, redirect /staging, or 404 when the upstream flag is off.
+    """Proxy /staging when STAGING_PROXY_ENABLED is 1. Otherwise 502, with no upstream call.
 
-    Returns None when the path is not a staging path.
+    Returns None when the path is not a staging path. With the proxy flag on and
+    no upstream, the answer is 404, which is the previous behavior.
     """
     path = request.url.path
     raw = request.scope.get('raw_path') or b''
+    kind = _staging_kind(path)
+    if (kind or climbs_out(path, raw)) and not PROXY_ENABLED:
+        _log('staging_proxy status=502 reason=proxy_disabled')
+        return _proxy_closed(request.method)
     if climbs_out(path, raw):
         _log('staging_proxy status=404 reason=bad_path')
         return _not_found()
-    kind = _staging_kind(path)
     if not kind:
         return None
     if UPSTREAM is None:
@@ -456,8 +523,8 @@ async def maybe_proxy(request):
         if request.url.query:
             dest += '?' + request.url.query
         t0 = time.perf_counter()
-        _log('staging_proxy status=302 ms=%d' % _ms(t0))
-        return seal(RedirectResponse(dest, status_code=302))
+        _log('staging_proxy status=301 ms=%d' % _ms(t0))
+        return seal(RedirectResponse(dest, status_code=301))
     body, err = await _read_limited(request)
     if err is not None:
         return err
@@ -530,11 +597,15 @@ async def _read_head(reader, started=None):
         chunk = await reader.read(4096)
         if not chunk:
             break
-        if started is not None:
-            started['ok'] = True
         buf += chunk
         if len(buf) > 65536:
             raise OSError('upstream headers')
+    # A partial header block is not a response. Leave started unset so the
+    # caller logs a 502 instead of treating a cut-off status line as 200.
+    if b'\r\n\r\n' not in buf:
+        raise OSError('upstream headers')
+    if started is not None:
+        started['ok'] = True
     raw = bytes(buf)
     head, _, rest = raw.partition(b'\r\n\r\n')
     lines = head.split(b'\r\n')
@@ -713,6 +784,10 @@ class StagingMiddleware:
             return
         path = scope.get('path') or ''
         if path == '/staging' or path.startswith('/staging/'):
+            if not PROXY_ENABLED:
+                _log('staging_proxy status=502 reason=proxy_disabled')
+                await _ws_http(send, 502, CLOSED_HTML.encode('utf-8'))
+                return
             if climbs_out(path, scope.get('raw_path') or b''):
                 _log('staging_proxy status=404 reason=bad_path')
                 await _ws_http(send, 404, b'not found', b'text/plain; charset=utf-8')
@@ -723,6 +798,21 @@ class StagingMiddleware:
             await _ws_http(send, 401, PRIVATE_HTML.encode('utf-8'))
             return
         await self.app(scope, receive, send)
+
+
+_NO_WS_CLOSE = {1004, 1005, 1006, 1015}
+
+
+def _legal_ws_close(code, reason):
+    """A close the browser can honor. 1005, 1006 and 1015 cannot be sent."""
+    text = (reason or '')[:123]
+    try:
+        code = int(code)
+    except Exception:
+        code = 1012
+    if code in _NO_WS_CLOSE or code < 1000 or code > 4999:
+        return 1012, text or 'upstream restart'
+    return code, text
 
 
 async def _proxy_ws(scope, receive, send):
@@ -812,6 +902,7 @@ async def _proxy_ws(scope, receive, send):
 
     async def remote_to_client():
         code = 1000
+        reason = ''
         try:
             async for message in remote:
                 if isinstance(message, str):
@@ -819,23 +910,30 @@ async def _proxy_ws(scope, receive, send):
                 else:
                     await send({'type': 'websocket.send', 'bytes': bytes(message)})
             code = int(getattr(remote, 'close_code', None) or 1000)
+            reason = getattr(remote, 'close_reason', None) or ''
         except Exception as exc:
             rcvd = getattr(exc, 'rcvd', None)
-            raw = getattr(rcvd, 'code', None)
+            raw = getattr(rcvd, 'code', None) if rcvd is not None else None
             if raw is None:
                 raw = getattr(exc, 'code', None)
             if raw is None:
                 raw = getattr(remote, 'close_code', None)
             try:
-                code = int(raw or 1000)
+                code = int(raw) if raw is not None else 1006
             except Exception:
-                code = 1000
-        if code < 1000 or code > 4999:
-            code = 1000
+                code = 1006
+            if rcvd is not None:
+                reason = getattr(rcvd, 'reason', '') or ''
+            if not reason:
+                reason = getattr(exc, 'reason', '') or ''
+        code, reason = _legal_ws_close(code, reason)
         try:
-            await send({'type': 'websocket.close', 'code': code, 'reason': ''})
+            await send({'type': 'websocket.close', 'code': code, 'reason': reason})
         except Exception:
-            pass
+            try:
+                await send({'type': 'websocket.close', 'code': 1001, 'reason': reason or 'upstream restart'})
+            except Exception:
+                pass
 
     tasks = [asyncio.ensure_future(client_to_remote()), asyncio.ensure_future(remote_to_client())]
     try:
@@ -852,6 +950,6 @@ async def _proxy_ws(scope, receive, send):
             if not task.done():
                 task.cancel()
         try:
-            await connector.__aexit__(None, None, None)
+            await asyncio.wait_for(connector.__aexit__(None, None, None), 1)
         except Exception:
             pass
