@@ -1,5 +1,5 @@
 """Sign-in with a local provider stand-in. Nothing here contacts Google or GitHub."""
-import http.client, json, os, sqlite3, stat, sys, tempfile, unittest, urllib.parse
+import hashlib, http.client, json, os, shutil, sqlite3, stat, sys, tempfile, unittest, urllib.parse
 from pathlib import Path
 
 os.environ['SIM_PREWARM'] = '0'
@@ -531,9 +531,9 @@ class AuthTests(unittest.TestCase):
         self.assertEqual(on[2], unk[2])
         self.assertIsNone(_header(on[1], 'set-cookie'))
         post_on = self._req('POST', '/auth/logout', body=b'{}')
-        post_unk = self._req('POST', '/no-such-auth-page', body=b'{}')
-        self.assertEqual(post_on[0], post_unk[0])
-        self.assertEqual(post_on[2], post_unk[2])
+        self.assertEqual(post_on[0], 404)
+        self.assertEqual(post_on[2], unk[2])
+        self.assertIsNone(_header(post_on[1], 'set-cookie'))
         status, _pairs, body = self._req('GET', '/api/health')
         self.assertEqual(status, 200)
         self.assertFalse(any('auth' in key for key in json.loads(body)))
@@ -568,6 +568,267 @@ class AuthTests(unittest.TestCase):
         self.assertIsNone(auth.safe_next('https://evil'))
         self.assertIsNone(auth.safe_next('/\\evil'))
         self.assertEqual(auth.safe_next('/lab?p=1'), '/lab?p=1')
+
+    def test_state_is_single_use_and_bound_to_pkce(self):
+        before = self.idp.token_calls
+        location, jar, _attrs, _body = self._start('google', '/?p=lamp1')
+        params = self._query(location)
+        self.assertEqual(params.get('code_challenge_method'), ['S256'])
+        with sqlite3.connect(self.db) as conn:
+            pending = json.loads(conn.execute(
+                'SELECT pending FROM sessions WHERE id = ?', (jar['cl_session'],)
+            ).fetchone()[0])
+        self.assertEqual(params['state'], [pending['state']])
+        self.assertEqual(params['code_challenge'], [auth._challenge(pending['verifier'])])
+        digest = hashlib.sha256(pending['verifier'].encode('ascii')).digest()
+        self.assertEqual(params['code_challenge'][0], auth._b64url(digest))
+        callback = self._authorize(location)
+        parsed = urllib.parse.urlsplit(callback)
+        query = urllib.parse.parse_qs(parsed.query)
+        code = query['code'][0]
+        missing = urllib.parse.urlunsplit((
+            parsed.scheme, parsed.netloc, parsed.path,
+            urllib.parse.urlencode({'code': code}), '',
+        ))
+        status, pairs, body = self._callback(missing, jar)
+        self.assertEqual(status, 200, body)
+        self.assertIn(b'Sign-in could not be confirmed', body)
+        self.assertIsNone(_header(pairs, 'location'))
+        self.assertEqual(self.idp.token_calls, before)
+        bad = pending['state'][:-1] + ('A' if pending['state'][-1] != 'A' else 'B')
+        wrong = urllib.parse.urlunsplit((
+            parsed.scheme, parsed.netloc, parsed.path,
+            urllib.parse.urlencode({'code': code, 'state': bad}), '',
+        ))
+        status, pairs, body = self._callback(wrong, jar)
+        self.assertEqual(status, 200, body)
+        self.assertIn(b'Sign-in could not be confirmed', body)
+        self.assertIsNone(_header(pairs, 'location'))
+        self.assertEqual(self.idp.token_calls, before)
+        status, pairs, body = self._callback(callback, jar)
+        self.assertEqual(status, 302, body)
+        self.assertTrue(_header(pairs, 'location').startswith('/'))
+        calls = self.idp.token_calls
+        status, pairs, body = self._callback(callback, jar)
+        self.assertEqual(status, 200, body)
+        self.assertIn(b'Sign-in could not be confirmed', body)
+        self.assertIsNone(_header(pairs, 'location'))
+        self.assertEqual(self.idp.token_calls, calls)
+
+    def test_open_redirect_blocks_evil_com_and_encoded_forms(self):
+        blocked = (
+            '//evil.com',
+            'https://evil.com',
+            'http://evil.com',
+            'https://evil.com/path',
+            '//evil.com/%2e%2e',
+            '/\\evil.com',
+            '/\\/evil.com',
+            '///evil.com',
+            '/%2F%2Fevil.com',
+            '/%2f%2fevil.com',
+            '/%5Cevil.com',
+            '/%5c%5cevil.com',
+            '/%252F%252Fevil.com',
+            'https%3A%2F%2Fevil.com',
+            'http%3A%2F%2Fevil.com%2F',
+            '//evil.com%00.example',
+        )
+        for nxt in blocked:
+            with self.subTest(nxt=nxt):
+                status, pairs, body = self._req(
+                    'GET', '/auth/google?next=' + urllib.parse.quote(nxt, safe=''),
+                )
+                self.assertEqual(status, 400, body)
+                self.assertIsNone(_header(pairs, 'location'))
+                self.assertNotIn(b'evil.com', body.lower())
+                self.assertIsNone(_header(pairs, 'set-cookie'))
+        status, pairs, body = self._req('GET', '/auth/github?next=' + urllib.parse.quote('/lab?p=1', safe=''))
+        self.assertEqual(status, 302, body)
+        self.assertNotIn('evil.com', _header(pairs, 'location'))
+
+    def test_session_cookie_is_rotated_and_logout_kills_it(self):
+        location, jar, attrs, _body = self._start('github', '/')
+        self.assertEqual(attrs.get('samesite'), 'lax')
+        callback = self._authorize(location)
+        status, pairs, body = self._callback(callback, jar)
+        self.assertEqual(status, 302, body)
+        name, value, flags, attrs = self._cookie(pairs)
+        self.assertEqual(name, 'cl_session')
+        self.assertNotEqual(value, jar['cl_session'])
+        self.assertIn('httponly', flags)
+        self.assertIn('secure', flags)
+        self.assertEqual(attrs.get('samesite'), 'lax')
+        self.assertNotIn('domain', attrs)
+        landed = _header(pairs, 'location')
+        self.assertTrue(landed.startswith('/'))
+        self.assertNotIn('://', landed)
+        old = jar['cl_session']
+        jar = {name: value}
+        signed, _ = self._session(jar)
+        self.assertTrue(signed['signed_in'])
+        stale, _ = self._session({'cl_session': old})
+        self.assertFalse(stale['signed_in'])
+        status, pairs, body = self._req(
+            'POST', '/auth/logout',
+            headers={
+                'Cookie': self._jar_header(jar),
+                'Content-Type': 'application/json',
+                'Origin': 'http://127.0.0.1:%d' % self.port,
+                'X-CSRF-Token': signed['csrf'],
+            },
+            body=json.dumps({'csrf': signed['csrf']}).encode(),
+        )
+        self.assertEqual(status, 200, body)
+        cleared = _header(pairs, 'set-cookie').lower()
+        self.assertIn('httponly', cleared)
+        self.assertIn('secure', cleared)
+        self.assertIn('samesite=lax', cleared)
+        gone, _ = self._session(jar)
+        self.assertFalse(gone['signed_in'])
+        self.assertFalse(self._session({'cl_session': old})[0]['signed_in'])
+
+    def test_cross_site_post_is_rejected(self):
+        jar, _old, _landed, _body = self._finish('google', '/')
+        view, _ = self._session(jar)
+        for origin, referer in (
+            ('https://evil.com', None),
+            (None, 'https://evil.com/steal'),
+            ('null', None),
+        ):
+            headers = {
+                'Cookie': self._jar_header(jar),
+                'Content-Type': 'application/json',
+                'X-CSRF-Token': view['csrf'],
+            }
+            if origin:
+                headers['Origin'] = origin
+            if referer:
+                headers['Referer'] = referer
+            status, _pairs, body = self._req(
+                'POST', '/auth/logout', headers=headers,
+                body=json.dumps({'csrf': view['csrf']}).encode(),
+            )
+            self.assertEqual(status, 403, (origin, referer, body))
+            self.assertEqual(json.loads(body).get('error'), 'csrf')
+            status, _pairs, body = self._req(
+                'POST', '/auth/projects/import', headers=headers,
+                body=json.dumps({'csrf': view['csrf'], 'projects': []}).encode(),
+            )
+            self.assertEqual(status, 403, (origin, referer, body))
+        still, _ = self._session(jar)
+        self.assertTrue(still['signed_in'])
+
+    def test_login_and_callback_return_429(self):
+        self._enable(AUTH_RATE_MAX='2')
+        for _ in range(2):
+            status, _pairs, body = self._req('GET', '/auth/google?next=/')
+            self.assertEqual(status, 302, body)
+        status, pairs, body = self._req('GET', '/auth/google?next=/')
+        self.assertEqual(status, 429, body)
+        self.assertIn('Too many sign-in attempts', body.decode('utf-8'))
+        self.assertTrue(_header(pairs, 'retry-after'))
+        self._enable(AUTH_RATE_MAX='2')
+        location, jar, _attrs, _body = self._start('github', '/')
+        callback = self._authorize(location)
+        status, _pairs, body = self._callback(callback, jar)
+        self.assertEqual(status, 302, body)
+        status, pairs, body = self._req('GET', '/auth/github/callback?code=abc&state=abc')
+        self.assertEqual(status, 429, body)
+        self.assertTrue(_header(pairs, 'retry-after'))
+
+    def test_full_login_and_logout_logs_omit_codes_tokens_and_email(self):
+        self.logs.clear()
+        location, jar, _attrs, _body = self._start('google', '/?view=schematic')
+        callback = self._authorize(location)
+        code = self._query(callback)['code'][0]
+        self.assertTrue(code)
+        status, pairs, body = self._callback(callback, jar)
+        self.assertEqual(status, 302, body)
+        landed = _header(pairs, 'location')
+        name, value, _flags, _attrs = self._cookie(pairs)
+        jar = {name: value}
+        view, _ = self._session(jar)
+        status, pairs, out_body = self._req(
+            'POST', '/auth/logout',
+            headers={
+                'Cookie': self._jar_header(jar),
+                'Content-Type': 'application/json',
+                'X-CSRF-Token': view['csrf'],
+            },
+            body=json.dumps({'csrf': view['csrf']}).encode(),
+        )
+        self.assertEqual(status, 200, out_body)
+        text = '\n'.join(self.logs)
+        surfaces = text + '\n' + (landed or '') + '\n' + body.decode('utf-8', 'replace') + '\n' + out_body.decode('utf-8', 'replace')
+        for secret in (code, ACCESS_TOKEN, REFRESH, GOOGLE_SECRET, GITHUB_SECRET, 'ada@example.com'):
+            self.assertNotIn(secret, surfaces)
+            self.assertNotIn(secret, location)
+
+    def test_flag_off_hides_every_auth_route(self):
+        self._enable(AUTH_ENABLED='0')
+        routes = (
+            ('GET', '/auth'),
+            ('GET', '/auth/'),
+            ('GET', '/auth/session'),
+            ('GET', '/auth/google'),
+            ('GET', '/auth/github'),
+            ('GET', '/auth/google/callback'),
+            ('GET', '/auth/github/callback?code=abc&state=abc'),
+            ('GET', '/auth/projects'),
+            ('POST', '/auth/logout'),
+            ('POST', '/auth/projects/import'),
+            ('POST', '/auth/google'),
+            ('POST', '/auth/github/callback'),
+        )
+        missing = self._req('GET', '/no-such-auth-page')
+        self.assertEqual(missing[0], 404)
+        for method, path in routes:
+            with self.subTest(method=method, path=path):
+                body = b'{}' if method == 'POST' else None
+                got = self._req(method, path, body=body)
+                self.assertEqual(got[0], 404, (method, path, got[0], got[2][:80]))
+                self.assertEqual(got[2], missing[2])
+                self.assertIsNone(_header(got[1], 'set-cookie'))
+                self.assertIsNone(_header(got[1], 'location'))
+
+    def test_restored_account_database_keeps_the_session(self):
+        jar, _old, _landed, _body = self._finish('google', '/')
+        view, _ = self._session(jar)
+        self.assertTrue(view['signed_in'])
+        backup = os.path.join(self.proj, 'accounts', 'auth.sqlite.bak')
+        source = sqlite3.connect(self.db)
+        try:
+            dest = sqlite3.connect(backup)
+            try:
+                source.backup(dest)
+            finally:
+                dest.close()
+        finally:
+            source.close()
+        self._enable()
+        for suffix in ('', '-wal', '-shm', '-journal'):
+            path = self.db + suffix
+            if os.path.exists(path):
+                os.remove(path)
+        shutil.copy(backup, self.db)
+        os.chmod(self.db, 0o600)
+        self._enable()
+        restored, _ = self._session(jar)
+        self.assertTrue(restored['signed_in'])
+        self.assertEqual(restored['display_name'], view['display_name'])
+        self.assertEqual(restored['provider'], 'google')
+        status, _pairs, body = self._req(
+            'POST', '/auth/logout',
+            headers={
+                'Cookie': self._jar_header(jar),
+                'Content-Type': 'application/json',
+                'X-CSRF-Token': restored['csrf'],
+            },
+            body=json.dumps({'csrf': restored['csrf']}).encode(),
+        )
+        self.assertEqual(status, 200, body)
+        self.assertFalse(self._session(jar)[0]['signed_in'])
 
 
 if __name__ == '__main__':

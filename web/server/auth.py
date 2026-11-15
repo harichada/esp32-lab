@@ -2,6 +2,8 @@
 
 The site with the flag unset is the same site as before: this middleware
 does not register routes, does not set a cookie, and does not add a header.
+A request under /auth is the static 404, including a POST, which would
+otherwise be 405.
 Provider URLs are fixed from AUTH_BASE_URL. The request's Host and forwarded
 headers are never copied into redirect_uri. The client address used for the
 rate limit is https.client_ip: the TCP peer, or the rightmost X-Forwarded-For
@@ -1011,6 +1013,48 @@ def list_projects(sid):
     return found if found is not None else []
 
 
+def _origin_value(url):
+    """scheme://host[:port] for an absolute URL, or empty when it is not one."""
+    if not isinstance(url, str) or not url or len(url) > 500:
+        return ''
+    parts = urllib.parse.urlsplit(url.strip())
+    if parts.scheme not in ('http', 'https') or not parts.hostname or parts.username or parts.password:
+        return ''
+    host = parts.hostname
+    port = parts.port
+    default = 443 if parts.scheme == 'https' else 80
+    if port is None or port == default:
+        return '%s://%s' % (parts.scheme, host)
+    return '%s://%s:%s' % (parts.scheme, host, port)
+
+
+def _declared_origin(scope):
+    """The browser's Origin, or the origin of Referer when Origin is absent."""
+    origin = _header(scope, 'origin').strip()
+    if origin:
+        if origin == 'null':
+            return 'null'
+        return _origin_value(origin) or 'invalid'
+    referer = _header(scope, 'referer').strip()
+    if not referer:
+        return ''
+    return _origin_value(referer) or 'invalid'
+
+
+def cross_site(scope):
+    """True when Origin or Referer names a site other than AUTH_BASE_URL.
+
+    A request with neither header is not judged here. The CSRF token still is.
+    """
+    declared = _declared_origin(scope)
+    if not declared:
+        return False
+    expected = _origin_value(BASE)
+    if not expected:
+        return True
+    return not _ct_eq(declared, expected)
+
+
 def _client_ip(scope):
     return https.client_ip(scope)
 
@@ -1263,7 +1307,16 @@ def _csrf_from(headers_token, body_token):
     return ''
 
 
+def _cross_site_rejected():
+    return _json(
+        {'ok': False, 'error': 'csrf', 'message': 'That request was refused.'},
+        403,
+    )
+
+
 async def _handle_logout(scope, receive):
+    if cross_site(scope):
+        return _cross_site_rejected()
     body = await _read_body(receive, 8192)
     if body is False:
         return _page('That sign-out was too large.', link_href='/', link_label='Back')
@@ -1286,6 +1339,8 @@ async def _handle_logout(scope, receive):
 
 
 async def _handle_import(scope, receive):
+    if cross_site(scope):
+        return _cross_site_rejected()
     body = await _read_body(receive, IMPORT_CAP)
     if body is None:
         return _json({'ok': False, 'error': 'closed'}, 400)
@@ -1356,17 +1411,27 @@ def _dispatch(method, path, scope, receive):
 
 
 class AuthMiddleware:
-    """Innermost auth gate. With AUTH_ENABLED off, the response is the inner app's."""
+    """Innermost auth gate. With AUTH_ENABLED off, /auth is the static 404."""
 
     def __init__(self, app):
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if not ENABLED or scope.get('type') != 'http':
+        if scope.get('type') != 'http':
             await self.app(scope, receive, send)
             return
         path = scope.get('path') or ''
         if path != '/auth' and not path.startswith('/auth/'):
+            await self.app(scope, receive, send)
+            return
+        if not ENABLED:
+            # A POST would otherwise be 405 from the static app. Every auth
+            # path is the same 404 as a missing page, with no cookie and no
+            # database read. GET and HEAD are passed through unchanged.
+            method = (scope.get('method') or 'GET').upper()
+            if method not in ('GET', 'HEAD'):
+                scope = dict(scope)
+                scope['method'] = 'GET'
             await self.app(scope, receive, send)
             return
         wait = rate_limit(scope)

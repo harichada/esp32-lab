@@ -201,7 +201,22 @@ Off unless `AUTH_ENABLED=1`. With the flag unset, `/auth/*` is the same 404 as a
 
 The callback is `AUTH_BASE_URL` plus `/auth/google/callback` or `/auth/github/callback`. Live is `https://esp32lab.duckdns.org/auth/google/callback` and `https://esp32lab.duckdns.org/auth/github/callback`. Staging is `https://esp32lab.duckdns.org/staging/auth/google/callback` and `https://esp32lab.duckdns.org/staging/auth/github/callback`. The Host header is not an input. Google's scope is `openid email profile`. GitHub's scope is `read:user user:email`.
 
-The session cookie is `cl_session`: HttpOnly, Secure, SameSite=Lax, no Domain, path `/` or the path of `AUTH_BASE_URL` (`/staging` on staging). Sign-out is `POST /auth/logout` with the CSRF token. Account data lives in the projects directory the server already mounts (`SIM_PROJECT_DIR`, default `~/.esp32lab/projects`). The database is `<SIM_PROJECT_DIR>/accounts/auth.sqlite`. That directory is created mode `0700` and the database file, including its SQLite `-wal` and `-shm` sidecars, is mode `0600`. Sessions, users, and account-saved projects are rows in that file, so the nightly backup of the projects volume covers them without a new job or a new mount. They are not the shared `/api/projects` JSON folder. `AUTH_DB` may name another file only when the resolved path is inside `SIM_PROJECT_DIR`. A path outside it is ignored.
+The session cookie is `cl_session`: HttpOnly, Secure, SameSite=Lax, no Domain, path `/` or the path of `AUTH_BASE_URL` (`/staging` on staging). Sign-out is `POST /auth/logout` with the CSRF token. A POST whose `Origin` or `Referer` is another site is rejected even when the token is present. Account data lives in the projects directory the server already mounts (`SIM_PROJECT_DIR`, default `~/.esp32lab/projects`). The database is `<SIM_PROJECT_DIR>/accounts/auth.sqlite`. That directory is created mode `0700` and the database file, including its SQLite `-wal` and `-shm` sidecars, is mode `0600`. Sessions, users, and account-saved projects are rows in that file. The file has to sit on the mounted projects volume so the nightly backup of that volume includes it. There is no new mount and no new backup job. They are not the shared `/api/projects` JSON folder. `AUTH_DB` may name another file only when the resolved path is inside `SIM_PROJECT_DIR`. A path outside it is ignored.
+
+On staging the volume is `esp32lab-staging` mounted at `/data/staging-projects` (`SIM_PROJECT_DIR=/data/staging-projects` in `esp32lab-staging`). The account file is `/data/staging-projects/accounts/auth.sqlite`. A plain copy of the database while `-wal` exists can drop the latest commits. Use SQLite `.backup`. From the host:
+
+```
+docker exec esp32lab-staging sqlite3 /data/staging-projects/accounts/auth.sqlite ".backup /data/staging-projects/accounts/auth.sqlite.bak"
+```
+
+Restore that snapshot back onto the same path, then restart the staging process so it reopens the file:
+
+```
+docker exec esp32lab-staging sh -c 'rm -f /data/staging-projects/accounts/auth.sqlite-wal /data/staging-projects/accounts/auth.sqlite-shm /data/staging-projects/accounts/auth.sqlite-journal && sqlite3 /data/staging-projects/accounts/auth.sqlite.bak ".backup /data/staging-projects/accounts/auth.sqlite" && chmod 700 /data/staging-projects/accounts && chmod 600 /data/staging-projects/accounts/auth.sqlite'
+docker restart esp32lab-staging
+```
+
+If the image has no `sqlite3` binary, the same backup is `python3 -c 'import sqlite3; s=sqlite3.connect("/data/staging-projects/accounts/auth.sqlite"); d=sqlite3.connect("/data/staging-projects/accounts/auth.sqlite.bak"); s.backup(d); d.close(); s.close()'`. The restore is the same call with the two paths swapped, after the `-wal` and `-shm` files are removed.
 
 Secrets come from the environment or `--env-file` (`/home/opc/oauth.env` on live, `/home/opc/oauth-staging.env` on staging). The file is an allow-list. A non-empty process value wins. Values are not logged.
 
