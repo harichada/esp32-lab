@@ -1,0 +1,7 @@
+sketch.ino: In function ‘void loop()’:
+sketch.ino:13:3: error: expected ‘;’ before ‘delay’
+   12 |   digitalWrite(LED, HIGH)
+      |                          ^
+      |                          ;
+   13 |   delay(1000);
+      |   ^~~~~

@@ -30,6 +30,11 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       so every visitor gets the column schematic. Any other value leaves index.html unchanged,
       and ?schmatch= on that page is then free to choose.
       Sign-in (off unless set): AUTH_ENABLED, AUTH_GOOGLE, AUTH_GITHUB, AUTH_BASE_URL.
+      GUEST_PARTS_LIMIT defaults on when AUTH_ENABLED=1 and off otherwise.
+      0/false/no/off turns the guest starter-part limit off while sign-in stays
+      on. GUEST_PARTS is an optional comma list of part type ids that replaces
+      the starter set (esp32, breadboard, led, resistor, pushbutton,
+      potentiometer, buzzer). AUTH_ENABLED=0 leaves the lab fully open.
       Secrets: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GITHUB_CLIENT_ID,
       GITHUB_CLIENT_SECRET, from the environment or --env-file. See auth.py.
       Live keeps AUTH_GOOGLE=0 until the Google consent screen is published.
@@ -50,6 +55,7 @@ import staging
 import auth
 import https
 import compileguard
+import guestparts
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request, Response
 import secrets
@@ -873,6 +879,12 @@ _install_queue()
 
 @app.post('/api/compile')
 async def compile_(req: dict, request: Request, response: Response):
+    # A body with no parts list is a code-only compile and is allowed. A named
+    # circuit that uses a locked part is 403 for a guest. Signed-in and
+    # flag-off requests are not checked.
+    denied = guestparts.reject(req if isinstance(req, dict) else {}, request.cookies)
+    if denied is not None:
+        return denied
     return await _compile_request(req, client_id=_client_id_from(request),
                                   compile_id=_compile_id_from(request), response=response)
 
@@ -1645,6 +1657,7 @@ async def _quiet_close(ws):
 
 RUN_EXPIRED_MSG = 'This build has expired. Press Run to build it again.'
 QEMU_FAIL_MSG = "The simulator couldn't start. Try again in a minute."
+SIM_STOPPED_MSG = 'The simulator stopped. Press Run to try again.'
 # Startup ``qemu-system-xtensa --version`` with the run spawn environment.
 # done is False until that check runs. A failed check makes runs fail fast.
 _qemu_check = {'done': False, 'ok': False, 'rc': None, 'at': 0.0, 'bin': ''}
@@ -1950,6 +1963,58 @@ def qemu_dgram_supported(binary, env) -> bool:
     return ok
 
 
+# QEMU 9.2's main-loop thread pool defaults to 64 workers, which is the whole
+# SIM_SANDBOX_NPROC budget. One more pthread then fails with
+# qemu_thread_create: Resource temporarily unavailable (exit 134). Eight
+# workers leaves room for QEMU's own threads under that cap.
+QEMU_THREAD_POOL_MAX = 8
+_thread_pool_kind: dict = {}
+
+
+def qemu_thread_pool_kind(binary) -> str:
+    """'main-loop' when that object accepts thread-pool-max, else 'iothread' or ''.
+
+    A missing binary, or a help probe that prints nothing, keeps 'main-loop':
+    the bundled Espressif QEMU is 9.2.2 and that object is the cap. A help
+    listing that names neither object returns '' so we do not pass a flag
+    the binary would reject.
+    """
+    binary = str(binary or '')
+    cached = _thread_pool_kind.get(binary)
+    if cached is not None:
+        return cached
+    kind = 'main-loop'
+    path = Path(binary)
+    if binary and path.is_file() and os.access(binary, os.X_OK):
+        try:
+            proc = subprocess.run(
+                [binary, '-object', 'help'],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=8)
+            text = (proc.stdout or b'').decode('utf-8', 'replace').lower()
+        except (OSError, subprocess.SubprocessError):
+            text = ''
+        if 'main-loop' in text and 'thread-pool-max' in text:
+            kind = 'main-loop'
+        elif 'iothread' in text and 'thread-pool-max' in text:
+            kind = 'iothread'
+        elif text.strip() and 'main-loop' not in text:
+            kind = ''
+        else:
+            kind = 'main-loop'
+    _thread_pool_kind[binary] = kind
+    return kind
+
+
+def qemu_thread_pool_args(binary=None) -> list:
+    """QEMU argv that caps the worker thread pool. Empty when no object fits."""
+    kind = qemu_thread_pool_kind(binary or QEMU)
+    if kind == 'main-loop':
+        return ['-object', 'main-loop,id=ml,thread-pool-max=%d' % QEMU_THREAD_POOL_MAX]
+    if kind == 'iothread':
+        return ['-object', 'iothread,id=ml,thread-pool-max=%d' % QEMU_THREAD_POOL_MAX]
+    return []
+
+
 def qemu_sandbox_argv(cmd: list[str], env: dict, rundir) -> tuple[list[str] | None, tuple]:
     """bwrap argv for a QEMU run, and the seccomp fd the caller must pass and close.
 
@@ -2066,6 +2131,20 @@ class _QemuProc:
 async def run(ws: WebSocket, bid: str):
     if not _authed(ws.query_params, ws.cookies):
         await ws.close(code=4401); return
+    # A simulation has to name its parts. Code-only is a compile, not a run.
+    # Missing parts, or a type outside the starter set, is the same 403 body
+    # the compile route returns. The socket is accepted so the page can read it.
+    named = ws.query_params.get('parts')
+    denied = guestparts.reject(
+        {'parts': named} if named else None, ws.cookies, require_named=True)
+    if denied is not None:
+        await ws.accept()
+        await ws.send_json({
+            't': 'error', 'ok': False, 'error': 'guest_parts',
+            'reason': 'guest_parts', 'message': guestparts.MESSAGE,
+        })
+        await ws.close(code=4403)
+        return
     await ws.accept()
     sid = ws.query_params.get('sid')
     if sid:   # resume an existing session
@@ -2277,7 +2356,7 @@ async def _qemu_session(ws, bid, img, tmp, hold):
         nic = lwip_nic_args(fw, qemu_path, srv_path)
     gsrv = await asyncio.start_unix_server(on_gpio, gsock); hold['gsrv'] = gsrv
     ssrv = await asyncio.start_unix_server(on_uart, ssock); hold['ssrv'] = ssrv
-    args = [QEMU, '-display', 'none', '-machine', 'esp32', '-drive', f'file={flash},if=mtd,format=raw', *nic,
+    args = [QEMU, *qemu_thread_pool_args(QEMU), '-display', 'none', '-machine', 'esp32', '-drive', f'file={flash},if=mtd,format=raw', *nic,
             '-chardev', f'socket,id=ser,path={ssock}', '-serial', 'chardev:ser',
             '-chardev', f'socket,id=gp,path={gsock}', '-global', 'driver=esp32.gpio,property=chardev,value=gp',
             '-drive', f'file={efuse},if=none,format=raw,id=efuse', '-global', 'driver=nvram.esp32.efuse,property=drive,value=efuse',
@@ -2621,6 +2700,9 @@ async def _qemu_session(ws, bid, img, tmp, hold):
     finally:
         # Let an in-flight frame finish, then send exit, then the caller closes
         # the socket. The exit frame is how a normal end stays an end, not an error.
+        # A return code that is already set means QEMU died on its own. A Stop
+        # or a watchdog still has a live process, which we kill below.
+        qemu_died = proc.returncode is not None
         for t in tasks:
             if t is not pump_task:
                 t.cancel()
@@ -2648,7 +2730,13 @@ async def _qemu_session(ws, bid, img, tmp, hold):
         shutil.rmtree(tmp, ignore_errors=True)
         nlog('wifi', 'session ended: link down')
         try:
-            await ws.send_json({'t': 'exit', 'code': proc.returncode})
+            payload = {'t': 'exit', 'code': proc.returncode}
+            # qemu_died is set before we kill a process that was still running.
+            # A browser Stop kills QEMU on purpose and is not an unexpected death.
+            if qemu_died:
+                payload['unexpected'] = True
+                payload['msg'] = SIM_STOPPED_MSG
+            await ws.send_json(payload)
         except Exception:
             pass
 
@@ -2675,6 +2763,10 @@ async def proj_put(pid: str, request: Request):
     if len(body) > MAX_BODY: return JSONResponse({'error': 'too large'}, 413)
     try: o = json.loads(body); assert isinstance(o, dict) and isinstance(o.get('parts'), list)
     except Exception: return JSONResponse({'error': 'not a project'}, 400)
+    # Reject before any write. An existing file is left as it is.
+    denied = guestparts.reject(o, request.cookies)
+    if denied is not None:
+        return denied
     PROJ_DIR.mkdir(parents=True, exist_ok=True)
     if len(list(PROJ_DIR.glob('*.json'))) >= PROJ_MAX and not (PROJ_DIR / f'{i}.json').exists(): return JSONResponse({'error': 'project limit'}, 507)
     tmp = PROJ_DIR / f'.{i}.tmp'; tmp.write_text(json.dumps(o)); tmp.replace(PROJ_DIR / f'{i}.json')
@@ -2734,8 +2826,9 @@ AUTH_META = b'<meta name="cl-auth" content="1">'
 # on, the file is served byte-for-byte.
 COMPILE_HINTS_META = b'<meta name="compilehints" content="1">'
 STATUS_STRIP_META = b'<meta name="statusstrip" content="1">'
-COMPILE_HINTS_SCRIPT = b'<script src="js/compilehints.js?v=3"></script>'
+COMPILE_HINTS_SCRIPT = b'<script src="js/compilehints.js?v=4"></script>'
 STATUS_STRIP_SCRIPT = b'<script src="js/statusstrip.js?v=7"></script>'
+GUEST_PARTS_SCRIPT = b'<script src="js/guestparts.js?v=1"></script>'
 _COMPILE_HINTS_ON = {'1', 'true', 'yes', 'on'}
 def schematic_match_enabled(env=None):
     env = os.environ if env is None else env
@@ -2762,6 +2855,20 @@ def lab_page(env=None):
         head.append(SCHEMATIC_META)
     if auth.enabled() and AUTH_META not in body:
         head.append(AUTH_META)
+    # Same switch as cl-auth: the global flag, which apply_env set from the
+    # process environment. A dict passed to lab_page still selects the list.
+    guest_meta = b''
+    if auth.enabled() and guestparts.enabled(env):
+        guest_meta = guestparts.meta_content(env).encode()
+    if guest_meta and b'name="guestparts"' not in body:
+        head.append(b'<meta name="guestparts" content="' + guest_meta + b'">')
+    auth_base = b''
+    try:
+        auth_base = auth.mount_path().encode()
+    except Exception:
+        auth_base = b''
+    if auth.enabled() and auth_base and b'name="cl-auth-base"' not in body:
+        head.append(b'<meta name="cl-auth-base" content="' + auth_base + b'">')
     if compile_hints_enabled(env) and COMPILE_HINTS_META not in body:
         head.append(COMPILE_HINTS_META)
     if status_strip_enabled(env) and STATUS_STRIP_META not in body:
@@ -2769,6 +2876,8 @@ def lab_page(env=None):
     if head:
         body = body.replace(b'<head>', b'<head>\n' + b'\n'.join(head), 1)
     scripts = []
+    if guest_meta and b'js/guestparts.js' not in body:
+        scripts.append(GUEST_PARTS_SCRIPT)
     if compile_hints_enabled(env) and b'js/compilehints.js' not in body:
         scripts.append(COMPILE_HINTS_SCRIPT)
     if status_strip_enabled(env) and b'js/statusstrip.js' not in body:

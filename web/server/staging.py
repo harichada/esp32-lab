@@ -253,7 +253,7 @@ def access_gate(request):
             resp = RedirectResponse(_redirect_target(request), status_code=302)
             resp.set_cookie(
                 'cl_stage', cookie_value(ACCESS),
-                max_age=86400 * 7, httponly=True, samesite='strict', path=COOKIE_PATH,
+                max_age=86400 * 7, httponly=True, samesite='lax', secure=True, path=COOKIE_PATH,
             )
             return seal(resp)
         return None

@@ -529,7 +529,7 @@ test('the busy Run button is grey, keeps its spinner, and theme.css is cache-bus
   assert.match(css, /#bExamples:active\{transform:translateY\(\.5px\)\}/);
   assert.match(css, /#bExamples:disabled,#bExamples\[aria-disabled="true"\]\{opacity:\.45/);
   const vTheme = html.match(/theme\.css\?v=(\d+)/);
-  assert.equal(vTheme && vTheme[1], '71');
+  assert.equal(vTheme && vTheme[1], '72');
   assert.match(css, /html\.strip-on body:not\(\.m\) #palList,html\.strip-on body:not\(\.m\) \.insp-body\{padding-bottom:calc\(var\(--s3\) \+ var\(--strip-h,0px\)\)\}/);
   assert.match(css, /#compileStrip\{[^}]*background:#1b1f24;[^}]*color:#e8eaed;/);
   assert.match(css, /#compileStrip\{[^}]*white-space:normal;[^}]*overflow:visible;[^}]*text-overflow:clip/);
@@ -571,13 +571,13 @@ test('the busy Run button is grey, keeps its spinner, and theme.css is cache-bus
   assert.match(mobile, /#compileStrip\{display:none!important\}/);
   assert.match(mobile, /html\[data-theme=light\] body\.m \.m-compile-toast\{[^}]*background:#eceef1;[^}]*color:#2c333c/);
   const mv = html.match(/mobile\.css\?v=(\d+)/);
-  assert.equal(mv && mv[1], '74');
+  assert.equal(mv && mv[1], '75');
   const av = html.match(/app\.js\?v=(\d+)/);
-  assert.equal(av && av[1], '98');
+  assert.equal(av && av[1], '99');
   const mj = html.match(/mobile\.js\?v=(\d+)/);
-  assert.equal(mj && mj[1], '71');
+  assert.equal(mj && mj[1], '72');
   const ev = html.match(/editor\.js\?v=(\d+)/);
-  assert.equal(ev && ev[1], '66');
+  assert.equal(ev && ev[1], '67');
   const appjs = fs.readFileSync(path.join(__dirname, '../js/app.js'), 'utf8');
   assert.match(appjs, /new ResizeObserver\(\(\) => syncStripMetrics\(\)\)/);
   assert.match(appjs, /stripObserver\.observe\(el\)/);
@@ -694,4 +694,23 @@ test('an aborted or timed-out compile fetch leaves Building immediately', async 
     global.fetch = origFetch;
     narrowPhone = false;
   }
+});
+
+test('an unexpected simulator exit is a sentence, not connection lost', async () => {
+  wsShouldThrow = false;
+  const pending = gate();
+  compileReply = pending.promise;
+  const flight = app.startRun();
+  pending.resolve(okResponse());
+  await flight;
+  global.WebSocket.last.onopen();
+  global.WebSocket.last.onmessage({
+    data: JSON.stringify({ t: 'exit', unexpected: true, code: 134, msg: 'qemu_thread_create: Resource temporarily unavailable' }),
+  });
+  global.WebSocket.last.onclose();
+  assert.equal(ids.stText.textContent, 'The simulator stopped. Press Run to try again.');
+  assert.equal(ids.stText.textContent.includes('CONNECTION LOST'), false);
+  assert.equal(ids.stText.textContent.includes('connection lost'), false);
+  assert.equal(app.serialText.includes('Resource temporarily unavailable'), false);
+  assert.equal(app.serialText.includes('The simulator stopped. Press Run to try again.'), true);
 });

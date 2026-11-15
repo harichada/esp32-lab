@@ -53,7 +53,7 @@ async function install(page: Page, hints: boolean, compileLog = log) {
       let body = await res.text();
       if (!body.includes('name="compilehints"')) body = body.replace('<head>', '<head>\n<meta name="compilehints" content="1">');
       if (!body.includes('compilehints.js')) {
-        body = body.replace('<script src="js/app.js', '<script src="js/compilehints.js?v=3"></script>\n<script src="js/app.js');
+        body = body.replace('<script src="js/app.js', '<script src="js/compilehints.js?v=4"></script>\n<script src="js/app.js');
       }
       await route.fulfill({ response: res, body });
     });

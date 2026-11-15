@@ -533,6 +533,33 @@ class AuthTests(unittest.TestCase):
         self.assertEqual(params['redirect_uri'], [base + '/auth/github/callback'])
         self.assertEqual(attrs.get('path'), '/staging')
 
+    def test_staging_auth_links_keep_the_mount(self):
+        base = 'http://127.0.0.1:%d/staging' % self.port
+        self._enable(AUTH_BASE_URL=base)
+        href = auth._again('google', '/staging/?ex=blink')
+        self.assertTrue(href.startswith('/staging/auth/google?'), href)
+        self.assertNotIn('://', href.split('?', 1)[0])
+        page = auth._page(
+            'The sign-in service did not respond. Your work is still on this device.',
+            link_href=href,
+        )
+        text = page.body.decode('utf-8')
+        self.assertIn('The sign-in service did not respond', text)
+        self.assertIn('href="/staging/auth/google?', text)
+        self.assertNotIn('href="/auth/', text)
+        for provider in ('google', 'github'):
+            link = auth._again(provider, '/staging/')
+            self.assertTrue(link.startswith('/staging/auth/' + provider), link)
+        landed = auth._with_flag('/staging/?ex=blink', 'ok')
+        self.assertTrue(landed.startswith('/staging/'), landed)
+        self.assertIn('auth_error=ok', landed)
+        self.assertNotIn('/staging/staging', landed)
+        home = auth._with_flag('/', 'cancelled')
+        self.assertTrue(home.startswith('/staging/'), home)
+        self.assertIn('auth_error=cancelled', home)
+        back = auth.public_href('/')
+        self.assertEqual(back, '/staging/')
+
     def test_test_idp_is_refused_off_loopback(self):
         self.logs.clear()
         auth.apply_env(self._config(
