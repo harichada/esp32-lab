@@ -214,6 +214,7 @@
     document.querySelectorAll('#ui2SideTabs [data-side]').forEach((b) => b.setAttribute('aria-checked', (b.dataset.side === 'props') === props ? 'true' : 'false'));
   }
 
+  let dockTab = null;
   function buildDockBar() {
     const dock = $('#dock'); if (!dock) return;
     const bar = document.createElement('div');
@@ -222,7 +223,7 @@
     dock.prepend(bar);
     bar.onclick = (e) => {
       const b = e.target.closest('[data-tab]'); if (!b) return;
-      if (b.classList.contains('on') && !document.body.classList.contains('ui2-dock-min')) {
+      if (b.dataset.tab === dockTab && !document.body.classList.contains('ui2-dock-min')) {
         document.body.classList.add('ui2-dock-min');
       } else {
         openDock(b.dataset.tab);
@@ -244,6 +245,7 @@
     grip.addEventListener('pointerup', () => { y0 = 0; });
   }
   function openDock(tab) {
+    dockTab = tab;
     if (tab === 'scope' && app() && app().ensureScope) app().ensureScope();
     document.body.classList.remove('ui2-dock-min');
     const topH = ($('#ui2top') && $('#ui2top').getBoundingClientRect().height) || 48;
