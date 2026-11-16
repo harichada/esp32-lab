@@ -17,7 +17,7 @@
 <script>try{clStorage.local.removeItem('esp32lab.view')}catch(e){}</script>
 <script>
 /* Workbench flag. Default off. UI2=1 injects meta name=ui2. ?ui=2 forces on, ?ui=0 or ?ui=1 forces off. */
-(function(){try{var q=new URLSearchParams(location.search).get('ui');var meta=document.querySelector('meta[name="ui2"]');var raw=meta?String(meta.getAttribute('content')||'').trim().toLowerCase():'';var server=raw==='1'||raw==='true'||raw==='yes'||raw==='on';var on=q==='2'?true:(q==='0'||q==='1'||q==='off')?false:server;if(!on)return;document.documentElement.setAttribute('data-ui','2');window.__UI2=true;document.write('<link rel="preload" href="fonts/Inter-var.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="fonts/JetBrainsMono-400.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="css/ui2.css?v=5">');}catch(e){}})();
+(function(){try{var q=new URLSearchParams(location.search).get('ui');var meta=document.querySelector('meta[name="ui2"]');var raw=meta?String(meta.getAttribute('content')||'').trim().toLowerCase():'';var server=raw==='1'||raw==='true'||raw==='yes'||raw==='on';var on=q==='2'?true:(q==='0'||q==='1'||q==='off')?false:server;if(!on)return;document.documentElement.setAttribute('data-ui','2');window.__UI2=true;document.write('<link rel="preload" href="fonts/Inter-var.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="fonts/JetBrainsMono-400.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="css/ui2.css?v=6">');}catch(e){}})();
 </script>
 </head>
 <body>
@@ -176,8 +176,14 @@
 <div id="keysDlg" class="modal" hidden><div class="modal-box keys"><div class="row"><h3 style="flex:1;margin:0">Keyboard shortcuts</h3><button data-close><svg class="ic"><use href="#i-x"/></svg></button></div><div id="keysList"></div></div></div>
 <script src="js/solver.js?v=40"></script>
 <script src="js/parts.js?v=48"></script>
-<script src="js/parts-art.js?v=41"></script>
-<script src="js/scope.js?v=40"></script>
+<script>
+/* Realistic artwork. The live page loads it during parse. The workbench loads it on the first tap so it is not a startup long task. */
+(function(){var src='js/parts-art.js?v=41';if(!window.__UI2){document.write('<script src="'+src+'"><\/script>');return;}window.__ui2Late=window.__ui2Late||{};window.__ui2Late.art=src;})();
+</script>
+<script>
+/* Scope instrument. The live page loads it during parse. The workbench loads it when Scope is opened. */
+(function(){var src='js/scope.js?v=40';if(!window.__UI2){document.write('<script src="'+src+'"><\/script>');return;}window.__ui2Late=window.__ui2Late||{};window.__ui2Late.scope=src;})();
+</script>
 <script src="js/sim.js?v=40"></script>
 <script src="js/remote_logic.js?v=40"></script>
 <script src="js/devices.js?v=40"></script>
@@ -191,11 +197,19 @@
 (function () {
   var examples = ['js/examples.js?v=45', 'js/basic.js?v=41'];
   var parts = ['js/parts/registry.js?v=40', 'js/parts/sensors.js?v=40', 'js/parts/displays.js?v=40', 'js/parts/examples-sensors-displays.js?v=40', 'js/parts/ics.js?v=40', 'js/parts/passives.js?v=41', 'js/parts/examples-ics.js?v=40', 'js/parts/hwkit.js?v=40', 'js/parts/actuators.js?v=40', 'js/parts/power.js?v=40', 'js/parts/semis.js?v=40', 'js/parts/examples-actuators.js?v=40'];
-  var eager = !window.__UI2;
-  try { var q = location.search || ''; if (/[?&]ex=/.test(q) || /[?&]p=/.test(q)) eager = true; } catch (e) {}
+  var q = '';
+  try { q = location.search || ''; } catch (e) {}
+  var wantExample = /[?&]ex=/.test(q) || /[?&]p=/.test(q);
   function tags(list) { return list.map(function (s) { return '<script src="' + s + '"><\/script>'; }).join(''); }
-  if (eager) document.write(tags(examples.concat(parts)));
-  else window.__ui2Late = { examples: examples, parts: parts };
+  if (!window.__UI2) document.write(tags(examples.concat(parts)));
+  else {
+    window.__ui2Late = window.__ui2Late || {};
+    var lateExamples = ['js/basic.js?v=41'];
+    if (wantExample) document.write(tags(['js/examples.js?v=45']));
+    else lateExamples.unshift('js/examples.js?v=45');
+    window.__ui2Late.examples = lateExamples;
+    window.__ui2Late.parts = parts;
+  }
 })();
 </script>
 <script src="js/bom.js?v=41"></script>
@@ -214,9 +228,9 @@
 })();
 </script>
 <script src="js/viewchrome.js?v=2"></script>
-<script src="js/app.js?v=103"></script>
+<script src="js/app.js?v=104"></script>
 <script src="js/mobile.js?v=72"></script>
-<script>if(window.__UI2)document.write('<script src="js/ui2.js?v=5"><\/script>');</script>
+<script>if(window.__UI2)document.write('<script src="js/ui2.js?v=6"><\/script>');</script>
 <script src="js/auth.js?v=7"></script>
 <p id="mCompileToast" class="m-compile-toast" hidden aria-hidden="true"></p>
 <footer id="legalFoot"><span>Simulator for ESP32 &middot; &copy; 2026 Hari Kishore Chada. Not affiliated with or endorsed by Espressif Systems, Arduino SA, or Wokwi. ESP32, Arduino and Wokwi are trademarks of their respective owners.</span> <a href="notices.html" target="_blank" rel="noopener">Open-source notices</a></footer>

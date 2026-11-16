@@ -233,6 +233,7 @@
     grip.addEventListener('pointerup', () => { y0 = 0; });
   }
   function openDock(tab) {
+    if (tab === 'scope' && app() && app().ensureScope) app().ensureScope();
     document.body.classList.remove('ui2-dock-min');
     if (!document.documentElement.style.getPropertyValue('--ui2dock')) document.documentElement.style.setProperty('--ui2dock', '32vh');
     const b = document.querySelector(`#tabs [data-tab="${tab}"]`); if (b) b.click();
@@ -357,7 +358,20 @@
     const cats = [...document.querySelectorAll('.pcat')].map((c) => c.dataset.cat).filter(Boolean);
     if (chip !== 'All' && cats.indexOf(chip) < 0) chip = 'All';
     chips.innerHTML = ['All', ...cats].map((c) => `<button type="button" data-chip="${esc(c)}" aria-pressed="${c === chip ? 'true' : 'false'}">${esc(c)}</button>`).join('');
-    chips.onclick = (e) => { const b = e.target.closest('[data-chip]'); if (!b) return; chip = b.dataset.chip; chips.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', x === b ? 'true' : 'false')); applyFilter(); };
+    chips.onclick = (e) => { const b = e.target.closest('[data-chip]'); if (!b) return; chip = b.dataset.chip; chips.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', x === b ? 'true' : 'false')); const sel = $('#ui2Cat'); if (sel) sel.value = chip; applyFilter(); };
+    let sel = $('#ui2Cat');
+    if (!sel) {
+      sel = document.createElement('select');
+      sel.id = 'ui2Cat';
+      sel.setAttribute('aria-label', 'Category');
+      chips.after(sel);
+      sel.onchange = () => {
+        chip = sel.value;
+        chips.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', x.dataset.chip === chip ? 'true' : 'false'));
+        applyFilter();
+      };
+    }
+    sel.innerHTML = ['All', ...cats].map((c) => `<option value="${esc(c)}"${c === chip ? ' selected' : ''}>${esc(c)}</option>`).join('');
   }
   function hookSearch() {
     const input = $('#palSearch'); if (!input || input.dataset.ui2hook === '1') return;
@@ -412,7 +426,7 @@
     nav.onclick = (e) => {
       const b = e.target.closest('[data-a]'); if (!b) return;
       const a = b.dataset.a;
-      if (a === 'parts' && window.Mobile) Mobile.setSheet('parts');
+      if (a === 'parts') { if (app() && app().ensureArt) app().ensureArt(); if (window.Mobile) Mobile.setSheet('parts'); }
       else if (a === 'code') openDock('code');
       else if (a === 'wire') { if (window.Mobile) Mobile.setSheet(null); toggleWireArm(); }
       else if (a === 'run') $('#ui2Run').click();
@@ -615,7 +629,8 @@
       const topBar = $('#ui2top');
       const anchorTop = (puck || bar) ? (puck || bar).getBoundingClientRect().top - frame.top : frame.height - 84;
       const topLimit = (topBar ? topBar.getBoundingClientRect().bottom - frame.top : 52) + margin;
-      const maxBottom = Math.min(frame.height - margin, anchorTop - margin);
+      const gap = 16;
+      const maxBottom = Math.min(frame.height - gap, anchorTop - gap);
       const maxH = Math.max(96, maxBottom - topLimit);
       const maxW = Math.min(420, Math.max(160, frame.width - margin * 2));
       pop.style.maxHeight = maxH + 'px';

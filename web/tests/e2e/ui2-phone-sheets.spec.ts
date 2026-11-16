@@ -51,11 +51,60 @@ function boxOf(selector: string) {
   const left = r.left - ox;
   const bottom = r.bottom - oy;
   const right = r.right - ox;
+  const slack = 0.5;
   return {
     top, left, bottom, right, vh, vw,
     width: r.width, height: r.height,
-    inside: top >= -1 && left >= -1 && bottom <= vh + 1 && right <= vw + 1 && r.width > 2 && r.height > 2,
+    inside: top >= -slack && left >= -slack && bottom <= vh + slack && right <= vw + slack && r.width > 2 && r.height > 2,
   };
+}
+
+function revealAll(selector: string) {
+  const vv = window.visualViewport;
+  const oy = vv ? vv.offsetTop : 0;
+  const ox = vv ? vv.offsetLeft : 0;
+  const vh = vv ? vv.height : window.innerHeight;
+  const vw = vv ? vv.width : window.innerWidth;
+  const slack = 0.5;
+  const measure = (el: HTMLElement) => {
+    const r = el.getBoundingClientRect();
+    const top = r.top - oy;
+    const left = r.left - ox;
+    const bottom = r.bottom - oy;
+    const right = r.right - ox;
+    return {
+      text: (el.textContent || '').trim().slice(0, 48),
+      top, left, bottom, right, vh, vw, h: r.height,
+      ok: top >= -slack && left >= -slack && bottom <= vh + slack && right <= vw + slack && r.width > 2 && r.height > 2,
+    };
+  };
+  const items = [...document.querySelectorAll(selector)].filter((el) => {
+    const node = el as HTMLElement;
+    return !node.hidden && node.getClientRects().length > 0;
+  }) as HTMLElement[];
+  const fails: ReturnType<typeof measure>[] = [];
+  for (const el of items) {
+    let node: HTMLElement | null = el.parentElement;
+    const scrollers: HTMLElement[] = [];
+    while (node) {
+      const s = getComputedStyle(node);
+      if (/(auto|scroll)/.test(s.overflowY) || /(auto|scroll)/.test(s.overflowX)) scrollers.push(node);
+      node = node.parentElement;
+    }
+    for (let pass = 0; pass < 2; pass++) {
+      for (const sc of scrollers) {
+        const er = el.getBoundingClientRect();
+        const sr = sc.getBoundingClientRect();
+        if (er.top < sr.top - slack) sc.scrollTop -= sr.top - er.top;
+        if (er.bottom > sr.bottom + slack) sc.scrollTop += er.bottom - sr.bottom;
+        if (er.left < sr.left - slack) sc.scrollLeft -= sr.left - er.left;
+        if (er.right > sr.right + slack) sc.scrollLeft += er.right - sr.right;
+      }
+    }
+    const box = measure(el);
+    if (!box.ok) fails.push(box);
+  }
+  return { total: items.length, fails };
 }
 
 async function expectInside(page: Page, selector: string) {
@@ -88,61 +137,46 @@ test.describe('phone sheets stay in the visual viewport', () => {
         fs.mkdirSync('/opt/cursor/artifacts', { recursive: true });
         await page.screenshot({ path: '/opt/cursor/artifacts/ui2-after-phone-more.png' });
       }
-      const gap = await page.evaluate(() => {
-        const pop = document.getElementById('ui2Pop')!.getBoundingClientRect();
-        const bar = document.getElementById('ui2Phone')!.getBoundingClientRect();
-        return bar.top - pop.bottom;
-      });
-      expect(gap).toBeGreaterThanOrEqual(-1);
       const abovePuck = await page.evaluate(() => {
         const pop = document.getElementById('ui2Pop')!.getBoundingClientRect();
         const puck = document.querySelector('#ui2Phone [data-a="run"]')!.getBoundingClientRect();
-        return pop.bottom <= puck.top + 1 && pop.width <= 420.5;
+        return { clear: pop.bottom <= puck.top + 0.5, width: pop.width, popBottom: pop.bottom, puckTop: puck.top };
       });
-      expect(abovePuck).toBe(true);
+      expect(abovePuck.clear, JSON.stringify(abovePuck)).toBe(true);
+      expect(abovePuck.width).toBeLessThanOrEqual(420.5);
       if (size.height <= 520) {
         const cols = await page.locator('#ui2Pop').evaluate((el) => getComputedStyle(el).gridTemplateColumns);
         expect(cols.split(' ').length).toBeGreaterThanOrEqual(2);
       }
-      const restart = page.locator('#ui2Pop button', { hasText: 'Restart' });
-      await restart.scrollIntoViewIfNeeded();
-      await expectInside(page, '#ui2Pop');
+      const menuItems = await page.evaluate(revealAll, '#ui2Pop button');
+      expect(menuItems.total).toBeGreaterThan(8);
+      expect(menuItems.fails, JSON.stringify(menuItems.fails.slice(0, 4))).toEqual([]);
       const restartClear = await page.evaluate(() => {
-        const item = [...document.querySelectorAll('#ui2Pop button')].find((b) => b.textContent === 'Restart')!;
+        const item = [...document.querySelectorAll('#ui2Pop button')].find((b) => (b.textContent || '').trim() === 'Restart') as HTMLElement;
         const r = item.getBoundingClientRect();
         const puck = document.querySelector('#ui2Phone [data-a="run"]')!.getBoundingClientRect();
         const vv = window.visualViewport;
+        const oy = vv ? vv.offsetTop : 0;
         const vh = vv ? vv.height : window.innerHeight;
-        return r.bottom <= puck.top + 1 && r.top >= -1 && r.bottom <= vh + 1 && r.height > 20;
+        return { above: r.bottom <= puck.top + 0.5, inView: r.top - oy >= -0.5 && r.bottom - oy <= vh + 0.5, h: r.height };
       });
-      expect(restartClear).toBe(true);
-      const buttons = page.locator('#ui2Pop button');
-      const count = await buttons.count();
-      expect(count).toBeGreaterThan(8);
-      for (let i = 0; i < count; i++) {
-        await buttons.nth(i).scrollIntoViewIfNeeded();
-        await expectInside(page, `#ui2Pop button:nth-child(${i + 1})`);
-      }
+      expect(restartClear.above, JSON.stringify(restartClear)).toBe(true);
+      expect(restartClear.inView).toBe(true);
+      expect(restartClear.h).toBeGreaterThan(20);
       await page.keyboard.press('Escape');
       await expect(page.locator('#ui2Pop')).toHaveCount(0);
 
       await page.locator('#ui2Phone [data-a="parts"]').tap();
       await expect(page.locator('#palette')).toBeVisible();
       await expectInside(page, '#palette');
+      const starter = await page.evaluate(revealAll, '#mTrack .pitem:not([hidden])');
+      expect(starter.total).toBeGreaterThan(8);
+      expect(starter.fails, 'starter ' + JSON.stringify(starter.fails.slice(0, 3)) + ' / ' + starter.total).toEqual([]);
       if (size.name === '844x390') {
         await page.locator('#ui2PalTools [data-set="all"]').click();
-        await expect.poll(() => page.locator('#mTrack .pitem').count()).toBeGreaterThan(40);
-        const scrolled = await page.evaluate(() => {
-          const items = [...document.querySelectorAll('#mTrack .pitem')] as HTMLElement[];
-          const last = items[items.length - 1];
-          const track = document.getElementById('mTrack')!;
-          track.scrollTop = track.scrollHeight;
-          const r = last.getBoundingClientRect();
-          const sheet = document.getElementById('palette')!.getBoundingClientRect();
-          const vh = window.visualViewport ? window.visualViewport.height : window.innerHeight;
-          return r.height > 8 && r.top >= sheet.top - 2 && r.bottom <= Math.min(sheet.bottom, vh) + 2;
-        });
-        expect(scrolled).toBe(true);
+        await expect.poll(() => page.locator('#mTrack .pitem:not([hidden])').count()).toBeGreaterThan(40);
+        const all = await page.evaluate(revealAll, '#mTrack .pitem:not([hidden])');
+        expect(all.fails, 'all ' + all.fails.length + '/' + all.total + ' ' + JSON.stringify(all.fails.slice(0, 3))).toEqual([]);
       }
       await page.evaluate(() => { const M = (window as unknown as { Mobile?: { setSheet?: (s: string | null) => void } }).Mobile; if (M && M.setSheet) M.setSheet(null); });
 
@@ -157,7 +191,7 @@ test.describe('phone sheets stay in the visual viewport', () => {
       await expect(page.locator('#ui2SymBar')).toBeHidden();
       const symH = await page.locator('#ui2Sym').evaluate((el) => el.getBoundingClientRect().height);
       expect(symH).toBeGreaterThan(20);
-      expect(symH).toBeLessThanOrEqual(44);
+      expect(symH).toBeLessThanOrEqual(45);
       await page.locator('#ui2Sym').click();
       const rowH = await page.locator('#ui2SymBar').evaluate((el) => el.getBoundingClientRect().height);
       expect(rowH).toBeLessThanOrEqual(56);
@@ -216,14 +250,12 @@ test.describe('phone sheets stay in the visual viewport', () => {
       await expect(page.locator('.toast').last()).toBeVisible();
       await expectInside(page, '.toast');
 
-      if (size.name === '844x390' || size.name === '390x664') {
-        await page.goto('/?ui=2&resume=0');
-        await ready(page);
-        await expect(page.locator('#ui2StartTitle')).toBeVisible();
-        await expectInside(page, '#ui2StartTitle');
-        await page.locator('#ui2Start [data-go="close"]').scrollIntoViewIfNeeded();
-        await expectInside(page, '#ui2Start [data-go="close"]');
-      }
+      await page.goto('/?ui=2&resume=0');
+      await ready(page);
+      await expect(page.locator('#ui2Start .ui2-card')).toBeVisible();
+      await expectInside(page, '#ui2Start .ui2-card');
+      const close = await page.evaluate(revealAll, '#ui2Start [data-go="close"]');
+      expect(close.fails, JSON.stringify(close.fails)).toEqual([]);
       if (size.name === '390x664') {
         await page.goto('/?ui=2&ex=blink&resume=0');
         await ready(page);

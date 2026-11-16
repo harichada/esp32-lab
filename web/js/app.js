@@ -1574,7 +1574,15 @@ async function fetchRetry(u, o, n = 4) {
         let x0 = 0, y0 = 0, x1 = sz.w, y1 = sz.h; for (const q of pins) { x0 = Math.min(x0, q.x); y0 = Math.min(y0, q.y); x1 = Math.max(x1, q.x); y1 = Math.max(y1, q.y); }
         if (k === 'breadboard') { p.props.cols = 20; x1 = 210; y0 = -14; y1 = 208; }
         const pad = 14; return `<svg viewBox="${x0 - pad} ${y0 - pad - 20} ${x1 - x0 + 2 * pad} ${y1 - y0 + 2 * pad + 20}" preserveAspectRatio="xMidYMid meet">${d.svg(p, null)}</svg>`; } catch (e) { return ''; } };
-    let h = ''; for (const [c, list] of Object.entries(cats)) { h += `<div class="pcat" data-cat="${P.esc(c)}">${c}</div><div class="pgrid" data-cat="${P.esc(c)}">`; for (const [k, d] of list) h += `<div class="pitem" draggable="true" data-type="${k}" data-q="${P.esc((d.label + ' ' + k + ' ' + c + ' ' + (d.keywords || '')).toLowerCase())}" title="${P.esc(d.label)} — drag onto the canvas or click to add">${thumb(k, d)}<span>${P.esc(d.label)}</span></div>`; h += '</div>'; }
+    let h = ''; const jobs = [];
+    for (const [c, list] of Object.entries(cats)) {
+      h += `<div class="pcat" data-cat="${P.esc(c)}">${c}</div><div class="pgrid" data-cat="${P.esc(c)}">`;
+      for (const [k, d] of list) {
+        jobs.push([k, d]);
+        h += `<div class="pitem" draggable="true" data-type="${k}" data-q="${P.esc((d.label + ' ' + k + ' ' + c + ' ' + (d.keywords || '')).toLowerCase())}" title="${P.esc(d.label)} — drag onto the canvas or click to add"><span>${P.esc(d.label)}</span></div>`;
+      }
+      h += '</div>';
+    }
     const list = $('#palList');
     // A phone strip may already be holding the previous items. Drop those
     // before writing the list, or the next session refresh shows them twice.
@@ -1614,6 +1622,34 @@ async function fetchRetry(u, o, n = 4) {
     });
     if (window.GuestParts && GuestParts.syncPalette) GuestParts.syncPalette(document);
     if (window.UI2 && UI2.afterPalette) UI2.afterPalette();
+    paintThumbs(jobs, thumb);
+  }
+  let thumbGen = 0;
+  function paintThumbs(jobs, thumb) {
+    const token = ++thumbGen;
+    const paintSome = (budget) => {
+      const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      const now = () => ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now());
+      while (jobs.length && now() - t0 < budget) {
+        const pair = jobs.shift();
+        const el = document.querySelector('.pitem[data-type="' + CSS.escape(pair[0]) + '"]');
+        if (!el || el.querySelector('svg')) continue;
+        el.insertAdjacentHTML('afterbegin', thumb(pair[0], pair[1]));
+      }
+    };
+    paintSome(12);
+    const step = (deadline) => {
+      if (token !== thumbGen) return;
+      let budget = 12;
+      if (deadline && typeof deadline.timeRemaining === 'function') budget = Math.max(4, Math.min(12, deadline.timeRemaining()));
+      paintSome(budget);
+      if (jobs.length && token === thumbGen) schedule();
+    };
+    const schedule = () => {
+      if (window.requestIdleCallback) requestIdleCallback(step, { timeout: 500 });
+      else setTimeout(() => step(null), 40);
+    };
+    if (jobs.length) schedule();
   }
   app.buildPalette = buildPalette;
   function about() {
@@ -2009,7 +2045,10 @@ async function fetchRetry(u, o, n = 4) {
       warnings: () => renderWarnings(),
       hover, state: (p) => app.sim ? app.sim.partState(p) : null, running: () => !!app.run || !espPart(), press,
     });
-    buildPalette(); about();
+    buildPalette();
+    const fillAbout = () => { try { about(); } catch (e) { /* the about tab fills on the next open */ } };
+    if (window.requestIdleCallback) requestIdleCallback(fillAbout, { timeout: 1600 });
+    else setTimeout(fillAbout, 80);
     fillExamples();
     $('#selExample').onchange = (e) => {
       const value = e.target.value;
@@ -2075,7 +2114,12 @@ async function fetchRetry(u, o, n = 4) {
     $('#netFilter').oninput = (e) => { app.netlog.filter = e.target.value; app.netlog.dirty = true; app.netlog.render(); };
     $('#bNetClr').onclick = () => app.netlog.clear();
     $('#bNetCopy').onclick = async () => { const t = app.netlog.text(); try { await navigator.clipboard.writeText(t); toast('Network log copied (' + t.split('\n').length + ' lines)'); } catch (e) { const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); toast('Network log copied'); } };
-    if (window.Instruments) { Instruments.mount($('#tab-scope'), { app, toast }); Instruments.renderStrip(true); }
+    if (window.Instruments) { Instruments.mount($('#tab-scope'), { app, toast }); Instruments.renderStrip(true); Instruments.__mounted = true; }
+    if (window.__UI2 && window.__ui2Late && window.__ui2Late.art) {
+      const kickArt = () => { document.removeEventListener('pointerdown', kickArt, true); ensureArt(); };
+      document.addEventListener('pointerdown', kickArt, true);
+      setTimeout(kickArt, 12000);
+    }
     $('#insp').addEventListener('click', (e) => {   // Inspector → probe / pin-to-telemetry buttons
       const b = e.target.closest('[data-probe],[data-watch]'); if (!b || !window.Instruments) return; const pr = JSON.parse(b.dataset.probe || b.dataset.watch);
       if (b.dataset.watch) Instruments.watchProbe(pr); else { Instruments.probe(pr); if (document.body.classList.contains('m') && window.Mobile) Mobile.setSheet('scope'); else { const t = document.querySelector('#tabs [data-tab=scope]'); if (t && !t.classList.contains('on')) t.click(); } }
@@ -2363,9 +2407,46 @@ async function fetchRetry(u, o, n = 4) {
     if (!window.Schematic) { try { await loadScriptOnce(src); } catch (e) { console.warn(e); return null; } }
     return mountSchematic();
   }
+  function loadLate(key) {
+    const late = window.__ui2Late;
+    const src = late && late[key];
+    if (!src) return Promise.resolve();
+    late[key] = null;
+    return loadScriptOnce(src);
+  }
+  let artPromise = null;
+  function ensureArt() {
+    if (window.__ui2ArtReady) return Promise.resolve();
+    if (!artPromise) {
+      artPromise = loadLate('art').then(() => {
+        window.__ui2ArtReady = true;
+        try { if (app.editor) app.editor.render(); } catch (e) { /* the basic artwork stays until the next edit */ }
+        try { buildPalette(); } catch (e) { /* thumbs refresh on the next parts open */ }
+      }).catch((e) => { artPromise = null; console.warn(e); });
+    }
+    return artPromise;
+  }
+  let scopePromise = null;
+  function ensureScope() {
+    if (window.Instruments && window.Instruments.__mounted) return Promise.resolve(window.Instruments);
+    if (!scopePromise) {
+      scopePromise = loadLate('scope').then(() => {
+        if (window.Instruments && !window.Instruments.__mounted) {
+          Instruments.mount($('#tab-scope'), { app, toast });
+          Instruments.renderStrip(true);
+          if (app.proj) Instruments.setProject(app.proj, app.sim);
+          Instruments.__mounted = true;
+        }
+        return window.Instruments;
+      }).catch((e) => { scopePromise = null; throw e; });
+    }
+    return scopePromise;
+  }
   app.ensureExamples = ensureExamples;
   app.ensureParts = ensureParts;
   app.ensureSchematic = ensureSchematic;
+  app.ensureArt = ensureArt;
+  app.ensureScope = ensureScope;
   function setupViewToggle() {
     const b2 = $('#bView2d'), b3 = $('#bView3d'), bs = $('#bViewSch'); if (!b2 || !b3) return;
     b2.onclick = () => setViewMode('2d'); b3.onclick = () => setViewMode('3d');

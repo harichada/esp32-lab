@@ -133,6 +133,7 @@ html[data-ui="2"] #ui2Chips::-webkit-scrollbar{display:none}
 html[data-ui="2"] #ui2Recent{display:flex;gap:6px;overflow:auto;padding-bottom:2px}
 html[data-ui="2"] #ui2Chips button,#ui2Recent button{height:26px;border-radius:99px;background:var(--l2);color:var(--txt);padding:0 10px;font-size:12px;transition:none}
 html[data-ui="2"] #ui2Chips button{flex:none;white-space:nowrap}
+html[data-ui="2"] #ui2Cat{display:none;height:32px;max-width:38vw;min-width:0}
 html[data-ui="2"] #ui2Chips button[aria-pressed="true"]{background:var(--l4);color:var(--txt);border-color:var(--line2)}
 html[data-ui="2"] body.m .m-chips{display:none!important}
 html[data-ui="2"] #ui2Lock{
@@ -232,7 +233,13 @@ html[data-ui="2"] .ui2-pop{
 html[data-ui="2"] .ui2-pop button{width:100%;justify-content:flex-start;height:36px;background:transparent;border-color:transparent}
 html[data-ui="2"] .ui2-pop button:hover{background:var(--l3)}
 html[data-ui="2"] .modal{animation:none;overflow:auto;align-items:flex-start;box-sizing:border-box;max-height:100dvh}
-html[data-ui="2"] #ui2Start .ui2-card,html[data-ui="2"] body.m #ui2Start .ui2-card{max-height:none;overflow:visible}
+html[data-ui="2"] #ui2Start.modal{
+  padding:0;align-items:flex-start;justify-content:center;overflow:hidden;box-sizing:border-box;
+}
+html[data-ui="2"] #ui2Start .ui2-card,html[data-ui="2"] body.m #ui2Start .ui2-card{
+  box-sizing:border-box;margin-top:calc(var(--ui2-topbar, 0px) + 8px);overflow:auto;
+  max-height:calc(var(--ui2-vv-height, 100dvh) - var(--ui2-topbar, 0px) - var(--ui2-sheet-bottom, 0px) - 16px);
+}
 html[data-ui="2"] .ui2-card{
   width:min(460px,calc(100vw - 24px));background:var(--l1);color:var(--txt);border:1px solid var(--line2);
   border-radius:16px;box-shadow:var(--sh2);padding:20px;max-height:calc(100vh - 32px);max-height:calc(100dvh - 32px);overflow:auto;
@@ -384,10 +391,11 @@ html[data-ui="2"] #ui2Sym{display:none}
 html[data-ui="2"] body.m #ui2Sym{display:inline-flex;height:36px;margin:0 8px;align-self:flex-start}
 html[data-ui="2"] body.m .m-symbar{flex-wrap:nowrap;max-height:48px;overflow-x:auto;overflow-y:hidden}
 html[data-ui="2"] body.m #ui2Pop.ui2-pop-sheet{
-  left:auto;right:max(8px, var(--sai-r));
+  left:auto;right:max(8px, var(--sai-r));box-sizing:border-box;
   top:auto;width:min(420px, calc(100vw - 16px));min-width:0;max-width:420px;
-  bottom:calc(var(--ui2-sheet-bottom) + 8px);
-  max-height:calc(var(--ui2-vv-height) - var(--ui2-topbar) - var(--ui2-sheet-bottom) - 16px);
+  bottom:calc(var(--ui2-sheet-bottom) + 16px);
+  max-height:calc(var(--ui2-vv-height) - var(--ui2-topbar) - var(--ui2-sheet-bottom) - 24px);
+  padding-bottom:20px;scroll-padding-bottom:20px;
 }
 html[data-ui="2"] body.m #ui2Pop.ui2-pop-sheet button{height:44px;min-height:44px}
 @media (max-height:520px){
@@ -430,6 +438,32 @@ html[data-ui="2"] body.m #mTrack .pitem{
 html[data-ui="2"] body.m #mTrack .pitem svg{height:64px}
 html[data-ui="2"] body.m #mTrack .pitem.m-focus::after,html[data-ui="2"] body.m #palList .pitem.m-focus::after{content:none!important}
 html[data-ui="2"] body.m #mTrack.m-empty::before{content:'No parts match';letter-spacing:0;text-transform:none;font-family:var(--font)}
+@media (max-height:520px){
+  html[data-ui="2"] body.m[data-msheet=parts] #palette{
+    display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;grid-template-rows:36px minmax(0,1fr);
+    grid-template-areas:"head search sets cats" "track track track track";
+    padding-bottom:0!important;overflow:hidden;align-items:center;
+  }
+  html[data-ui="2"] body.m[data-msheet=parts] .m-sh-h{grid-area:head;padding:0 4px;min-height:0}
+  html[data-ui="2"] body.m[data-msheet=parts] .m-grab,html[data-ui="2"] body.m[data-msheet=parts] .m-sh-t{display:none!important}
+  html[data-ui="2"] body.m[data-msheet=parts] .m-sh-row{min-height:0}
+  html[data-ui="2"] body.m[data-msheet=parts] .m-x{width:32px;height:32px}
+  html[data-ui="2"] body.m[data-msheet=parts] .pal-search{grid-area:search;padding:2px 4px}
+  html[data-ui="2"] body.m[data-msheet=parts] .pal-search input{height:32px}
+  html[data-ui="2"] body.m[data-msheet=parts] #ui2PalTools{display:contents}
+  html[data-ui="2"] body.m[data-msheet=parts] .ui2-sets{grid-area:sets;align-self:center}
+  html[data-ui="2"] body.m[data-msheet=parts] .ui2-sets button{height:32px;min-height:32px;padding:0 8px}
+  html[data-ui="2"] body.m[data-msheet=parts] #ui2Chips,html[data-ui="2"] body.m[data-msheet=parts] #ui2Recent{display:none!important}
+  html[data-ui="2"] body.m[data-msheet=parts] #ui2Cat{display:block;grid-area:cats;align-self:center;margin-right:6px}
+  html[data-ui="2"] body.m[data-msheet=parts] #ui2Lock{grid-column:1 / -1}
+  html[data-ui="2"] body.m[data-msheet=parts] #mTrack.m-only{
+    grid-area:track;align-self:stretch;height:auto!important;max-height:none!important;
+    grid-auto-rows:minmax(64px, auto);
+    padding:6px 8px calc(16px + var(--sai-b))!important;
+  }
+  html[data-ui="2"] body.m[data-msheet=parts] #mTrack .pitem{min-height:64px!important}
+  html[data-ui="2"] body.m[data-msheet=parts] #mTrack .pitem svg{height:28px!important}
+}
 
 html[data-ui="2"] button:focus-visible,html[data-ui="2"] select:focus-visible,html[data-ui="2"] input:focus-visible,html[data-ui="2"] [role="radio"]:focus-visible{
   outline:2px solid var(--acc2);outline-offset:2px;
