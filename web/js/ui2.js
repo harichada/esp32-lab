@@ -28,6 +28,7 @@
     buildAbout();
     hookEditor();
     hookKeys();
+    watchViewport();
     const obs = new MutationObserver(syncChrome);
     obs.observe(document.body, { attributes: true, attributeFilter: ['class'] });
     if (app().proj) ed().fit();
@@ -360,7 +361,7 @@
       <button type="button" data-a="wire">${ic('i-wire')}<span>Wire</span></button>
       <button type="button" data-a="code">${ic('i-cmd')}<span>Code</span></button>
       <button type="button" data-a="run" class="primary" aria-label="Run">${ic('i-play')}<span>Run</span></button>
-      <button type="button" data-a="more" aria-label="More">${ic('i-more')}<span>More</span></button>`;
+      <button type="button" data-a="more" aria-label="More" aria-haspopup="menu" aria-expanded="false" aria-controls="ui2Pop">${ic('i-more')}<span>More</span></button>`;
     document.body.appendChild(nav);
     nav.onclick = (e) => {
       const b = e.target.closest('[data-a]'); if (!b) return;
@@ -501,11 +502,70 @@
     window.addEventListener('keyup', (e) => { if (e.key === ' ' && ed()) ed()._spacePan = false; }, true);
   }
 
-  function closePop() { const p = $('#ui2Pop'); if (p) p.remove(); const m = $('#ui2More'); if (m) m.setAttribute('aria-expanded', 'false'); }
+  function visualFrame() {
+    const vv = window.visualViewport;
+    const top = vv ? vv.offsetTop : 0;
+    const left = vv ? vv.offsetLeft : 0;
+    const height = vv ? vv.height : window.innerHeight;
+    const width = vv ? vv.width : window.innerWidth;
+    return { top: top, left: left, width: width, height: height, bottom: top + height, right: left + width };
+  }
+  function watchViewport() {
+    const apply = () => {
+      const frame = visualFrame();
+      const root = document.documentElement;
+      root.style.setProperty('--ui2-vv-top', Math.max(0, frame.top) + 'px');
+      root.style.setProperty('--ui2-vv-bottom', Math.max(0, window.innerHeight - frame.bottom) + 'px');
+      root.style.setProperty('--ui2-vv-height', frame.height + 'px');
+      const pop = $('#ui2Pop');
+      if (pop) fitPop(pop);
+    };
+    apply();
+    const vv = window.visualViewport;
+    if (vv) {
+      vv.addEventListener('resize', apply);
+      vv.addEventListener('scroll', apply);
+    }
+    window.addEventListener('resize', apply);
+    window.addEventListener('orientationchange', () => setTimeout(apply, 60));
+  }
+  function fitPop(pop) {
+    const frame = visualFrame();
+    const phone = document.body.classList.contains('m');
+    const margin = 8;
+    if (phone) {
+      const bar = $('#ui2Phone');
+      const topBar = $('#ui2top');
+      const barTop = bar ? bar.getBoundingClientRect().top - frame.top : frame.height - 64;
+      const topLimit = (topBar ? topBar.getBoundingClientRect().bottom - frame.top : 52) + margin;
+      const maxBottom = Math.min(frame.height, barTop) - margin;
+      const maxH = Math.max(120, maxBottom - topLimit);
+      pop.style.maxHeight = maxH + 'px';
+      pop.style.bottom = (window.innerHeight - (frame.top + maxBottom)) + 'px';
+      pop.style.top = 'auto';
+      pop.style.left = Math.max(margin, frame.left) + 'px';
+      pop.style.right = margin + 'px';
+      pop.style.width = 'auto';
+      return;
+    }
+    const r = pop.getBoundingClientRect();
+    const top = r.top - frame.top;
+    const bottom = r.bottom - frame.top;
+    const maxH = Math.max(120, frame.height - margin * 2);
+    pop.style.maxHeight = maxH + 'px';
+    if (bottom > frame.height - margin) {
+      const shift = bottom - (frame.height - margin);
+      const next = Math.max(frame.top + margin, (parseFloat(pop.style.top) || r.top) - shift);
+      pop.style.top = next + 'px';
+    } else if (top < margin) pop.style.top = (frame.top + margin) + 'px';
+  }
+  function closePop() { const p = $('#ui2Pop'); if (p) p.remove(); const m = $('#ui2More'); if (m) m.setAttribute('aria-expanded', 'false'); const phone = document.querySelector('#ui2Phone [data-a="more"]'); if (phone) phone.setAttribute('aria-expanded', 'false'); }
   function openMenu(anchor) {
     closePop();
     const pop = document.createElement('div');
     pop.id = 'ui2Pop'; pop.className = 'ui2-pop'; pop.setAttribute('role', 'menu'); pop.tabIndex = 0;
+    const phone = document.body.classList.contains('m');
+    if (phone) pop.classList.add('ui2-pop-sheet');
     const items = [
       ['Projects', 'bProjects'], ['Save', 'bSave'], ['Download', 'bDownload'], ['Import', 'fileIn'],
       ['Breadboard view', 'view:2d'], ['Schematic view', 'view:schematic'], ['3D view', 'view:3d'],
@@ -514,10 +574,18 @@
     ];
     pop.innerHTML = items.map(([label, id]) => `<button type="button" role="menuitem" data-go="${id}">${label}</button>`).join('');
     document.body.appendChild(pop);
-    const r = anchor.getBoundingClientRect();
-    const wide = pop.offsetWidth || 240;
-    pop.style.top = Math.min(r.bottom + 6, window.innerHeight - 40) + 'px';
-    pop.style.left = Math.max(8, Math.min(r.right - wide, window.innerWidth - wide - 8)) + 'px';
+    if (!phone) {
+      const frame = visualFrame();
+      const r = anchor.getBoundingClientRect();
+      const wide = Math.min(320, frame.width - 16);
+      let left = r.right + frame.left - wide;
+      left = Math.max(frame.left + 8, Math.min(left, frame.right - wide - 8));
+      let top = r.bottom + frame.top + 6;
+      pop.style.width = wide + 'px';
+      pop.style.left = left + 'px';
+      pop.style.top = top + 'px';
+    }
+    fitPop(pop);
     anchor.setAttribute('aria-expanded', 'true');
     pop.onclick = (e) => {
       const b = e.target.closest('[data-go]'); if (!b) return;

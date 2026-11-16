@@ -7,6 +7,7 @@
 @font-face{font-family:'JetBrains Mono';src:url(../fonts/JetBrainsMono-600.woff2) format('woff2');font-weight:600;font-style:normal;font-display:swap}
 
 html[data-ui="2"]{
+  --ui2-vv-top:0px;--ui2-vv-bottom:0px;--ui2-vv-height:100dvh;
   --bg:#0c0e12;--l0:#101216;--l1:#16191f;--l2:#1c2128;--l3:#252b33;--l4:#313842;
   --line:#2a313a;--line2:#3a424c;--hair:rgba(255,255,255,.06);
   --txt:#e8eaee;--txt2:#c5cbd3;--mut:#a8b1bc;
@@ -202,28 +203,32 @@ html[data-ui="2"] table.pins{font-family:var(--mono);font-size:12px;font-weight:
 html[data-ui="2"] table.pins td{font-variant-numeric:tabular-nums;padding:5px 6px}
 html[data-ui="2"] table.pins td:nth-child(2){text-align:right}
 html[data-ui="2"] .toast,html[data-ui="2"] body.viewsch .toast{
-  top:112px!important;bottom:auto!important;left:auto!important;right:16px;
+  top:calc(60px + var(--ui2-vv-top, 0px))!important;bottom:auto!important;left:auto!important;right:16px;
   transform:none!important;width:max-content;max-width:min(360px,calc(100vw - 32px));
   font-family:var(--mono);font-size:12px;font-weight:400;font-variant-numeric:tabular-nums;
   background:var(--l1);color:var(--txt);border:1px solid var(--line2);border-left:3px solid var(--acc2);
   border-radius:8px;box-shadow:var(--sh1);padding:8px 12px;animation:ui2toast 160ms ease;
 }
 html[data-ui="2"] body:not(.m) .toast{right:316px}
-html[data-ui="2"] body.m .toast{left:12px!important;right:12px!important;width:auto}
+html[data-ui="2"] body.m .toast{
+  top:calc(var(--ui2-topbar) + 8px)!important;left:max(12px, env(safe-area-inset-left))!important;
+  right:max(12px, env(safe-area-inset-right))!important;width:auto;max-width:none;
+}
 html[data-ui="2"] .toast::before{display:none}
 @keyframes ui2toast{from{opacity:0;transform:translateY(-6px)}}
 
 /* Menus, start, examples */
 html[data-ui="2"] .ui2-pop{
-  position:fixed;z-index:70;min-width:220px;max-width:min(320px,calc(100vw - 16px));max-height:min(70vh,520px);overflow:auto;
+  position:fixed;z-index:80;min-width:220px;max-width:min(320px,calc(100vw - 16px));max-height:min(70dvh,70vh,520px);overflow:auto;
   background:var(--l1);border:1px solid var(--line2);border-radius:12px;box-shadow:var(--sh2);padding:6px;
+  overscroll-behavior:contain;-webkit-overflow-scrolling:touch;
 }
 html[data-ui="2"] .ui2-pop button{width:100%;justify-content:flex-start;height:36px;background:transparent;border-color:transparent}
 html[data-ui="2"] .ui2-pop button:hover{background:var(--l3)}
 html[data-ui="2"] .modal{animation:none}
 html[data-ui="2"] .ui2-card{
   width:min(460px,calc(100vw - 24px));background:var(--l1);color:var(--txt);border:1px solid var(--line2);
-  border-radius:16px;box-shadow:var(--sh2);padding:20px;max-height:calc(100vh - 32px);overflow:auto;
+  border-radius:16px;box-shadow:var(--sh2);padding:20px;max-height:calc(100vh - 32px);max-height:calc(100dvh - 32px);overflow:auto;
 }
 html[data-ui="2"] .ui2-card h2{margin:0 0 6px;font-size:20px;letter-spacing:-.02em}
 html[data-ui="2"] .ui2-card p{margin:0 0 14px;color:var(--txt2)}
@@ -263,27 +268,43 @@ html[data-ui="2"] #cmdk .cmdk-box{border-radius:14px;border:1px solid var(--line
 html[data-ui="2"] #cmdkIn{font-size:15px}
 
 /* Connect sheet */
-html[data-ui="2"] #ui2Connect{position:fixed;left:0;right:0;bottom:0;z-index:65;max-height:62%;display:flex;flex-direction:column;background:var(--l1);border-top:1px solid var(--line2);border-radius:16px 16px 0 0;box-shadow:var(--sh2)}
+html[data-ui="2"] #ui2Connect{position:fixed;left:0;right:0;bottom:0;z-index:75;max-height:min(62dvh,62vh);display:flex;flex-direction:column;background:var(--l1);border-top:1px solid var(--line2);border-radius:16px 16px 0 0;box-shadow:var(--sh2)}
 html[data-ui="2"] #ui2Connect[hidden]{display:none!important}
 html[data-ui="2"] #ui2Connect header{display:flex;align-items:center;gap:8px;padding:10px 12px}
 html[data-ui="2"] #ui2Connect h2{margin:0;flex:1;font-size:16px}
-html[data-ui="2"] #ui2PinList{overflow:auto;padding:0 8px 12px;display:flex;flex-direction:column;gap:4px}
+html[data-ui="2"] #ui2PinList{overflow:auto;min-height:0;flex:1;padding:0 8px 12px;display:flex;flex-direction:column;gap:4px;-webkit-overflow-scrolling:touch}
 html[data-ui="2"] #ui2PinList button{height:44px;justify-content:flex-start;background:var(--l2)}
 
-/* Phone */
-html[data-ui="2"] body.m{--mTop:52px}
-html[data-ui="2"] body.m #ui2top{display:flex;height:52px;padding:0 8px;gap:8px}
+/* Phone. Sheets sit in the visual viewport (100dvh / visualViewport), above the bottom bar and the home indicator. */
+html[data-ui="2"] body.m{
+  --mTop:calc(52px + env(safe-area-inset-top));
+  --ui2-topbar:calc(52px + env(safe-area-inset-top) + var(--ui2-vv-top));
+  --ui2-bar:calc(64px + env(safe-area-inset-bottom));
+  --ui2-sheet-bottom:calc(var(--ui2-bar) + var(--ui2-vv-bottom));
+}
+html[data-ui="2"][data-cl-env=staging] body.m{--ui2-topbar:calc(52px + var(--stage-offset, 56px) + var(--ui2-vv-top))}
+html[data-ui="2"] body.m #ui2top{
+  display:flex;top:var(--ui2-vv-top);height:calc(52px + env(safe-area-inset-top));
+  padding:env(safe-area-inset-top) 8px 0;gap:8px;box-sizing:border-box;z-index:62;
+}
+html[data-ui="2"][data-cl-env=staging] body.m #ui2top{
+  top:calc(var(--ui2-vv-top) + var(--stage-offset, 56px));padding-top:0;height:52px;
+}
+html[data-ui="2"][data-cl-env=staging] body.m #stageBanner{
+  top:var(--ui2-vv-top);z-index:61;height:var(--stage-offset, 56px);max-height:var(--stage-offset, 56px);overflow:auto;
+}
 html[data-ui="2"] body.m .ui2-id{flex:1;min-width:0}
 html[data-ui="2"] body.m #ui2Menu{display:inline-flex;width:44px;height:44px;padding:0;justify-content:center}
 html[data-ui="2"] body.m .ui2-views,html[data-ui="2"] body.m .ui2-actions,html[data-ui="2"] body.m #ui2Sch,html[data-ui="2"] body.m #ui2SideTabs,html[data-ui="2"] body.m #ui2DockBar{display:none!important}
 html[data-ui="2"] body.m .ui2-mark{display:none}
-html[data-ui="2"] body.m #main{top:52px;bottom:calc(64px + env(safe-area-inset-bottom))}
+html[data-ui="2"] body.m #main{top:var(--ui2-topbar);bottom:var(--ui2-sheet-bottom)}
 html[data-ui="2"] body.m #mDial,html[data-ui="2"] body.m #mIgnite,html[data-ui="2"] body.m #mTicker,html[data-ui="2"] body.m #mCount,html[data-ui="2"] body.m #mFlash,html[data-ui="2"] body.m #mParts,
 html[data-ui="2"] body.m .canvas-tools,html[data-ui="2"] body.m .zoom-tools,html[data-ui="2"] body.m .hint{display:none!important}
 html[data-ui="2"] #ui2Phone{
-  display:none;position:fixed;left:0;right:0;bottom:0;z-index:42;height:calc(64px + env(safe-area-inset-bottom));
-  padding:6px 6px calc(6px + env(safe-area-inset-bottom));gap:2px;align-items:flex-end;justify-content:space-around;
-  background:var(--l0);border-top:1px solid var(--line);
+  display:none;position:fixed;left:0;right:0;bottom:var(--ui2-vv-bottom, 0px);z-index:42;height:calc(64px + env(safe-area-inset-bottom));
+  padding:6px max(6px, env(safe-area-inset-right)) calc(6px + env(safe-area-inset-bottom)) max(6px, env(safe-area-inset-left));
+  gap:2px;align-items:flex-end;justify-content:space-around;
+  background:var(--l0);border-top:1px solid var(--line);box-sizing:border-box;
 }
 html[data-ui="2"] body.m #ui2Phone{display:flex}
 html[data-ui="2"] #ui2Phone button{flex:1;height:48px;flex-direction:column;gap:2px;justify-content:center;background:transparent;border-color:transparent;color:var(--txt2);font-size:12px;padding:0}
@@ -300,18 +321,55 @@ html[data-ui="2"] #ui2Phone button[data-a="run"]{
 }
 html[data-ui="2"] #ui2Phone button[data-a="run"]:active{transform:translateY(-10px) scale(.98)}
 html[data-ui="2"] body.m #mSel{
-  bottom:calc(76px + env(safe-area-inset-bottom));background:var(--l1);border:1px solid var(--line2);border-radius:999px;
-  text-transform:none;letter-spacing:0;font-family:var(--font);
+  bottom:12px;max-width:calc(100% - 16px);background:var(--l1);border:1px solid var(--line2);border-radius:999px;
+  text-transform:none;letter-spacing:0;font-family:var(--font);z-index:8;
 }
 html[data-ui="2"] body.m .m-sh-t,html[data-ui="2"] body.m .m-lbl,html[data-ui="2"] body.m .pcat,html[data-ui="2"] body.m #mTrack .pitem span,html[data-ui="2"] body.m #palList .pitem span{
   text-transform:none!important;letter-spacing:0!important;font-family:var(--font)!important;
 }
 html[data-ui="2"] body.m .m-sh-t::before{content:none!important}
 html[data-ui="2"] body.m .m-sheet::before,html[data-ui="2"] body.m .m-sheet::after{display:none!important}
-html[data-ui="2"] body.m .m-sheet{border-radius:16px 16px 0 0;box-shadow:var(--sh2)}
-html[data-ui="2"] body.m[data-msheet=parts] #palette{height:52%;max-height:52%}
+html[data-ui="2"] body.m .m-sheet{
+  bottom:var(--ui2-sheet-bottom)!important;
+  max-height:calc(var(--ui2-vv-height) - var(--ui2-topbar) - var(--ui2-sheet-bottom) - 8px)!important;
+  padding-bottom:12px!important;border-radius:16px 16px 0 0;box-shadow:var(--sh2);overflow:hidden;
+}
+html[data-ui="2"] body.m[data-msheet=parts] #palette{
+  height:auto;top:auto;
+  max-height:min(70dvh, calc(var(--ui2-vv-height) - var(--ui2-topbar) - var(--ui2-sheet-bottom) - 8px));
+}
+html[data-ui="2"] body.m[data-msheet=code] #dock,
+html[data-ui="2"] body.m[data-msheet=serial] #dock,
+html[data-ui="2"] body.m[data-msheet=dock] #dock{
+  top:var(--ui2-topbar);bottom:var(--ui2-sheet-bottom);height:auto;max-height:none;
+}
+html[data-ui="2"] body.m #mMore .m-more-b,
+html[data-ui="2"] body.m #dock .tab,
+html[data-ui="2"] body.m #side #insp{flex:1;min-height:0;overflow:auto;-webkit-overflow-scrolling:touch}
+html[data-ui="2"] body.m #ui2Pop.ui2-pop-sheet{
+  left:max(8px, env(safe-area-inset-left));right:max(8px, env(safe-area-inset-right));
+  top:auto;width:auto;min-width:0;max-width:none;
+  bottom:calc(var(--ui2-sheet-bottom) + 8px);
+  max-height:min(70dvh, calc(var(--ui2-vv-height) - var(--ui2-topbar) - var(--ui2-sheet-bottom) - 16px));
+}
+html[data-ui="2"] body.m #ui2Pop.ui2-pop-sheet button{height:44px;min-height:44px}
+html[data-ui="2"] body.m #ui2Connect{
+  bottom:var(--ui2-sheet-bottom);
+  max-height:min(70dvh, calc(var(--ui2-vv-height) - var(--ui2-topbar) - var(--ui2-sheet-bottom) - 8px));
+}
+html[data-ui="2"] body.m .modal{
+  box-sizing:border-box;align-items:flex-start;overflow:auto;
+  padding:calc(var(--ui2-topbar) + 8px) max(10px, env(safe-area-inset-right)) calc(var(--ui2-sheet-bottom) + 8px) max(10px, env(safe-area-inset-left));
+}
+html[data-ui="2"] body.m .ui2-card,
+html[data-ui="2"] body.m .modal-box,
+html[data-ui="2"] body.m .cmdk-box,
+html[data-ui="2"] body.m .auth-dlg .modal-box{
+  max-height:calc(var(--ui2-vv-height) - var(--ui2-topbar) - var(--ui2-sheet-bottom) - 16px);overflow:auto;
+}
+html[data-ui="2"] body.m .auth-dlg.modal{align-items:flex-start;justify-content:flex-start}
 html[data-ui="2"] body.m #mTrack.m-only{
-  display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr));grid-auto-rows:minmax(96px,auto);
+  display:grid!important;flex:1 1 auto;grid-template-columns:repeat(3,minmax(0,1fr));grid-auto-rows:minmax(96px,auto);
   overflow:auto!important;overflow-x:hidden!important;scroll-snap-type:none!important;align-content:start;
   min-height:0!important;padding:8px!important;gap:8px!important;touch-action:pan-y;
 }
