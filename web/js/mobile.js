@@ -17,6 +17,23 @@
   // Set false to hide the phone fit icon. html[data-fit-pill=off] does the same. The % tap still fits.
   const PHONE_FIT_BUTTON = true;
 
+  function installProbeHooks() {
+    if (!window.Instruments) return;
+    Instruments.onArm = () => {
+      // In UI2 phone mode the scope is in the dock sheet ('dock'), not a standalone 'scope' sheet.
+      if (document.body.classList.contains('m') && (sheet === 'scope' || sheet === 'dock')) {
+        setSheet(null);
+        app && app.cmd && app.cmd.toast('Tap a pin or wire to probe');
+      }
+    };
+    Instruments.onProbed = () => {
+      if (!document.body.classList.contains('m')) return;
+      // In UI2 phone mode, click the dock's Scope tab button to reopen it correctly.
+      const ui2Btn = document.querySelector('#ui2PhoneDock [data-tab=scope]');
+      if (ui2Btn) ui2Btn.click(); else setSheet('scope');
+    };
+  }
+
   function setSheet(name) {
     sheet = name || null; document.body.dataset.msheet = sheet || '';
     const menu = $('#mMenu');
@@ -155,7 +172,7 @@
     if (window.clAuth && window.clAuth.mountMobile) window.clAuth.mountMobile();
     // full-screen oscilloscope HUD sheet (the instrument DOM moves here while open)
     const msc = document.createElement('section'); msc.id = 'mScope'; msc.className = 'panel m-sheet m-only'; document.body.appendChild(msc); sheetHead(msc, 'Oscilloscope', '<span class="m-sc-tag">MSO-4 · LIVE</span>');
-    if (window.Instruments) { Instruments.onArm = () => { if (document.body.classList.contains('m') && sheet === 'scope') { setSheet(null); app.cmd.toast('Tap a pin or wire to probe'); } }; Instruments.onProbed = () => { if (document.body.classList.contains('m')) setSheet('scope'); }; }
+    installProbeHooks();
     more.onclick = (e) => { const b = e.target.closest('[data-a],[data-d]'); if (!b) return; const a = b.dataset.a;
       if (b.dataset.d === 'scope' || b.dataset.d === 'code' || b.dataset.d === 'serial') { setSheet(b.dataset.d); return; }
       if (b.dataset.d) { openDock(b.dataset.d); return; }
@@ -550,5 +567,5 @@
   }
   window.addEventListener('DOMContentLoaded', () => { bindFitPill(); apply(); if (MQ.addEventListener) MQ.addEventListener('change', apply); else MQ.addListener(apply); if (document.body.classList.contains('m')) setTimeout(() => fitIfReady(window.app && window.app.editor, true), 200); });
   bindFitPill();
-  window.Mobile = { setSheet, openDock, fitIfReady, fitFromPill, bindFitPill, applyFitPillFlag, ignitePress, bindIgnite, syncIgnite, sheetHead, syncPhoneChrome };
+  window.Mobile = { setSheet, openDock, fitIfReady, fitFromPill, bindFitPill, applyFitPillFlag, ignitePress, bindIgnite, syncIgnite, sheetHead, syncPhoneChrome, installProbeHooks };
 })();

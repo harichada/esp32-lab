@@ -48,8 +48,11 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       STATUS_STRIP_ENABLED (default 0). 1, true, yes, or on puts <meta name="statusstrip" content="1">
       on the lab page. A compile timeout then says "It's saved." only when this visitor has a copy,
       and a build server that is down shows one line next to Run. Unset or 0 leaves that behaviour off.
+      UI2 (default 0). 1, true, yes, or on puts <meta name="ui2" content="1"> on the lab page so the
+      Workbench shell loads. Unset or 0 serves the current interface. ?ui=2 on the page forces the
+      shell on, and ?ui=0 or ?ui=1 forces it off, either way without a second request.
 """
-import asyncio, contextvars, ctypes, hashlib, json, os, re, shutil, subprocess, sys, tempfile, threading, time, argparse
+import asyncio, contextvars, ctypes, hashlib, json, os, re, shutil, signal, subprocess, sys, tempfile, threading, time, argparse
 from email.utils import formatdate
 import diskkeep
 import staging
@@ -1638,13 +1641,32 @@ class Link:
         if since: self.resumes += 1; print(f'run {self.sid}: browser resumed (since {since}, now {self.n}, replayed {sent})', flush=True)
         for m in self.pending_req(): await self.send_json(m)   # re-ask a lock-step question whose answer may have been lost
     async def read(self, ws):
+        # Any close or error on the socket that is still attached ends the run.
+        # A replacement socket (a resume that already attached) is left alone.
+        stop = False
         try:
             while True: await self.q.put(await ws.receive_json())
         except WebSocketDisconnect as e:
             print(f'run {self.sid}: websocket closed code={e.code}')
-            if STOP_ON_1001 and e.code == 1001 and self.ws is ws: await self.q.put({'t': 'stop'})   # page closed/navigated away: end the run now
-        except Exception: pass
-        finally: self.detach(ws)
+            stop = self.ws is ws
+        except Exception as e:
+            print(f'run {self.sid}: websocket error {type(e).__name__}')
+            stop = self.ws is ws
+        finally:
+            self.detach(ws)
+            if stop:
+                await self.reap_qemu()
+                try: self.q.put_nowait({'t': 'stop', 'why': 'socket'})
+                except Exception: pass
+    async def reap_qemu(self):
+        proc = getattr(self, 'qemu', None)
+        if proc is None or proc.returncode is not None:
+            return
+        proc.kill()
+        try:
+            await asyncio.wait_for(proc.wait(), 2)
+        except Exception:
+            pass
     async def receive_json(self): return await self.q.get()
     async def close(self):
         # Wait out an in-flight frame, then close. Closing under a send drops
@@ -1934,7 +1956,7 @@ def _popen_qemu(args, env, pass_fds=()):
     """
     return subprocess.Popen(
         list(args), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        pass_fds=tuple(pass_fds), close_fds=True)
+        pass_fds=tuple(pass_fds), close_fds=True, start_new_session=True)
 
 
 def _mount_ro(argv: list, path: Path, seen: set) -> None:
@@ -2110,6 +2132,24 @@ class _QemuProc:
         return self._p.returncode
 
     def kill(self):
+        """SIGKILL this QEMU session's process group, then the direct child.
+
+        The spawn is its own session, so the group is QEMU and whatever it
+        started. The server's group is never signalled.
+        """
+        pid = self.pid
+        if pid and pid > 0:
+            try:
+                pgid = os.getpgid(pid)
+            except ProcessLookupError:
+                pgid = 0
+            if pgid > 0 and pgid != os.getpgrp():
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except ProcessLookupError:
+                    return
+                except OSError:
+                    pass
         try:
             self._p.kill()
         except ProcessLookupError:
@@ -2403,6 +2443,7 @@ async def _qemu_session(ws, bid, img, tmp, hold):
         compileguard.close_fds(seccomp_fds)
     proc = _QemuProc(popen)
     hold['proc'] = proc; runs[id(ws)] = proc
+    link.qemu = proc
 
     async def pump_qemu():
         # Open the log before the chardev handshake. A QEMU that rejects
@@ -2827,6 +2868,7 @@ AUTH_META = b'<meta name="cl-auth" content="1">'
 # on, the file is served byte-for-byte.
 COMPILE_HINTS_META = b'<meta name="compilehints" content="1">'
 STATUS_STRIP_META = b'<meta name="statusstrip" content="1">'
+UI2_META = b'<meta name="ui2" content="1">'
 COMPILE_HINTS_SCRIPT = b'<script src="js/compilehints.js?v=4"></script>'
 STATUS_STRIP_SCRIPT = b'<script src="js/statusstrip.js?v=7"></script>'
 GUEST_PARTS_SCRIPT = b'<script src="js/guestparts.js?v=4"></script>'
@@ -2840,6 +2882,9 @@ def compile_hints_enabled(env=None):
 def status_strip_enabled(env=None):
     env = os.environ if env is None else env
     return str(env.get('STATUS_STRIP_ENABLED', '0')).strip().lower() in _COMPILE_HINTS_ON
+def ui2_enabled(env=None):
+    env = os.environ if env is None else env
+    return str(env.get('UI2', '0')).strip().lower() in _COMPILE_HINTS_ON
 def lab_page(env=None):
     """Lab HTML and whether it is the file unchanged.
 
@@ -2874,6 +2919,8 @@ def lab_page(env=None):
         head.append(COMPILE_HINTS_META)
     if status_strip_enabled(env) and STATUS_STRIP_META not in body:
         head.append(STATUS_STRIP_META)
+    if ui2_enabled(env) and UI2_META not in body:
+        head.append(UI2_META)
     if head:
         body = body.replace(b'<head>', b'<head>\n' + b'\n'.join(head), 1)
     scripts = []

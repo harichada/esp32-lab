@@ -83,7 +83,12 @@ async function fetchRetry(u, o, n = 4) {
     }
     setProject(ex, { readOnly: true }); setUrl({ ex: k });
   }
-  Examples.EX.remote = ((f) => () => { const e = f(); e.files = {}; return e; })(Examples.EX.remote);
+  if (window.Examples && Examples.EX && typeof Examples.EX.remote === 'function' && !Examples.EX.remote.__ui2wrap) {
+    const remoteFactory = Examples.EX.remote;
+    const wrappedRemote = () => { const e = remoteFactory(); e.files = {}; return e; };
+    wrappedRemote.__ui2wrap = 1;
+    Examples.EX.remote = wrappedRemote;
+  }
   // ---------------- projects: examples are read-only, edits go to a copy in My Projects ----------------
   function setUrl(o) { const u = new URL(location.href); u.searchParams.delete('ex'); u.searchParams.delete('p'); u.searchParams.delete('t'); for (const k in o) u.searchParams.set(k, o[k]); history.replaceState(null, '', u); }
   const STORAGE_FULL_MSG = "Couldn't save. Your browser storage is full. Export this project to keep it, then delete old projects in My Projects to free up space.";
@@ -303,7 +308,7 @@ async function fetchRetry(u, o, n = 4) {
       const col = String(c[2] || 'green').replace(/^#.*/, 'green');
       wires.push({ id: 'w' + (++n), a, b, pts: a.x !== b.x && a.y !== b.y ? [{ x: a.x, y: b.y }] : [], color: window.WIRE_COLORS[col] ? col : 'green' });
     }
-    return { name: 'Imported from diagram.json', mode: 'qemu', code: Examples.BLINK, parts, wires, notes: skipped.length ? 'Skipped unsupported diagram.json parts: ' + [...new Set(skipped)].join(', ') : 'Imported diagram.json (sketch not included in diagram.json — paste it in the Code tab).' };
+    return { name: 'Imported from diagram.json', mode: 'qemu', code: (window.Examples && Examples.BLINK) || '', parts, wires, notes: skipped.length ? 'Skipped unsupported diagram.json parts: ' + [...new Set(skipped)].join(', ') : 'Imported diagram.json (sketch not included in diagram.json — paste it in the Code tab).' };
   }
   app.importWokwi = importWokwi;
   // ---------------- code editor ----------------
@@ -1434,7 +1439,11 @@ async function fetchRetry(u, o, n = 4) {
     if (!sel) { el.innerHTML = '<p class="muted">Select a part or wire.</p>'; return; }
     if (sel.wire) {
       const w = app.proj.wires.find((q) => q.id === sel.wire); if (!w) { el.innerHTML = '<p class="muted">Select a part or wire.</p>'; return; }
-      el.innerHTML = `<h3>Wire ${w.id}</h3><div class="insp-k">Colour</div><div class="row wrap">${Object.keys(window.WIRE_COLORS).map((c) => `<button class="sw ${w.color === c ? 'on' : ''}" data-col="${c}" style="background:${window.WIRE_COLORS[c]}" title="${c}"></button>`).join('')}</div><p id="ro" class="ro"></p><div class="row probe-row"><button class="probe-b" data-probe='${JSON.stringify({ kind: 'wire', wire: w.id })}'>⌁ Probe on scope</button><button class="probe-b" data-watch='${JSON.stringify({ kind: 'wire', wire: w.id })}'>📌 Telemetry</button></div><button id="iDel">Delete wire</button>`;
+      const ui2 = document.documentElement.dataset.ui === '2';
+      const probeWire = ui2
+        ? `<button class="probe-b" aria-label="Probe on scope" data-probe='${JSON.stringify({ kind: 'wire', wire: w.id })}'><svg class="ic" aria-hidden="true"><use href="#i-flow"/></svg> Probe</button><button class="probe-b" aria-label="Pin to telemetry" data-watch='${JSON.stringify({ kind: 'wire', wire: w.id })}'><svg class="ic" aria-hidden="true"><use href="#i-map"/></svg> Watch</button>`
+        : `<button class="probe-b" data-probe='${JSON.stringify({ kind: 'wire', wire: w.id })}'>⌁ Probe on scope</button><button class="probe-b" data-watch='${JSON.stringify({ kind: 'wire', wire: w.id })}'>📌 Telemetry</button>`;
+      el.innerHTML = `<h3>Wire ${w.id}</h3><div class="insp-k">Colour</div><div class="row wrap">${Object.keys(window.WIRE_COLORS).map((c) => `<button class="sw ${w.color === c ? 'on' : ''}" data-col="${c}" style="background:${window.WIRE_COLORS[c]}" title="${c}"></button>`).join('')}</div><p id="ro" class="ro"></p><div class="row probe-row">${probeWire}</div><button id="iDel">Delete wire</button>`;
       el.querySelectorAll('[data-col]').forEach((b) => b.onclick = () => { app.editor.setWireColor(b.dataset.col); renderInspector(sel); });
       $('#iDel').onclick = () => app.editor.deleteSel(); return;
     }
@@ -1459,7 +1468,13 @@ async function fetchRetry(u, o, n = 4) {
       const tip = physical ? 'Turn this part end for end (F)' : P.NO_FLIP_TIP;
       flipBtns = `<button id="iFlip" class="${on ? 'on' : ''} ${physical ? '' : 'is-off'}" aria-disabled="${physical ? 'false' : 'true'}" title="${P.esc(tip)}">↔ Flip</button>`;
     }
-    h += `<p id="ro" class="ro"></p><div class="row"><button id="iRot">⟳ Rotate</button>${flipBtns}<button id="iDel">🗑 Delete</button></div><div id="pinTable"></div>`;
+    const ui2 = document.documentElement.dataset.ui === '2';
+    const rotLab = ui2 ? '<svg class="ic" aria-hidden="true"><use href="#i-rotate"/></svg> Rotate' : '⟳ Rotate';
+    const delLab = ui2 ? '<svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg> Delete' : '🗑 Delete';
+    if (ui2) {
+      flipBtns = flipBtns.replace('↔ Flip H', '<svg class="ic" aria-hidden="true"><use href="#i-flip"/></svg> Flip H').replace('↕ Flip V', '<svg class="ic" aria-hidden="true"><use href="#i-flip"/></svg> Flip V').replace('↔ Flip', '<svg class="ic" aria-hidden="true"><use href="#i-flip"/></svg> Flip');
+    }
+    h += `<p id="ro" class="ro"></p><div class="row"><button id="iRot">${rotLab}</button>${flipBtns}<button id="iDel">${delLab}</button></div><div id="pinTable"></div>`;
     el.innerHTML = h;
     el.querySelectorAll('[data-k]').forEach((inp) => {
       const k = inp.dataset.k, ev = inp.type === 'range' ? 'input' : 'change';
@@ -1492,7 +1507,10 @@ async function fetchRetry(u, o, n = 4) {
       const v = app.sim.pinVoltage(p, q.name); let extra = '';
       if (rt) { const g = P.espGpio(q.name); if (g >= 0) { const s = rt.pins[g]; extra = `<td>${s.out ? (s.pwm !== undefined ? 'PWM ' + Math.round(s.pwm * 100) + '%' : 'OUT ' + s.level) : 'IN' + (s.pu ? '↑' : '') + (s.pd ? '↓' : '')}</td><td class="muted">${P.esc(d.info(q.name))}</td>`; } else extra = '<td></td><td></td>'; }
       const pj = P.esc(JSON.stringify({ kind: 'pin', part: p.id, pin: q.name, label: p.id + '.' + q.name }));
-      return `<tr><td>${P.esc(q.name)}</td><td>${P.fmt(v, 'V')}</td>${extra}<td class="pacts"><button class="pa" title="Probe on scope" data-probe="${pj}">⌁</button><button class="pa" title="Pin to telemetry strip" data-watch="${pj}">📌</button></td></tr>`;
+      const acts = document.documentElement.dataset.ui === '2'
+        ? `<button class="pa" aria-label="Probe on scope" data-probe="${pj}"><svg class="ic" aria-hidden="true"><use href="#i-flow"/></svg></button><button class="pa" aria-label="Pin to telemetry" data-watch="${pj}"><svg class="ic" aria-hidden="true"><use href="#i-map"/></svg></button>`
+        : `<button class="pa" title="Probe on scope" data-probe="${pj}">⌁</button><button class="pa" title="Pin to telemetry strip" data-watch="${pj}">📌</button>`;
+      return `<tr><td>${P.esc(q.name)}</td><td>${P.fmt(v, 'V')}</td>${extra}<td class="pacts">${acts}</td></tr>`;
     }).join('') + '</table>';
   }
   // ---------------- hover tooltip ----------------
@@ -1511,7 +1529,16 @@ async function fetchRetry(u, o, n = 4) {
     }
     if (!t) { tip.hidden = true; return; }
     const wr = $('#stageWrap').getBoundingClientRect();
-    tip.innerHTML = t; tip.hidden = false; tip.style.left = (h.ev.clientX - wr.left + 14) + 'px'; tip.style.top = (h.ev.clientY - wr.top + 14) + 'px';
+    tip.innerHTML = t; tip.hidden = false;
+    let left = h.ev.clientX - wr.left + 14, top = h.ev.clientY - wr.top + 14;
+    tip.style.left = left + 'px'; tip.style.top = top + 'px';
+    if (document.documentElement.dataset.ui === '2') {
+      const tr = tip.getBoundingClientRect();
+      if (tr.right > wr.right - 8) left = Math.max(8, h.ev.clientX - wr.left - tr.width - 14);
+      if (tr.bottom > wr.bottom - 8) top = Math.max(8, h.ev.clientY - wr.top - tr.height - 14);
+      if (tr.left < wr.left + 8) left = 8;
+      tip.style.left = left + 'px'; tip.style.top = top + 'px';
+    }
   }
   // ---------------- scope ----------------
   const SCOL = ['#ffd84a', '#4ae0ff', '#ff5ad1', '#7dff6a'];
@@ -1556,7 +1583,15 @@ async function fetchRetry(u, o, n = 4) {
         let x0 = 0, y0 = 0, x1 = sz.w, y1 = sz.h; for (const q of pins) { x0 = Math.min(x0, q.x); y0 = Math.min(y0, q.y); x1 = Math.max(x1, q.x); y1 = Math.max(y1, q.y); }
         if (k === 'breadboard') { p.props.cols = 20; x1 = 210; y0 = -14; y1 = 208; }
         const pad = 14; return `<svg viewBox="${x0 - pad} ${y0 - pad - 20} ${x1 - x0 + 2 * pad} ${y1 - y0 + 2 * pad + 20}" preserveAspectRatio="xMidYMid meet">${d.svg(p, null)}</svg>`; } catch (e) { return ''; } };
-    let h = ''; for (const [c, list] of Object.entries(cats)) { h += `<div class="pcat" data-cat="${P.esc(c)}">${c}</div><div class="pgrid" data-cat="${P.esc(c)}">`; for (const [k, d] of list) h += `<div class="pitem" draggable="true" data-type="${k}" data-q="${P.esc((d.label + ' ' + k + ' ' + c + ' ' + (d.keywords || '')).toLowerCase())}" title="${P.esc(d.label)} — drag onto the canvas or click to add">${thumb(k, d)}<span>${P.esc(d.label)}</span></div>`; h += '</div>'; }
+    let h = ''; const jobs = [];
+    for (const [c, list] of Object.entries(cats)) {
+      h += `<div class="pcat" data-cat="${P.esc(c)}">${c}</div><div class="pgrid" data-cat="${P.esc(c)}">`;
+      for (const [k, d] of list) {
+        jobs.push([k, d]);
+        h += `<div class="pitem" draggable="true" data-type="${k}" data-q="${P.esc((d.label + ' ' + k + ' ' + c + ' ' + (d.keywords || '')).toLowerCase())}" title="${P.esc(d.label)} — drag onto the canvas or click to add"><span>${P.esc(d.label)}</span></div>`;
+      }
+      h += '</div>';
+    }
     const list = $('#palList');
     // A phone strip may already be holding the previous items. Drop those
     // before writing the list, or the next session refresh shows them twice.
@@ -1595,6 +1630,35 @@ async function fetchRetry(u, o, n = 4) {
       });
     });
     if (window.GuestParts && GuestParts.syncPalette) GuestParts.syncPalette(document);
+    if (window.UI2 && UI2.afterPalette) UI2.afterPalette();
+    paintThumbs(jobs, thumb);
+  }
+  let thumbGen = 0;
+  function paintThumbs(jobs, thumb) {
+    const token = ++thumbGen;
+    const paintSome = (budget) => {
+      const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      const now = () => ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now());
+      while (jobs.length && now() - t0 < budget) {
+        const pair = jobs.shift();
+        const el = document.querySelector('.pitem[data-type="' + CSS.escape(pair[0]) + '"]');
+        if (!el || el.querySelector('svg')) continue;
+        el.insertAdjacentHTML('afterbegin', thumb(pair[0], pair[1]));
+      }
+    };
+    paintSome(12);
+    const step = (deadline) => {
+      if (token !== thumbGen) return;
+      let budget = 12;
+      if (deadline && typeof deadline.timeRemaining === 'function') budget = Math.max(4, Math.min(12, deadline.timeRemaining()));
+      paintSome(budget);
+      if (jobs.length && token === thumbGen) schedule();
+    };
+    const schedule = () => {
+      if (window.requestIdleCallback) requestIdleCallback(step, { timeout: 500 });
+      else setTimeout(() => step(null), 40);
+    };
+    if (jobs.length) schedule();
   }
   app.buildPalette = buildPalette;
   function about() {
@@ -1990,7 +2054,10 @@ async function fetchRetry(u, o, n = 4) {
       warnings: () => renderWarnings(),
       hover, state: (p) => app.sim ? app.sim.partState(p) : null, running: () => !!app.run || !espPart(), press,
     });
-    buildPalette(); about();
+    buildPalette();
+    const fillAbout = () => { try { about(); } catch (e) { /* the about tab fills on the next open */ } };
+    if (window.requestIdleCallback) requestIdleCallback(fillAbout, { timeout: 1600 });
+    else setTimeout(fillAbout, 80);
     fillExamples();
     $('#selExample').onchange = (e) => {
       const value = e.target.value;
@@ -2041,15 +2108,7 @@ async function fetchRetry(u, o, n = 4) {
     $('#bRestart').onclick = () => { stopRun(); startRun(); };
     $('#cbFlow').checked = clStorage.local.getItem('esp32lab.flow') !== '0'; $('#stage').classList.toggle('flow', $('#cbFlow').checked);
     $('#cbFlow').onchange = (e) => { $('#stage').classList.toggle('flow', e.target.checked); clStorage.local.setItem('esp32lab.flow', e.target.checked ? '1' : '0'); };
-    if (window.Schematic) {
-      app.schematic = new Schematic.SchematicView($('#stageWrap'), {
-        select: (id) => app.editor.select(id ? { part: id } : null),
-        state: (p) => (app.sim ? app.sim.partState(p) : null),
-        voltage: (p, name) => app.sim.pinVoltage(p, name),
-        readout: (p) => app.sim.readout(p),
-      });
-      if (app.proj) app.schematic.setProject(app.proj);
-    }
+    mountSchematic();
     setupViewToggle();
     app.cmd = { run: startRun, stop: stopRun, restart: () => { stopRun(); startRun(); }, save, projects: projectsDialog, loadExample, makeCopy: () => makeCopy(false), toast, download, view3d: () => setViewMode('3d'), view2d: () => setViewMode('2d'), viewSch: () => setViewMode('schematic') };
     $('#cbOrtho').checked = clStorage.local.getItem('esp32lab.ortho') !== '0'; app.editor.ortho = $('#cbOrtho').checked; $('#cbOrtho').onchange = (e) => { app.editor.ortho = e.target.checked; clStorage.local.setItem('esp32lab.ortho', e.target.checked ? '1' : '0'); };
@@ -2064,10 +2123,30 @@ async function fetchRetry(u, o, n = 4) {
     $('#netFilter').oninput = (e) => { app.netlog.filter = e.target.value; app.netlog.dirty = true; app.netlog.render(); };
     $('#bNetClr').onclick = () => app.netlog.clear();
     $('#bNetCopy').onclick = async () => { const t = app.netlog.text(); try { await navigator.clipboard.writeText(t); toast('Network log copied (' + t.split('\n').length + ' lines)'); } catch (e) { const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); toast('Network log copied'); } };
-    if (window.Instruments) { Instruments.mount($('#tab-scope'), { app, toast }); Instruments.renderStrip(true); }
+    if (window.Instruments) { Instruments.mount($('#tab-scope'), { app, toast }); Instruments.renderStrip(true); Instruments.__mounted = true; }
+    if (window.__UI2 && window.__ui2Late && window.__ui2Late.art) {
+      const kickArt = () => { document.removeEventListener('pointerdown', kickArt, true); ensureArt(); };
+      document.addEventListener('pointerdown', kickArt, true);
+      setTimeout(kickArt, 12000);
+    }
     $('#insp').addEventListener('click', (e) => {   // Inspector → probe / pin-to-telemetry buttons
-      const b = e.target.closest('[data-probe],[data-watch]'); if (!b || !window.Instruments) return; const pr = JSON.parse(b.dataset.probe || b.dataset.watch);
-      if (b.dataset.watch) Instruments.watchProbe(pr); else { Instruments.probe(pr); if (document.body.classList.contains('m') && window.Mobile) Mobile.setSheet('scope'); else { const t = document.querySelector('#tabs [data-tab=scope]'); if (t && !t.classList.contains('on')) t.click(); } }
+      const b = e.target.closest('[data-probe],[data-watch]'); if (!b) return;
+      const pr = JSON.parse(b.dataset.probe || b.dataset.watch);
+      if (b.dataset.watch) { if (window.Instruments) Instruments.watchProbe(pr); return; }
+      const doProbe = () => {
+        Instruments.probe(pr);
+        if (document.body.classList.contains('m') && window.Mobile) {
+          // UI2 phone: click the dock Scope tab; original phone: open scope sheet.
+          const ui2Btn = document.querySelector('#ui2PhoneDock [data-tab=scope]');
+          if (ui2Btn) ui2Btn.click(); else Mobile.setSheet('scope');
+        } else {
+          // Desktop: UI2 dock bar first, then original #tabs fallback.
+          const scopeBtn = document.querySelector('#ui2DockBar [data-tab=scope]') || document.querySelector('#tabs [data-tab=scope]');
+          if (scopeBtn && !scopeBtn.classList.contains('on')) scopeBtn.click();
+        }
+      };
+      if (window.Instruments && window.Instruments.__mounted) doProbe();
+      else ensureScope().then(doProbe);
     });
     $('#inPsk').onchange = (e) => { app.world.tv.psk = e.target.value; app.devDirty = true; };
     $('#cbStandby').onchange = (e) => { app.world.tv.networkStandby = e.target.checked; app.devDirty = true; };
@@ -2078,9 +2157,10 @@ async function fetchRetry(u, o, n = 4) {
     const sp = new URLSearchParams(location.search), q = sp.get('ex'), pid = sp.get('p'), saved = clStorage.local.getItem(STORE);
     if (saved && !store.list().length) { try { const o = JSON.parse(saved); if (!o.example) { o.name = o.name || 'My saved project'; store.importJson(o); } } catch (e) { /* ignore */ } clStorage.local.removeItem(STORE); }
     if (pid && store.get(pid)) openProject(pid);
-    else if (q && Examples.EX[q]) loadExample(q, { keepLocked: true });
+    else if (q && window.Examples && Examples.EX[q]) loadExample(q, { keepLocked: true });
     else if (store.current() && store.get(store.current())) openProject(store.current());
-    else loadExample('blink');
+    else if (document.documentElement.dataset.ui === '2' && window.UI2 && UI2.freshStart) UI2.freshStart();
+    else if (window.Examples) loadExample('blink');
     try {
       const viewQ = sp.get('view');
       if (viewQ === '2d' || viewQ === 'schematic' || viewQ === '3d') {
@@ -2134,6 +2214,7 @@ async function fetchRetry(u, o, n = 4) {
     finally { window.__3dPrefetching = false; }
   }
   function schedule3dPrefetch() {
+    if (document.documentElement.dataset.ui === '2') return;
     if (no3dDevice()) return;
     let q = '';
     try { q = location.search || ''; } catch (_) {}
@@ -2240,6 +2321,9 @@ async function fetchRetry(u, o, n = 4) {
   }
   async function setViewMode(mode, quiet) {
     if (mode === '3d' && applyNo3d()) { mode = '2d'; if (!quiet) toast('3D view is desktop-only for now — staying in 2D'); }
+    if (mode === 'schematic' && !app.schematic && document.documentElement.dataset.ui === '2') {
+      try { await ensureSchematic(); } catch (e) { console.warn(e); }
+    }
     if (mode === 'schematic' && !app.schematic) mode = '2d';
     const seq = ++viewSeq;
     viewMode = mode === '3d' ? '3d' : mode === 'schematic' ? 'schematic' : '2d';
@@ -2283,6 +2367,111 @@ async function fetchRetry(u, o, n = 4) {
       if (!quiet) toast('3D view — drag orbit · pinch/wheel zoom · Esc or Back to 2D to exit');
     } catch (e) { if (seq === viewSeq) view3dFail(e); show3dLoad(false); }
   }
+  function mountSchematic() {
+    if (app.schematic || !window.Schematic) return app.schematic || null;
+    app.schematic = new Schematic.SchematicView($('#stageWrap'), {
+      select: (id) => app.editor.select(id ? { part: id } : null),
+      state: (p) => (app.sim ? app.sim.partState(p) : null),
+      voltage: (p, name) => app.sim.pinVoltage(p, name),
+      readout: (p) => app.sim.readout(p),
+    });
+    if (app.proj) app.schematic.setProject(app.proj);
+    return app.schematic;
+  }
+  function flushAddonExamples() {
+    const reg = window.PartsReg, E = window.Examples;
+    if (!reg || !reg.EXS || !E || !E.EX || !E.LIST) return;
+    for (const [key, name, factory, group] of reg.EXS) {
+      if (E.EX[key]) continue;
+      E.EX[key] = factory;
+      if (!E.LIST.some((row) => row[0] === key)) E.LIST.push(group ? [key, name, group] : [key, name]);
+    }
+  }
+  let examplesReady = null, partsReady = null;
+  function ensureExamples() {
+    if (!examplesReady) {
+      examplesReady = (async () => {
+        if (!(window.Examples && Examples.LIST)) {
+          const list = (window.__ui2Late && window.__ui2Late.examples) || ['js/examples.js?v=45', 'js/basic.js?v=41'];
+          for (const src of list) { try { await loadScriptOnce(src); } catch (e) { console.warn(e); } }
+          if (window.__ui2Late) window.__ui2Late.examples = null;
+        }
+        if (window.Examples && Examples.EX && typeof Examples.EX.remote === 'function' && !Examples.EX.remote.__ui2wrap) {
+          const remoteFactory = Examples.EX.remote;
+          const wrappedRemote = () => { const e = remoteFactory(); e.files = {}; return e; };
+          wrappedRemote.__ui2wrap = 1;
+          Examples.EX.remote = wrappedRemote;
+        }
+        flushAddonExamples();
+        fillExamples();
+      })().catch((e) => { examplesReady = null; throw e; });
+    }
+    return examplesReady;
+  }
+  function ensureParts() {
+    if (window.__ui2PartsReady) return Promise.resolve();
+    if (!partsReady) {
+      partsReady = (async () => {
+        await ensureExamples();
+        const late = window.__ui2Late;
+        const list = late && late.parts;
+        if (list && list.length) {
+          for (const src of list) { try { await loadScriptOnce(src); } catch (e) { console.warn(e); } }
+          late.parts = null;
+          buildPalette();
+        }
+        window.__ui2PartsReady = true;
+      })().catch((e) => { partsReady = null; throw e; });
+    }
+    return partsReady;
+  }
+  async function ensureSchematic() {
+    if (app.schematic) return app.schematic;
+    const src = (window.__ui2Late && window.__ui2Late.schematic) || 'js/schematic.js?v=75';
+    if (!window.Schematic) { try { await loadScriptOnce(src); } catch (e) { console.warn(e); return null; } }
+    return mountSchematic();
+  }
+  function loadLate(key) {
+    const late = window.__ui2Late;
+    const src = late && late[key];
+    if (!src) return Promise.resolve();
+    late[key] = null;
+    return loadScriptOnce(src);
+  }
+  let artPromise = null;
+  function ensureArt() {
+    if (window.__ui2ArtReady) return Promise.resolve();
+    if (!artPromise) {
+      artPromise = loadLate('art').then(() => {
+        window.__ui2ArtReady = true;
+        try { if (app.editor) app.editor.render(); } catch (e) { /* the basic artwork stays until the next edit */ }
+        try { buildPalette(); } catch (e) { /* thumbs refresh on the next parts open */ }
+      }).catch((e) => { artPromise = null; console.warn(e); });
+    }
+    return artPromise;
+  }
+  let scopePromise = null;
+  function ensureScope() {
+    if (window.Instruments && window.Instruments.__mounted) return Promise.resolve(window.Instruments);
+    if (!scopePromise) {
+      scopePromise = loadLate('scope').then(() => {
+        if (window.Instruments && !window.Instruments.__mounted) {
+          Instruments.mount($('#tab-scope'), { app, toast });
+          Instruments.renderStrip(true);
+          if (app.proj) Instruments.setProject(app.proj, app.sim);
+          Instruments.__mounted = true;
+          if (window.Mobile) Mobile.installProbeHooks();
+        }
+        return window.Instruments;
+      }).catch((e) => { scopePromise = null; throw e; });
+    }
+    return scopePromise;
+  }
+  app.ensureExamples = ensureExamples;
+  app.ensureParts = ensureParts;
+  app.ensureSchematic = ensureSchematic;
+  app.ensureArt = ensureArt;
+  app.ensureScope = ensureScope;
   function setupViewToggle() {
     const b2 = $('#bView2d'), b3 = $('#bView3d'), bs = $('#bViewSch'); if (!b2 || !b3) return;
     b2.onclick = () => setViewMode('2d'); b3.onclick = () => setViewMode('3d');
