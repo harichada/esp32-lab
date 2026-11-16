@@ -1529,7 +1529,16 @@ async function fetchRetry(u, o, n = 4) {
     }
     if (!t) { tip.hidden = true; return; }
     const wr = $('#stageWrap').getBoundingClientRect();
-    tip.innerHTML = t; tip.hidden = false; tip.style.left = (h.ev.clientX - wr.left + 14) + 'px'; tip.style.top = (h.ev.clientY - wr.top + 14) + 'px';
+    tip.innerHTML = t; tip.hidden = false;
+    let left = h.ev.clientX - wr.left + 14, top = h.ev.clientY - wr.top + 14;
+    tip.style.left = left + 'px'; tip.style.top = top + 'px';
+    if (document.documentElement.dataset.ui === '2') {
+      const tr = tip.getBoundingClientRect();
+      if (tr.right > wr.right - 8) left = Math.max(8, h.ev.clientX - wr.left - tr.width - 14);
+      if (tr.bottom > wr.bottom - 8) top = Math.max(8, h.ev.clientY - wr.top - tr.height - 14);
+      if (tr.left < wr.left + 8) left = 8;
+      tip.style.left = left + 'px'; tip.style.top = top + 'px';
+    }
   }
   // ---------------- scope ----------------
   const SCOL = ['#ffd84a', '#4ae0ff', '#ff5ad1', '#7dff6a'];

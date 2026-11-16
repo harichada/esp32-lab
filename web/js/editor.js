@@ -493,6 +493,12 @@
       m.style.left = (ev.clientX - r.left) + 'px'; m.style.top = (ev.clientY - r.top) + 'px'; const at = this.toWorld(ev);
       m.onclick = (e) => { const b = e.target.closest('[data-a],[data-c]'); if (!b) return; if (b.dataset.c) this.colorWire(id, b.dataset.c); else if (b.dataset.a === 'del') this.deleteWire(id); else if (b.dataset.a === 'bend') this.addBend(id, at); else { this.push(); this.wire(id).pts = []; this.renderWires(); this.hooks.changed(false); } this.closeMenu(); };
       wrap.appendChild(m); this.menu = m;
+      if (ui2On()) {
+        const box = m.getBoundingClientRect();
+        const pad = 8;
+        if (box.right > window.innerWidth - pad) m.style.left = Math.max(pad, (ev.clientX - r.left) - box.width) + 'px';
+        if (box.bottom > window.innerHeight - pad) m.style.top = Math.max(pad, (ev.clientY - r.top) - box.height) + 'px';
+      }
     }
     _emitHover(h) {
       this._hover = h || null;

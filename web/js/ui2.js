@@ -226,7 +226,8 @@
     });
     grip.addEventListener('pointermove', (e) => {
       if (!y0) return;
-      const max = Math.round(window.innerHeight * 0.4);
+      const top = ($('#ui2top') && $('#ui2top').getBoundingClientRect().height) || 48;
+      const max = Math.max(180, Math.round(window.innerHeight - top - 8));
       const next = Math.max(120, Math.min(max, h0 + (y0 - e.clientY)));
       document.documentElement.style.setProperty('--ui2dock', next + 'px');
     });
@@ -235,7 +236,10 @@
   function openDock(tab) {
     if (tab === 'scope' && app() && app().ensureScope) app().ensureScope();
     document.body.classList.remove('ui2-dock-min');
-    if (!document.documentElement.style.getPropertyValue('--ui2dock')) document.documentElement.style.setProperty('--ui2dock', '32vh');
+    const topH = ($('#ui2top') && $('#ui2top').getBoundingClientRect().height) || 48;
+    const avail = Math.max(200, window.innerHeight - topH - 8);
+    const opened = tab === 'scope' ? Math.min(avail, Math.max(280, Math.round(window.innerHeight * 0.58))) : Math.min(avail, Math.round(window.innerHeight * 0.32));
+    if (tab === 'scope' || !document.documentElement.style.getPropertyValue('--ui2dock')) document.documentElement.style.setProperty('--ui2dock', opened + 'px');
     const b = document.querySelector(`#tabs [data-tab="${tab}"]`); if (b) b.click();
     document.querySelectorAll('#ui2DockBar [data-tab], #ui2PhoneDock [data-tab]').forEach((x) => x.classList.toggle('on', x.dataset.tab === tab));
     if (document.body.classList.contains('m') && window.Mobile && Mobile.setSheet) Mobile.setSheet('dock');
