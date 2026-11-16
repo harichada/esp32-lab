@@ -2130,8 +2130,23 @@ async function fetchRetry(u, o, n = 4) {
       setTimeout(kickArt, 12000);
     }
     $('#insp').addEventListener('click', (e) => {   // Inspector → probe / pin-to-telemetry buttons
-      const b = e.target.closest('[data-probe],[data-watch]'); if (!b || !window.Instruments) return; const pr = JSON.parse(b.dataset.probe || b.dataset.watch);
-      if (b.dataset.watch) Instruments.watchProbe(pr); else { Instruments.probe(pr); if (document.body.classList.contains('m') && window.Mobile) Mobile.setSheet('scope'); else { const t = document.querySelector('#tabs [data-tab=scope]'); if (t && !t.classList.contains('on')) t.click(); } }
+      const b = e.target.closest('[data-probe],[data-watch]'); if (!b) return;
+      const pr = JSON.parse(b.dataset.probe || b.dataset.watch);
+      if (b.dataset.watch) { if (window.Instruments) Instruments.watchProbe(pr); return; }
+      const doProbe = () => {
+        Instruments.probe(pr);
+        if (document.body.classList.contains('m') && window.Mobile) {
+          // UI2 phone: click the dock Scope tab; original phone: open scope sheet.
+          const ui2Btn = document.querySelector('#ui2PhoneDock [data-tab=scope]');
+          if (ui2Btn) ui2Btn.click(); else Mobile.setSheet('scope');
+        } else {
+          // Desktop: UI2 dock bar first, then original #tabs fallback.
+          const scopeBtn = document.querySelector('#ui2DockBar [data-tab=scope]') || document.querySelector('#tabs [data-tab=scope]');
+          if (scopeBtn && !scopeBtn.classList.contains('on')) scopeBtn.click();
+        }
+      };
+      if (window.Instruments && window.Instruments.__mounted) doProbe();
+      else ensureScope().then(doProbe);
     });
     $('#inPsk').onchange = (e) => { app.world.tv.psk = e.target.value; app.devDirty = true; };
     $('#cbStandby').onchange = (e) => { app.world.tv.networkStandby = e.target.checked; app.devDirty = true; };

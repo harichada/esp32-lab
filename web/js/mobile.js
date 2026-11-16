@@ -19,8 +19,19 @@
 
   function installProbeHooks() {
     if (!window.Instruments) return;
-    Instruments.onArm = () => { if (document.body.classList.contains('m') && sheet === 'scope') { setSheet(null); app && app.cmd && app.cmd.toast('Tap a pin or wire to probe'); } };
-    Instruments.onProbed = () => { if (document.body.classList.contains('m')) setSheet('scope'); };
+    Instruments.onArm = () => {
+      // In UI2 phone mode the scope is in the dock sheet ('dock'), not a standalone 'scope' sheet.
+      if (document.body.classList.contains('m') && (sheet === 'scope' || sheet === 'dock')) {
+        setSheet(null);
+        app && app.cmd && app.cmd.toast('Tap a pin or wire to probe');
+      }
+    };
+    Instruments.onProbed = () => {
+      if (!document.body.classList.contains('m')) return;
+      // In UI2 phone mode, click the dock's Scope tab button to reopen it correctly.
+      const ui2Btn = document.querySelector('#ui2PhoneDock [data-tab=scope]');
+      if (ui2Btn) ui2Btn.click(); else setSheet('scope');
+    };
   }
 
   function setSheet(name) {
