@@ -191,7 +191,7 @@
     tabs.id = 'ui2SideTabs';
     tabs.setAttribute('role', 'radiogroup');
     tabs.setAttribute('aria-label', 'Side panel');
-    tabs.innerHTML = '<button type="button" role="radio" data-side="parts" aria-checked="true">Parts</button><button type="button" role="radio" data-side="props" aria-checked="false">Properties</button>';
+    tabs.innerHTML = '<button type="button" role="radio" data-side="parts" aria-checked="true">Parts</button><button type="button" role="radio" data-side="props" aria-checked="false">Properties</button><button type="button" id="ui2SideClose" aria-label="Toggle side panel" title="Collapse panel"></button>';
     const host = document.getElementById('main') || document.body;
     host.appendChild(tabs);
     const live = document.createElement('div');
@@ -202,7 +202,9 @@
       document.querySelectorAll('body > .toast').forEach((t) => live.appendChild(t));
     }).observe(document.body, { childList: true });
     tabs.onclick = (e) => {
+      if (e.target.closest('#ui2SideClose')) { document.body.classList.toggle('ui2-side-min'); return; }
       const b = e.target.closest('[data-side]'); if (!b) return;
+      document.body.classList.remove('ui2-side-min');
       document.body.classList.toggle('ui2-props', b.dataset.side === 'props');
       paintSide();
     };
@@ -218,7 +220,14 @@
     bar.id = 'ui2DockBar';
     bar.innerHTML = '<button type="button" data-tab="code">Code</button><button type="button" data-tab="serial">Serial</button><button type="button" data-tab="scope">Scope</button><button type="button" id="ui2DockGrip" aria-label="Resize code drawer"></button>';
     dock.prepend(bar);
-    bar.onclick = (e) => { const b = e.target.closest('[data-tab]'); if (b) openDock(b.dataset.tab); };
+    bar.onclick = (e) => {
+      const b = e.target.closest('[data-tab]'); if (!b) return;
+      if (b.classList.contains('on') && !document.body.classList.contains('ui2-dock-min')) {
+        document.body.classList.add('ui2-dock-min');
+      } else {
+        openDock(b.dataset.tab);
+      }
+    };
     const grip = $('#ui2DockGrip');
     let y0 = 0, h0 = 0;
     grip.addEventListener('pointerdown', (e) => {

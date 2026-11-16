@@ -93,6 +93,14 @@ html[data-ui="2"] #ui2SideTabs{
 }
 html[data-ui="2"] #ui2SideTabs button{height:28px;border:0;background:transparent;color:var(--txt2);border-radius:7px;padding:0 10px}
 html[data-ui="2"] #ui2SideTabs button[aria-checked="true"]{background:var(--l3);color:var(--txt)}
+html[data-ui="2"] #ui2SideClose{margin-left:auto;width:28px;padding:0;flex:none;font-size:14px}
+html[data-ui="2"] #ui2SideClose::after{content:'‹'}
+html[data-ui="2"] body:not(.m).ui2-side-min #main{grid-template-columns:minmax(0,1fr) 0px}
+html[data-ui="2"] body:not(.m).ui2-side-min #palette,html[data-ui="2"] body:not(.m).ui2-side-min #side{display:none}
+html[data-ui="2"] body:not(.m).ui2-side-min #ui2SideTabs{width:36px;padding:0 4px}
+html[data-ui="2"] body:not(.m).ui2-side-min #ui2SideTabs [data-side]{display:none}
+html[data-ui="2"] body:not(.m).ui2-side-min #ui2SideClose{margin-left:0}
+html[data-ui="2"] body:not(.m).ui2-side-min #ui2SideClose::after{content:'›'}
 
 html[data-ui="2"] body:not(.m) #dockResizer{display:none}
 html[data-ui="2"] body:not(.m) #center{overflow:hidden;min-height:0}
