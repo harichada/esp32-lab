@@ -1392,9 +1392,7 @@ def seccomp_loads(*, refresh: bool = False) -> bool:
 
 
 def sandbox_ok(*, refresh: bool = False) -> bool:
-    """Bubblewrap probe and seccomp load. True when sandbox is explicitly disabled."""
-    if sandbox_choice() == 'off':
-        return True
+    """Bubblewrap probe and seccomp load. False when disabled or not functioning."""
     if not sandbox_enabled():
         return False
     if resolve_backend() != 'bwrap':
@@ -1409,11 +1407,11 @@ def sandbox_ok(*, refresh: bool = False) -> bool:
 def sandbox_ok_for_run() -> bool:
     """A run re-probes when the last result failed. A recent success is reused.
 
-    When the sandbox is explicitly disabled (``SIM_COMPILE_SANDBOX=off``), the
-    run is also allowed to proceed unsandboxed — matching the compile behaviour.
+    When the sandbox is explicitly disabled (``SIM_COMPILE_SANDBOX=off``) the
+    operator has accepted unsandboxed execution; the run is allowed through.
     """
     if sandbox_choice() == 'off':
-        return True
+        return True  # explicit operator opt-in; callers must not infer sandbox is running
     failed = _bwrap_ok is False or _seccomp_ok is False
     return sandbox_ok(refresh=failed)
 

@@ -294,12 +294,13 @@ def health():
     # qemu_ok and sandbox_ok are redone every 60s. Stderr from the qemu probe stays in the log.
     qemu_ok = qemu_ready()
     sandbox_ok = compileguard.sandbox_ok()
+    sandbox_off = compileguard.sandbox_choice() == 'off'
     compile_ok = bool(ok_c)
-    # A broken sandbox means the lab cannot compile or run. Both flags follow it.
-    if not sandbox_ok:
+    # A broken sandbox (not merely disabled) means the lab cannot compile or run.
+    if not sandbox_ok and not sandbox_off:
         compile_ok = False
         qemu_ok = False
-    ready = bool(ok_q and compile_ok and qemu_ok and sandbox_ok)
+    ready = bool(ok_q and compile_ok and qemu_ok and (sandbox_ok or sandbox_off))
     body = {'ok': ready, 'qemu': QEMU if ok_q else None, 'qemu_ok': qemu_ok,
             'sandbox_ok': sandbox_ok, 'compile_ok': compile_ok,
             'arduino_cli': CLI if ok_c else None, 'fqbn': FQBN, 'runs': len(runs),
