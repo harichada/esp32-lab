@@ -117,7 +117,7 @@ _ETC_FILES = ('/etc/ld.so.cache', '/etc/ld.so.conf', '/etc/passwd', '/etc/group'
 _ETC_DIRS = ('/etc/ld.so.conf.d', '/etc/alternatives')
 _PASS_ENV = (
     'ARDUINO_DIRECTORIES_DATA', 'ARDUINO_DIRECTORIES_USER', 'ARDUINO_DIRECTORIES_DOWNLOADS',
-    'ARDUINO_BUILD_CACHE_PATH', 'ARDUINO_DATA_DIR', 'XDG_CACHE_HOME', 'ARDUINO_CLI',
+    'ARDUINO_BUILD_CACHE_PATH', 'ARDUINO_DATA_DIR', 'XDG_CACHE_HOME', 'ARDUINO_CLI', 'HOME',
 )
 
 
@@ -1392,7 +1392,9 @@ def seccomp_loads(*, refresh: bool = False) -> bool:
 
 
 def sandbox_ok(*, refresh: bool = False) -> bool:
-    """Bubblewrap probe and seccomp load. False when either cannot run."""
+    """Bubblewrap probe and seccomp load. True when sandbox is explicitly disabled."""
+    if sandbox_choice() == 'off':
+        return True
     if not sandbox_enabled():
         return False
     if resolve_backend() != 'bwrap':
@@ -1405,7 +1407,13 @@ def sandbox_ok(*, refresh: bool = False) -> bool:
 
 
 def sandbox_ok_for_run() -> bool:
-    """A run re-probes when the last result failed. A recent success is reused."""
+    """A run re-probes when the last result failed. A recent success is reused.
+
+    When the sandbox is explicitly disabled (``SIM_COMPILE_SANDBOX=off``), the
+    run is also allowed to proceed unsandboxed — matching the compile behaviour.
+    """
+    if sandbox_choice() == 'off':
+        return True
     failed = _bwrap_ok is False or _seccomp_ok is False
     return sandbox_ok(refresh=failed)
 

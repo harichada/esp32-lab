@@ -2041,6 +2041,9 @@ def qemu_thread_pool_args(binary=None) -> list:
 def qemu_sandbox_argv(cmd: list[str], env: dict, rundir) -> tuple[list[str] | None, tuple]:
     """bwrap argv for a QEMU run, and the seccomp fd the caller must pass and close.
 
+    When ``SIM_COMPILE_SANDBOX=off`` the sandbox is disabled for both compile
+    and run; the command is returned unchanged with no seccomp fd.
+
     ``--unshare-all`` includes ``--unshare-net``, so the namespace has only
     ``lo`` and slirp has no route to the host. Host ``/proc`` is not mounted:
     QEMU 9.2.2's esp32 machine, chardevs, slirp, and the unix dgram netdev
@@ -2056,6 +2059,8 @@ def qemu_sandbox_argv(cmd: list[str], env: dict, rundir) -> tuple[list[str] | No
     binds, so a prefix or ``relay.py`` that lives under the temp directory
     is not covered by the tmpfs.
     """
+    if compileguard.sandbox_choice() == 'off':
+        return list(cmd), ()
     rundir = Path(rundir)
     argv = ['bwrap', '--die-with-parent', '--unshare-all', '--new-session']
     # Fresh /tmp before every bind. A --ro-bind of a path under the temp
@@ -2428,8 +2433,9 @@ async def _qemu_session(ws, bid, img, tmp, hold):
     run_cgroup = compileguard.prepare_pids_cgroup(run_limits['nproc'])
     hold['cgroup'] = run_cgroup
     try:
+        qemu_env = spawn_env if compileguard.sandbox_choice() == 'off' else compileguard.host_sandbox_env()
         popen = await asyncio.to_thread(
-            _popen_qemu, launched, compileguard.host_sandbox_env(), seccomp_fds)
+            _popen_qemu, launched, qemu_env, seccomp_fds)
         compileguard.assign_pids_cgroup(run_cgroup, popen.pid)
     except OSError as exc:
         try:
