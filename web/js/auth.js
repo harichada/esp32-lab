@@ -44,26 +44,150 @@
     const root = originOf() + (base ? base + '/' : '/');
     return new URL(rel, root);
   }
-  function openMenu() {
-    const phone = document.body && document.body.classList && document.body.classList.contains('m');
-    if (phone && root.Mobile && typeof root.Mobile.setSheet === 'function') {
-      root.Mobile.setSheet('more');
-      const btn = document.querySelector('#mAuth button');
-      if (btn && typeof btn.focus === 'function') btn.focus();
-      return true;
+  const BRANDS = { google: 'Google', github: 'GitHub', facebook: 'Facebook', x: 'X', twitter: 'X' };
+  const BRAND_ORDER = ['google', 'github', 'facebook', 'x', 'twitter'];
+  const LEAD = 'Sign in to unlock all parts and save projects to your account. Your work on this device stays here.';
+  let opener = null;
+  let trap = null;
+
+  function brandName(id) {
+    if (BRANDS[id]) return BRANDS[id];
+    const raw = String(id || '');
+    return raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : 'this account';
+  }
+  function providerList() {
+    const providers = (session && session.providers) || {};
+    const ids = Object.keys(providers).filter((id) => providers[id]);
+    ids.sort((a, b) => {
+      const ia = BRAND_ORDER.indexOf(a);
+      const ib = BRAND_ORDER.indexOf(b);
+      if (ia < 0 && ib < 0) return a < b ? -1 : a > b ? 1 : 0;
+      if (ia < 0) return 1;
+      if (ib < 0) return -1;
+      return ia - ib;
+    });
+    return ids.map((id) => [id, brandName(id)]);
+  }
+  function partLine(label) {
+    const name = String(label || '').replace(/\s+/g, ' ').trim();
+    if (!name) return '';
+    if (/^sign in free to use/i.test(name)) return name;
+    return 'Sign in free to use ' + (/^the\b/i.test(name) ? '' : 'the ') + name;
+  }
+  function focusables(box) {
+    return [...box.querySelectorAll('button, a[href], input, select, textarea')].filter((el) => !el.disabled && el.getAttribute('aria-hidden') !== 'true');
+  }
+  function closeWindow() {
+    const dlg = document.getElementById('authDlg');
+    if (dlg) dlg.hidden = true;
+    const sign = document.getElementById('bSignIn');
+    if (sign) sign.setAttribute('aria-expanded', 'false');
+    if (trap) {
+      document.removeEventListener('keydown', trap, true);
+      trap = null;
     }
-    const header = document.getElementById('bSignIn');
-    if (header && typeof header.click === 'function') {
-      header.click();
-      return true;
+    const back = opener && opener.isConnected ? opener : sign;
+    opener = null;
+    if (back && typeof back.focus === 'function') {
+      try { back.focus(); } catch (e) { /* the opener may be in a closed sheet */ }
     }
-    const account = document.querySelector('#mAuth button');
-    if (account) {
-      if (root.Mobile && typeof root.Mobile.setSheet === 'function') root.Mobile.setSheet('more');
-      if (typeof account.focus === 'function') account.focus();
-      return true;
+  }
+  function ensureWindow() {
+    let dlg = document.getElementById('authDlg');
+    if (dlg) return dlg;
+    dlg = document.createElement('div');
+    dlg.id = 'authDlg';
+    dlg.className = 'modal auth-dlg';
+    dlg.hidden = true;
+    const box = document.createElement('div');
+    box.className = 'modal-box';
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-modal', 'true');
+    box.setAttribute('aria-labelledby', 'authDlgTitle');
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'auth-x';
+    close.id = 'authDlgClose';
+    close.setAttribute('aria-label', 'Close');
+    close.textContent = '×';
+    close.addEventListener('click', (e) => { e.stopPropagation(); closeWindow(); });
+    const title = document.createElement('h2');
+    title.id = 'authDlgTitle';
+    title.textContent = 'Sign in';
+    const part = document.createElement('p');
+    part.id = 'authDlgPart';
+    part.hidden = true;
+    const lead = document.createElement('p');
+    lead.id = 'authDlgLead';
+    lead.textContent = LEAD;
+    const choices = document.createElement('div');
+    choices.id = 'authDlgChoices';
+    choices.className = 'auth-choices';
+    box.append(close, title, part, lead, choices);
+    dlg.appendChild(box);
+    dlg.addEventListener('click', (e) => {
+      if (e.target === dlg) closeWindow();
+    });
+    document.body.appendChild(dlg);
+    return dlg;
+  }
+  function openWindow(opts) {
+    if (!session || session.signed_in) return false;
+    const choices = providerList();
+    if (!choices.length) return false;
+    const dlg = ensureWindow();
+    const title = document.getElementById('authDlgTitle');
+    const part = document.getElementById('authDlgPart');
+    const line = partLine(opts && opts.part);
+    title.textContent = 'Sign in';
+    if (line) {
+      part.hidden = false;
+      part.textContent = line;
+    } else if (part) {
+      part.hidden = true;
+      part.textContent = '';
     }
-    return false;
+    const list = document.getElementById('authDlgChoices');
+    list.textContent = '';
+    choices.forEach(([id, brand]) => {
+      const b = providerButton(id, 'Continue with ' + brand);
+      b.classList.add('auth-brand');
+      const mark = document.createElement('span');
+      mark.className = 'auth-mark';
+      mark.setAttribute('aria-hidden', 'true');
+      mark.textContent = brand.charAt(0);
+      b.insertBefore(mark, b.firstChild);
+      list.appendChild(b);
+    });
+    const from = (opts && opts.opener) || document.activeElement;
+    opener = from && from !== document.body ? from : document.getElementById('bSignIn');
+    const sign = document.getElementById('bSignIn');
+    if (sign) sign.setAttribute('aria-expanded', 'true');
+    dlg.hidden = false;
+    if (trap) document.removeEventListener('keydown', trap, true);
+    trap = (e) => {
+      if (dlg.hidden) return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        closeWindow();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      const items = focusables(dlg);
+      if (!items.length) return;
+      const i = items.indexOf(document.activeElement);
+      e.preventDefault();
+      if (e.shiftKey) items[i <= 0 ? items.length - 1 : i - 1].focus();
+      else items[(i + 1) % items.length].focus();
+    };
+    document.addEventListener('keydown', trap, true);
+    const first = list.querySelector('button') || document.getElementById('authDlgClose');
+    if (first) first.focus();
+    return true;
+  }
+  function openMenu(opts) {
+    return openWindow(opts);
   }
   function sessionBag() {
     return root.clStorage && root.clStorage.session;
@@ -123,19 +247,6 @@
       toast('Sign-in could not be started. Your work is still on this device.', true);
     }
   }
-  function menuButtons() {
-    const providers = (session && session.providers) || {};
-    const out = [];
-    if (providers.google) out.push(['google', 'Google']);
-    if (providers.github) out.push(['github', 'GitHub']);
-    return out;
-  }
-  function closeMenu() {
-    const menu = $('#authMenu');
-    const btn = $('#bSignIn');
-    if (menu) menu.hidden = true;
-    if (btn) btn.setAttribute('aria-expanded', 'false');
-  }
   function mountHeader() {
     const tb = document.querySelector('header .tb');
     if (!tb || $('#authSlot')) return;
@@ -154,55 +265,19 @@
       out.addEventListener('click', () => signOut(out));
       slot.append(name, out);
     } else {
-      const choices = menuButtons();
-      if (!choices.length) return;
+      if (!providerList().length) return;
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.id = 'bSignIn';
       btn.textContent = 'Sign in';
-      btn.setAttribute('aria-haspopup', choices.length > 1 ? 'menu' : 'false');
+      btn.setAttribute('aria-haspopup', 'dialog');
       btn.setAttribute('aria-expanded', 'false');
-      btn.setAttribute('aria-controls', 'authMenu');
-      const menu = document.createElement('div');
-      menu.id = 'authMenu';
-      menu.className = 'auth-menu';
-      menu.setAttribute('role', 'menu');
-      menu.hidden = true;
-      choices.forEach(([id, label]) => {
-        const item = providerButton(id, 'Sign in with ' + label);
-        item.setAttribute('role', 'menuitem');
-        menu.appendChild(item);
+      btn.setAttribute('aria-controls', 'authDlg');
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openWindow({ opener: btn });
       });
-      btn.addEventListener('click', () => {
-        if (choices.length === 1) { begin(choices[0][0], btn); return; }
-        const open = menu.hidden;
-        menu.hidden = !open;
-        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-        if (open) {
-          const first = menu.querySelector('button');
-          if (first) first.focus();
-        }
-      });
-      btn.addEventListener('keydown', (e) => {
-        if (e.key === 'ArrowDown' && choices.length > 1) {
-          e.preventDefault();
-          menu.hidden = false;
-          btn.setAttribute('aria-expanded', 'true');
-          const first = menu.querySelector('button');
-          if (first) first.focus();
-        }
-      });
-      menu.addEventListener('keydown', (e) => {
-        const items = [...menu.querySelectorAll('button')];
-        const i = items.indexOf(document.activeElement);
-        if (e.key === 'Escape') { e.preventDefault(); closeMenu(); btn.focus(); }
-        else if (e.key === 'ArrowDown') { e.preventDefault(); items[(i + 1) % items.length].focus(); }
-        else if (e.key === 'ArrowUp') { e.preventDefault(); items[(i - 1 + items.length) % items.length].focus(); }
-      });
-      document.addEventListener('click', (e) => {
-        if (!slot.contains(e.target)) closeMenu();
-      });
-      slot.append(btn, menu);
+      slot.appendChild(btn);
     }
     const dot = $('#connDot');
     if (dot && dot.parentNode === tb) tb.insertBefore(slot, dot);
@@ -241,10 +316,16 @@
       box.append(accountHeading(), name, out);
       return;
     }
-    const choices = menuButtons();
-    if (!choices.length) { box.remove(); return; }
-    const buttons = choices.map(([id, text]) => providerButton(id, 'Sign in with ' + text));
-    box.append(accountHeading(), ...buttons);
+    if (!providerList().length) { box.remove(); return; }
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.id = 'mSignIn';
+    btn.textContent = 'Sign in';
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openWindow({ opener: btn });
+    });
+    box.append(accountHeading(), btn);
   }
   function accountWhen(updated) {
     const t = Number(updated);
@@ -345,18 +426,20 @@
       loadAccount(group, status);
       return;
     }
-    const choices = menuButtons();
-    if (!choices.length) return;
+    if (!providerList().length) return;
     const note = document.createElement('p');
     note.className = 'auth-note';
     note.id = 'authProjNote';
     note.textContent = 'Sign in to keep your projects on any device.';
-    const group = document.createElement('div');
-    group.className = 'auth-provs';
-    group.setAttribute('role', 'group');
-    group.setAttribute('aria-labelledby', 'authProjNote');
-    choices.forEach(([id, text]) => group.appendChild(providerButton(id, 'Sign in with ' + text)));
-    box.append(note, group);
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'auth-go';
+    btn.textContent = 'Sign in';
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openWindow({ opener: btn });
+    });
+    box.append(note, btn);
   }
   function signOutCancelled(err) {
     if (!err) return false;
@@ -525,6 +608,8 @@
     begin: begin,
     here: here,
     openMenu: openMenu,
+    openWindow: openWindow,
+    closeWindow: closeWindow,
     returnTarget: returnTarget,
     signOutCancelled: signOutCancelled,
     useSession: useSession,

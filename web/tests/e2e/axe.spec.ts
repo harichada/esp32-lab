@@ -11,6 +11,7 @@ const RULES = [
   'label-title-only',
   'landmark-unique',
   'page-has-heading-one',
+  'heading-order',
   'scrollable-region-focusable',
 ];
 

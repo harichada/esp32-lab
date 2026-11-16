@@ -2828,7 +2828,7 @@ COMPILE_HINTS_META = b'<meta name="compilehints" content="1">'
 STATUS_STRIP_META = b'<meta name="statusstrip" content="1">'
 COMPILE_HINTS_SCRIPT = b'<script src="js/compilehints.js?v=4"></script>'
 STATUS_STRIP_SCRIPT = b'<script src="js/statusstrip.js?v=7"></script>'
-GUEST_PARTS_SCRIPT = b'<script src="js/guestparts.js?v=1"></script>'
+GUEST_PARTS_SCRIPT = b'<script src="js/guestparts.js?v=2"></script>'
 _COMPILE_HINTS_ON = {'1', 'true', 'yes', 'on'}
 def schematic_match_enabled(env=None):
     env = os.environ if env is None else env

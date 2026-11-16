@@ -56,7 +56,7 @@ test('the page has no sign-in entry until a session exists', () => {
   assert.match(auth, /Save your /);
   assert.match(auth, /Not now/);
   assert.match(auth, /role', 'dialog'/);
-  assert.match(html, /auth\.js\?v=5/);
+  assert.match(html, /auth\.js\?v=6/);
 });
 
 test('a cancelled sign-out stays quiet and a real failure still has a message', () => {
@@ -132,15 +132,15 @@ test('phone sign-in is the first More item and opens the provider directly', () 
   assert.equal(box.children[0].tagName, 'h2');
   assert.equal(box.children[0].id, 'mAuthTitle');
   assert.equal(box.children[0].textContent, 'Account');
-  assert.equal(box.children[1].textContent, 'Sign in with GitHub');
-  assert.equal(box.children[1].dataset.provider, 'github');
+  assert.equal(box.children[1].textContent, 'Sign in');
+  assert.equal(box.children[1].id, 'mSignIn');
   assert.equal(more.children[1].textContent, 'Examples');
   useSession({ signed_in: false, providers: { github: true, google: true }, csrf: '' });
   mountMobile();
   const again = more.children[0];
   assert.equal(again.children[0].textContent, 'Account');
-  assert.deepEqual(again.children.slice(1).map((b) => b.textContent), ['Sign in with Google', 'Sign in with GitHub']);
-  assert.equal(again.children.some((n) => n.id === 'mSignIn' || n.id === 'mAuthMenu'), false);
+  assert.deepEqual(again.children.slice(1).map((b) => b.textContent), ['Sign in']);
+  assert.equal(again.children[1].id, 'mSignIn');
   useSession({ signed_in: true, display_name: 'Ada Lovelace', csrf: 'tok', providers: { github: true } });
   mountMobile();
   const signed = more.children[0];

@@ -13,6 +13,7 @@ const RULES = [
   'label-title-only',
   'landmark-unique',
   'page-has-heading-one',
+  'heading-order',
   'scrollable-region-focusable',
 ];
 
@@ -38,7 +39,7 @@ async function install(page: Page) {
       body = body.replace('<head>', '<head>\n<meta name="guestparts" content="' + ALLOW + '">');
     }
     if (!body.includes('guestparts.js')) {
-      body = body.replace('<script src="js/app.js', '<script src="js/guestparts.js?v=1"></script>\n<script src="js/app.js');
+      body = body.replace('<script src="js/app.js', '<script src="js/guestparts.js?v=2"></script>\n<script src="js/app.js');
     }
     await route.fulfill({ response: res, body });
   });
@@ -103,10 +104,23 @@ test('a guest can run Blink and a locked part opens sign-in', async ({ page }) =
   const axe = await new AxeBuilder({ page }).withRules(RULES).analyze();
   const bad = axe.violations.map((v) => v.id + ' ' + v.nodes.length);
   expect(bad, bad.join('\n')).toEqual([]);
-  await locked.focus();
-  await page.keyboard.press('Enter');
-  await expect(page.locator('#authMenu')).toBeVisible();
+  await locked.click({ force: true });
+  const dlg = page.locator('#authDlg');
+  await expect(dlg).toBeVisible();
+  await expect(dlg.locator('[role="dialog"]')).toHaveAttribute('aria-modal', 'true');
+  await expect(dlg.locator('[role="dialog"]')).toHaveAttribute('aria-labelledby', 'authDlgTitle');
+  await expect(dlg.getByText(/Sign in free to use the /)).toBeVisible();
+  await expect(dlg.getByRole('button', { name: 'Continue with Google' })).toBeVisible();
+  await expect(dlg.getByRole('button', { name: 'Continue with GitHub' })).toBeVisible();
+  await page.waitForTimeout(400);
+  await expect(dlg).toBeVisible();
+  const desk = await dlg.locator('.modal-box').boundingBox();
+  expect(desk).not.toBeNull();
+  expect(Math.abs(desk!.x + desk!.width / 2 - 640)).toBeLessThan(40);
+  expect(Math.abs(desk!.y + desk!.height / 2 - 400)).toBeLessThan(80);
+  await page.screenshot({ path: '/opt/cursor/artifacts/signin-window-desktop.png' });
   await page.keyboard.press('Escape');
+  await expect(dlg).toBeHidden();
   const partCount = await page.evaluate(() => (window as unknown as { app: { proj: { parts: unknown[] } } }).app.proj.parts.length);
   await page.locator('#bRun').click();
   await expect.poll(() => page.evaluate(() => (window as unknown as { app?: { compilePhase?: string } }).app?.compilePhase)).toBe('running');
@@ -115,4 +129,35 @@ test('a guest can run Blink and a locked part opens sign-in', async ({ page }) =
   expect(after).toContain('resistor');
   expect(after.length).toBe(partCount);
   expect(errors).toEqual([]);
+});
+
+test.describe('phone sign-in window', () => {
+  test.use({ hasTouch: true });
+  test('a phone tap on a locked part leaves the sign-in window open', async ({ page }) => {
+    const errors = await install(page);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto('/?ex=blink&resume=0');
+    await expect.poll(() => page.evaluate(() => !!(window as unknown as { app?: { cmd?: unknown } }).app?.cmd)).toBe(true);
+    await page.locator('#mParts').click();
+    const locked = page.locator('.pitem-locked').first();
+    await locked.scrollIntoViewIfNeeded();
+    await locked.tap({ force: true });
+    const dlg = page.locator('#authDlg');
+    await expect(dlg).toBeVisible();
+    await page.waitForTimeout(400);
+    await expect(dlg).toBeVisible();
+    const box = await dlg.locator('.modal-box').boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.x).toBeGreaterThanOrEqual(0);
+    expect(box!.width).toBeLessThanOrEqual(390);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(391);
+    expect(box!.y).toBeGreaterThanOrEqual(0);
+    expect(box!.y + box!.height).toBeLessThanOrEqual(844);
+    expect(Math.abs(box!.x + box!.width / 2 - 195)).toBeLessThan(24);
+    expect(Math.abs(box!.y + box!.height / 2 - 422)).toBeLessThan(80);
+    const overflow = await dlg.locator('.modal-box').evaluate((el) => el.scrollWidth <= el.clientWidth + 1);
+    expect(overflow).toBe(true);
+    await page.screenshot({ path: '/opt/cursor/artifacts/signin-window-phone.png' });
+    expect(errors).toEqual([]);
+  });
 });

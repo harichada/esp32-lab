@@ -120,7 +120,7 @@
       const it = e.target.closest('.pitem'); if (!it) return;
       if (it.getAttribute('data-guest-locked') === '1' || (window.GuestParts && GuestParts.blocks(it.dataset.type))) {
         e.preventDefault(); e.stopPropagation();
-        if (window.GuestParts) GuestParts.prompt();
+        if (window.GuestParts) GuestParts.promptType(it.dataset.type);
         return;
       }
       setSheet(null); app.cmd.toast('Added ' + it.querySelector('span').textContent + ' · drag to place');

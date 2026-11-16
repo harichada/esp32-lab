@@ -143,7 +143,7 @@
     select(s) { this.sel = s; for (const [id, g] of this.partEls) g.classList.toggle('sel', !!(s && s.part === id)); this.renderWires(); this.hooks.selected(s); if (!this.mode) this.setHint(); }
     // ---------- model ops ----------
     addPart(type, x, y) {
-      if (root.GuestParts && root.GuestParts.blocks(type)) { root.GuestParts.prompt(); return null; }
+      if (root.GuestParts && root.GuestParts.blocks(type)) { root.GuestParts.promptType(type); return null; }
       const d = P.T[type]; this.push();
       let n = 1; const pre = (d.prefix || type.slice(0, 3).toUpperCase()); while (this.proj.parts.some((p) => p.id === pre + n)) n++;
       const p = { id: pre + n, type, x: snap(x), y: snap(y), rot: 0, props: JSON.parse(JSON.stringify(d.props || {})) };

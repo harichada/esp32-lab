@@ -19,20 +19,24 @@ for (const width of [390, 1280]) {
       await page.getByRole('button', { name: 'More options' }).click();
       const heading = page.getByRole('heading', { name: 'Account' });
       await expect(heading).toBeVisible();
-      const signIn = page.getByRole('button', { name: 'Sign in with GitHub' });
+      const signIn = page.getByRole('button', { name: 'Sign in', exact: true });
       await expect(signIn).toBeVisible();
-      await expect(page.locator('#mMore .m-more-b button').first()).toHaveText('Sign in with GitHub');
-      const box = await signIn.boundingBox();
+      await expect(page.locator('#mMore .m-more-b button').first()).toHaveText('Sign in');
+      await signIn.click();
+      const go = page.getByRole('button', { name: 'Continue with GitHub' });
+      await expect(go).toBeVisible();
+      const box = await go.boundingBox();
       expect(box).not.toBeNull();
       expect(box!.width).toBeGreaterThanOrEqual(44);
       expect(box!.height).toBeGreaterThanOrEqual(44);
       await assertNoGoogle(page);
-      await signIn.click();
+      await go.click();
     } else {
       const header = page.locator('#bSignIn');
       await expect(header).toBeVisible();
       await expect(header).toHaveText('Sign in');
       await header.click();
+      await page.getByRole('button', { name: 'Continue with GitHub' }).click();
     }
     await expect(page.locator('#authName')).toHaveText('Ada Lovelace');
     await expect(page.locator('body')).toHaveClass(/viewsch/);

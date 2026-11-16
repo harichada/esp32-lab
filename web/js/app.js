@@ -70,7 +70,7 @@ async function fetchRetry(u, o, n = 4) {
     // A click on a locked example opens sign-in and leaves the current circuit
     // alone. A shared link (?ex=) still draws the circuit; Run stays blocked.
     if (!(opts && opts.keepLocked) && window.GuestParts && GuestParts.exampleLocked(k)) {
-      GuestParts.prompt();
+      GuestParts.promptExample(k);
       return;
     }
     const ex = Examples.EX[k](); ex.example = k;
@@ -778,7 +778,7 @@ async function fetchRetry(u, o, n = 4) {
   }
   async function startRun() {
     if (window.GuestParts && GuestParts.projectBlocked(app.proj)) {
-      GuestParts.prompt();
+      GuestParts.promptProject(app.proj);
       setCompilePhase('idle');
       setStatus('err', GuestParts.SENTENCE);
       serialAppend('\n[' + GuestParts.SENTENCE + ']\n');
@@ -862,7 +862,7 @@ async function fetchRetry(u, o, n = 4) {
         let body = {};
         try { body = await r.json(); } catch (e) { /* a bare 403 still uses the sentence */ }
         if (body && body.error === 'guest_parts') {
-          if (window.GuestParts) GuestParts.prompt();
+          if (window.GuestParts) GuestParts.promptProject(app.proj);
           const sentence = (body.message) || (window.GuestParts && GuestParts.SENTENCE) || 'Sign in free to use this part';
           setCompilePhase('idle');
           setStatus('err', sentence);
@@ -1152,7 +1152,7 @@ async function fetchRetry(u, o, n = 4) {
       case 'error': {
         if (m.reason === 'guest_parts' || m.error === 'guest_parts') {
           const shown = m.message || (window.GuestParts && GuestParts.SENTENCE) || 'Sign in free to use this part';
-          if (window.GuestParts) GuestParts.prompt();
+          if (window.GuestParts) GuestParts.promptProject(app.proj);
           app.netlog.add({ k: 'info', msg: shown, ok: false });
           serialAppend('\n[' + shown + ']\n');
           setStatus('err', shown);
@@ -1567,20 +1567,27 @@ async function fetchRetry(u, o, n = 4) {
       el.addEventListener('dragstart', (ev) => {
         if (window.GuestParts && GuestParts.blocks(el.dataset.type)) {
           ev.preventDefault();
-          GuestParts.prompt();
+          ev.stopPropagation();
+          GuestParts.promptType(el.dataset.type);
           return;
         }
         ev.dataTransfer.setData('text/x-part', el.dataset.type);
       });
-      el.addEventListener('click', () => {
-        if (window.GuestParts && GuestParts.blocks(el.dataset.type)) { GuestParts.prompt(); return; }
+      el.addEventListener('click', (ev) => {
+        if (window.GuestParts && GuestParts.blocks(el.dataset.type)) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          GuestParts.promptType(el.dataset.type);
+          return;
+        }
         app.editor.addPartInView(el.dataset.type);
       });
       el.addEventListener('keydown', (ev) => {
         if (ev.key !== 'Enter' && ev.key !== ' ') return;
         if (!(window.GuestParts && GuestParts.blocks(el.dataset.type))) return;
         ev.preventDefault();
-        GuestParts.prompt();
+        ev.stopPropagation();
+        GuestParts.promptType(el.dataset.type);
       });
     });
     if (window.GuestParts) GuestParts.markPalette(document);
@@ -1879,7 +1886,7 @@ async function fetchRetry(u, o, n = 4) {
         }
         item.addEventListener('click', (ev) => {
           ev.stopPropagation();
-          if (locked) { if (window.GuestParts) GuestParts.prompt(); closeExamples(); return; }
+          if (locked) { ev.stopPropagation(); if (window.GuestParts) GuestParts.promptExample(opt.value); closeExamples(); return; }
           sel.value = opt.value;
           sel.dispatchEvent(new Event('change'));
           closeExamples();
@@ -1979,7 +1986,7 @@ async function fetchRetry(u, o, n = 4) {
       const value = e.target.value;
       e.target.value = '';
       if (!value) return;
-      if (window.GuestParts && GuestParts.exampleLocked(value)) { GuestParts.prompt(); return; }
+      if (window.GuestParts && GuestParts.exampleLocked(value)) { e.stopPropagation(); GuestParts.promptExample(value); return; }
       loadExample(value);
     };
     // The Examples button replaces the select once the top bar is narrow.

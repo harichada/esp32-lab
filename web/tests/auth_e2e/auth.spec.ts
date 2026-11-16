@@ -29,11 +29,13 @@ async function signIn(page: Page, provider: 'Google' | 'GitHub', width: number) 
   if (width <= 820) {
     await page.getByRole('button', { name: 'More options' }).click();
     await expect(page.getByRole('heading', { name: 'Account' })).toBeVisible();
-    await page.getByRole('button', { name: 'Sign in with ' + provider }).click();
-    return;
+    await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  } else {
+    await page.locator('#bSignIn').click();
   }
-  await page.locator('#bSignIn').click();
-  await page.locator('#authMenu [data-provider="' + provider.toLowerCase() + '"]').click();
+  const dlg = page.locator('#authDlg');
+  await expect(dlg).toBeVisible();
+  await dlg.getByRole('button', { name: 'Continue with ' + provider }).click();
 }
 
 test.afterEach(async ({ page }) => {
@@ -52,9 +54,10 @@ test('Google sign-in at 1280 keeps the project and view and saves local projects
   page.on('request', (req) => {
     if (req.url().includes('/auth/projects/import')) imports.push(req.method());
   });
-  await page.locator('#bSignIn').focus();
-  await page.keyboard.press('ArrowDown');
-  await expect(page.locator('#authMenu')).toBeVisible();
+  await page.locator('#bSignIn').click();
+  const sign = page.locator('#authDlg');
+  await expect(sign).toBeVisible();
+  await expect(sign.getByRole('button', { name: 'Continue with Google' })).toBeFocused();
   await page.keyboard.press('Enter');
   const dialog = page.getByRole('dialog', { name: 'Save your 3 projects to your account?' });
   await expect(dialog).toBeVisible();
@@ -128,7 +131,11 @@ test('390 reaches a provider in two taps and shows Account', async ({ page }) =>
   expect(await heading.evaluate((el) => el.tagName)).toBe('H2');
   await expect(page.locator('#mAuth')).toHaveAttribute('role', 'group');
   await expect(page.locator('#mAuth')).toHaveAttribute('aria-labelledby', 'mAuthTitle');
-  const google = page.getByRole('button', { name: 'Sign in with Google' });
+  const open = page.getByRole('button', { name: 'Sign in', exact: true });
+  await expect(open).toBeVisible();
+  await open.click();
+  taps += 1;
+  const google = page.getByRole('button', { name: 'Continue with Google' });
   await expect(google).toBeVisible();
   const hit = page.waitForRequest((req) => {
     try { return new URL(req.url()).pathname === '/auth/google' && req.method() === 'GET'; }
@@ -137,7 +144,7 @@ test('390 reaches a provider in two taps and shows Account', async ({ page }) =>
   await google.click();
   taps += 1;
   const req = await hit;
-  expect(taps).toBe(2);
+  expect(taps).toBe(3);
   expect(new URL(req.url()).pathname).toBe('/auth/google');
 });
 
@@ -148,9 +155,12 @@ test('GitHub sign-in at 390 uses the More sheet', async ({ page }) => {
   await page.getByRole('button', { name: 'More options' }).click();
   const heading = page.getByRole('heading', { name: 'Account' });
   await expect(heading).toBeVisible();
-  const github = page.getByRole('button', { name: 'Sign in with GitHub' });
+  const account = page.getByRole('button', { name: 'Sign in', exact: true });
+  await expect(account).toBeVisible();
+  await expect(page.locator('#mMore .m-more-b button').first()).toHaveText('Sign in');
+  await account.click();
+  const github = page.getByRole('button', { name: 'Continue with GitHub' });
   await expect(github).toBeVisible();
-  await expect(page.locator('#mMore .m-more-b button').nth(1)).toHaveText('Sign in with GitHub');
   const gitBox = await github.boundingBox();
   expect(gitBox).not.toBeNull();
   expect(gitBox!.width).toBeGreaterThanOrEqual(44);

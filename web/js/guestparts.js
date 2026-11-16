@@ -80,17 +80,26 @@
     for (let i = 0; i < types.length; i++) if (!allowed(types[i], doc)) return true;
     return false;
   }
-  function prompt() {
+  function labelOf(type) {
+    const d = root.Parts && root.Parts.T && root.Parts.T[type];
+    return (d && d.label) || type || '';
+  }
+  function firstLockedLabel(types) {
+    const list = types || [];
+    for (let i = 0; i < list.length; i++) if (!allowed(list[i])) return labelOf(list[i]);
+    return '';
+  }
+  function prompt(label) {
     const auth = root.clAuth;
-    if (auth && typeof auth.openMenu === 'function' && auth.openMenu()) return;
+    const opts = { part: label || '' };
+    if (auth && typeof auth.openWindow === 'function' && auth.openWindow(opts)) return;
+    if (auth && typeof auth.openMenu === 'function' && auth.openMenu(opts)) return;
     const header = typeof document !== 'undefined' && document.getElementById && document.getElementById('bSignIn');
     if (header && typeof header.click === 'function') { header.click(); return; }
-    const phone = typeof document !== 'undefined' && document.querySelector && document.querySelector('#mAuth button');
-    if (phone) {
-      if (root.Mobile && typeof root.Mobile.setSheet === 'function') root.Mobile.setSheet('more');
-      if (typeof phone.focus === 'function') phone.focus();
-    }
   }
+  function promptType(type) { prompt(labelOf(type)); }
+  function promptExample(key) { prompt(firstLockedLabel(exampleParts(key))); }
+  function promptProject(proj) { prompt(firstLockedLabel(partTypes(proj))); }
   function lockSvg() {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('class', 'lock');
@@ -151,6 +160,9 @@
     projectBlocked: projectBlocked,
     exampleLocked: exampleLocked,
     prompt: prompt,
+    promptType: promptType,
+    promptExample: promptExample,
+    promptProject: promptProject,
     markPalette: markPalette,
     markPart: markPart,
   };
