@@ -36,6 +36,7 @@
     if (app().proj) ed().fit();
     syncChrome();
     if (window.__ui2NeedStart && !app().proj) showStart();
+    if (!document.body.classList.contains('m')) openDock('code');
   }
 
   function injectSymbols() {
