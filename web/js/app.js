@@ -2445,6 +2445,7 @@ async function fetchRetry(u, o, n = 4) {
           Instruments.renderStrip(true);
           if (app.proj) Instruments.setProject(app.proj, app.sim);
           Instruments.__mounted = true;
+          if (window.Mobile) Mobile.installProbeHooks();
         }
         return window.Instruments;
       }).catch((e) => { scopePromise = null; throw e; });
