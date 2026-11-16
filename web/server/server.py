@@ -34,7 +34,8 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       0/false/no/off turns the guest starter-part limit off while sign-in stays
       on. GUEST_PARTS is an optional comma list of part type ids that replaces
       the starter set (esp32, breadboard, led, resistor, pushbutton,
-      potentiometer, buzzer). AUTH_ENABLED=0 leaves the lab fully open.
+      potentiometer, buzzer, plus the schematic symbols ground, vcc33,
+      vcc5, and label). AUTH_ENABLED=0 leaves the lab fully open.
       Secrets: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GITHUB_CLIENT_ID,
       GITHUB_CLIENT_SECRET, from the environment or --env-file. See auth.py.
       Live keeps AUTH_GOOGLE=0 until the Google consent screen is published.
@@ -48,7 +49,7 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       on the lab page. A compile timeout then says "It's saved." only when this visitor has a copy,
       and a build server that is down shows one line next to Run. Unset or 0 leaves that behaviour off.
 """
-import asyncio, contextvars, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, argparse
+import asyncio, contextvars, ctypes, hashlib, json, os, re, shutil, subprocess, sys, tempfile, threading, time, argparse
 from email.utils import formatdate
 import diskkeep
 import staging
@@ -2828,7 +2829,7 @@ COMPILE_HINTS_META = b'<meta name="compilehints" content="1">'
 STATUS_STRIP_META = b'<meta name="statusstrip" content="1">'
 COMPILE_HINTS_SCRIPT = b'<script src="js/compilehints.js?v=4"></script>'
 STATUS_STRIP_SCRIPT = b'<script src="js/statusstrip.js?v=7"></script>'
-GUEST_PARTS_SCRIPT = b'<script src="js/guestparts.js?v=2"></script>'
+GUEST_PARTS_SCRIPT = b'<script src="js/guestparts.js?v=3"></script>'
 _COMPILE_HINTS_ON = {'1', 'true', 'yes', 'on'}
 def schematic_match_enabled(env=None):
     env = os.environ if env is None else env
@@ -2910,6 +2911,146 @@ https.apply_env()
 app.add_middleware(auth.AuthMiddleware)
 app.add_middleware(staging.StagingMiddleware)
 refresh_health_cache()
+
+# Finished bwrap children get reparented here when this process is PID 1
+# (the container has no init) or a child subreaper. A SIGCHLD handler that
+# waitpid(-1) would steal the status from subprocess and asyncio, which then
+# report the wrong exit code. This thread only collects pids those callers
+# do not own, and it leaves their zombies for them.
+_REAP_GRACE = 0.5
+_REAP_INTERVAL = 0.25
+_reap_lock = threading.Lock()
+_reap_owned = set()
+_reap_seen = {}
+_reap_installed = False
+_reap_popen_init = subprocess.Popen.__init__
+_reap_handle_exit = subprocess.Popen._handle_exitstatus
+
+
+def _reap_note_popen(self, *args, **kwargs):
+    _reap_popen_init(self, *args, **kwargs)
+    pid = getattr(self, 'pid', None)
+    if not pid:
+        return
+    with _reap_lock:
+        _reap_owned.add(pid)
+        _reap_seen.pop(pid, None)
+
+
+def _reap_note_exit(self, sts, *args, **kwargs):
+    _reap_handle_exit(self, sts, *args, **kwargs)
+    pid = getattr(self, 'pid', None)
+    if not pid:
+        return
+    try:
+        with _reap_lock:
+            _reap_owned.discard(pid)
+            _reap_seen.pop(pid, None)
+    except Exception:
+        pass
+
+
+def _reap_drop_collected():
+    """Forget pids subprocess or asyncio has already collected."""
+    with _reap_lock:
+        pids = list(_reap_owned)
+    gone = []
+    for pid in pids:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            gone.append(pid)
+        except OSError:
+            pass
+    if not gone:
+        return
+    with _reap_lock:
+        for pid in gone:
+            _reap_owned.discard(pid)
+            _reap_seen.pop(pid, None)
+
+
+def reap_orphans():
+    """Collect exited children that subprocess is not waiting on.
+
+    Owned pids stay zombies until Popen or the asyncio watcher collects
+    them, so their exit status is unchanged. A pid that has only just
+    appeared waits out the grace period, which is long enough for Popen
+    to record it.
+    """
+    skipped = set()
+    while True:
+        try:
+            info = os.waitid(os.P_ALL, 0, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except ChildProcessError:
+            return
+        except OSError:
+            return
+        if info is None:
+            return
+        pid = int(getattr(info, 'si_pid', 0) or 0)
+        if pid <= 0 or pid in skipped:
+            return
+        now = time.monotonic()
+        with _reap_lock:
+            owned = pid in _reap_owned
+            seen = _reap_seen.get(pid)
+            if not owned and seen is None:
+                _reap_seen[pid] = now
+                seen = now
+        if owned or now - seen < _REAP_GRACE:
+            skipped.add(pid)
+            continue
+        try:
+            got, _sts = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            with _reap_lock:
+                _reap_seen.pop(pid, None)
+            continue
+        if got != pid:
+            skipped.add(pid)
+            continue
+        with _reap_lock:
+            _reap_seen.pop(pid, None)
+
+
+def _reap_loop():
+    while True:
+        try:
+            _reap_drop_collected()
+            reap_orphans()
+        except Exception:
+            pass
+        time.sleep(_REAP_INTERVAL)
+
+
+def _enable_child_subreaper():
+    """Orphans of our descendants come back here, including when we are not PID 1."""
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
+        libc.prctl.restype = ctypes.c_int
+        # PR_SET_CHILD_SUBREAPER
+        if libc.prctl(36, 1, 0, 0, 0) != 0:
+            return False
+    except (OSError, AttributeError):
+        return False
+    return True
+
+
+def install_child_reaper():
+    """Start the orphan reaper once. Safe to call again."""
+    global _reap_installed
+    if _reap_installed:
+        return
+    _reap_installed = True
+    subprocess.Popen.__init__ = _reap_note_popen
+    subprocess.Popen._handle_exitstatus = _reap_note_exit
+    _enable_child_subreaper()
+    threading.Thread(target=_reap_loop, name='child-reaper', daemon=True).start()
+
+
+install_child_reaper()
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(); ap.add_argument('--port', type=int, default=8765); ap.add_argument('--host', default='127.0.0.1')

@@ -49,7 +49,8 @@ class GuestPartsDecisionTests(unittest.TestCase):
     def test_mapping_is_the_catalog_ids(self):
         self.assertEqual(
             guestparts.DEFAULT_PARTS,
-            ('esp32', 'breadboard', 'led', 'resistor', 'pushbutton', 'potentiometer', 'buzzer'),
+            ('esp32', 'breadboard', 'led', 'resistor', 'pushbutton', 'potentiometer', 'buzzer',
+             'ground', 'vcc33', 'vcc5', 'label'),
         )
 
 
@@ -180,8 +181,8 @@ class GuestPartsHttpTests(unittest.TestCase):
         os.environ.pop('GUEST_PARTS_LIMIT', None)
         body, plain = server.lab_page()
         self.assertFalse(plain)
-        self.assertIn(b'<meta name="guestparts" content="esp32,breadboard,led,resistor,pushbutton,potentiometer,buzzer">', body)
-        self.assertIn(b'js/guestparts.js?v=2', body)
+        self.assertIn(b'<meta name="guestparts" content="esp32,breadboard,led,resistor,pushbutton,potentiometer,buzzer,ground,vcc33,vcc5,label">', body)
+        self.assertIn(b'js/guestparts.js?v=3', body)
         os.environ['GUEST_PARTS_LIMIT'] = '0'
         body, plain = server.lab_page()
         self.assertNotIn(b'name="guestparts"', body)

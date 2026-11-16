@@ -56,7 +56,14 @@ test('the page has no sign-in entry until a session exists', () => {
   assert.match(auth, /Save your /);
   assert.match(auth, /Not now/);
   assert.match(auth, /role', 'dialog'/);
-  assert.match(html, /auth\.js\?v=6/);
+  assert.match(auth, /#4285F4/);
+  assert.match(auth, /#34A853/);
+  assert.match(auth, /#FBBC05/);
+  assert.match(auth, /#EA4335/);
+  assert.match(auth, /currentColor/);
+  assert.match(auth, /aria-hidden', 'true'/);
+  assert.doesNotMatch(auth, /<img|new Image|fetch\(['"]https?:/);
+  assert.match(html, /auth\.js\?v=7/);
 });
 
 test('a cancelled sign-out stays quiet and a real failure still has a message', () => {

@@ -4,7 +4,7 @@
  * The page does not load this file when the limit is off. */
 (function (root) {
   const SENTENCE = 'Sign in free to use this part';
-  const DEFAULTS = ['esp32', 'breadboard', 'led', 'resistor', 'pushbutton', 'potentiometer', 'buzzer'];
+  const DEFAULTS = ['esp32', 'breadboard', 'led', 'resistor', 'pushbutton', 'potentiometer', 'buzzer', 'ground', 'vcc33', 'vcc5', 'label'];
   let signedIn = false;
   const exampleCache = new Map();
 

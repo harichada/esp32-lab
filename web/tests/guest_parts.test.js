@@ -19,7 +19,7 @@ test('the limit is off without the meta and on with the starter list', () => {
   meta(null);
   assert.equal(G.enabled(), false);
   assert.equal(G.blocks('servo'), false);
-  meta('esp32,breadboard,led,resistor,pushbutton,potentiometer,buzzer');
+  meta('esp32,breadboard,led,resistor,pushbutton,potentiometer,buzzer,ground,vcc33,vcc5,label');
   G.noteSession({ signed_in: false });
   assert.equal(G.enabled(), true);
   assert.equal(G.allowed('led'), true);
@@ -78,7 +78,7 @@ test('a locked palette part shows the sentence and a click opens sign-in', () =>
 });
 
 test('blink uses only starter parts and a servo example does not', () => {
-  meta('esp32,breadboard,led,resistor,pushbutton,potentiometer,buzzer');
+  meta('esp32,breadboard,led,resistor,pushbutton,potentiometer,buzzer,ground,vcc33,vcc5,label');
   G.noteSession({ signed_in: false });
   global.Examples = {
     EX: {
@@ -88,4 +88,21 @@ test('blink uses only starter parts and a servo example does not', () => {
   };
   assert.equal(G.exampleLocked('blink'), false);
   assert.equal(G.exampleLocked('servo'), true);
+});
+
+test('pot, fade, and the JS pot stay open because ground is a starter symbol', () => {
+  require('../js/parts.js');
+  require('../js/examples.js');
+  meta('esp32,breadboard,led,resistor,pushbutton,potentiometer,buzzer,ground,vcc33,vcc5,label');
+  G.noteSession({ signed_in: false });
+  for (const key of ['pot', 'fade', 'potjs']) {
+    assert.equal(G.exampleLocked(key), false, key);
+    const types = globalThis.Examples.EX[key]().parts.map((p) => p.type);
+    for (const type of types) assert.equal(G.allowed(type), true, key + ' ' + type);
+  }
+  assert.equal(G.allowed('ground'), true);
+  assert.equal(G.allowed('vcc33'), true);
+  assert.equal(G.allowed('vcc5'), true);
+  assert.equal(G.allowed('label'), true);
+  assert.equal(G.allowed('servo'), false);
 });

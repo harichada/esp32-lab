@@ -152,11 +152,7 @@
     choices.forEach(([id, brand]) => {
       const b = providerButton(id, 'Continue with ' + brand);
       b.classList.add('auth-brand');
-      const mark = document.createElement('span');
-      mark.className = 'auth-mark';
-      mark.setAttribute('aria-hidden', 'true');
-      mark.textContent = brand.charAt(0);
-      b.insertBefore(mark, b.firstChild);
+      b.insertBefore(brandMark(id, brand), b.firstChild);
       list.appendChild(b);
     });
     const from = (opts && opts.opener) || document.activeElement;
@@ -220,6 +216,42 @@
     else sp.delete('view');
     const q = sp.toString();
     return path + (q ? '?' + q : '');
+  }
+  function svgMark() {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', 'auth-mark');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.setAttribute('focusable', 'false');
+    return svg;
+  }
+  function svgPath(svg, d, fill) {
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', d);
+    path.setAttribute('fill', fill);
+    svg.appendChild(path);
+    return path;
+  }
+  function brandMark(id, brand) {
+    // Drawn here. No image request. The button text is the accessible name.
+    if (id === 'google') {
+      const svg = svgMark();
+      svgPath(svg, 'M23.49 12.27c0-.79-.07-1.54-.2-2.27H12v4.3h6.45a5.52 5.52 0 0 1-2.39 3.62v3h3.87c2.26-2.09 3.56-5.16 3.56-8.65z', '#4285F4');
+      svgPath(svg, 'M12 24c3.24 0 5.96-1.07 7.95-2.91l-3.87-3c-1.08.72-2.45 1.15-4.08 1.15-3.13 0-5.78-2.11-6.73-4.96H1.26v3.09A12 12 0 0 0 12 24z', '#34A853');
+      svgPath(svg, 'M5.27 14.28A7.2 7.2 0 0 1 4.89 12c0-.79.14-1.56.38-2.28V6.63H1.26a12 12 0 0 0 0 10.74l4.01-3.09z', '#FBBC05');
+      svgPath(svg, 'M12 4.75c1.77 0 3.35.61 4.6 1.8l3.45-3.45C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.69 1.26 6.63l4.01 3.09C6.22 6.86 8.87 4.75 12 4.75z', '#EA4335');
+      return svg;
+    }
+    if (id === 'github') {
+      const svg = svgMark();
+      svgPath(svg, 'M12 .3C5.37.3 0 5.67 0 12.3c0 5.3 3.44 9.8 8.21 11.38.6.11.82-.26.82-.58 0-.28-.01-1.04-.02-2.04-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.33-1.76-1.33-1.76-1.09-.74.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.8 1.3 3.49 1 .1-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.12-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.29-1.55 3.3-1.23 3.3-1.23.66 1.66.25 2.88.12 3.18.77.84 1.23 1.91 1.23 3.22 0 4.61-2.81 5.62-5.49 5.92.43.37.81 1.1.81 2.22 0 1.6-.01 2.9-.01 3.29 0 .32.22.7.83.58A12.02 12.02 0 0 0 24 12.3C24 5.67 18.63.3 12 .3z', 'currentColor');
+      return svg;
+    }
+    const mark = document.createElement('span');
+    mark.className = 'auth-mark auth-letter';
+    mark.setAttribute('aria-hidden', 'true');
+    mark.textContent = String(brand || id || '?').charAt(0);
+    return mark;
   }
   function providerButton(provider, label) {
     const b = document.createElement('button');

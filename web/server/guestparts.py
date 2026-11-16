@@ -26,8 +26,15 @@ import re
 #   pushbutton    Pushbutton 6 mm
 #   potentiometer Potentiometer  (not the 3296 trimmer)
 #   buzzer        Buzzer (active) (not the passive 12085 buzzer)
+# Schematic symbols, not parts you buy. Pot, Fade, and Pot (JS) place a
+# ground. 3.3 V, 5 V, and a text label are the same kind of symbol.
+#   ground        Ground
+#   vcc33         3.3 V supply
+#   vcc5          5 V supply
+#   label         Text label (a net label on the sheet)
 DEFAULT_PARTS = (
     'esp32', 'breadboard', 'led', 'resistor', 'pushbutton', 'potentiometer', 'buzzer',
+    'ground', 'vcc33', 'vcc5', 'label',
 )
 MESSAGE = 'Sign in free to use this part'
 _ON = {'1', 'true', 'yes', 'on'}

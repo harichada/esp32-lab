@@ -39,7 +39,7 @@ async function install(page: Page) {
       body = body.replace('<head>', '<head>\n<meta name="guestparts" content="' + ALLOW + '">');
     }
     if (!body.includes('guestparts.js')) {
-      body = body.replace('<script src="js/app.js', '<script src="js/guestparts.js?v=2"></script>\n<script src="js/app.js');
+      body = body.replace('<script src="js/app.js', '<script src="js/guestparts.js?v=3"></script>\n<script src="js/app.js');
     }
     await route.fulfill({ response: res, body });
   });
@@ -112,6 +112,14 @@ test('a guest can run Blink and a locked part opens sign-in', async ({ page }) =
   await expect(dlg.getByText(/Sign in free to use the /)).toBeVisible();
   await expect(dlg.getByRole('button', { name: 'Continue with Google' })).toBeVisible();
   await expect(dlg.getByRole('button', { name: 'Continue with GitHub' })).toBeVisible();
+  const googleMark = dlg.locator('button[data-provider="google"] svg.auth-mark');
+  const githubMark = dlg.locator('button[data-provider="github"] svg.auth-mark');
+  await expect(googleMark).toHaveCount(1);
+  await expect(githubMark).toHaveCount(1);
+  await expect(googleMark).toHaveAttribute('aria-hidden', 'true');
+  await expect(githubMark).toHaveAttribute('aria-hidden', 'true');
+  await expect(googleMark.locator('path')).toHaveCount(4);
+  await expect(githubMark.locator('path')).toHaveCount(1);
   await page.waitForTimeout(400);
   await expect(dlg).toBeVisible();
   const desk = await dlg.locator('.modal-box').boundingBox();

@@ -33,18 +33,37 @@ SCRIPT = textwrap.dedent(r'''
     key = 'thread-pool-max='
     if key in text:
         cap = int(text.split(key, 1)[1].split(',', 1)[0].split()[0])
-    n = 0
-    for pid in os.listdir('/proc'):
-        if not pid.isdigit():
-            continue
-        try:
-            n += len(os.listdir('/proc/%s/task' % pid))
-        except OSError:
-            pass
+    def user_tasks():
+        # RLIMIT_NPROC counts this uid's tasks on the whole host. Counting
+        # every task we can see in /proc made the limit higher than this
+        # user's usage, so a 64-thread pool still fitted.
+        uid = os.getuid()
+        total = 0
+        for name in os.listdir('/proc'):
+            if not name.isdigit():
+                continue
+            try:
+                if os.stat('/proc/' + name).st_uid != uid:
+                    continue
+                total += len(os.listdir('/proc/' + name + '/task'))
+            except OSError:
+                continue
+        return total
+    n = user_tasks()
     # Room for the capped pool (8) and a little noise. The old default of 64
     # does not fit, which is the abort this cap exists to stop.
-    limit = n + 40
-    resource.setrlimit(resource.RLIMIT_NPROC, (limit, limit))
+    headroom = 40
+    limit = n + headroom
+    _soft, hard = resource.getrlimit(resource.RLIMIT_NPROC)
+    if hard != resource.RLIM_INFINITY and limit > hard:
+        limit = hard
+    resource.setrlimit(resource.RLIMIT_NPROC, (limit, hard))
+    if cap <= 8:
+        live = user_tasks()
+        if limit < live + cap + 4:
+            want = live + headroom
+            if hard == resource.RLIM_INFINITY or want <= hard:
+                resource.setrlimit(resource.RLIMIT_NPROC, (want, hard))
     def hold():
         threading.Event().wait(30)
     try:

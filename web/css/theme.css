@@ -444,10 +444,9 @@ body.m .auth-dlg .modal-box{width:min(380px,calc(100vw - 32px));max-width:calc(1
 .auth-x{position:absolute;top:8px;right:8px;width:44px;height:44px;min-width:44px;min-height:44px;padding:0;border-radius:10px;font-size:22px;line-height:1}
 .auth-choices{display:flex;flex-direction:column;gap:8px;width:100%}
 .auth-brand{width:100%;min-height:44px;height:auto;justify-content:center;gap:10px;font-weight:650;white-space:normal}
-.auth-mark{width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;background:#fff;color:#1a1d22;font:750 12px/1 system-ui,sans-serif;flex:none}
-.auth-brand[data-provider="google"] .auth-mark{color:#1a73e8}
-.auth-brand[data-provider="github"] .auth-mark{background:#1b1f24;color:#fff}
-.auth-brand[data-provider="facebook"] .auth-mark{color:#1877f2}
+svg.auth-mark{width:18px;height:18px;flex:none;display:block}
+.auth-letter{width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;background:#fff;color:#1a1d22;font:750 12px/1 system-ui,sans-serif;flex:none}
+.auth-brand[data-provider="facebook"] .auth-letter{color:#1877f2}
 .auth-slot{display:inline-flex;align-items:center;gap:6px;position:relative}
 .insp-h{margin:12px 0 6px;font-size:13px;font-weight:650;line-height:1.3}
 .auth-who{max-width:14ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-weight:600}
