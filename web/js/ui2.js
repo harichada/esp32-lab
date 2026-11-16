@@ -33,6 +33,7 @@
     tameSymbols();
     const obs = new MutationObserver(syncChrome);
     obs.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+    document.body.classList.remove('c-dock');
     if (app().proj) ed().fit();
     syncChrome();
     if (window.__ui2NeedStart && !app().proj) showStart();
@@ -248,6 +249,7 @@
     dockTab = tab;
     if (tab === 'scope' && app() && app().ensureScope) app().ensureScope();
     document.body.classList.remove('ui2-dock-min');
+    document.body.classList.remove('c-dock');
     const topH = ($('#ui2top') && $('#ui2top').getBoundingClientRect().height) || 48;
     const avail = Math.max(200, window.innerHeight - topH - 8);
     const opened = tab === 'scope' ? Math.min(avail, Math.max(280, Math.round(window.innerHeight * 0.58))) : Math.min(avail, Math.round(window.innerHeight * 0.32));

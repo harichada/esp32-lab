@@ -103,6 +103,7 @@ html[data-ui="2"] body:not(.m).ui2-side-min #ui2SideClose{margin-left:0}
 html[data-ui="2"] body:not(.m).ui2-side-min #ui2SideClose::after{content:'›'}
 
 html[data-ui="2"] body:not(.m) #dockResizer{display:none}
+html[data-ui="2"] body:not(.m).c-dock #dock{display:flex!important}
 html[data-ui="2"] body:not(.m) #center{overflow:hidden;min-height:0}
 html[data-ui="2"] body:not(.m) #dock{
   height:var(--ui2dock,36px);min-height:36px;overflow:hidden;
