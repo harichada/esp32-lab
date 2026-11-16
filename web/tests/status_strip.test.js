@@ -218,7 +218,7 @@ test('the module never builds HTML from a log', () => {
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
   assert.doesNotMatch(html, /js\/statusstrip\.js/);
   assert.doesNotMatch(html, /js\/compilehints\.js/);
-  assert.match(html, /js\/app\.js\?v=101/);
+  assert.match(html, /js\/app\.js\?v=102/);
   assert.doesNotMatch(html, /id="statusStrip"/);
   for (const banned of ['84', '86', '87', '88', '89', '90', '91', '92']) assert.doesNotMatch(html, new RegExp('js/app\\.js\\?v=' + banned + '(?:\\D|$)'));
   assert.doesNotMatch(html, /js\/projects\.js\?v=48/);

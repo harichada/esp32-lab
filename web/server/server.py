@@ -48,6 +48,9 @@ Env:  QEMU_BIN (default ~/qemu-gpio/bin/qemu-system-xtensa or ~/qemu-src/build/q
       STATUS_STRIP_ENABLED (default 0). 1, true, yes, or on puts <meta name="statusstrip" content="1">
       on the lab page. A compile timeout then says "It's saved." only when this visitor has a copy,
       and a build server that is down shows one line next to Run. Unset or 0 leaves that behaviour off.
+      UI2 (default 0). 1, true, yes, or on puts <meta name="ui2" content="1"> on the lab page so the
+      Workbench shell loads. Unset or 0 serves the current interface. ?ui=2 on the page forces the
+      shell on, and ?ui=0 or ?ui=1 forces it off, either way without a second request.
 """
 import asyncio, contextvars, ctypes, hashlib, json, os, re, shutil, subprocess, sys, tempfile, threading, time, argparse
 from email.utils import formatdate
@@ -2827,6 +2830,7 @@ AUTH_META = b'<meta name="cl-auth" content="1">'
 # on, the file is served byte-for-byte.
 COMPILE_HINTS_META = b'<meta name="compilehints" content="1">'
 STATUS_STRIP_META = b'<meta name="statusstrip" content="1">'
+UI2_META = b'<meta name="ui2" content="1">'
 COMPILE_HINTS_SCRIPT = b'<script src="js/compilehints.js?v=4"></script>'
 STATUS_STRIP_SCRIPT = b'<script src="js/statusstrip.js?v=7"></script>'
 GUEST_PARTS_SCRIPT = b'<script src="js/guestparts.js?v=4"></script>'
@@ -2840,6 +2844,9 @@ def compile_hints_enabled(env=None):
 def status_strip_enabled(env=None):
     env = os.environ if env is None else env
     return str(env.get('STATUS_STRIP_ENABLED', '0')).strip().lower() in _COMPILE_HINTS_ON
+def ui2_enabled(env=None):
+    env = os.environ if env is None else env
+    return str(env.get('UI2', '0')).strip().lower() in _COMPILE_HINTS_ON
 def lab_page(env=None):
     """Lab HTML and whether it is the file unchanged.
 
@@ -2874,6 +2881,8 @@ def lab_page(env=None):
         head.append(COMPILE_HINTS_META)
     if status_strip_enabled(env) and STATUS_STRIP_META not in body:
         head.append(STATUS_STRIP_META)
+    if ui2_enabled(env) and UI2_META not in body:
+        head.append(UI2_META)
     if head:
         body = body.replace(b'<head>', b'<head>\n' + b'\n'.join(head), 1)
     scripts = []

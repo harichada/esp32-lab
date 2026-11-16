@@ -573,11 +573,11 @@ test('the busy Run button is grey, keeps its spinner, and theme.css is cache-bus
   const mv = html.match(/mobile\.css\?v=(\d+)/);
   assert.equal(mv && mv[1], '75');
   const av = html.match(/app\.js\?v=(\d+)/);
-  assert.equal(av && av[1], '101');
+  assert.equal(av && av[1], '102');
   const mj = html.match(/mobile\.js\?v=(\d+)/);
   assert.equal(mj && mj[1], '72');
   const ev = html.match(/editor\.js\?v=(\d+)/);
-  assert.equal(ev && ev[1], '67');
+  assert.equal(ev && ev[1], '68');
   const appjs = fs.readFileSync(path.join(__dirname, '../js/app.js'), 'utf8');
   assert.match(appjs, /new ResizeObserver\(\(\) => syncStripMetrics\(\)\)/);
   assert.match(appjs, /stripObserver\.observe\(el\)/);

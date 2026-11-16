@@ -1434,7 +1434,11 @@ async function fetchRetry(u, o, n = 4) {
     if (!sel) { el.innerHTML = '<p class="muted">Select a part or wire.</p>'; return; }
     if (sel.wire) {
       const w = app.proj.wires.find((q) => q.id === sel.wire); if (!w) { el.innerHTML = '<p class="muted">Select a part or wire.</p>'; return; }
-      el.innerHTML = `<h3>Wire ${w.id}</h3><div class="insp-k">Colour</div><div class="row wrap">${Object.keys(window.WIRE_COLORS).map((c) => `<button class="sw ${w.color === c ? 'on' : ''}" data-col="${c}" style="background:${window.WIRE_COLORS[c]}" title="${c}"></button>`).join('')}</div><p id="ro" class="ro"></p><div class="row probe-row"><button class="probe-b" data-probe='${JSON.stringify({ kind: 'wire', wire: w.id })}'>⌁ Probe on scope</button><button class="probe-b" data-watch='${JSON.stringify({ kind: 'wire', wire: w.id })}'>📌 Telemetry</button></div><button id="iDel">Delete wire</button>`;
+      const ui2 = document.documentElement.dataset.ui === '2';
+      const probeWire = ui2
+        ? `<button class="probe-b" aria-label="Probe on scope" data-probe='${JSON.stringify({ kind: 'wire', wire: w.id })}'><svg class="ic" aria-hidden="true"><use href="#i-flow"/></svg> Probe</button><button class="probe-b" aria-label="Pin to telemetry" data-watch='${JSON.stringify({ kind: 'wire', wire: w.id })}'><svg class="ic" aria-hidden="true"><use href="#i-map"/></svg> Watch</button>`
+        : `<button class="probe-b" data-probe='${JSON.stringify({ kind: 'wire', wire: w.id })}'>⌁ Probe on scope</button><button class="probe-b" data-watch='${JSON.stringify({ kind: 'wire', wire: w.id })}'>📌 Telemetry</button>`;
+      el.innerHTML = `<h3>Wire ${w.id}</h3><div class="insp-k">Colour</div><div class="row wrap">${Object.keys(window.WIRE_COLORS).map((c) => `<button class="sw ${w.color === c ? 'on' : ''}" data-col="${c}" style="background:${window.WIRE_COLORS[c]}" title="${c}"></button>`).join('')}</div><p id="ro" class="ro"></p><div class="row probe-row">${probeWire}</div><button id="iDel">Delete wire</button>`;
       el.querySelectorAll('[data-col]').forEach((b) => b.onclick = () => { app.editor.setWireColor(b.dataset.col); renderInspector(sel); });
       $('#iDel').onclick = () => app.editor.deleteSel(); return;
     }
@@ -1459,7 +1463,13 @@ async function fetchRetry(u, o, n = 4) {
       const tip = physical ? 'Turn this part end for end (F)' : P.NO_FLIP_TIP;
       flipBtns = `<button id="iFlip" class="${on ? 'on' : ''} ${physical ? '' : 'is-off'}" aria-disabled="${physical ? 'false' : 'true'}" title="${P.esc(tip)}">↔ Flip</button>`;
     }
-    h += `<p id="ro" class="ro"></p><div class="row"><button id="iRot">⟳ Rotate</button>${flipBtns}<button id="iDel">🗑 Delete</button></div><div id="pinTable"></div>`;
+    const ui2 = document.documentElement.dataset.ui === '2';
+    const rotLab = ui2 ? '<svg class="ic" aria-hidden="true"><use href="#i-rotate"/></svg> Rotate' : '⟳ Rotate';
+    const delLab = ui2 ? '<svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg> Delete' : '🗑 Delete';
+    if (ui2) {
+      flipBtns = flipBtns.replace('↔ Flip H', '<svg class="ic" aria-hidden="true"><use href="#i-flip"/></svg> Flip H').replace('↕ Flip V', '<svg class="ic" aria-hidden="true"><use href="#i-flip"/></svg> Flip V').replace('↔ Flip', '<svg class="ic" aria-hidden="true"><use href="#i-flip"/></svg> Flip');
+    }
+    h += `<p id="ro" class="ro"></p><div class="row"><button id="iRot">${rotLab}</button>${flipBtns}<button id="iDel">${delLab}</button></div><div id="pinTable"></div>`;
     el.innerHTML = h;
     el.querySelectorAll('[data-k]').forEach((inp) => {
       const k = inp.dataset.k, ev = inp.type === 'range' ? 'input' : 'change';
@@ -1492,7 +1502,10 @@ async function fetchRetry(u, o, n = 4) {
       const v = app.sim.pinVoltage(p, q.name); let extra = '';
       if (rt) { const g = P.espGpio(q.name); if (g >= 0) { const s = rt.pins[g]; extra = `<td>${s.out ? (s.pwm !== undefined ? 'PWM ' + Math.round(s.pwm * 100) + '%' : 'OUT ' + s.level) : 'IN' + (s.pu ? '↑' : '') + (s.pd ? '↓' : '')}</td><td class="muted">${P.esc(d.info(q.name))}</td>`; } else extra = '<td></td><td></td>'; }
       const pj = P.esc(JSON.stringify({ kind: 'pin', part: p.id, pin: q.name, label: p.id + '.' + q.name }));
-      return `<tr><td>${P.esc(q.name)}</td><td>${P.fmt(v, 'V')}</td>${extra}<td class="pacts"><button class="pa" title="Probe on scope" data-probe="${pj}">⌁</button><button class="pa" title="Pin to telemetry strip" data-watch="${pj}">📌</button></td></tr>`;
+      const acts = document.documentElement.dataset.ui === '2'
+        ? `<button class="pa" aria-label="Probe on scope" data-probe="${pj}"><svg class="ic" aria-hidden="true"><use href="#i-flow"/></svg></button><button class="pa" aria-label="Pin to telemetry" data-watch="${pj}"><svg class="ic" aria-hidden="true"><use href="#i-map"/></svg></button>`
+        : `<button class="pa" title="Probe on scope" data-probe="${pj}">⌁</button><button class="pa" title="Pin to telemetry strip" data-watch="${pj}">📌</button>`;
+      return `<tr><td>${P.esc(q.name)}</td><td>${P.fmt(v, 'V')}</td>${extra}<td class="pacts">${acts}</td></tr>`;
     }).join('') + '</table>';
   }
   // ---------------- hover tooltip ----------------
@@ -2080,6 +2093,7 @@ async function fetchRetry(u, o, n = 4) {
     if (pid && store.get(pid)) openProject(pid);
     else if (q && Examples.EX[q]) loadExample(q, { keepLocked: true });
     else if (store.current() && store.get(store.current())) openProject(store.current());
+    else if (document.documentElement.dataset.ui === '2' && window.UI2 && UI2.freshStart) UI2.freshStart();
     else loadExample('blink');
     try {
       const viewQ = sp.get('view');
