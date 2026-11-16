@@ -80,8 +80,17 @@ test('first-run card, Blink in 15 clicks, copy and the lock bar', async ({ page 
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto('/?ui=2&resume=0');
   await ready(page);
+  await expect.poll(() => page.evaluate(async () => {
+    await document.fonts.load('16px Inter');
+    await document.fonts.load('12px "JetBrains Mono"');
+    return document.fonts.check('16px Inter') && document.fonts.check('12px "JetBrains Mono"');
+  })).toBe(true);
   await expect(page.locator('#ui2Start')).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as unknown as { app: { proj: unknown } }).app.proj)).toBeNull();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#ui2Start')).toBeHidden();
+  await page.evaluate(() => { const s = document.getElementById('ui2Start'); if (s) s.hidden = false; });
+  await expect(page.locator('#ui2Start')).toBeVisible();
   await axe(page);
   await shot(page, 'ui2-after-desk-dark-start.png');
 
@@ -170,6 +179,27 @@ test('desktop light and the running canvas', async ({ page }) => {
   await shot(page, 'ui2-after-desk-light.png');
   await page.evaluate(() => { document.documentElement.dataset.theme = 'dark'; });
   await shot(page, 'ui2-after-desk-dark.png');
+  await page.locator('#ui2Examples').click();
+  await expect(page.locator('#ui2ExGrid button').first()).toBeVisible();
+  await expect(page.locator('#ui2Ex .ui2-ex-title').first()).toBeVisible();
+  await shot(page, 'ui2-after-examples.png');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#ui2Ex')).toBeHidden();
+  await page.locator('#ui2PalTools [data-set="all"]').click();
+  await expect(page.locator('#ui2Chips button', { hasText: 'Semiconductors' })).toBeVisible();
+  await shot(page, 'ui2-after-chips.png');
+  await page.locator('#side').evaluate((el) => { el.style.visibility = 'visible'; });
+  await page.evaluate(() => {
+    const ed = (window as unknown as { app: { editor: { select: (s: { part: string }) => void; part: (id: string) => unknown }; proj: { parts: { id: string; type: string }[] } } }).app;
+    const esp = ed.proj.parts.find((p) => p.type === 'esp32');
+    if (esp) ed.editor.select({ part: esp.id });
+    document.body.classList.add('ui2-props');
+  });
+  await expect(page.locator('#insp table.pins')).toBeVisible();
+  await shot(page, 'ui2-after-props.png');
+  await page.locator('#ui2top [data-view="schematic"]').click();
+  await expect(page.locator('.toast')).toBeVisible();
+  await shot(page, 'ui2-after-schematic.png');
   expect(errors.filter((e) => !/favicon/i.test(e))).toEqual([]);
 });
 
@@ -180,9 +210,16 @@ test.describe('phone', () => {
     await page.goto('/?ui=2&ex=blink&resume=0');
     await ready(page);
     await axe(page);
+    await expect(page.locator('#ui2Copy')).toBeVisible();
+    await expect(page.locator('.projbanner')).toBeHidden();
+    const navSize = await page.locator('#ui2Phone button span').first().evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+    expect(navSize).toBeGreaterThanOrEqual(12);
     await shot(page, 'ui2-after-phone-dark.png');
     const before = await page.evaluate(() => (window as unknown as { app: { proj: { parts: unknown[] } } }).app.proj.parts.length);
     await page.locator('#ui2Phone [data-a="parts"]').tap();
+    await expect(page.locator('#ui2Chips')).toBeVisible();
+    await expect(page.locator('.m-chips')).toBeHidden();
+    await shot(page, 'ui2-after-phone-parts.png');
     const led = page.locator('#mTrack .pitem[data-type="led"]');
     await expect(led).toBeVisible();
     await led.tap();

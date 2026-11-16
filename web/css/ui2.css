@@ -1,5 +1,10 @@
 /* Workbench (ui2). Every rule is gated on html[data-ui="2"], so the live UI is unchanged when the flag is off.
-   Dark-first instrument: one copper accent, hairline surfaces, Inter for UI, monospace for readings. */
+   Dark-first instrument: one copper accent, hairline surfaces, Inter for UI, monospace for readings.
+   Faces are self-hosted. font-display: swap, and the flag script preloads Inter plus JetBrains Mono 400. */
+@font-face{font-family:Inter;src:url(../fonts/Inter-var.woff2) format('woff2');font-weight:100 900;font-style:normal;font-display:swap}
+@font-face{font-family:'JetBrains Mono';src:url(../fonts/JetBrainsMono-400.woff2) format('woff2');font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:'JetBrains Mono';src:url(../fonts/JetBrainsMono-500.woff2) format('woff2');font-weight:500;font-style:normal;font-display:swap}
+@font-face{font-family:'JetBrains Mono';src:url(../fonts/JetBrainsMono-600.woff2) format('woff2');font-weight:600;font-style:normal;font-display:swap}
 
 html[data-ui="2"]{
   --bg:#0c0e12;--l0:#101216;--l1:#16191f;--l2:#1c2128;--l3:#252b33;--l4:#313842;
@@ -47,7 +52,10 @@ html[data-ui="2"] .ui2-mark{
 html[data-ui="2"] .ui2-mark svg{width:13px;height:13px}
 html[data-ui="2"] .ui2-name{
   background:transparent;border:0;height:32px;padding:0 4px;font-weight:600;font-size:14px;letter-spacing:-.01em;
-  max-width:28ch;overflow:hidden;text-overflow:ellipsis;
+  max-width:28ch;overflow:hidden;text-overflow:ellipsis;color:var(--txt);opacity:1;
+}
+html[data-ui="2"][data-theme="light"] #ui2top #ui2Name{
+  color:#1c1915!important;-webkit-text-fill-color:#1c1915!important;opacity:1!important;font-weight:600!important;
 }
 html[data-ui="2"] .ui2-save{color:var(--mut);font-family:var(--mono);font-size:12px;white-space:nowrap}
 html[data-ui="2"] .ui2-views{display:inline-flex;padding:3px;gap:2px;background:var(--l2);border:1px solid var(--line);border-radius:9px}
@@ -97,17 +105,29 @@ html[data-ui="2"] .panel-h,html[data-ui="2"] .pcat,html[data-ui="2"] h4,html[dat
   text-transform:none!important;letter-spacing:0!important;font-family:var(--font);
 }
 html[data-ui="2"] body.m .proj-title{font-family:var(--font)!important;text-transform:none!important;letter-spacing:-.01em!important}
-html[data-ui="2"] body.m .projbanner #bCopy{
-  background:#8d5314!important;color:#fff8ee!important;border:1px solid #7a4810!important;box-shadow:none!important;
-  font-family:var(--font)!important;letter-spacing:0!important;text-transform:none!important;border-radius:10px!important;
+html[data-ui="2"] body.m .projbanner{display:none!important}
+html[data-ui="2"] #ui2Copy{display:none}
+html[data-ui="2"] body.m #ui2Copy:not([hidden]){
+  display:inline-flex;align-items:center;justify-content:center;flex:none;height:32px;padding:0 10px;
+  border-radius:8px;background:#8d5314;border:1px solid #7a4810;color:#fff8ee;font-family:var(--font);
+  font-size:12px;font-weight:600;letter-spacing:0;text-transform:none;box-shadow:none;
 }
+html[data-ui="2"] body.m .ui2-name{flex:1;min-width:4ch;max-width:none}
 html[data-ui="2"] #ui2PalTools{display:flex;flex-direction:column;gap:8px;padding:8px 8px 0}
 html[data-ui="2"] .ui2-sets{display:flex;gap:4px}
 html[data-ui="2"] .ui2-sets button{flex:1;justify-content:center;height:30px}
 html[data-ui="2"] .ui2-sets button[aria-checked="true"]{border-color:var(--acc-d);color:var(--txt);background:var(--acc-bg)}
-html[data-ui="2"] #ui2Chips,html[data-ui="2"] #ui2Recent{display:flex;gap:6px;overflow:auto;padding-bottom:2px}
+html[data-ui="2"] #ui2Chips{
+  display:flex;flex-wrap:nowrap;gap:6px;overflow-x:auto;overflow-y:hidden;padding:0 32px 2px 0;
+  scrollbar-width:none;-webkit-mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 28px),transparent);
+  mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 28px),transparent);
+}
+html[data-ui="2"] #ui2Chips::-webkit-scrollbar{display:none}
+html[data-ui="2"] #ui2Recent{display:flex;gap:6px;overflow:auto;padding-bottom:2px}
 html[data-ui="2"] #ui2Chips button,#ui2Recent button{height:26px;border-radius:99px;background:var(--l2);color:var(--txt2);padding:0 10px;font-size:12px}
+html[data-ui="2"] #ui2Chips button{flex:none;white-space:nowrap}
 html[data-ui="2"] #ui2Chips button[aria-pressed="true"]{background:var(--l4);color:var(--txt);border-color:var(--line2)}
+html[data-ui="2"] body.m .m-chips{display:none!important}
 html[data-ui="2"] #ui2Lock{
   margin:0 8px 8px;width:calc(100% - 16px);justify-content:center;height:34px;
   background:#3a2a16;border-color:#6e4b1e;color:#fff4e4;
@@ -153,12 +173,45 @@ html[data-ui="2"] .hl-net{stroke:#8fd0a4}
 html[data-ui="2"] .part.sel>:first-child{filter:drop-shadow(0 0 0.6px #e0a15a)}
 html[data-ui="2"] #stage.flow.live .w-flow{stroke:#f2d48a;filter:drop-shadow(0 0 1.4px rgba(242,212,138,.95))}
 html[data-ui="2"] .pin{stroke:#6b5420}
+html[data-ui="2"] #side{background:var(--l1)}
+html[data-ui="2"] #insp h3{font-size:13px;letter-spacing:.01em}
+html[data-ui="2"] #insp h3 small{font-family:var(--mono);font-size:12px;font-weight:400;font-variant-numeric:tabular-nums}
+html[data-ui="2"] #insp label,html[data-ui="2"] #insp .insp-k{
+  font-family:var(--mono);font-size:12px;font-weight:400;font-variant-numeric:tabular-nums;color:var(--txt2);
+}
+html[data-ui="2"] #insp label{
+  display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;
+  margin:0 0 6px;padding:6px 8px;background:var(--l0);border:1px solid var(--line);border-radius:8px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.04);
+}
+html[data-ui="2"] #insp label:has(input[type=range]),html[data-ui="2"] #insp label:has(input[type=checkbox]){grid-template-columns:1fr}
+html[data-ui="2"] #insp input,html[data-ui="2"] #insp select{
+  font-family:var(--mono);font-size:13px;font-weight:400;font-variant-numeric:tabular-nums;
+  background:transparent;border-color:transparent;box-shadow:none;text-align:right;
+}
+html[data-ui="2"] #insp input[type=range]{text-align:left}
 html[data-ui="2"] #ro{
-  font-family:var(--mono);color:#d7f5c8;background:#0c0e12;border:1px solid #3a3428;
+  font-family:var(--mono);font-weight:400;font-size:12px;line-height:1.45;letter-spacing:.01em;
+  font-variant-numeric:tabular-nums;color:#d7f5c8;background:#0c0e12;border:1px solid #3a3428;border-radius:8px;
+  margin:8px 0;padding:8px 10px;
   box-shadow:inset 0 0 0 1px rgba(224,161,90,.28),inset 0 10px 18px rgba(0,0,0,.35);
 }
 html[data-ui="2"][data-theme="light"] #ro{color:#14532d;background:#f7f4ee;border-color:#e0d4c0;box-shadow:inset 0 0 0 1px rgba(138,78,18,.25)}
-html[data-ui="2"] table.pins td{font-variant-numeric:tabular-nums}
+html[data-ui="2"] #ro:empty{display:none}
+html[data-ui="2"] table.pins{font-family:var(--mono);font-size:12px;font-weight:400;font-variant-numeric:tabular-nums}
+html[data-ui="2"] table.pins td{font-variant-numeric:tabular-nums;padding:5px 6px}
+html[data-ui="2"] table.pins td:nth-child(2){text-align:right}
+html[data-ui="2"] .toast,html[data-ui="2"] body.viewsch .toast{
+  top:112px!important;bottom:auto!important;left:auto!important;right:16px;
+  transform:none!important;width:max-content;max-width:min(360px,calc(100vw - 32px));
+  font-family:var(--mono);font-size:12px;font-weight:400;font-variant-numeric:tabular-nums;
+  background:var(--l1);color:var(--txt);border:1px solid var(--line2);border-left:3px solid var(--acc2);
+  border-radius:8px;box-shadow:var(--sh1);padding:8px 12px;animation:ui2toast 160ms ease;
+}
+html[data-ui="2"] body:not(.m) .toast{right:316px}
+html[data-ui="2"] body.m .toast{left:12px!important;right:12px!important;width:auto}
+html[data-ui="2"] .toast::before{display:none}
+@keyframes ui2toast{from{opacity:0;transform:translateY(-6px)}}
 
 /* Menus, start, examples */
 html[data-ui="2"] .ui2-pop{
@@ -167,6 +220,7 @@ html[data-ui="2"] .ui2-pop{
 }
 html[data-ui="2"] .ui2-pop button{width:100%;justify-content:flex-start;height:36px;background:transparent;border-color:transparent}
 html[data-ui="2"] .ui2-pop button:hover{background:var(--l3)}
+html[data-ui="2"] .modal{animation:none}
 html[data-ui="2"] .ui2-card{
   width:min(460px,calc(100vw - 24px));background:var(--l1);color:var(--txt);border:1px solid var(--line2);
   border-radius:16px;box-shadow:var(--sh2);padding:20px;max-height:calc(100vh - 32px);overflow:auto;
@@ -182,13 +236,29 @@ html[data-ui="2"] .ui2-coach{
 }
 html[data-ui="2"] .ui2-coach[hidden]{display:none!important}
 html[data-ui="2"] #ui2CoachNow{margin:0;flex:1;font-size:13px}
-html[data-ui="2"] .ui2-ex{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+html[data-ui="2"] #ui2Ex .ui2-card{width:min(840px,calc(100vw - 24px))}
+html[data-ui="2"] .ui2-ex{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px}
 html[data-ui="2"] .ui2-ex button{
-  height:auto;align-items:flex-start;flex-direction:column;gap:4px;padding:10px;text-align:left;white-space:normal;position:relative;
+  height:auto;min-width:0;align-items:stretch;flex-direction:column;gap:8px;padding:10px;text-align:left;
+  white-space:normal;word-break:normal;overflow-wrap:break-word;background:var(--l2);border-radius:12px;
 }
-html[data-ui="2"] .ui2-ex b{font-size:13px}
-html[data-ui="2"] .ui2-ex small{color:var(--txt2);font-weight:450;line-height:1.35}
-html[data-ui="2"] .ui2-ex .ui2-badge{position:absolute;top:8px;right:8px;font-size:11px;color:var(--txt2)}
+html[data-ui="2"] .ui2-ex-top{display:flex;gap:10px;align-items:flex-start;min-width:0}
+html[data-ui="2"] .ui2-ex-thumb{
+  width:72px;height:52px;flex:none;display:grid;place-items:center;overflow:hidden;
+  background:var(--l0);border:1px solid var(--line);border-radius:8px;
+}
+html[data-ui="2"] .ui2-ex-thumb svg{width:64px;height:44px}
+html[data-ui="2"] .ui2-ex-copy{display:flex;flex-direction:column;gap:4px;min-width:0;flex:1}
+html[data-ui="2"] .ui2-ex-title{font-size:14px;font-weight:600;line-height:1.3;white-space:normal;word-break:normal;overflow-wrap:break-word}
+html[data-ui="2"] .ui2-ex-meta{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+html[data-ui="2"] .ui2-diff,html[data-ui="2"] .ui2-ex .ui2-badge{
+  position:static;font-family:var(--mono);font-size:12px;font-weight:500;line-height:1.3;
+  padding:1px 7px;border-radius:99px;border:1px solid var(--line2);color:var(--txt2);background:var(--l0);
+}
+html[data-ui="2"] .ui2-ex-notes{color:var(--txt2);font-size:12px;font-weight:450;line-height:1.35;white-space:normal;word-break:normal;overflow-wrap:break-word}
+html[data-ui="2"] .ui2-ex-chips{display:flex;flex-wrap:wrap;gap:4px}
+html[data-ui="2"] .ui2-ex-chips span{font-size:12px;line-height:1.3;padding:2px 7px;border-radius:99px;background:var(--l3);color:var(--txt2);white-space:nowrap}
+@media (max-width:720px){html[data-ui="2"] .ui2-ex{grid-template-columns:minmax(0,1fr)}}
 html[data-ui="2"] #cmdk .cmdk-box{border-radius:14px;border:1px solid var(--line2);box-shadow:var(--sh2);background:var(--l1)}
 html[data-ui="2"] #cmdkIn{font-size:15px}
 
@@ -202,7 +272,8 @@ html[data-ui="2"] #ui2PinList button{height:44px;justify-content:flex-start;back
 
 /* Phone */
 html[data-ui="2"] body.m{--mTop:52px}
-html[data-ui="2"] body.m #ui2top{height:52px;grid-template-columns:44px minmax(0,1fr) auto;padding:0 8px}
+html[data-ui="2"] body.m #ui2top{display:flex;height:52px;padding:0 8px;gap:8px}
+html[data-ui="2"] body.m .ui2-id{flex:1;min-width:0}
 html[data-ui="2"] body.m #ui2Menu{display:inline-flex;width:44px;height:44px;padding:0;justify-content:center}
 html[data-ui="2"] body.m .ui2-views,html[data-ui="2"] body.m .ui2-actions,html[data-ui="2"] body.m #ui2Sch,html[data-ui="2"] body.m #ui2SideTabs,html[data-ui="2"] body.m #ui2DockBar{display:none!important}
 html[data-ui="2"] body.m .ui2-mark{display:none}
@@ -215,7 +286,8 @@ html[data-ui="2"] #ui2Phone{
   background:var(--l0);border-top:1px solid var(--line);
 }
 html[data-ui="2"] body.m #ui2Phone{display:flex}
-html[data-ui="2"] #ui2Phone button{flex:1;height:48px;flex-direction:column;gap:2px;justify-content:center;background:transparent;border-color:transparent;color:var(--txt2);font-size:11px;padding:0}
+html[data-ui="2"] #ui2Phone button{flex:1;height:48px;flex-direction:column;gap:2px;justify-content:center;background:transparent;border-color:transparent;color:var(--txt2);font-size:12px;padding:0}
+html[data-ui="2"] #ui2Phone button span{font-size:12px;line-height:1.2}
 html[data-ui="2"] #ui2Phone button .ic{width:20px;height:20px}
 html[data-ui="2"][data-theme="light"] #ui2top,html[data-ui="2"][data-theme="light"] #ui2Phone{background:#f7f5f1}
 html[data-ui="2"][data-theme="light"] #ui2Name,html[data-ui="2"][data-theme="light"] #ui2Save,

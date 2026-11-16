@@ -113,9 +113,30 @@
   function syncId() {
     const name = $('#ui2Name'), save = $('#ui2Save'), p = app() && app().proj;
     if (!name) return;
-    if (!p) { name.textContent = 'No project'; if (save) save.textContent = ''; return; }
+    if (!p) { name.textContent = 'No project'; if (save) save.textContent = ''; syncCopy(); return; }
     name.textContent = p.name || 'Untitled';
     if (save) save.textContent = app().readOnly ? 'Example' : (p.id ? 'Saved' : 'Not saved');
+    syncCopy();
+  }
+  function syncCopy() {
+    const phone = document.body.classList.contains('m');
+    const show = phone && app() && app().readOnly && app().proj;
+    let btn = $('#ui2Copy');
+    if (!show) { if (btn) btn.hidden = true; return; }
+    if (!btn) {
+      btn = document.createElement('button');
+      btn.type = 'button';
+      btn.id = 'ui2Copy';
+      btn.textContent = 'Make a copy';
+      const id = document.querySelector('#ui2top .ui2-id');
+      if (id) id.appendChild(btn);
+      btn.onclick = () => {
+        const b = document.getElementById('bCopy');
+        if (b) b.click();
+        else if (app() && app().cmd && app().cmd.makeCopy) app().cmd.makeCopy();
+      };
+    }
+    btn.hidden = false;
   }
   function rename() {
     const p = app() && app().proj; if (!p || app().readOnly) return;
@@ -133,8 +154,10 @@
     else if (cmd.view2d) cmd.view2d();
     syncChrome();
   }
-  function newChooser(opener) {
+  async function newChooser(opener) {
     if (!app().newBlankDialog) return;
+    if (app().ensureExamples) { try { await app().ensureExamples(); } catch (e) { return; } }
+    if (!window.Examples) return;
     app().newBlankDialog(opener, (kind) => {
       const raw = window.Examples.newBlank(kind);
       const p = app().store.importJson(raw);
@@ -206,7 +229,7 @@
     tools.innerHTML = `<div class="ui2-sets" role="radiogroup" aria-label="Part set">
         <button type="button" role="radio" data-set="starter" aria-checked="true">Starter</button>
         <button type="button" role="radio" data-set="all" aria-checked="false">All parts</button></div>
-      <div id="ui2Chips" role="toolbar" aria-label="Categories"></div>
+      <div id="ui2Chips" role="toolbar" aria-label="Categories" tabindex="0"></div>
       <div id="ui2Recent" role="toolbar" aria-label="Recent parts"></div>`;
     const search = pal.querySelector('.pal-search');
     if (search) search.after(tools); else pal.prepend(tools);
@@ -214,21 +237,15 @@
     lock.type = 'button'; lock.id = 'ui2Lock'; lock.hidden = true; lock.textContent = 'Sign in to unlock all parts';
     tools.after(lock);
     lock.onclick = () => { if (window.GuestParts) GuestParts.prompt(''); };
-    document.querySelectorAll('.pgrid').forEach((g) => { [...g.children].forEach((it) => { if (!it.dataset.cat) it.dataset.cat = g.dataset.cat || ''; }); });
-    const cats = [...document.querySelectorAll('.pcat')].map((c) => c.dataset.cat).filter(Boolean);
-    const chips = $('#ui2Chips');
-    chips.innerHTML = ['All', ...cats].map((c) => `<button type="button" data-chip="${c}" aria-pressed="${c === 'All' ? 'true' : 'false'}">${c}</button>`).join('');
-    chips.onclick = (e) => { const b = e.target.closest('[data-chip]'); if (!b) return; chip = b.dataset.chip; chips.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', x === b ? 'true' : 'false')); applyFilter(); };
-    tools.querySelector('.ui2-sets').onclick = (e) => {
+    stampCats();
+    refreshChips();
+    tools.querySelector('.ui2-sets').onclick = async (e) => {
       const b = e.target.closest('[data-set]'); if (!b) return; setName = b.dataset.set;
       tools.querySelectorAll('[data-set]').forEach((x) => x.setAttribute('aria-checked', x === b ? 'true' : 'false'));
+      if (setName === 'all' && app() && app().ensureParts) { try { await app().ensureParts(); } catch (err) { /* starter parts stay usable */ } }
       applyFilter();
     };
-    const input = $('#palSearch');
-    if (input) {
-      const prev = input.oninput;
-      input.oninput = (e) => { if (typeof prev === 'function') prev.call(input, e); applyFilter(); };
-    }
+    hookSearch();
     if (window.GuestParts && GuestParts.syncPalette && !GuestParts._ui2) {
       const orig = GuestParts.syncPalette;
       GuestParts.syncPalette = function (scope) { orig(scope); badgeLocks(); applyFilter(); };
@@ -285,6 +302,37 @@
     const bar = $('#ui2Lock'); if (bar) bar.hidden = !locked;
     badgeLocks();
   }
+  function stampCats() {
+    document.querySelectorAll('.pgrid').forEach((g) => { [...g.children].forEach((it) => { if (!it.dataset.cat) it.dataset.cat = g.dataset.cat || ''; }); });
+  }
+  function refreshChips() {
+    const chips = $('#ui2Chips'); if (!chips) return;
+    const cats = [...document.querySelectorAll('.pcat')].map((c) => c.dataset.cat).filter(Boolean);
+    if (chip !== 'All' && cats.indexOf(chip) < 0) chip = 'All';
+    chips.innerHTML = ['All', ...cats].map((c) => `<button type="button" data-chip="${esc(c)}" aria-pressed="${c === chip ? 'true' : 'false'}">${esc(c)}</button>`).join('');
+    chips.onclick = (e) => { const b = e.target.closest('[data-chip]'); if (!b) return; chip = b.dataset.chip; chips.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', x === b ? 'true' : 'false')); applyFilter(); };
+  }
+  function hookSearch() {
+    const input = $('#palSearch'); if (!input || input.dataset.ui2hook === '1') return;
+    input.dataset.ui2hook = '1';
+    const prev = input.oninput;
+    input.oninput = async (e) => {
+      if (typeof prev === 'function') prev.call(input, e);
+      if ((input.value || '').trim() && app() && app().ensureParts) { try { await app().ensureParts(); } catch (err) { /* keep the starter filter */ } }
+      applyFilter();
+    };
+  }
+  function afterPalette() {
+    const input = $('#palSearch'); if (input) delete input.dataset.ui2hook;
+    stampCats();
+    refreshChips();
+    hookSearch();
+    badgeLocks();
+    applyFilter();
+    if (document.body.classList.contains('m') && window.Mobile_track) window.Mobile_track(true);
+  }
+  window.UI2.afterPalette = afterPalette;
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
   function buildToolbar() {
     const tools = $('.canvas-tools'), zoom = $('.zoom-tools');
@@ -424,12 +472,19 @@
 
   function hookKeys() {
     window.addEventListener('keydown', (e) => {
+      const k = String(e.key || '').toLowerCase();
+      if (k === 'escape') {
+        const start = $('#ui2Start');
+        if (start && !start.hidden) { start.hidden = true; e.preventDefault(); return; }
+        const ex = $('#ui2Ex');
+        if (ex && !ex.hidden) { ex.hidden = true; e.preventDefault(); return; }
+        closePop();
+        const c = $('#ui2Connect'); if (c && !c.hidden) { c.hidden = true; return; }
+      }
       const tag = (e.target && e.target.tagName) || '';
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       const editor = ed(); if (!editor) return;
       const meta = e.ctrlKey || e.metaKey;
-      const k = String(e.key || '').toLowerCase();
-      if (k === 'escape') { closePop(); const c = $('#ui2Connect'); if (c && !c.hidden) { c.hidden = true; return; } }
       if (meta && k === 'c') { if (editor.copySel()) e.preventDefault(); return; }
       if (meta && k === 'v') { if (editor.pasteSel()) e.preventDefault(); return; }
       if (meta && (k === 'd')) { e.preventDefault(); editor.duplicateSel(); return; }
@@ -494,13 +549,15 @@
       <button type="button" data-go="close">Close</button>
     </div>`;
     document.body.appendChild(d);
-    d.onclick = (e) => {
+    d.onclick = async (e) => {
       const b = e.target.closest('[data-go]'); if (!b && e.target === d) { d.hidden = true; return; }
       if (!b) return;
       const go = b.dataset.go;
       if (go === 'close') { d.hidden = true; return; }
       d.hidden = true;
       window.__ui2NeedStart = false;
+      if (app().ensureExamples) { try { await app().ensureExamples(); } catch (err) { return; } }
+      if (!window.Examples) return;
       if (go === 'blink') { app().cmd.loadExample('blink'); syncId(); return; }
       const raw = window.Examples.newBlank('esp32');
       if (go === 'guide') { raw.code = window.Examples.BLINK; raw.name = 'Blink'; }
@@ -552,7 +609,28 @@
     el.textContent = i < 0 ? 'Blink is ready.' : `Step ${i + 1} of 4. ${labels[i]}`;
   }
 
-  function showExamples() {
+  function partThumb(part) {
+    if (!part || !window.Parts || !Parts.T[part.type] || typeof Parts.T[part.type].svg !== 'function') return '';
+    try {
+      const d = Parts.T[part.type];
+      const p = { id: 'T', type: part.type, x: 0, y: 0, rot: 0, props: JSON.parse(JSON.stringify(d.props || {})) };
+      const sz = d.size(p);
+      const pins = d.pins(p) || [];
+      let x0 = 0, y0 = 0, x1 = sz.w, y1 = sz.h;
+      for (const q of pins) { x0 = Math.min(x0, q.x); y0 = Math.min(y0, q.y); x1 = Math.max(x1, q.x); y1 = Math.max(y1, q.y); }
+      const pad = 8;
+      return `<svg viewBox="${x0 - pad} ${y0 - pad} ${Math.max(1, x1 - x0 + 2 * pad)} ${Math.max(1, y1 - y0 + 2 * pad)}" preserveAspectRatio="xMidYMid meet" aria-hidden="true">${d.svg(p, null)}</svg>`;
+    } catch (e) { return ''; }
+  }
+  function exampleDifficulty(parts) {
+    const types = (parts || []).map((p) => p && p.type).filter((t) => t && t !== 'breadboard' && t !== 'label' && t !== 'ground' && t !== 'vcc33' && t !== 'vcc5');
+    const extra = types.filter((t) => !starterSet.has(t));
+    if (extra.length >= 3 || types.length >= 8) return 'Advanced';
+    if (extra.length || types.length >= 5) return 'Intermediate';
+    return 'Beginner';
+  }
+  async function showExamples() {
+    if (app() && app().ensureExamples) { try { await app().ensureExamples(); } catch (e) { /* the grid shows what is already registered */ } }
     let d = $('#ui2Ex');
     if (!d) {
       d = document.createElement('div');
@@ -567,16 +645,24 @@
     const grid = $('#ui2ExGrid');
     const list = (window.Examples && Examples.LIST) || [];
     grid.innerHTML = list.map(([key, name]) => {
-      let notes = '', parts = '';
+      let notes = '', chips = '', thumb = '', level = 'Beginner';
       try {
         const ex = Examples.EX[key]();
-        notes = String(ex.notes || '').replace(/\s+/g, ' ').slice(0, 110);
+        notes = String(ex.notes || '').replace(/\s+/g, ' ').slice(0, 120);
         const labels = [];
-        (ex.parts || []).forEach((p) => { const lab = (Parts.T[p.type] && Parts.T[p.type].label) || p.type; if (labels.indexOf(lab) < 0 && labels.length < 5) labels.push(lab); });
-        parts = labels.join(', ');
+        const parts = ex.parts || [];
+        level = exampleDifficulty(parts);
+        parts.forEach((p) => {
+          if (!p || p.type === 'breadboard' || p.type === 'label') return;
+          const lab = (Parts.T[p.type] && Parts.T[p.type].label) || p.type;
+          if (labels.indexOf(lab) < 0 && labels.length < 4) labels.push(lab);
+        });
+        chips = labels.map((lab) => `<span>${esc(lab)}</span>`).join('');
+        const hero = parts.find((p) => p && p.type && p.type !== 'breadboard' && p.type !== 'label' && p.type !== 'esp32') || parts.find((p) => p && p.type === 'esp32');
+        thumb = partThumb(hero);
       } catch (err) { notes = ''; }
       const locked = window.GuestParts && GuestParts.exampleLocked && GuestParts.exampleLocked(key);
-      return `<button type="button" data-ex="${key}"><b>${name}</b>${locked ? '<span class="ui2-badge">Locked</span>' : ''}<small>${notes}</small><small>${parts}</small></button>`;
+      return `<button type="button" data-ex="${esc(key)}"><span class="ui2-ex-top">${thumb ? `<span class="ui2-ex-thumb">${thumb}</span>` : ''}<span class="ui2-ex-copy"><span class="ui2-ex-title">${esc(name)}</span><span class="ui2-ex-meta"><span class="ui2-diff">${level}</span>${locked ? '<span class="ui2-badge">Locked</span>' : ''}</span></span></span>${notes ? `<span class="ui2-ex-notes">${esc(notes)}</span>` : ''}${chips ? `<span class="ui2-ex-chips">${chips}</span>` : ''}</button>`;
     }).join('');
     grid.onclick = (e) => {
       const b = e.target.closest('[data-ex]'); if (!b) return;
