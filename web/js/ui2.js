@@ -679,7 +679,7 @@
     const phone = document.body.classList.contains('m');
     if (phone) pop.classList.add('ui2-pop-sheet');
     const items = [
-      ['Projects', 'bProjects'], ['Save', 'bSave'], ['Download', 'bDownload'], ['Import', 'fileIn'],
+      ['Projects', 'bProjects'], ['Examples', 'ui2Examples'], ['Save', 'bSave'], ['Download', 'bDownload'], ['Import', 'fileIn'],
       ['Breadboard view', 'view:2d'], ['Schematic view', 'view:schematic'], ['3D view', 'view:3d'],
       ['Command palette', 'bCmdk'], ['Keyboard shortcuts', 'bKeys'], ['Theme', 'bTheme'],
       ['Restart', 'bRestart'], ['Reset', 'bReset'], ['About', 'about'],
