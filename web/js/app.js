@@ -1557,13 +1557,17 @@ async function fetchRetry(u, o, n = 4) {
         if (k === 'breadboard') { p.props.cols = 20; x1 = 210; y0 = -14; y1 = 208; }
         const pad = 14; return `<svg viewBox="${x0 - pad} ${y0 - pad - 20} ${x1 - x0 + 2 * pad} ${y1 - y0 + 2 * pad + 20}" preserveAspectRatio="xMidYMid meet">${d.svg(p, null)}</svg>`; } catch (e) { return ''; } };
     let h = ''; for (const [c, list] of Object.entries(cats)) { h += `<div class="pcat" data-cat="${P.esc(c)}">${c}</div><div class="pgrid" data-cat="${P.esc(c)}">`; for (const [k, d] of list) h += `<div class="pitem" draggable="true" data-type="${k}" data-q="${P.esc((d.label + ' ' + k + ' ' + c + ' ' + (d.keywords || '')).toLowerCase())}" title="${P.esc(d.label)} — drag onto the canvas or click to add">${thumb(k, d)}<span>${P.esc(d.label)}</span></div>`; h += '</div>'; }
-    $('#palList').innerHTML = h + '<div class="pal-empty" hidden>No parts match.</div>';
-    $('#palList').querySelectorAll('.pcat').forEach((el) => el.onclick = () => { el.classList.toggle('closed'); el.nextElementSibling.classList.toggle('closed'); });
+    const list = $('#palList');
+    // A phone strip may already be holding the previous items. Drop those
+    // before writing the list, or the next session refresh shows them twice.
+    document.querySelectorAll('.pitem').forEach((el) => { if (!list.contains(el)) el.remove(); });
+    list.innerHTML = h + '<div class="pal-empty" hidden>No parts match.</div>';
+    list.querySelectorAll('.pcat').forEach((el) => el.onclick = () => { el.classList.toggle('closed'); el.nextElementSibling.classList.toggle('closed'); });
     $('#palSearch').oninput = (e) => { const q = e.target.value.trim().toLowerCase(); let n = 0;
       document.querySelectorAll('.pitem').forEach((it) => { const m = !q || it.dataset.q.includes(q); it.hidden = !m; n += m; });
       document.querySelectorAll('.pgrid').forEach((g) => { const any = [...g.children].some((c) => !c.hidden); g.hidden = !any; g.previousElementSibling.hidden = !any; if (q) g.classList.remove('closed'); });
       document.querySelector('.pal-empty').hidden = n > 0; };
-    document.querySelectorAll('.pitem').forEach((el) => {
+    list.querySelectorAll('.pitem').forEach((el) => {
       el.addEventListener('dragstart', (ev) => {
         if (window.GuestParts && GuestParts.blocks(el.dataset.type)) {
           ev.preventDefault();
@@ -1590,7 +1594,7 @@ async function fetchRetry(u, o, n = 4) {
         GuestParts.promptType(el.dataset.type);
       });
     });
-    if (window.GuestParts) GuestParts.markPalette(document);
+    if (window.GuestParts && GuestParts.syncPalette) GuestParts.syncPalette(document);
   }
   app.buildPalette = buildPalette;
   function about() {
@@ -1959,9 +1963,15 @@ async function fetchRetry(u, o, n = 4) {
     if (mobile) mobile.innerHTML = sel.innerHTML;
   }
   function refreshGuestParts() {
-    if (typeof buildPalette === 'function') buildPalette();
+    // The palette is built once. A later session only changes which items are locked.
+    if (window.GuestParts && GuestParts.syncPalette) GuestParts.syncPalette(document);
     fillExamples();
-    if (app.proj && window.GuestParts && GuestParts.projectBlocked(app.proj)) setStatus('warn', GuestParts.SENTENCE);
+    if (!app.proj || !window.GuestParts) return;
+    if (GuestParts.projectBlocked(app.proj)) setStatus('warn', GuestParts.SENTENCE);
+    else {
+      const live = document.getElementById('stLive');
+      if (live && live.textContent === GuestParts.SENTENCE) setStatus('idle', 'Idle');
+    }
   }
   app.fillExamples = fillExamples;
   app.refreshGuestParts = refreshGuestParts;

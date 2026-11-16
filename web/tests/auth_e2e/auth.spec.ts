@@ -268,3 +268,116 @@ test('account projects list, open, signed-out 401, and another user', async ({ p
   await other.close();
   await page.request.post(info().mock + '/control', { data: { sub: 'google-sub-1001', mode: 'ok' } });
 });
+
+async function paletteReady(page: Page) {
+  await expect.poll(() => page.evaluate(() => {
+    const w = window as unknown as { app?: { editor?: unknown }; Parts?: { T?: object } };
+    return !!(w.app && w.app.editor && w.Parts && w.Parts.T && document.getElementById('bSignIn'));
+  })).toBe(true);
+  await expect.poll(() => page.evaluate(() => document.querySelectorAll('.pitem-locked').length)).toBeGreaterThan(0);
+}
+
+async function paletteCounts(page: Page) {
+  return page.evaluate(() => {
+    const w = window as unknown as { Parts: { T: object }; app: { proj: { parts: { type: string }[] } } };
+    const of = (type: string) => w.app.proj.parts.filter((p) => p.type === type).length;
+    return {
+      catalog: Object.keys(w.Parts.T).length,
+      items: document.querySelectorAll('.pitem').length,
+      total: w.app.proj.parts.length,
+      led: of('led'),
+      ground: of('ground'),
+    };
+  });
+}
+
+async function onePart(page: Page, type: 'led' | 'ground', act: () => Promise<void>) {
+  const before = await paletteCounts(page);
+  await act();
+  await expect.poll(async () => (await paletteCounts(page))[type]).toBe(before[type] + 1);
+  await page.waitForTimeout(300);
+  const after = await paletteCounts(page);
+  expect(after[type]).toBe(before[type] + 1);
+  expect(after.total).toBe(before.total + 1);
+  expect(after.items).toBe(after.catalog);
+}
+
+test('desktop palette matches the catalog and one click adds one part', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(origin + '/?ex=blink&resume=0');
+  await paletteReady(page);
+  const counts = await paletteCounts(page);
+  expect(counts.catalog).toBeGreaterThan(50);
+  expect(counts.items).toBe(counts.catalog);
+  const led = page.locator('.pitem[data-type="led"]');
+  const ground = page.locator('.pitem[data-type="ground"]');
+  await expect(led).toHaveCount(1);
+  await expect(ground).toHaveCount(1);
+  await onePart(page, 'led', () => led.click());
+  await onePart(page, 'ground', () => ground.click());
+  const locked = page.locator('.pitem[data-type="capacitor"]');
+  const before = await paletteCounts(page);
+  await locked.click({ force: true });
+  const dlg = page.locator('#authDlg');
+  await expect(dlg).toBeVisible();
+  await expect(dlg.getByText(/Sign in free to use the /)).toBeVisible();
+  await page.waitForTimeout(300);
+  expect(await paletteCounts(page)).toMatchObject({ total: before.total, items: before.catalog });
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => {
+    const w = window as unknown as { GuestParts?: { noteSession?: (s: { signed_in: boolean }) => void } };
+    w.GuestParts && w.GuestParts.noteSession && w.GuestParts.noteSession({ signed_in: true });
+  });
+  await expect.poll(() => page.evaluate(() => document.querySelectorAll('.pitem-locked').length)).toBe(0);
+  expect((await paletteCounts(page)).items).toBe(counts.catalog);
+  await onePart(page, 'led', () => led.click());
+  await page.evaluate(() => {
+    const w = window as unknown as { GuestParts?: { noteSession?: (s: { signed_in: boolean }) => void } };
+    w.GuestParts && w.GuestParts.noteSession && w.GuestParts.noteSession({ signed_in: false });
+  });
+  await expect.poll(() => page.evaluate(() => document.querySelectorAll('.pitem-locked').length)).toBeGreaterThan(0);
+  expect((await paletteCounts(page)).items).toBe(counts.catalog);
+});
+
+test.describe('phone palette', () => {
+  test.use({ hasTouch: true });
+  test('a phone palette matches the catalog and one tap adds one part', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(origin + '/?ex=blink&resume=0');
+    await paletteReady(page);
+    const counts = await paletteCounts(page);
+    expect(counts.catalog).toBeGreaterThan(50);
+    expect(counts.items).toBe(counts.catalog);
+    const open = async () => {
+      const showing = await page.evaluate(() => document.body.dataset.msheet === 'parts');
+      if (!showing) await page.locator('#mParts').click();
+    };
+    await open();
+    const led = page.locator('#mTrack .pitem[data-type="led"]');
+    const ground = page.locator('#mTrack .pitem[data-type="ground"]');
+    await expect(led).toHaveCount(1);
+    await expect(ground).toHaveCount(1);
+    await onePart(page, 'led', async () => { await led.scrollIntoViewIfNeeded(); await led.tap(); });
+    await open();
+    await onePart(page, 'ground', async () => { await ground.scrollIntoViewIfNeeded(); await ground.tap(); });
+    await open();
+    const locked = page.locator('#mTrack .pitem[data-type="capacitor"]');
+    const before = await paletteCounts(page);
+    await locked.scrollIntoViewIfNeeded();
+    await locked.tap({ force: true });
+    const dlg = page.locator('#authDlg');
+    await expect(dlg).toBeVisible();
+    await expect(dlg.getByText(/Sign in free to use the /)).toBeVisible();
+    await page.waitForTimeout(300);
+    expect(await paletteCounts(page)).toMatchObject({ total: before.total, items: before.catalog });
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => {
+      const w = window as unknown as { GuestParts?: { noteSession?: (s: { signed_in: boolean }) => void } };
+      w.GuestParts && w.GuestParts.noteSession && w.GuestParts.noteSession({ signed_in: true });
+    });
+    await expect.poll(() => page.evaluate(() => document.querySelectorAll('.pitem-locked').length)).toBe(0);
+    expect((await paletteCounts(page)).items).toBe(counts.catalog);
+    await open();
+    await onePart(page, 'led', async () => { await led.scrollIntoViewIfNeeded(); await led.tap(); });
+  });
+});

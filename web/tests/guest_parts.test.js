@@ -106,3 +106,76 @@ test('pot, fade, and the JS pot stay open because ground is a starter symbol', (
   assert.equal(G.allowed('label'), true);
   assert.equal(G.allowed('servo'), false);
 });
+
+test('a session refresh locks in place and does not build the palette again', () => {
+  const app = fs.readFileSync(path.join(__dirname, '../js/app.js'), 'utf8');
+  const refresh = app.slice(app.indexOf('function refreshGuestParts'), app.indexOf('app.fillExamples'));
+  assert.match(refresh, /syncPalette/);
+  assert.doesNotMatch(refresh, /buildPalette\(/);
+  meta('led,ground');
+  G.noteSession({ signed_in: false });
+  const items = [];
+  function make(type) {
+    const el = {
+      dataset: { type },
+      draggable: true,
+      attrs: { title: type + ' — drag onto the canvas or click to add' },
+      className: '',
+      children: [],
+      classList: {
+        add(c) { el.className += ' ' + c; },
+        remove(c) { el.className = el.className.replace(c, ''); },
+      },
+      setAttribute(k, v) { this.attrs[k] = String(v); },
+      getAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k) ? this.attrs[k] : null; },
+      removeAttribute(k) { delete this.attrs[k]; },
+      hasAttribute(k) { return Object.prototype.hasOwnProperty.call(this.attrs, k); },
+      querySelector(sel) {
+        if (sel !== '.pitem-lock') return null;
+        return this.children.find((c) => c.className === 'pitem-lock') || null;
+      },
+      appendChild(node) { this.children.push(node); node.parent = this; return node; },
+    };
+    items.push(el);
+    return el;
+  }
+  const led = make('led');
+  const servo = make('servo');
+  global.document = {
+    querySelector(sel) {
+      if (sel === 'meta[name="guestparts"]') return { getAttribute: () => 'led,ground' };
+      return null;
+    },
+    querySelectorAll() { return items; },
+    createElement() {
+      const node = { className: '', attrs: {}, children: [], textContent: '' };
+      node.setAttribute = (k, v) => { node.attrs[k] = String(v); };
+      node.appendChild = (c) => { node.children.push(c); return c; };
+      node.append = (...xs) => node.children.push(...xs);
+      node.remove = () => {
+        if (!node.parent) return;
+        node.parent.children = node.parent.children.filter((c) => c !== node);
+      };
+      return node;
+    },
+    createElementNS() { return global.document.createElement('svg'); },
+  };
+  G.syncPalette(global.document);
+  assert.equal(items.length, 2);
+  assert.equal(led.getAttribute('data-guest-locked'), null);
+  assert.equal(servo.getAttribute('data-guest-locked'), '1');
+  assert.equal(servo.draggable, false);
+  assert.equal(servo.children.length, 1);
+  G.noteSession({ signed_in: true });
+  G.syncPalette(global.document);
+  assert.equal(items.length, 2);
+  assert.equal(servo.getAttribute('data-guest-locked'), null);
+  assert.equal(servo.draggable, true);
+  assert.equal(servo.children.length, 0);
+  assert.match(servo.getAttribute('title'), /drag onto the canvas/);
+  G.noteSession({ signed_in: false });
+  G.syncPalette(global.document);
+  assert.equal(items.length, 2);
+  assert.equal(servo.getAttribute('data-guest-locked'), '1');
+  assert.equal(led.getAttribute('data-guest-locked'), null);
+});

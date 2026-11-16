@@ -126,6 +126,7 @@
     el.setAttribute('role', 'button');
     el.setAttribute('tabindex', '0');
     el.setAttribute('aria-disabled', 'true');
+    if (el.getAttribute('data-guest-title') == null) el.setAttribute('data-guest-title', el.getAttribute('title') || '');
     // The thumbnail is decorative. Hiding it keeps the accessible name equal
     // to the part name plus the sign-in sentence (axe: label-content-name-mismatch).
     // The thumbnail's own text stays in the accessible name. A separate
@@ -139,12 +140,36 @@
     note.appendChild(text);
     el.appendChild(note);
   }
-  function markPalette(scope) {
-    const rootEl = scope || document;
-    if (!rootEl || !rootEl.querySelectorAll || !guest()) return;
+  function unmarkPart(el) {
+    if (!el || el.getAttribute('data-guest-locked') !== '1') return;
+    el.removeAttribute('data-guest-locked');
+    el.classList.remove('pitem-locked');
+    el.draggable = true;
+    el.removeAttribute('role');
+    el.removeAttribute('tabindex');
+    el.removeAttribute('aria-disabled');
+    const kept = el.getAttribute('data-guest-title');
+    if (kept != null) {
+      el.setAttribute('title', kept);
+      el.removeAttribute('data-guest-title');
+    }
+    const note = el.querySelector && el.querySelector('.pitem-lock');
+    if (note && note.remove) note.remove();
+  }
+  function syncPalette(scope) {
+    // Lock state only. Rebuilding the list after the phone strip has moved
+    // the first set out of #palList leaves that set in place and adds another,
+    // and the new click listener is bound onto both.
+    const rootEl = scope || (typeof document !== 'undefined' ? document : null);
+    if (!rootEl || !rootEl.querySelectorAll) return;
+    const locking = guest();
     rootEl.querySelectorAll('.pitem').forEach((el) => {
-      if (blocks(el.dataset.type)) markPart(el);
+      if (locking && blocks(el.dataset && el.dataset.type)) markPart(el);
+      else unmarkPart(el);
     });
+  }
+  function markPalette(scope) {
+    syncPalette(scope);
   }
   const api = {
     SENTENCE: SENTENCE,
@@ -164,7 +189,9 @@
     promptExample: promptExample,
     promptProject: promptProject,
     markPalette: markPalette,
+    syncPalette: syncPalette,
     markPart: markPart,
+    unmarkPart: unmarkPart,
   };
   root.GuestParts = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

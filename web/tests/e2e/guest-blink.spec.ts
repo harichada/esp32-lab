@@ -39,7 +39,7 @@ async function install(page: Page) {
       body = body.replace('<head>', '<head>\n<meta name="guestparts" content="' + ALLOW + '">');
     }
     if (!body.includes('guestparts.js')) {
-      body = body.replace('<script src="js/app.js', '<script src="js/guestparts.js?v=3"></script>\n<script src="js/app.js');
+      body = body.replace('<script src="js/app.js', '<script src="js/guestparts.js?v=4"></script>\n<script src="js/app.js');
     }
     await route.fulfill({ response: res, body });
   });

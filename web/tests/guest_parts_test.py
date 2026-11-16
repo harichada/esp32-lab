@@ -182,7 +182,7 @@ class GuestPartsHttpTests(unittest.TestCase):
         body, plain = server.lab_page()
         self.assertFalse(plain)
         self.assertIn(b'<meta name="guestparts" content="esp32,breadboard,led,resistor,pushbutton,potentiometer,buzzer,ground,vcc33,vcc5,label">', body)
-        self.assertIn(b'js/guestparts.js?v=3', body)
+        self.assertIn(b'js/guestparts.js?v=4', body)
         os.environ['GUEST_PARTS_LIMIT'] = '0'
         body, plain = server.lab_page()
         self.assertNotIn(b'name="guestparts"', body)
