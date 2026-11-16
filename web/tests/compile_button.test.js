@@ -58,6 +58,7 @@ bRun.appendChild(spin);
 byId('code', 'textarea');
 byId('inDefines', 'input');
 byId('buildLog', 'pre');
+byId('netNotice', 'p');
 byId('buildDet', 'details');
 byId('stDot', 'i');
 byId('stText', 'span');
@@ -109,9 +110,13 @@ let compileReply = null;
 let wsShouldThrow = false;
 let progressBody = { active: false };
 let lastCompile = null;
+let lastProgress = null;
 global.fetch = (url, init) => {
   const u = String(url);
-  if (u.includes('progress')) return Promise.resolve({ status: 200, json: async () => progressBody });
+  if (u.includes('progress')) {
+    lastProgress = { url: u, init: init || {} };
+    return Promise.resolve({ status: 200, json: async () => progressBody });
+  }
   if (u.includes('api/compile')) { lastCompile = { url: u, init: init || {} }; return compileReply; }
   return Promise.resolve({ status: 200, ok: true, json: async () => ({}) });
 };
@@ -265,7 +270,13 @@ test('Run stays busy for the whole compile, then restores', async () => {
   busy();
   failed.resolve(okResponse({ ok: false, log: 'error: sketch.ino:1\n' }));
   await failedFlight;
-  idle();
+  assert.equal(label.textContent, 'Run');
+  assert.equal(bRun.disabled, false);
+  assert.equal(app.compilePhase, 'idle');
+  assert.equal(ids.compileStrip.textContent, 'error: sketch.ino:1');
+  assert.equal(ids.compileStrip.hidden, false);
+  assert.equal(ids.stLive.textContent, 'error: sketch.ino:1');
+  assert.doesNotMatch(ids.stText.textContent, /compile error/);
   phoneRun();
   assert.equal(buildTab.clicked, 1);
 
@@ -371,6 +382,9 @@ test('a queued compile shows the server message and position, then returns to id
   assert.match(app.serialText, /\[Another build is ahead of yours\. You are number 2\.\]/);
   const id = lastCompile.init.headers['X-Client-Id'];
   assert.match(id, /^[A-Za-z0-9_-]{1,64}$/);
+  assert.equal(lastCompile.init.headers['X-Compile-Id'], undefined);
+  assert.equal(lastProgress.init.headers['X-Compile-Id'], undefined);
+  assert.equal(lastProgress.init.headers['X-Client-Id'], id);
   progressBody = { active: false, wait: { reason: 'warm-up', position: 1, message: 'Preparing network stack (first run after restart), about 40 s…' } };
   await delay(450);
   assert.equal(label.textContent, 'Queued');
@@ -431,6 +445,57 @@ test('compile status copy covers queue fallbacks and never a bare Waiting', () =
   }
 });
 
+
+test('a network sketch shows the safety line once, through textContent', async () => {
+  const notice = 'Your sketch uses the network. It can reach the simulated devices in Circuit Lab, but not the internet, which is blocked for safety. Requests to real websites will fail even if your code is fine.';
+  const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
+  assert.match(html, /id="netNotice" role="status"/);
+  assert.match(html, /min-height:1\.6em/);
+  assert.match(html, /color:var\(--txt\)/);
+  ids.netNotice.textContent = '';
+  const pending = gate();
+  compileReply = pending.promise;
+  const flight = app.startRun();
+  await delay(20);
+  assert.equal(lastProgress.init.headers['X-Compile-Id'], undefined);
+  const serverId = 'serverCompileIdValue22';
+  pending.resolve(okResponse({ compile_id: serverId, net_blocked_notice: true }));
+  await flight;
+  assert.equal(ids.netNotice.textContent, notice);
+  assert.equal(ids.netNotice.innerHTML, undefined);
+  assert.equal(lastProgress.init.headers['X-Compile-Id'], serverId);
+  assert.match(lastProgress.url, /id=serverCompileIdValue22/);
+  const again = gate();
+  compileReply = again.promise;
+  const second = app.startRun();
+  again.resolve(okResponse({ compile_id: serverId, net_blocked_notice: true }));
+  await second;
+  assert.equal(ids.netNotice.textContent, notice);
+  const quiet = gate();
+  compileReply = quiet.promise;
+  const third = app.startRun();
+  quiet.resolve(okResponse({ compile_id: 'anotherServerCompileId22', net_blocked_notice: false }));
+  await third;
+  assert.equal(ids.netNotice.textContent, '');
+});
+
+test('a build-server failure is shown as that sentence, not an include hint', async () => {
+  const msg = "The simulator couldn't start. Try again in a minute. Your sketch is fine and saved.";
+  const pending = gate();
+  compileReply = pending.promise;
+  const flight = app.startRun();
+  pending.resolve(okResponse({
+    ok: false,
+    reason: 'infra',
+    log: "We couldn't check this sketch's #include lines, so it wasn't built. Check them for typos, then press Run again.",
+  }));
+  await flight;
+  assert.equal(ids.buildLog.textContent, msg);
+  assert.equal(ids.buildLog.innerHTML, undefined);
+  assert.doesNotMatch(ids.buildLog.textContent, /#include lines/);
+  assert.doesNotMatch(ids.buildLog.textContent, /compile error/);
+});
+
 test('the busy Run button is grey, keeps its spinner, and theme.css is cache-busted', () => {
   const css = fs.readFileSync(path.join(__dirname, '../css/theme.css'), 'utf8');
   const html = fs.readFileSync(path.join(__dirname, '../index.html'), 'utf8');
@@ -443,8 +508,9 @@ test('the busy Run button is grey, keeps its spinner, and theme.css is cache-bus
   assert.doesNotMatch(block[1], /#22d3ee|#06b6d4|#67e8f9|var\(--mut\)/);
   assert.match(css, /html\[data-theme=light\] #bRun\.spinning[^\{]*\{[^}]*background:#eceef1;[^}]*color:#2c333c/);
   assert.match(css, /#bRun\.spinning \.runspin\{display:block;animation:runspin/);
-  assert.match(html, /id="compileStrip"[^>]*role="status"[^>]*aria-live="polite"/);
-  assert.match(html, /id="mCompileToast"[^>]*role="status"[^>]*aria-live="polite"/);
+  assert.doesNotMatch(html, /id="compileStrip"[^>]*aria-live/);
+  assert.doesNotMatch(html, /id="mCompileToast"[^>]*aria-live/);
+  assert.match(html, /id="stLive"[^>]*role="status"[^>]*aria-live="polite"/);
   assert.match(css, /#compileStrip\{[^}]*position:fixed;[^}]*top:var\(--strip-top,0px\);[^}]*left:0;[^}]*right:0;/);
   assert.match(css, /html\.strip-on #stage,html\.strip-on #projBanner[^\{]*\{transform:translateY\(var\(--strip-h,0px\)\)\}/);
   assert.doesNotMatch(css, /html\.strip-on[^\{]*\{[^}]*(?:margin-top|top:)/);
@@ -463,7 +529,7 @@ test('the busy Run button is grey, keeps its spinner, and theme.css is cache-bus
   assert.match(css, /#bExamples:active\{transform:translateY\(\.5px\)\}/);
   assert.match(css, /#bExamples:disabled,#bExamples\[aria-disabled="true"\]\{opacity:\.45/);
   const vTheme = html.match(/theme\.css\?v=(\d+)/);
-  assert.equal(vTheme && vTheme[1], '64');
+  assert.equal(vTheme && vTheme[1], '74');
   assert.match(css, /html\.strip-on body:not\(\.m\) #palList,html\.strip-on body:not\(\.m\) \.insp-body\{padding-bottom:calc\(var\(--s3\) \+ var\(--strip-h,0px\)\)\}/);
   assert.match(css, /#compileStrip\{[^}]*background:#1b1f24;[^}]*color:#e8eaed;/);
   assert.match(css, /#compileStrip\{[^}]*white-space:normal;[^}]*overflow:visible;[^}]*text-overflow:clip/);
@@ -505,13 +571,13 @@ test('the busy Run button is grey, keeps its spinner, and theme.css is cache-bus
   assert.match(mobile, /#compileStrip\{display:none!important\}/);
   assert.match(mobile, /html\[data-theme=light\] body\.m \.m-compile-toast\{[^}]*background:#eceef1;[^}]*color:#2c333c/);
   const mv = html.match(/mobile\.css\?v=(\d+)/);
-  assert.equal(mv && mv[1], '68');
+  assert.equal(mv && mv[1], '75');
   const av = html.match(/app\.js\?v=(\d+)/);
-  assert.equal(av && av[1], '77');
+  assert.equal(av && av[1], '103');
   const mj = html.match(/mobile\.js\?v=(\d+)/);
-  assert.equal(mj && mj[1], '69');
+  assert.equal(mj && mj[1], '72');
   const ev = html.match(/editor\.js\?v=(\d+)/);
-  assert.equal(ev && ev[1], '65');
+  assert.equal(ev && ev[1], '68');
   const appjs = fs.readFileSync(path.join(__dirname, '../js/app.js'), 'utf8');
   assert.match(appjs, /new ResizeObserver\(\(\) => syncStripMetrics\(\)\)/);
   assert.match(appjs, /stripObserver\.observe\(el\)/);
@@ -530,4 +596,121 @@ test('the busy Run button is grey, keeps its spinner, and theme.css is cache-bus
   const editor = fs.readFileSync(path.join(__dirname, '../js/editor.js'), 'utf8');
   assert.match(editor, /svg\.focus\(\{ preventScroll: true \}\)/);
   assert.doesNotMatch(editor, /svg\.focus\(\)/);
+});
+
+const TIMEOUT_TEXT = "Your sketch took too long to build. It's saved. Try Run again, and if it keeps happening, make the sketch smaller.";
+
+function restored(where) {
+  assert.equal(label.textContent, 'Run', where);
+  assert.equal(bRun.disabled, false, where);
+  assert.equal(bRun.classList.contains('spinning'), false, where);
+  assert.notEqual(label.textContent, 'Building…', where);
+  assert.equal(app.compilePhase, 'idle', where);
+  assert.equal(app.run, null, where);
+}
+
+test('a 504 compile timeout restores Run and shows the saved-sketch sentence', async () => {
+  assert.equal(app.COMPILE_TIMEOUT_TEXT, TIMEOUT_TEXT);
+  try {
+    const pending = gate();
+    compileReply = pending.promise;
+    narrowPhone = false;
+    const flight = app.startRun();
+    busy();
+    phoneCompiling();
+    pending.resolve({
+      status: 504,
+      json: async () => ({ ok: false, reason: 'timeout', log: TIMEOUT_TEXT }),
+    });
+    await flight;
+    restored('desktop');
+    phoneRun();
+    assert.equal(ids.stText.textContent, TIMEOUT_TEXT);
+    assert.equal(ids.stLive.textContent, TIMEOUT_TEXT);
+    assert.equal(ids.status.getAttribute('title'), TIMEOUT_TEXT);
+    assert.equal(ids.compileStrip.textContent, TIMEOUT_TEXT);
+    assert.equal(ids.compileStrip.hidden, false);
+    assert.equal(ids.mCompileToast.hidden, true);
+    assert.equal(ids.buildLog.textContent, TIMEOUT_TEXT + '\n');
+
+    narrowPhone = true;
+    const phonePending = gate();
+    compileReply = phonePending.promise;
+    const phoneFlight = app.startRun();
+    assert.equal(bRun.disabled, true);
+    assert.equal(label.textContent, 'Building…');
+    assert.equal(ids.mCompileToast.textContent, app.BUILDING_TEXT);
+    assert.equal(ids.mCompileToast.hidden, false);
+    assert.equal(ids.stText.textContent, 'Building…');
+    phonePending.resolve({
+      status: 504,
+      json: async () => ({ ok: false, reason: 'timeout', log: TIMEOUT_TEXT }),
+    });
+    await phoneFlight;
+    restored('phone');
+    phoneRun();
+    assert.equal(ids.stText.textContent, TIMEOUT_TEXT);
+    assert.equal(ids.stLive.textContent, TIMEOUT_TEXT);
+    assert.equal(ids.status.getAttribute('title'), TIMEOUT_TEXT);
+    assert.equal(ids.mCompileToast.textContent, TIMEOUT_TEXT);
+    assert.equal(ids.mCompileToast.hidden, false);
+    assert.equal(ids.compileStrip.hidden, true);
+  } finally {
+    narrowPhone = false;
+  }
+});
+
+test('an aborted or timed-out compile fetch leaves Building immediately', async () => {
+  const origFetch = global.fetch;
+  async function giveUp(name) {
+    let compileCalls = 0;
+    global.fetch = (url, opts) => {
+      const u = String(url);
+      if (u.includes('api/compile') && !u.includes('progress')) {
+        compileCalls += 1;
+        const err = new Error(name);
+        err.name = name;
+        return Promise.reject(err);
+      }
+      return origFetch(url, opts);
+    };
+    const started = Date.now();
+    const flight = app.startRun();
+    busy();
+    phoneCompiling();
+    await flight;
+    assert.ok(Date.now() - started < 800, name + ' does not wait out gateway retries');
+    assert.equal(compileCalls, 1, name);
+    restored(name);
+    phoneRun();
+    assert.equal(ids.stText.textContent, TIMEOUT_TEXT);
+    assert.equal(ids.stLive.textContent, TIMEOUT_TEXT);
+    assert.notEqual(label.textContent, 'Building…');
+  }
+  try {
+    await giveUp('AbortError');
+    await giveUp('TimeoutError');
+  } finally {
+    global.fetch = origFetch;
+    narrowPhone = false;
+  }
+});
+
+test('an unexpected simulator exit is a sentence, not connection lost', async () => {
+  wsShouldThrow = false;
+  const pending = gate();
+  compileReply = pending.promise;
+  const flight = app.startRun();
+  pending.resolve(okResponse());
+  await flight;
+  global.WebSocket.last.onopen();
+  global.WebSocket.last.onmessage({
+    data: JSON.stringify({ t: 'exit', unexpected: true, code: 134, msg: 'qemu_thread_create: Resource temporarily unavailable' }),
+  });
+  global.WebSocket.last.onclose();
+  assert.equal(ids.stText.textContent, 'The simulator stopped. Press Run to try again.');
+  assert.equal(ids.stText.textContent.includes('CONNECTION LOST'), false);
+  assert.equal(ids.stText.textContent.includes('connection lost'), false);
+  assert.equal(app.serialText.includes('Resource temporarily unavailable'), false);
+  assert.equal(app.serialText.includes('The simulator stopped. Press Run to try again.'), true);
 });

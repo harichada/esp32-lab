@@ -1,0 +1,5 @@
+sketch.ino: In function ‘void setup()’:
+sketch.ino:5:16: error: ‘LEDD’ was not declared in this scope; did you mean ‘LED’?
+    5 |   digitalWrite(LEDD, HIGH);
+      |                ^~~~
+      |                LED

@@ -1,0 +1,10 @@
+sketch.ino:2:19: warning: missing terminating " character
+    2 |   const char* s = "hello;
+      |                   ^
+sketch.ino:2:19: error: missing terminating " character
+    2 |   const char* s = "hello;
+      |                   ^~~~~~~
+sketch.ino: In function ‘void setup()’:
+sketch.ino:3:1: error: expected primary-expression before ‘}’ token
+    3 | }
+      | ^

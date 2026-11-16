@@ -24,6 +24,15 @@ body.m #bStop{display:none}body.m.running #bStop{display:inline-flex;width:40px;
 body.m.running .runctl .run span{display:none}body.m.running .runctl .run{padding:0;width:40px;justify-content:center}
 body.m #mMenu{width:44px;height:44px;border-radius:12px;color:var(--txt)}
 body.m .iconbtn,body.m button{min-height:44px}body.m .iconbtn{min-width:44px}
+body.m .auth-slot{display:none}
+body.m #mAuth{display:flex;flex-direction:column;align-items:stretch;gap:8px}
+body.m #mAuth h2.m-lbl{font-family:inherit;line-height:1.2}
+body.m #mAuth button,#mSignIn,#mSignOut{min-height:44px;min-width:44px;width:100%;justify-content:flex-start}
+body.m #mAuth .auth-who{display:flex;align-items:center;min-height:44px;font-size:16px}
+body.m #mAuth button:hover,body.m #mSignIn:hover,body.m #mSignOut:hover{background:var(--l4)}
+body.m #mAuth button:active,body.m #mSignIn:active,body.m #mSignOut:active{transform:translateY(.5px)}
+body.m #mAuth button:focus-visible,body.m #mSignIn:focus-visible,body.m #mSignOut:focus-visible{outline:2px solid #0891b2;outline-offset:2px}
+body.m #mAuth button:disabled,body.m #mAuth button[aria-disabled="true"]{opacity:.45}
 /* ---- canvas ---- */
 body.m #main{position:fixed;left:0;right:0;top:var(--mTop);bottom:var(--mBot);height:auto;display:block}
 body.m #center{position:absolute;inset:0}
@@ -140,9 +149,9 @@ body.m table.pins{font-size:13px}body.m table.pins td{padding:8px}body.m .sw{wid
 body.m .modal{padding:calc(var(--mTop) + 8px) 10px 10px;align-items:flex-start;z-index:80}
 body.m .modal-box{width:100%;max-height:calc(100% - 20px);border-radius:18px;padding:16px}
 body.m .nb-modal{z-index:90}body.m .nb-opts{grid-template-columns:1fr}body.m .nb-opt{min-height:0;padding:14px}body.m .nb-foot button{height:40px;padding:0 18px}
-body.m .projs td{padding:12px 6px;font-size:14px}body.m .projs td:last-child{white-space:normal}body.m .projs td button{height:40px;min-height:40px;margin:3px}
-body.m .projs tr{display:flex;flex-wrap:wrap;align-items:center}body.m .projs td:last-child{text-align:left;width:100%;border-top:0;padding-top:0}
-body.m .toast{bottom:calc(var(--dock) + 110px);font-size:14px;border-radius:14px;max-width:calc(100vw - 24px)}
+body.m .projs td{padding:12px 6px;font-size:14px;min-width:0;max-width:100%;overflow-wrap:anywhere}body.m .projs td:last-child{white-space:normal}body.m .projs td button{height:40px;min-height:40px;margin:3px}
+body.m .projs tr{display:flex;flex-wrap:wrap;align-items:center;max-width:100%}body.m .projs td:last-child{text-align:left;width:100%;border-top:0;padding-top:0}
+body.m .toast{bottom:calc(268px + env(safe-area-inset-bottom));font-size:14px;border-radius:14px;max-width:calc(100vw - 24px)}
 body.m .ctxmenu button{height:48px;font-size:15px}body.m .ctx-colors span{width:28px;height:28px}
 body.m .cmdk-in input{font-size:16px}
 
@@ -196,6 +205,9 @@ body.m #palList .pitem svg{height:86px}
 body.m #palList .pitem span{font-family:var(--mono);font-size:11.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--txt)}
 body.m #palList .pitem.m-focus{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc),0 0 34px rgba(34,211,238,.35),inset 0 0 24px rgba(34,211,238,.12)}
 body.m #palList .pitem.m-focus::after{content:'TAP TO DEPLOY';position:absolute;bottom:-18px;font:600 9.5px var(--mono);letter-spacing:.2em;color:var(--acc)}
+body.m #palList .pitem-locked.m-focus::after{content:none}
+body.m .pitem svg.lock,body.m #palList .pitem svg.lock,body.m #mTrack .pitem svg.lock{width:14px;height:14px}
+body.m #palList .pitem span.pitem-lock,body.m #mTrack .pitem span.pitem-lock,body.m .pitem span.pitem-lock{text-transform:none;letter-spacing:0;font-size:10px;white-space:normal;display:flex;-webkit-line-clamp:unset;font-family:var(--sans,system-ui,sans-serif)}
 body.m #palList .pitem{position:relative;overflow:visible}
 body.m .pal-empty{flex:0 0 100%;text-align:center}
 /* orbital command dial */
@@ -240,7 +252,15 @@ body.m #mIgnite.compiling::after{content:"";position:absolute;left:50%;top:50%;w
   body.m .m-compile-toast{position:fixed;right:max(16px,env(safe-area-inset-right));bottom:calc(102px + env(safe-area-inset-bottom));z-index:60;display:block;width:min(280px,calc(100vw - 24px));margin:0;padding:8px 10px;border-radius:12px;background:#1b1f24;color:#e8eaed;border:1px solid #9aa3af;font-size:13px;line-height:1.4;font-weight:500;text-align:left;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;height:auto;min-height:calc(2 * 1.4em + 18px);pointer-events:none;box-shadow:0 8px 24px rgba(0,0,0,.35)}
   body.m .m-compile-toast[hidden]{display:none!important}
   #compileStrip{display:none!important}
+  #compileStrip.timeout-card{display:block!important;top:var(--strip-top,54px)}
 }
+body.m .status-strip{top:auto;left:max(12px,env(safe-area-inset-left));right:max(108px,env(safe-area-inset-right));bottom:calc(96px + env(safe-area-inset-bottom));width:auto;border-bottom:0;border-radius:12px;border:1px solid #9aa3af;box-shadow:0 8px 24px rgba(0,0,0,.35)}
+/* The phone toolbar is hidden, so the dot is its own header item. Show it unless the status line is already on screen. */
+body.m #connDot{display:none!important}
+body.m.strip-flag:not(.strip-seen) #connDot{display:inline-flex!important;grid-column:2;grid-row:2;justify-self:end;align-self:center;padding:0;gap:6px}
+body.m.strip-flag:not(.strip-seen) #connDot>span{display:none}
+body.m.strip-flag:not(.strip-seen) #status{padding-right:14px}
+body.m.strip-flag.strip-seen #connDot,body.m.strip-flag.strip-seen #mConn{display:none!important}
 html[data-theme=light] body.m .m-compile-toast{background:#eceef1;color:#2c333c;border-color:#3d4550}
 body.busy #mIgnite .m-ig-bg{stroke:var(--warn);stroke-dasharray:8 6;animation:mSpin 1.2s linear infinite;transform-origin:center}
 #mCount{position:fixed;inset:0;z-index:85;pointer-events:none;place-items:center;font:700 min(60px,12vw) var(--mono);letter-spacing:.06em;color:#e6fdff;text-shadow:0 0 30px var(--acc),0 0 60px rgba(34,211,238,.5)}
@@ -267,6 +287,7 @@ body.m #mTrack .pitem svg{height:86px;width:100%}
 body.m #mTrack .pitem span{font-family:var(--mono);font-size:11.5px;letter-spacing:.04em;text-transform:uppercase;color:var(--txt);text-align:center}
 body.m #mTrack .pitem.m-focus{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc),0 0 34px rgba(34,211,238,.35),inset 0 0 24px rgba(34,211,238,.12)}
 body.m #mTrack .pitem.m-focus::after{content:'TAP TO DEPLOY';position:absolute;bottom:-18px;font:600 9.5px var(--mono);letter-spacing:.2em;color:var(--acc)}
+body.m #mTrack .pitem-locked.m-focus::after{content:none}
 #mParts{position:absolute;right:max(12px,env(safe-area-inset-right));top:36px;z-index:7;height:44px;padding:0 16px 0 12px;gap:6px;border-radius:6px;background:rgba(34,211,238,.12);border:1px solid var(--hud);color:var(--acc);font:700 12px var(--mono);letter-spacing:.16em;box-shadow:0 0 22px rgba(34,211,238,.25);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
 body.m #mParts.m-only{display:inline-flex!important}#mParts .ic{width:18px;height:18px}
 body.m.m-wiring #mParts{opacity:0;pointer-events:none}
@@ -290,7 +311,24 @@ body.m.view3d .canvas-tools,body.m.view3d .zoom-tools{z-index:12}
 body.m .exit3d{top:72px;right:auto;left:50%;transform:translateX(-50%);height:44px;line-height:44px;padding:0 20px;border-radius:8px;font-size:13px}
 body.m.view3d #mParts{opacity:.3;pointer-events:none}
 body.m.view3d .hint{display:none}
-body.m.viewsch .hint{display:block;left:12px;right:12px;bottom:calc(176px + env(safe-area-inset-bottom));max-width:none!important;height:auto;white-space:normal!important;overflow:visible!important;text-overflow:clip;line-height:1.35}
+body.m.viewsch .hint{display:block;left:12px;right:12px;bottom:calc(236px + env(safe-area-inset-bottom));max-width:none!important;height:auto;white-space:normal!important;overflow:visible!important;text-overflow:clip;line-height:1.35}
+/* Breadboard / Tidy stay on the view row. The bar uses the width above the
+   ignition button, and nothing scrolls sideways. At 320 the pair wraps onto
+   its own row so neither label is clipped. */
+body.m.viewsch .canvas-tools{left:4px;flex-wrap:nowrap;align-items:flex-start;overflow:hidden;max-width:calc(100% - 8px);width:max-content;gap:2px;touch-action:manipulation}
+@media (max-width:360px){
+  body.m.viewsch .canvas-tools{left:4px;flex-wrap:wrap;width:calc(100% - 8px);max-width:calc(100% - 8px)}
+  body.m.viewsch .sch-layout{flex:1 0 100%}
+}
+@media (max-width:430px){
+  body.m.viewsch #bView3d{position:relative}
+  body.m.viewsch #bView3d span{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+  body.m.viewsch .view-toggle .seg{padding:0 8px}
+}
+body.m .zoom-tools #schFitAll{display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;min-width:44px;min-height:44px;height:44px}
+body.m.viewsch .sch-layout,body.m.viewsch .view-toggle{flex:0 0 auto}
+body.m.viewsch .toast{bottom:calc(300px + env(safe-area-inset-bottom))}
+body.m .sch-layout .sch-lay,body.m .sch-fitall{min-width:44px;min-height:44px;padding:0 8px;font-size:13px;white-space:nowrap;text-overflow:clip}
 body.m.viewsch #mSel [data-a=rot],body.m.viewsch #mSel [data-a=del]{display:none!important}
 body.m .view-toggle .seg{padding:0 10px}
 /* oscilloscope HUD sheet (full-screen) */
@@ -312,6 +350,7 @@ body.m .tel-i canvas{width:84px;height:22px}body.m .tel-h{display:none}body.m .t
    #bFit stays hidden here; #bFitPill is the visible fit control next to the %. */
 @media (max-width:430px){
   body.m .zoom-tools{top:88px;bottom:auto;right:max(8px,env(safe-area-inset-right));left:auto;flex-direction:column;gap:6px;padding:4px;z-index:14}
+  body.m.viewsch .zoom-tools{flex-direction:row;flex-wrap:nowrap;align-items:flex-start;overflow:hidden;width:max-content;max-width:calc(100% - 16px)}
   body.m .zoom-tools #bZoomOut,body.m .zoom-tools #bZoomIn,body.m .zoom-tools #zoomPct,body.m .zoom-tools #bFitPill{display:inline-flex!important;width:44px;min-width:44px;height:44px;min-height:44px;padding:0;align-items:center;justify-content:center;box-sizing:border-box}
   body.m .zoom-tools #bFit{display:none!important}
   body.m.view3d .zoom-tools #zoomPct,body.m.view3d .zoom-tools #bFitPill{display:inline-flex!important}
@@ -329,6 +368,7 @@ html[data-cl-env=staging] body.m #stageBanner{position:fixed;top:0;left:0;right:
 html[data-cl-env=staging] body.m header#top{top:var(--stage-offset);height:54px;padding-top:0}
 html[data-cl-env=staging] body.m #mTicker,html[data-cl-env=staging] body.m #main{top:calc(54px + var(--stage-offset))}
 html[data-cl-env=staging] body.m .m-sheet{max-height:calc(100% - 54px - var(--stage-offset) - var(--mBot) - 12px)}
+body.m.storage-full[data-msheet=more] #mMore,html[data-cl-env=staging] body.m.storage-full[data-msheet=more] #mMore{max-height:calc(100% - var(--mTop) - var(--stage-offset, 0px) - var(--mBot) - 12px - var(--storage-alert, 220px))}
 html[data-cl-env=staging] body.m .modal{padding-top:calc(54px + var(--stage-offset) + 8px)}
 @media (max-height:520px){
   html[data-cl-env=staging] body.m header#top{height:44px}
@@ -337,4 +377,8 @@ html[data-cl-env=staging] body.m .modal{padding-top:calc(54px + var(--stage-offs
 }
 @media (max-width:430px){
   html[data-cl-env=staging] body.m .zoom-tools{top:calc(88px + var(--stage-offset))}
+  html[data-cl-env=staging] body.m.viewsch .zoom-tools{top:calc(88px + var(--stage-offset))}
 }
+/* Sit above the Run button. The editor underneath does not move. */
+body.m .compile-hint{position:relative;left:auto;right:auto;bottom:auto;max-width:100%;font-size:15px}
+body.m .compile-hint button{font-size:15px}

@@ -1,4 +1,18 @@
-async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o);if(r.status>=502&&r.status<=504&&i<n)throw new Error('gw');return r;}catch(e){if(i>=n)throw e;await new Promise(z=>setTimeout(z,1500*(i+1)));}}}
+async function fetchRetry(u, o, n = 4) {
+  for (let i = 0; ; i++) {
+    try {
+      const r = await fetch(u, o);
+      // 502/503 are gateway drops and are retried. 504 is a compile that ran too long
+      // and must reach the page immediately, not start another build.
+      if ((r.status === 502 || r.status === 503) && i < n) throw new Error('gw');
+      return r;
+    } catch (e) {
+      if (e && (e.name === 'AbortError' || e.name === 'TimeoutError')) throw e;
+      if (i >= n) throw e;
+      await new Promise((z) => setTimeout(z, 1500 * (i + 1)));
+    }
+  }
+}
 /* Application glue: project state, runtimes (QEMU over websocket / JS sketch), panels, devices, persistence. */
 (function () {
   const P = window.Parts, { Sim } = window.SimCore, R = window.RemoteLogic, $ = (s) => document.querySelector(s);
@@ -13,6 +27,10 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     return p;
   }
   function setProject(p, opts) {
+    const prev = app.proj;
+    if (prev && prev !== p && !prev.id && prev.draftId && window.Schematic && Schematic.releaseDraft) {
+      try { Schematic.releaseDraft(prev); } catch (e) { /* the draft key stays until the next sweep */ }
+    }
     stopRun(); app.readOnly = !!(opts && opts.readOnly);
     if (window.Netlist) { try { Netlist.migrate(p); } catch (e) { /* open the board even if its netlist cannot be built */ } }
     app.proj = normalize(p); app.sim = new Sim(app.proj); app.file = 'sketch'; app.world = new Devices.MockWorld(); app.world.onchange = () => (app.devDirty = true); app.world.onlog = (e) => app.netlog.add({ k: 'dev', msg: `${e.proto}: ${e.summary}`, ok: !(e.code < 0 || e.code >= 400) });
@@ -27,11 +45,34 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     serialClear(); app.irFrames = [];
     serialAppend(`— ${app.proj.name || 'project'} —\n${app.proj.notes ? app.proj.notes + '\n' : ''}`);
     app.devDirty = true; setStatus('idle', 'idle'); renderBanner();
+    if (window.GuestParts && GuestParts.projectBlocked(app.proj)) setStatus('warn', GuestParts.SENTENCE);
     if (window.Bom) Bom.render(document.getElementById('bomView'), app.proj);
     if (app.view3d) app.view3d.setProject(app.proj);
     if (app.schematic) { app.schematic.sel = null; app.schematic.setProject(app.proj); }
+    syncExampleReady();
   }
-  async function loadExample(k) {
+  // Stays set for the life of the view. The e2e helper waits on this instead of a toast,
+  // which is removed on a timer and is gone before a slow assertion notices it.
+  function syncExampleReady() {
+    const root = document.documentElement;
+    if (!root || !root.setAttribute || !root.removeAttribute) return;
+    const proj = app.proj;
+    const sch = app.schematic;
+    const tabs = document.getElementById('fileTabs');
+    const code = document.getElementById('code');
+    const filesReady = !!(proj && proj.example && proj.files && tabs && tabs.querySelector('button[data-f="sketch"]') && code && code.value === (proj.code || ''));
+    const netReady = !!(proj && proj.netlist && Array.isArray(proj.netlist.nets) && proj.netlist.nets.length);
+    const drawn = !!(sch && sch.active && sch.svg && sch.svg.classList.contains('on') && sch.svg.querySelector('.sch-hit'));
+    if (filesReady && netReady && drawn) root.setAttribute('data-example-ready', String(proj.example));
+    else root.removeAttribute('data-example-ready');
+  }
+  async function loadExample(k, opts) {
+    // A click on a locked example opens sign-in and leaves the current circuit
+    // alone. A shared link (?ex=) still draws the circuit; Run stays blocked.
+    if (!(opts && opts.keepLocked) && window.GuestParts && GuestParts.exampleLocked(k)) {
+      GuestParts.promptExample(k);
+      return;
+    }
     const ex = Examples.EX[k](); ex.example = k;
     if (ex.fetch) {
       for (const [name, url] of Object.entries(ex.fetch)) {
@@ -42,21 +83,103 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     }
     setProject(ex, { readOnly: true }); setUrl({ ex: k });
   }
-  Examples.EX.remote = ((f) => () => { const e = f(); e.files = {}; return e; })(Examples.EX.remote);
+  if (window.Examples && Examples.EX && typeof Examples.EX.remote === 'function' && !Examples.EX.remote.__ui2wrap) {
+    const remoteFactory = Examples.EX.remote;
+    const wrappedRemote = () => { const e = remoteFactory(); e.files = {}; return e; };
+    wrappedRemote.__ui2wrap = 1;
+    Examples.EX.remote = wrappedRemote;
+  }
   // ---------------- projects: examples are read-only, edits go to a copy in My Projects ----------------
   function setUrl(o) { const u = new URL(location.href); u.searchParams.delete('ex'); u.searchParams.delete('p'); u.searchParams.delete('t'); for (const k in o) u.searchParams.set(k, o[k]); history.replaceState(null, '', u); }
+  const STORAGE_FULL_MSG = "Couldn't save. Your browser storage is full. Export this project to keep it, then delete old projects in My Projects to free up space.";
+  function showStorageFull() {
+    const doc = document;
+    if (!doc || !doc.body || !doc.getElementById || !doc.createElement) return;
+    let box = doc.getElementById('storageFull');
+    if (!box) {
+      if (!doc.head) return;
+      const css = doc.createElement('style');
+      css.id = 'storageFullStyle';
+      css.textContent = '#storageFull{position:fixed;z-index:100;left:50%;top:50%;transform:translate(-50%,-50%);width:min(480px,calc(100vw - 16px));max-height:calc(100vh - 16px);box-sizing:border-box;margin:0;padding:12px;background:#15181c;color:#e6e8eb;border:1px solid #2c3138;border-radius:10px;box-shadow:0 24px 64px rgba(0,0,0,.6);overflow:auto}#storageFull p{margin:0 0 12px;white-space:normal;overflow-wrap:anywhere;line-height:1.4;font-size:14px}#storageFull .storage-full-actions{display:flex;flex-wrap:wrap;gap:8px}#storageFull button{min-width:44px;min-height:44px;height:auto;white-space:normal;padding:8px 14px;box-sizing:border-box}'
+        + 'body.m.storage-full[data-msheet=more] #storageFull{top:calc(var(--mTop, 0px) + var(--stage-offset, 0px) + 8px);left:max(8px, env(safe-area-inset-left));right:max(8px, env(safe-area-inset-right));width:auto;transform:none;max-height:var(--storage-alert, 220px);z-index:80}';
+      doc.head.appendChild(css);
+      box = doc.createElement('div');
+      box.id = 'storageFull';
+      box.setAttribute('role', 'alert');
+      box.setAttribute('aria-live', 'assertive');
+      box.innerHTML = '<p id="storageFullMsg"></p><div class="storage-full-actions"><button type="button" id="storageFullExport" class="primary">Export</button><button type="button" id="storageFullProjects">Open My Projects</button><button type="button" id="storageFullDismiss">Dismiss</button></div>';
+      doc.body.appendChild(box);
+      box.querySelector('#storageFullExport').onclick = () => { try { download(); } catch (e) { /* the JSON is built in memory */ } };
+      box.querySelector('#storageFullProjects').onclick = () => { try { projectsDialog(); } catch (e) { /* the list stays closed */ } };
+      box.querySelector('#storageFullDismiss').onclick = () => { box.hidden = true; placeStorageFull(); };
+      if (typeof MutationObserver === 'function' && doc.body && !doc.body.__storageWatch) {
+        doc.body.__storageWatch = true;
+        new MutationObserver(() => placeStorageFull()).observe(doc.body, { attributes: true, attributeFilter: ['data-msheet', 'class'] });
+      }
+    }
+    const msg = doc.getElementById('storageFullMsg');
+    if (msg) msg.textContent = STORAGE_FULL_MSG;
+    box.hidden = false;
+    placeStorageFull();
+  }
+  function placeStorageFull() {
+    const doc = document;
+    const box = doc.getElementById && doc.getElementById('storageFull');
+    const body = doc.body;
+    if (!box || !body) return;
+    const open = !box.hidden;
+    if (body.classList) body.classList.toggle('storage-full', open);
+    if (!open || !body.classList || !body.classList.contains('m') || body.dataset.msheet !== 'more') {
+      if (body.style) body.style.removeProperty('--storage-alert');
+      return;
+    }
+    const prev = box.style.maxHeight;
+    box.style.maxHeight = 'none';
+    const h = Math.ceil(box.getBoundingClientRect().height);
+    box.style.maxHeight = prev;
+    body.style.setProperty('--storage-alert', Math.max(120, h + 16) + 'px');
+  }
+  window.onStorageFull = showStorageFull;
   function makeCopy(auto) {
     syncDefines(); syncCode(); const was = app.proj.name;
-    const c = store.copy(app.proj); Object.assign(app.proj, { id: c.id, name: c.name, copiedFrom: c.copiedFrom }); delete app.proj.example;
-    app.readOnly = false; store.save(app.proj); setUrl({ p: app.proj.id }); renderBanner();
+    let carried = '';
+    try { if (window.Schematic && Schematic.storedLayout) carried = Schematic.storedLayout(app.proj) || ''; } catch (e) { carried = ''; }
+    let c;
+    try { c = store.copy(app.proj); }
+    catch (e) { showStorageFull(); return null; }
+    Object.assign(app.proj, { id: c.id, name: c.name, copiedFrom: c.copiedFrom }); delete app.proj.example;
+    if (app.proj.draftId && window.Schematic && Schematic.releaseDraft) {
+      try { Schematic.releaseDraft(app.proj); } catch (e) { delete app.proj.draftId; }
+    }
+    app.readOnly = false;
+    try { store.save(app.proj); }
+    catch (e) { showStorageFull(); return app.proj; }
+    if (carried && window.Schematic && Schematic.writeLayout) {
+      try { Schematic.writeLayout(app.proj, carried); } catch (e) { /* the copy still opens on Tidy; writeLayout reports a full disk */ }
+    }
+    setUrl({ p: app.proj.id }); renderBanner();
     toast(auto ? `Examples are read-only — your change is in a copy: “${app.proj.name}” (My Projects)` : `Copied “${was}” to My Projects as “${app.proj.name}”`);
     return app.proj;
   }
   function beforeEdit() { if (app.readOnly) makeCopy(true); }
   let saveT = 0;
-  function autosave() { if (app.readOnly || !app.proj) return; clearTimeout(saveT); saveT = setTimeout(() => { syncCode(); store.save(app.proj); renderBanner(true); }, 600); }
+  function autosave() {
+    if (app.readOnly || !app.proj) return;
+    clearTimeout(saveT);
+    saveT = setTimeout(() => {
+      try { syncCode(); store.save(app.proj); }
+      catch (e) { showStorageFull(); return; }
+      renderBanner(true);
+    }, 600);
+  }
   function syncDefines() { if (app.proj) app.proj.defines = $('#inDefines').value.split(',').map((x) => x.trim()).filter(Boolean); }
-  function openProject(id) { const p = store.get(id); if (!p) { toast('Project not found', true); return false; } setProject(p); setUrl({ p: id }); store.save(app.proj); return true; }
+  function openProject(id) {
+    const p = store.get(id); if (!p) { toast('Project not found', true); return false; }
+    setProject(p); setUrl({ p: id });
+    try { store.save(app.proj); }
+    catch (e) { showStorageFull(); }
+    return true;
+  }
   function setProjectTitle(name) {
     const el = document.getElementById && document.getElementById('projTitle');
     if (!el) return;
@@ -77,16 +200,26 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const bc = $('#bCopy'); if (bc) bc.onclick = () => makeCopy(false);
     const pn = $('#pbName'); if (pn) pn.onclick = () => { const n = prompt('Rename project', app.proj.name); if (n) { app.proj.name = n; store.rename(app.proj.id, n); renderBanner(true); } };
   }
-  function save() { syncCode(); syncDefines(); if (app.readOnly) { makeCopy(false); return; } store.save(app.proj); renderBanner(true); toast('Saved “' + app.proj.name + '” to My Projects' + (store.serverSync ? ' (+ server copy)' : '')); }
+  function save() {
+    syncCode(); syncDefines();
+    try {
+      if (app.readOnly) { makeCopy(false); return; }
+      store.save(app.proj);
+    } catch (e) { showStorageFull(); return; }
+    renderBanner(true);
+    toast('Saved “' + app.proj.name + '” to My Projects' + (store.serverSync ? ' (+ server copy)' : ''));
+  }
   function projectsDialog() {
     let d = $('#projDlg'); if (!d) { d = document.createElement('div'); d.id = 'projDlg'; d.className = 'modal'; document.body.appendChild(d); }
     const L = store.list();
     d.innerHTML = `<div class="modal-box"><div class="row"><h3 style="flex:1;margin:0">My Projects</h3><button data-a="close">✕</button></div>
+      <div id="authProj"></div>
       <div class="row"><button data-a="new">＋ New blank</button><label class="btn">⤒ Import JSON / diagram.json<input type="file" id="projImp" accept=".json,application/json" hidden></label>
-      <label title="Also keep a copy of each project on the simulator server"><input type="checkbox" id="cbSrv" ${store.serverSync ? 'checked' : ''}> server copy</label><button data-a="srv">From server…</button></div>
+      <label title="Also keep a copy of each project on the simulator server"><input type="checkbox" id="cbSrv" ${store.serverSync ? 'checked' : ''}> server copy</label><button type="button" data-a="srv" id="bFromServer">From server…</button></div>
       <table class="projs">${L.map((e) => `<tr data-id="${e.id}" class="${app.proj && app.proj.id === e.id ? 'cur' : ''}"><td class="pn">${P.esc(e.name)}<br><small class="muted">${new Date(e.updated).toLocaleString()}${e.from ? ' · from ' + P.esc(e.from) : ''}</small></td>
         <td><button data-a="open">Open</button><button data-a="ren">Rename</button><button data-a="dup">Duplicate</button><button data-a="exp">Export</button><button data-a="del">Delete</button></td></tr>`).join('') || '<tr><td class="muted">No projects yet. Open an example and press “Make a copy” (or just start editing it).</td></tr>'}</table><div id="srvList"></div></div>`;
     d.hidden = false;
+    if (window.clAuth) window.clAuth.fillProjects(d);
     d.onclick = async (e) => {
       if (e.target === d) { d.hidden = true; return; }
       const b = e.target.closest('[data-a]'); if (!b) return; const id = b.closest('tr') && b.closest('tr').dataset.id; const a = b.dataset.a;
@@ -142,7 +275,13 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
   app.newBlankDialog = newBlankDialog;
   app.makeCopy = makeCopy; app.openProject = openProject;
-  function download() { syncCode(); const b = new Blob([JSON.stringify(app.proj, null, 1)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = (app.proj.name || 'project').replace(/[^\w.-]+/g, '_') + '.json'; a.click(); }
+  function download() {
+    syncCode();
+    let mode = '';
+    try { if (window.Schematic && Schematic.storedLayout) mode = Schematic.storedLayout(app.proj) || ''; } catch (e) { mode = ''; }
+    const text = store.downloadJson(app.proj, mode);
+    const b = new Blob([text], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = (app.proj.name || 'project').replace(/[^\w.-]+/g, '_') + '.json'; a.click();
+  }
   function openFile(f) {
     const rd = new FileReader();
     rd.onload = () => { try { const o = JSON.parse(rd.result); const p = store.importJson(o.connections && o.parts && !o.wires ? importWokwi(o) : o); openProject(p.id); toast('Loaded ' + f.name + ' into My Projects'); } catch (e) { toast('Could not load: ' + e.message, true); } };
@@ -169,7 +308,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       const col = String(c[2] || 'green').replace(/^#.*/, 'green');
       wires.push({ id: 'w' + (++n), a, b, pts: a.x !== b.x && a.y !== b.y ? [{ x: a.x, y: b.y }] : [], color: window.WIRE_COLORS[col] ? col : 'green' });
     }
-    return { name: 'Imported from diagram.json', mode: 'qemu', code: Examples.BLINK, parts, wires, notes: skipped.length ? 'Skipped unsupported diagram.json parts: ' + [...new Set(skipped)].join(', ') : 'Imported diagram.json (sketch not included in diagram.json — paste it in the Code tab).' };
+    return { name: 'Imported from diagram.json', mode: 'qemu', code: (window.Examples && Examples.BLINK) || '', parts, wires, notes: skipped.length ? 'Skipped unsupported diagram.json parts: ' + [...new Set(skipped)].join(', ') : 'Imported diagram.json (sketch not included in diagram.json — paste it in the Code tab).' };
   }
   app.importWokwi = importWokwi;
   // ---------------- code editor ----------------
@@ -179,6 +318,18 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
   function syncCode() { const v = $('#code').value; if (app.file === 'sketch') app.proj.code = v; else app.proj.files[app.file] = v; }
   function loadCode() { $('#code').value = app.file === 'sketch' ? app.proj.code : app.proj.files[app.file] || ''; }
+  function openCodeFile(name) {
+    const file = !name || name === 'sketch' || name === 'sketch.ino' || name === 'sketch.ino.cpp' || /\.ino\.cpp$/.test(name) ? 'sketch' : name;
+    if (!app.proj) return;
+    if (file !== 'sketch' && !(app.proj.files && Object.prototype.hasOwnProperty.call(app.proj.files, file))) return;
+    if (app.file === file) return;
+    syncCode();
+    app.file = file;
+    renderFileTabs();
+    loadCode();
+    if (app.codeview && typeof app.codeview.refresh === 'function') app.codeview.refresh(true);
+  }
+  app.openCodeFile = openCodeFile;
   function modeNote() {
     $('#modeNote').innerHTML = app.proj.mode === 'qemu'
       ? '<b>Real firmware.</b> Compiled by arduino-cli (esp32 core 3.3, DOIT DevKit V1) and executed in Espressif QEMU (Xtensa LX6). GPIO out/in/enable, pull-ups, RMT (IR) and UART0 are bridged to this circuit. ADC (SAR with a typical chip’s non-linear response + eFuse Vref, so analogReadMilliVolts is right up to 3.13 V), LEDC PWM + hardware fades, I²C (SSD1306, BME280, MPU6050) and SPI (ILI9341 TFT, MCP3008, microSD/FAT) are bridged; Wi-Fi sketches run real lwIP (TCP/HTTP + UDP) over QEMU’s open_eth NIC. <span class="warn">Not emulated: the 802.11 radio, Bluetooth, deep sleep.</span>'
@@ -232,8 +383,10 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   // ---------------- runtimes ----------------
   function sendRun(m) { if (app.run && app.run.ws && app.run.ws.readyState === 1) app.run.ws.send(JSON.stringify(m)); }
   function espPart() { return app.proj.parts.find((q) => q.type === 'esp32'); }
+  const OFFLINE = "Can't reach the simulator right now. Your work is saved on this device. Try again in a moment.";
   function statusFace(kind, text) {
     const t = String(text || '').trim();
+    if (t === OFFLINE || /can't reach the simulator/i.test(t)) return { short: 'Offline', full: OFFLINE };
     if (kind === 'run' || /^running\b/i.test(t)) return { short: 'Running', full: t || 'Running' };
     if (kind === 'busy') {
       const queued = app.compilePhase === 'queued' || /\bqueued\b|ahead of yours|position \d|waiting for another build/i.test(t);
@@ -245,11 +398,13 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
   let statusWord = 'Idle';
   function statusShort(word) {
+    if (word === COMPILE_TIMEOUT_TEXT) return word;
     if (word === 'Building…' || word === 'Building...') return 'Build';
     if (word === 'Queued') return 'Wait';
     if (word === 'Running') return 'Run';
     if (word === 'Idle') return 'Idle';
     if (word === 'Run error') return 'Error';
+    if (word === 'Offline') return 'Offline';
     const one = String(word || '').split(/\s+/)[0] || 'Status';
     return one.length > 8 ? one.slice(0, 8) : one;
   }
@@ -283,7 +438,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const st = document.getElementById && document.getElementById('status');
     if (st && st.setAttribute) st.setAttribute('title', sentence);
     const live = document.getElementById && document.getElementById('stLive');
-    if (live) live.textContent = sentence;
+    if (live && live.textContent !== sentence) live.textContent = sentence;
     applyStatusTier(0);
     if (typeof syncHeaderFit === 'function') syncHeaderFit();
   }
@@ -348,9 +503,12 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
   let compileBusy = false;
   const BUILDING_TEXT = 'Building your code… the first build takes longer.';
+  const COMPILE_TIMEOUT_TEXT = "Your sketch took too long to build. It's saved. Try Run again, and if it keeps happening, make the sketch smaller.";
+  const SIMULATOR_STATUS = "The simulator couldn't start. Try again in a minute. Your sketch is fine and saved.";
+  const SIM_STOPPED = 'The simulator stopped. Press Run to try again.';
   const QUEUE_FALLBACK = 'Waiting for another build to finish…';
   // One phase for the Run button and the status line: idle, queued, building, running.
-  // A 429, a compile error, and a dropped socket return to idle.
+  // A 429, a 504 compile timeout, a compile error, an aborted fetch, and a dropped socket return to idle.
   function queuedCopy(wait) {
     const msg = wait && typeof wait.message === 'string' ? wait.message.trim() : '';
     const bare = !msg || msg === 'Waiting…' || msg === 'Waiting';
@@ -380,6 +538,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   const stripDown = new Set();
   function setCompilePhase(phase, detail) {
     const next = phase === 'queued' || phase === 'building' || phase === 'running' ? phase : 'idle';
+    if (window.StatusStrip && StatusStrip.clearTimeoutCard) StatusStrip.clearTimeoutCard();
     app.compilePhase = next;
     compileBusy = next === 'queued' || next === 'building';
     const sentence = next === 'queued' ? (detail || QUEUE_FALLBACK) : next === 'building' ? BUILDING_TEXT : '';
@@ -448,7 +607,69 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
         root.style.setProperty('--strip-h', '0px');
         if (root.classList) root.classList.remove('strip-on');
       }
+      syncStatusStrip();
     } catch (e) {}
+  }
+  function syncStatusStrip() {
+    const el = document.getElementById && document.getElementById('statusStrip');
+    const root = document.documentElement;
+    if (!root || !root.classList) return;
+    if (!el || el.hidden) { root.classList.remove('backend-down'); return; }
+    const h = el.getBoundingClientRect ? el.getBoundingClientRect().height : 0;
+    if (root.style && root.style.setProperty) root.style.setProperty('--status-h', (h || 0) + 'px');
+    root.classList.add('backend-down');
+  }
+  function paintBackend(down, health) {
+    if (health) app.health = health;
+    app.backendDown = down;
+    const dot = $('#connDot');
+    if (dot) {
+      dot.className = 'conn ' + (down ? 'bad' : 'ok');
+      dot.title = down ? StatusStrip.LINE : 'Backend connected: arduino-cli + QEMU ready';
+    }
+    if (down) StatusStrip.showDown(document);
+    else StatusStrip.hideDown(document);
+    syncStatusStrip();
+    markStripSeen();
+  }
+  function markStripSeen() {
+    const el = document.getElementById && document.getElementById('statusStrip');
+    let seen = false;
+    if (el && !el.hidden && el.getBoundingClientRect) {
+      const b = el.getBoundingClientRect();
+      const w = window.innerWidth || 0;
+      const h = window.innerHeight || 0;
+      if (b.width === 0 && b.height === 0 && typeof requestAnimationFrame === 'function' && !el.__stripMeasure) {
+        el.__stripMeasure = true;
+        requestAnimationFrame(() => { el.__stripMeasure = false; markStripSeen(); });
+      }
+      seen = b.width > 0 && b.height > 0 && b.top >= -1 && b.left >= -1 && b.bottom <= h + 1 && b.right <= w + 1;
+    }
+    if (document.body && document.body.classList && document.body.classList.toggle) document.body.classList.toggle('strip-seen', !!seen);
+  }
+  function watchBackend() {
+    if (app.healthWatch) return;
+    if (document.body && document.body.classList) document.body.classList.add('strip-flag');
+    const watch = StatusStrip.watchHealth({
+      hidden: () => !!document.hidden,
+      fetch: async () => {
+        const r = await fetch('api/health');
+        return r.json();
+      },
+      onDown: (h) => {
+        paintBackend(true, h);
+        if (!compileBusy && (statusWord === 'Idle' || statusWord === 'Offline' || !statusWord)) setStatus('warn', 'Offline');
+      },
+      onUp: (h) => {
+        paintBackend(false, h);
+        if (statusWord === 'Offline') setStatus('idle', 'Idle');
+      },
+    });
+    app.healthWatch = watch;
+    document.addEventListener('visibilitychange', () => watch.onVisibility());
+    window.addEventListener('focus', () => watch.onVisibility());
+    window.addEventListener('resize', markStripSeen);
+    watch.start();
   }
   let stripObserver = null;
   function watchStripChrome() {
@@ -494,9 +715,45 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
   app.syncStripMetrics = syncStripMetrics;
   function setRunBusy(on) { setCompilePhase(on ? 'building' : 'idle'); }
+  function showCompileTimeout(text) {
+    const sentence = text || COMPILE_TIMEOUT_TEXT;
+    setStatus('warn', sentence);
+    const narrow = !!(window.matchMedia && window.matchMedia('(max-width: 640px)').matches);
+    const strip = document.getElementById && document.getElementById('compileStrip');
+    const phone = document.getElementById && document.getElementById('mCompileToast');
+    if (strip) {
+      strip.textContent = narrow ? '' : sentence;
+      strip.hidden = !!narrow;
+      strip.setAttribute('aria-hidden', narrow ? 'true' : 'false');
+    }
+    if (phone) {
+      phone.textContent = narrow ? sentence : '';
+      phone.hidden = !narrow;
+      phone.setAttribute('aria-hidden', narrow ? 'false' : 'true');
+    }
+    const bl = $('#buildLog');
+    if (bl) bl.textContent = sentence + '\n';
+    serialAppend('\n[' + sentence + ']\n');
+    toast(sentence, true);
+    if (window.Mobile && typeof window.Mobile.syncIgnite === 'function') window.Mobile.syncIgnite();
+    if (typeof syncStripMetrics === 'function') syncStripMetrics();
+  }
   app.queuedCopy = queuedCopy;
   app.setCompilePhase = setCompilePhase;
   app.BUILDING_TEXT = BUILDING_TEXT;
+  app.COMPILE_TIMEOUT_TEXT = COMPILE_TIMEOUT_TEXT;
+  function compileJobId() {
+    const raw = (globalThis.crypto && crypto.randomUUID && crypto.randomUUID()) || ('j' + Math.random().toString(36).slice(2) + Date.now().toString(36));
+    const id = String(raw).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
+    return id.length >= 8 ? id : (id + 'jobtoken').slice(0, 16);
+  }
+  function shownCompileLog(log, job) {
+    const text = String(log || '');
+    if (!/^# job /.test(text)) return text;
+    if (window.CompileHints && CompileHints.ownsLog && !CompileHints.ownsLog(text, job)) return null;
+    if (window.CompileHints && CompileHints.untag) return CompileHints.untag(text);
+    return text.replace(/^# job [A-Za-z0-9_-]+\n/, '');
+  }
   function tabClientId() {
     try {
       let id = clStorage.session.getItem('esp32client');
@@ -508,12 +765,30 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       return id;
     } catch (e) { return ''; }
   }
+  const NET_NOTICE = 'Your sketch uses the network. It can reach the simulated devices in Circuit Lab, but not the internet, which is blocked for safety. Requests to real websites will fail even if your code is fine.';
+  function showNetNotice(on) {
+    const el = $('#netNotice');
+    if (!el) return;
+    el.textContent = on ? NET_NOTICE : '';
+  }
+  function progressHeaders(compileId) {
+    const headers = { 'X-Client-Id': tabClientId() };
+    if (compileId) headers['X-Compile-Id'] = compileId;
+    return headers;
+  }
   function retryAfterSeconds(r) {
     const h = r && r.headers && r.headers.get && r.headers.get('Retry-After');
     const n = parseInt(h, 10);
     return Number.isFinite(n) && n > 0 && n < 120 ? n : 3;
   }
   async function startRun() {
+    if (window.GuestParts && GuestParts.projectBlocked(app.proj)) {
+      GuestParts.promptProject(app.proj);
+      setCompilePhase('idle');
+      setStatus('err', GuestParts.SENTENCE);
+      serialAppend('\n[' + GuestParts.SENTENCE + ']\n');
+      return;
+    }
     if (compileBusy) return;
     syncCode(); stopRun(); app.proj.defines = $('#inDefines').value.split(',').map((s) => s.trim()).filter(Boolean);
     const esp = espPart();
@@ -528,20 +803,39 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       try { await sk.start(); } catch (e) { return; }
       return;
     }
-    const run = app.run = { kind: 'qemu', t0: performance.now() };
+    if (app.healthWatch && typeof app.healthWatch.poke === 'function') await app.healthWatch.poke();
+    if (window.StatusStrip && StatusStrip.enabled() && app.backendDown) {
+      setStatus('warn', 'Offline');
+      StatusStrip.repeat(document);
+      syncStatusStrip();
+      return;
+    }
+    const run = app.run = { kind: 'qemu', t0: performance.now(), compileId: '', job: compileJobId() };
     app.netlog.add({ k: 'info', msg: `—— run: ${app.proj.name || 'sketch'} ——` });
     setCompilePhase('building');
     setStatus('busy', BUILDING_TEXT); $('#buildLog').textContent = '';
+    showNetNotice(false);
+    if (window.CompileHints && CompileHints.enabled()) {
+      CompileHints.clear();
+      if (app.codeview) app.codeview.setLog('');
+    }
     let res;
-    const clientHeaders = { 'X-Client-Id': tabClientId() };
+    let timeoutText = '';
     let shownWait = '';
     let holdBuilding = false;
     try {
       const bl = $('#buildLog'); bl.textContent = BUILDING_TEXT + '\n';
       const poll = async () => {
         try {
-          const q = await (await fetch('api/compile/progress', { headers: clientHeaders })).json();
+          const id = run.compileId;
+          const q = await (await fetch('api/compile/progress' + (id ? ('?id=' + encodeURIComponent(id)) : ''), { headers: progressHeaders(id) })).json();
           if (app.run !== run || !run.poll || run.settled) return;
+          if (q.compile_id) {
+            if (run.compileId && q.compile_id !== run.compileId) return;
+            run.compileId = q.compile_id;
+          }
+          const stamp = run.compileId || run.job;
+          if (q.job && q.job !== run.job && q.job !== stamp) return;
           const waiting = q.wait && (q.wait.message || q.wait.position != null || q.wait.reason);
           if (waiting) {
             const copy = queuedCopy(q.wait);
@@ -555,15 +849,43 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
           } else if (q.unpacking || q.active) {
             setCompilePhase('building');
             setStatus('busy', BUILDING_TEXT);
-            if (q.active) { const stage = q.stage || 'compiling…'; bl.textContent = q.log || (stage + '\n'); bl.scrollTop = bl.scrollHeight; }
+            if (q.active) {
+              const stage = q.stage || 'compiling…';
+              const active = shownCompileLog(q.log, run.compileId || run.job);
+              if (active != null) { bl.textContent = active || (stage + '\n'); bl.scrollTop = bl.scrollHeight; }
+            }
           }
         } catch (e) {}
       };
       run.poll = setInterval(poll, 400);
       poll();
-      const r = await fetchRetry('api/compile', { method: 'POST', headers: { 'content-type': 'application/json', ...clientHeaders }, body: JSON.stringify({ sketch: app.proj.code, files: app.proj.files, defines: app.proj.defines }) });
+      const compileBody = { sketch: app.proj.code, files: app.proj.files, defines: app.proj.defines, job: run.job };
+      if (window.GuestParts && GuestParts.enabled()) compileBody.parts = GuestParts.partTypes(app.proj);
+      const r = await fetchRetry('api/compile', { method: 'POST', headers: { 'content-type': 'application/json', ...progressHeaders('') }, body: JSON.stringify(compileBody) });
       clearInterval(run.poll); run.poll = null;
-      if (r.status === 429) {
+      if (r.status === 403) {
+        let body = {};
+        try { body = await r.json(); } catch (e) { /* a bare 403 still uses the sentence */ }
+        if (body && body.error === 'guest_parts') {
+          if (window.GuestParts) GuestParts.promptProject(app.proj);
+          const sentence = (body.message) || (window.GuestParts && GuestParts.SENTENCE) || 'Sign in free to use this part';
+          setCompilePhase('idle');
+          setStatus('err', sentence);
+          serialAppend('\n[' + sentence + ']\n');
+          app.run = null;
+          return;
+        }
+        setCompilePhase('idle');
+        setStatus('err', 'Sign in free to use this part');
+        app.run = null;
+        return;
+      } else if (r.status === 504) {
+        let body = {};
+        try { body = await r.json(); } catch (e) { /* a bare 504 still uses the sentence below */ }
+        const fromServer = body && typeof body.log === 'string' ? body.log.trim() : '';
+        timeoutText = (body && body.reason === 'timeout' && fromServer) ? fromServer : COMPILE_TIMEOUT_TEXT;
+        app.run = null;
+      } else if (r.status === 429) {
         let body = {};
         try { body = await r.json(); } catch (e) { /* the status line is the message */ }
         const reason = body && body.reason;
@@ -571,30 +893,191 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
         const msg = (reason === 'full' || reason === 'timeout') && body.log
           ? body.log
           : `Please wait ${wait} second${wait === 1 ? '' : 's'} before compiling again`;
-        setCompilePhase('idle');
-        setStatus('warn', msg); toast(msg);
-        $('#buildLog').textContent = msg + '\n';
-        serialAppend('\n[' + msg + ']\n');
+        if (reason === 'timeout' && window.StatusStrip && StatusStrip.enabled()) {
+          timeoutText = StatusStrip.timeoutSentence(msg, StatusStrip.hasUserCopy(app.proj, app.readOnly, app.store));
+          setStatus('warn', 'Timed out');
+          app.run = null;
+        } else {
+          setCompilePhase('idle');
+          setStatus('warn', msg); toast(msg);
+          $('#buildLog').textContent = msg + '\n';
+          serialAppend('\n[' + msg + ']\n');
+          app.run = null;
+          return;
+        }
+      } else {
+        res = await r.json();
+        run.compileId = res && res.compile_id ? String(res.compile_id) : '';
+        run.settled = true;
+        holdBuilding = !!(res && res.ok && app.run === run);
+        if (run.compileId) {
+          try { await fetch('api/compile/progress?id=' + encodeURIComponent(run.compileId), { headers: progressHeaders(run.compileId) }); } catch (e) { /* the POST body is the log */ }
+        }
+      }
+    } catch (e) {
+      clearInterval(run.poll); run.poll = null;
+      const gaveUp = e && (e.name === 'AbortError' || e.name === 'TimeoutError');
+      if (gaveUp) {
+        app.run = null;
+        timeoutText = COMPILE_TIMEOUT_TEXT;
+      } else if (window.StatusStrip && StatusStrip.enabled()) {
+        app.backendDown = true;
+        app.run = null;
+        setStatus('warn', 'Offline');
+      } else {
+        setCompilePhase('idle'); setStatus('err', OFFLINE); serialAppend('\n' + OFFLINE + '\n'); app.run = null; return;
+      }
+    }
+    finally { if (!holdBuilding || app.run !== run) setCompilePhase('idle'); }
+    if (timeoutText) {
+      if (window.StatusStrip && StatusStrip.enabled()) {
+        StatusStrip.showTimeout(document, StatusStrip.timeoutSentence(timeoutText, StatusStrip.hasUserCopy(app.proj, app.readOnly, app.store)));
+        syncStripMetrics();
+        setStatus('warn', 'Timed out');
+        return;
+      }
+      showCompileTimeout(timeoutText);
+      return;
+    }
+    if (window.StatusStrip && StatusStrip.enabled() && app.backendDown && app.run !== run) {
+      document.body.classList.add('strip-flag');
+      StatusStrip.repeat(document);
+      syncStatusStrip();
+      return;
+    }
+    if (app.run !== run || !res) return;
+    const stamp = (res.compile_id || res.job || run.compileId || run.job);
+    if (res.compile_id && run.compileId && res.compile_id !== run.compileId) { app.run = null; return; }
+    if (res.job && res.job !== run.job && res.job !== res.compile_id && res.job !== run.compileId) { app.run = null; return; }
+    const hintsOn = !!(window.CompileHints && CompileHints.enabled());
+    const failure = compileFailureLog(res);
+    const fullLog = failure || res.log || '';
+    const visible = shownCompileLog(fullLog, stamp);
+    if (visible == null) { app.run = null; return; }
+    const buildText = res.ok ? (res.cached ? cachedCompileLog(visible) : visible) : visible;
+    $('#buildLog').textContent = hintsOn && window.CompileHints.boundLog ? CompileHints.boundLog(buildText) : buildText;
+    if (app.codeview) app.codeview.setLog(res.ok ? '' : (hintsOn && window.CompileHints.boundLog ? CompileHints.boundLog(visible) : visible));
+    if (!res.ok) {
+      setCompilePhase('idle');
+      if (window.StatusStrip && StatusStrip.enabled() && StatusStrip.isCompileTimeout(visible)) {
+        StatusStrip.showTimeout(document, StatusStrip.timeoutSentence(StatusStrip.COMPILE_TIMEOUT_BASE, StatusStrip.hasUserCopy(app.proj, app.readOnly, app.store)));
+        syncStripMetrics();
+        setStatus('warn', 'Timed out');
         app.run = null;
         return;
       }
-      res = await r.json();
-      run.settled = true;
-      holdBuilding = !!(res && res.ok && app.run === run);
-    } catch (e) { clearInterval(run.poll); run.poll = null; setCompilePhase('idle'); setStatus('err', 'backend unreachable'); serialAppend('\n[backend] cannot reach /api/compile — start server/server.py (see README) or switch to JS sketch mode.\n'); app.run = null; return; }
-    finally { if (!holdBuilding || app.run !== run) setCompilePhase('idle'); }
-    if (app.run !== run) return;
-    $('#buildLog').textContent = res.cached ? cachedCompileLog(res.log) : (res.log || ''); if (app.codeview) app.codeview.setLog(res.ok ? '' : (res.log || ''));
-    if (!res.ok) { setCompilePhase('idle'); setStatus('err', 'compile error'); $('#buildDet').open = true; document.querySelector('[data-tab=build]').click(); if (app.codeview) app.codeview.setLog(res.log || ''); serialAppend('\n[compile failed — see build log in Code tab]\n'); app.run = null; return; }
+      if (hintsOn) {
+        const owned = CompileHints.acceptLog(fullLog, stamp);
+        setStatus('err', 'Error');
+        if (owned) CompileHints.showFailure(owned, { code: $('#code') ? $('#code').value : '' });
+        else {
+          CompileHints.clear();
+          showFailureSurfaces('The compile failed. The log has no compiler error line.');
+        }
+        serialAppend('\n[compile failed — see the note on the code]\n');
+        app.run = null;
+        return;
+      }
+      const sentence = failureStatus(res) || SIMULATOR_STATUS;
+      showFailureSurfaces(sentence);
+      $('#buildDet').open = true; document.querySelector('[data-tab=build]').click(); if (app.codeview) app.codeview.setLog(res.log || ''); serialAppend('\n[compile failed — see build log in Code tab]\n'); app.run = null; return;
+    }
+    if (hintsOn) CompileHints.clear();
+    showNetNotice(!!res.net_blocked_notice);
     serialAppend(`\n[compiled ${res.cached ? '(cached)' : ''}${res.netShim ? ' + QemuNet shim' : ''}; starting QEMU]\n`);
     run.bid = res.id; run.lastN = 0; run.tries = 0; connectRun(run);
+  }
+  function sketchToken(raw) {
+    // Anything copied out of the sketch is plain text, at most 80 characters,
+    // and never a host path or a sandbox path.
+    let text = String(raw || '').replace(/[\u0000-\u001f]/g, '');
+    if (text.length > 80) text = text.slice(0, 80);
+    if (!text || text.charAt(0) === '/' || text.charAt(0) === '\\' || text.indexOf('..') >= 0) return 'that file';
+    if (/\/proc\/|\/etc\/|bwrap|sandbox/i.test(text)) return 'that file';
+    return text;
+  }
+  function headerSuggestion(header) {
+    const low = String(header || '').replace(/\\/g, '/').toLowerCase();
+    const base = low.split('/').pop();
+    if (base === 'socket.h' || base === 'netdb.h' || base === 'in.h' || base === 'inet.h' || base === 'un.h' || base === 'winsock.h' || base === 'winsock2.h') {
+      return 'Remove it and use WiFi.h instead.';
+    }
+    if (base === 'stdio.h' || base === 'fstream' || base === 'fstream.h' || base === 'fcntl.h' || base === 'unistd.h' || base === 'dirent.h') {
+      return 'Remove it and keep data in your sketch instead.';
+    }
+    return 'Remove it and use a library such as WiFi.h, or a file in your sketch.';
+  }
+  function includeStatus(code) {
+    const lines = String(code || '').split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const inc = line.match(/^\s*#\s*include\s*([<"])([^>"]*)[>"]/);
+      if (inc) {
+        const header = sketchToken(inc[2]);
+        return 'Line ' + (i + 1) + ": Circuit Lab can't use <" + header + '>. ' + headerSuggestion(inc[2]);
+      }
+      if (/\.\s*inc\s*bin|\.\s*include/i.test(line)) {
+        return 'Line ' + (i + 1) + ": Circuit Lab can't use an assembler include. Remove the .incbin or .include.";
+      }
+    }
+    return "Circuit Lab can't use that include. Remove it and use a library such as WiFi.h, or a file in your sketch.";
+  }
+  function firstCompilerLine(log) {
+    const lines = String(log || '').split('\n');
+    let hit = '';
+    for (let i = 0; i < lines.length; i++) {
+      if (/error:/i.test(lines[i])) { hit = lines[i]; break; }
+    }
+    if (!hit) hit = lines.filter((ln) => ln.trim())[0] || '';
+    let text = hit.replace(/[\u0000-\u001f]/g, ' ');
+    text = text.replace(/(?:\/|[A-Za-z]:\\)[^\s:]*[\\/]/g, '');
+    text = text.replace(/\b(?:bwrap|\/proc\/\S*|\/etc\/\S*)/gi, '');
+    text = text.replace(/\s+/g, ' ').trim();
+    if (text.length > 80) text = text.slice(0, 80);
+    return text || 'Check the build log.';
+  }
+  function failureStatus(res) {
+    if (!res || res.ok) return '';
+    if (res.reason === 'infra') return SIMULATOR_STATUS;
+    const log = String(res.log || '');
+    if (res.reason === 'outside' || res.reason === 'asm' || res.reason === 'unsupported' || res.reason === 'unknown_library'
+      || /outside the project|assembler include|can't check|doesn't have a library/.test(log)) {
+      return includeStatus(app.proj && app.proj.code);
+    }
+    return firstCompilerLine(log);
+  }
+  function showFailureSurfaces(sentence) {
+    // Phone toast and desktop strip both show the same plain sentence.
+    const narrow = !!(window.matchMedia && window.matchMedia('(max-width: 640px)').matches);
+    const strip = document.getElementById && document.getElementById('compileStrip');
+    const toast = document.getElementById && document.getElementById('mCompileToast');
+    if (strip) {
+      strip.textContent = sentence;
+      strip.hidden = !!narrow;
+      strip.setAttribute('aria-hidden', narrow ? 'true' : 'false');
+    }
+    if (toast) {
+      toast.textContent = sentence;
+      toast.hidden = !narrow;
+      toast.setAttribute('aria-hidden', narrow ? 'false' : 'true');
+    }
+    setStatus('err', sentence);
+  }
+  function compileFailureLog(res) {
+    // reason=infra is the build server. The learner sentence is fixed; the include-lines hint is only for their sketch.
+    if (res && res.reason === 'infra') return SIMULATOR_STATUS;
+    return (res && res.log) || '';
   }
   app.startRun = startRun;
   // Resumable run websocket: the server keeps QEMU alive for a grace period when the socket drops (ngrok heartbeat
   // timeouts, network blips). We reconnect with backoff and resume the same session from the last message we saw.
   function connectRun(run) {
     const resume = !!run.sid;
-    const q = resume ? `?sid=${run.sid}&since=${run.lastN}` : '';
+    let q = resume ? `?sid=${run.sid}&since=${run.lastN}` : '';
+    if (window.GuestParts && GuestParts.enabled() && !GuestParts.signedIn()) {
+      const named = GuestParts.partTypes(app.proj).join(',');
+      q += (q ? '&' : '?') + 'parts=' + encodeURIComponent(named);
+    }
     let ws;
     try { ws = run.ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + location.pathname.replace(/[^/]*$/, '') + 'api/run/' + run.bid + q); }
     catch (e) { setCompilePhase('idle'); setStatus('err', 'connection lost'); app.run = null; return; }
@@ -623,6 +1106,12 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       run.ws = null; ws.onclose = ws.onmessage = null; try { ws.close(); } catch (e) { /* already closed */ }
       // A dropped socket is no longer a compile. The Run control must not stay on Building….
       setCompilePhase('idle');
+      if (run.stopped) {
+        setStatus('err', SIM_STOPPED);
+        document.body.classList.remove('reconnecting');
+        app.run = null;
+        return;
+      }
       if (run.ended || !run.sid) { setStatus(run.ended ? 'idle' : 'err', run.ended ? 'QEMU exited' : 'connection lost'); document.body.classList.remove('reconnecting'); app.run = null; return; }
       if (!run.lostAt || run.tries === 0) run.lostAt = Date.now();
       if (run.grace && Date.now() - run.lostAt > run.grace + 600000) { setStatus('err', 'connection lost'); document.body.classList.remove('reconnecting'); serialAppend('\n[connection lost — run expired on the server]\n'); app.run = null; return; }
@@ -665,8 +1154,37 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       case 'netlog': app.netlog.add(m); break;
       case 'invack': onInvAck(); break;
       case 'status': serialAppend(`[qemu] ${m.msg}\n`); break;
-      case 'error': app.netlog.add({ k: 'info', msg: 'error: ' + m.msg, ok: false }); serialAppend(`[error] ${m.msg}\n`); setStatus('err', 'error'); break;
-      case 'exit': serialAppend(`[qemu exited ${m.code}]\n`); break;
+      case 'error': {
+        if (m.reason === 'guest_parts' || m.error === 'guest_parts') {
+          const shown = m.message || (window.GuestParts && GuestParts.SENTENCE) || 'Sign in free to use this part';
+          if (window.GuestParts) GuestParts.promptProject(app.proj);
+          app.netlog.add({ k: 'info', msg: shown, ok: false });
+          serialAppend('\n[' + shown + ']\n');
+          setStatus('err', shown);
+          if (app.run) app.run.ended = true;
+          break;
+        }
+        if (m.unexpected || /qemu_thread_create|resource temporarily unavailable/i.test(m.msg || '')) {
+          if (app.run) app.run.stopped = true;
+          app.netlog.add({ k: 'info', msg: SIM_STOPPED, ok: false });
+          serialAppend('\n[' + SIM_STOPPED + ']\n');
+          setStatus('err', SIM_STOPPED);
+          break;
+        }
+        const shown = (m.reason === 'unknown' || m.msg === 'unknown build id')
+          ? 'This build has expired. Press Run to build it again.'
+          : (m.msg || 'error');
+        app.netlog.add({ k: 'info', msg: 'error: ' + shown, ok: false }); serialAppend(`[error] ${shown}\n`); setStatus('err', shown); break;
+      }
+      case 'exit':
+        if (m.unexpected) {
+          if (app.run) app.run.stopped = true;
+          serialAppend('\n[' + SIM_STOPPED + ']\n');
+          setStatus('err', SIM_STOPPED);
+          break;
+        }
+        serialAppend(`[qemu exited ${m.code}]\n`);
+        break;
     }
   }
   // ---------------- servo / NeoPixel / DHT22 (state that the parts render; parts never see the ESP32 runtime) ----------------
@@ -921,7 +1439,11 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (!sel) { el.innerHTML = '<p class="muted">Select a part or wire.</p>'; return; }
     if (sel.wire) {
       const w = app.proj.wires.find((q) => q.id === sel.wire); if (!w) { el.innerHTML = '<p class="muted">Select a part or wire.</p>'; return; }
-      el.innerHTML = `<h3>Wire ${w.id}</h3><div class="insp-k">Colour</div><div class="row wrap">${Object.keys(window.WIRE_COLORS).map((c) => `<button class="sw ${w.color === c ? 'on' : ''}" data-col="${c}" style="background:${window.WIRE_COLORS[c]}" title="${c}"></button>`).join('')}</div><p id="ro" class="ro"></p><div class="row probe-row"><button class="probe-b" data-probe='${JSON.stringify({ kind: 'wire', wire: w.id })}'>⌁ Probe on scope</button><button class="probe-b" data-watch='${JSON.stringify({ kind: 'wire', wire: w.id })}'>📌 Telemetry</button></div><button id="iDel">Delete wire</button>`;
+      const ui2 = document.documentElement.dataset.ui === '2';
+      const probeWire = ui2
+        ? `<button class="probe-b" aria-label="Probe on scope" data-probe='${JSON.stringify({ kind: 'wire', wire: w.id })}'><svg class="ic" aria-hidden="true"><use href="#i-flow"/></svg> Probe</button><button class="probe-b" aria-label="Pin to telemetry" data-watch='${JSON.stringify({ kind: 'wire', wire: w.id })}'><svg class="ic" aria-hidden="true"><use href="#i-map"/></svg> Watch</button>`
+        : `<button class="probe-b" data-probe='${JSON.stringify({ kind: 'wire', wire: w.id })}'>⌁ Probe on scope</button><button class="probe-b" data-watch='${JSON.stringify({ kind: 'wire', wire: w.id })}'>📌 Telemetry</button>`;
+      el.innerHTML = `<h3>Wire ${w.id}</h3><div class="insp-k">Colour</div><div class="row wrap">${Object.keys(window.WIRE_COLORS).map((c) => `<button class="sw ${w.color === c ? 'on' : ''}" data-col="${c}" style="background:${window.WIRE_COLORS[c]}" title="${c}"></button>`).join('')}</div><p id="ro" class="ro"></p><div class="row probe-row">${probeWire}</div><button id="iDel">Delete wire</button>`;
       el.querySelectorAll('[data-col]').forEach((b) => b.onclick = () => { app.editor.setWireColor(b.dataset.col); renderInspector(sel); });
       $('#iDel').onclick = () => app.editor.deleteSel(); return;
     }
@@ -946,7 +1468,13 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       const tip = physical ? 'Turn this part end for end (F)' : P.NO_FLIP_TIP;
       flipBtns = `<button id="iFlip" class="${on ? 'on' : ''} ${physical ? '' : 'is-off'}" aria-disabled="${physical ? 'false' : 'true'}" title="${P.esc(tip)}">↔ Flip</button>`;
     }
-    h += `<p id="ro" class="ro"></p><div class="row"><button id="iRot">⟳ Rotate</button>${flipBtns}<button id="iDel">🗑 Delete</button></div><div id="pinTable"></div>`;
+    const ui2 = document.documentElement.dataset.ui === '2';
+    const rotLab = ui2 ? '<svg class="ic" aria-hidden="true"><use href="#i-rotate"/></svg> Rotate' : '⟳ Rotate';
+    const delLab = ui2 ? '<svg class="ic" aria-hidden="true"><use href="#i-trash"/></svg> Delete' : '🗑 Delete';
+    if (ui2) {
+      flipBtns = flipBtns.replace('↔ Flip H', '<svg class="ic" aria-hidden="true"><use href="#i-flip"/></svg> Flip H').replace('↕ Flip V', '<svg class="ic" aria-hidden="true"><use href="#i-flip"/></svg> Flip V').replace('↔ Flip', '<svg class="ic" aria-hidden="true"><use href="#i-flip"/></svg> Flip');
+    }
+    h += `<p id="ro" class="ro"></p><div class="row"><button id="iRot">${rotLab}</button>${flipBtns}<button id="iDel">${delLab}</button></div><div id="pinTable"></div>`;
     el.innerHTML = h;
     el.querySelectorAll('[data-k]').forEach((inp) => {
       const k = inp.dataset.k, ev = inp.type === 'range' ? 'input' : 'change';
@@ -979,7 +1507,10 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       const v = app.sim.pinVoltage(p, q.name); let extra = '';
       if (rt) { const g = P.espGpio(q.name); if (g >= 0) { const s = rt.pins[g]; extra = `<td>${s.out ? (s.pwm !== undefined ? 'PWM ' + Math.round(s.pwm * 100) + '%' : 'OUT ' + s.level) : 'IN' + (s.pu ? '↑' : '') + (s.pd ? '↓' : '')}</td><td class="muted">${P.esc(d.info(q.name))}</td>`; } else extra = '<td></td><td></td>'; }
       const pj = P.esc(JSON.stringify({ kind: 'pin', part: p.id, pin: q.name, label: p.id + '.' + q.name }));
-      return `<tr><td>${P.esc(q.name)}</td><td>${P.fmt(v, 'V')}</td>${extra}<td class="pacts"><button class="pa" title="Probe on scope" data-probe="${pj}">⌁</button><button class="pa" title="Pin to telemetry strip" data-watch="${pj}">📌</button></td></tr>`;
+      const acts = document.documentElement.dataset.ui === '2'
+        ? `<button class="pa" aria-label="Probe on scope" data-probe="${pj}"><svg class="ic" aria-hidden="true"><use href="#i-flow"/></svg></button><button class="pa" aria-label="Pin to telemetry" data-watch="${pj}"><svg class="ic" aria-hidden="true"><use href="#i-map"/></svg></button>`
+        : `<button class="pa" title="Probe on scope" data-probe="${pj}">⌁</button><button class="pa" title="Pin to telemetry strip" data-watch="${pj}">📌</button>`;
+      return `<tr><td>${P.esc(q.name)}</td><td>${P.fmt(v, 'V')}</td>${extra}<td class="pacts">${acts}</td></tr>`;
     }).join('') + '</table>';
   }
   // ---------------- hover tooltip ----------------
@@ -998,7 +1529,16 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     }
     if (!t) { tip.hidden = true; return; }
     const wr = $('#stageWrap').getBoundingClientRect();
-    tip.innerHTML = t; tip.hidden = false; tip.style.left = (h.ev.clientX - wr.left + 14) + 'px'; tip.style.top = (h.ev.clientY - wr.top + 14) + 'px';
+    tip.innerHTML = t; tip.hidden = false;
+    let left = h.ev.clientX - wr.left + 14, top = h.ev.clientY - wr.top + 14;
+    tip.style.left = left + 'px'; tip.style.top = top + 'px';
+    if (document.documentElement.dataset.ui === '2') {
+      const tr = tip.getBoundingClientRect();
+      if (tr.right > wr.right - 8) left = Math.max(8, h.ev.clientX - wr.left - tr.width - 14);
+      if (tr.bottom > wr.bottom - 8) top = Math.max(8, h.ev.clientY - wr.top - tr.height - 14);
+      if (tr.left < wr.left + 8) left = 8;
+      tip.style.left = left + 'px'; tip.style.top = top + 'px';
+    }
   }
   // ---------------- scope ----------------
   const SCOL = ['#ffd84a', '#4ae0ff', '#ff5ad1', '#7dff6a'];
@@ -1043,17 +1583,82 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
         let x0 = 0, y0 = 0, x1 = sz.w, y1 = sz.h; for (const q of pins) { x0 = Math.min(x0, q.x); y0 = Math.min(y0, q.y); x1 = Math.max(x1, q.x); y1 = Math.max(y1, q.y); }
         if (k === 'breadboard') { p.props.cols = 20; x1 = 210; y0 = -14; y1 = 208; }
         const pad = 14; return `<svg viewBox="${x0 - pad} ${y0 - pad - 20} ${x1 - x0 + 2 * pad} ${y1 - y0 + 2 * pad + 20}" preserveAspectRatio="xMidYMid meet">${d.svg(p, null)}</svg>`; } catch (e) { return ''; } };
-    let h = ''; for (const [c, list] of Object.entries(cats)) { h += `<div class="pcat" data-cat="${P.esc(c)}">${c}</div><div class="pgrid" data-cat="${P.esc(c)}">`; for (const [k, d] of list) h += `<div class="pitem" draggable="true" data-type="${k}" data-q="${P.esc((d.label + ' ' + k + ' ' + c + ' ' + (d.keywords || '')).toLowerCase())}" title="${P.esc(d.label)} — drag onto the canvas or click to add">${thumb(k, d)}<span>${P.esc(d.label)}</span></div>`; h += '</div>'; }
-    $('#palList').innerHTML = h + '<div class="pal-empty" hidden>No parts match.</div>';
-    $('#palList').querySelectorAll('.pcat').forEach((el) => el.onclick = () => { el.classList.toggle('closed'); el.nextElementSibling.classList.toggle('closed'); });
+    let h = ''; const jobs = [];
+    for (const [c, list] of Object.entries(cats)) {
+      h += `<div class="pcat" data-cat="${P.esc(c)}">${c}</div><div class="pgrid" data-cat="${P.esc(c)}">`;
+      for (const [k, d] of list) {
+        jobs.push([k, d]);
+        h += `<div class="pitem" draggable="true" data-type="${k}" data-q="${P.esc((d.label + ' ' + k + ' ' + c + ' ' + (d.keywords || '')).toLowerCase())}" title="${P.esc(d.label)} — drag onto the canvas or click to add"><span>${P.esc(d.label)}</span></div>`;
+      }
+      h += '</div>';
+    }
+    const list = $('#palList');
+    // A phone strip may already be holding the previous items. Drop those
+    // before writing the list, or the next session refresh shows them twice.
+    document.querySelectorAll('.pitem').forEach((el) => { if (!list.contains(el)) el.remove(); });
+    list.innerHTML = h + '<div class="pal-empty" hidden>No parts match.</div>';
+    list.querySelectorAll('.pcat').forEach((el) => el.onclick = () => { el.classList.toggle('closed'); el.nextElementSibling.classList.toggle('closed'); });
     $('#palSearch').oninput = (e) => { const q = e.target.value.trim().toLowerCase(); let n = 0;
       document.querySelectorAll('.pitem').forEach((it) => { const m = !q || it.dataset.q.includes(q); it.hidden = !m; n += m; });
       document.querySelectorAll('.pgrid').forEach((g) => { const any = [...g.children].some((c) => !c.hidden); g.hidden = !any; g.previousElementSibling.hidden = !any; if (q) g.classList.remove('closed'); });
       document.querySelector('.pal-empty').hidden = n > 0; };
-    document.querySelectorAll('.pitem').forEach((el) => {
-      el.addEventListener('dragstart', (ev) => ev.dataTransfer.setData('text/x-part', el.dataset.type));
-      el.addEventListener('click', () => app.editor.addPartInView(el.dataset.type));
+    list.querySelectorAll('.pitem').forEach((el) => {
+      el.addEventListener('dragstart', (ev) => {
+        if (window.GuestParts && GuestParts.blocks(el.dataset.type)) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          GuestParts.promptType(el.dataset.type);
+          return;
+        }
+        ev.dataTransfer.setData('text/x-part', el.dataset.type);
+      });
+      el.addEventListener('click', (ev) => {
+        if (window.GuestParts && GuestParts.blocks(el.dataset.type)) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          GuestParts.promptType(el.dataset.type);
+          return;
+        }
+        app.editor.addPartInView(el.dataset.type);
+      });
+      el.addEventListener('keydown', (ev) => {
+        if (ev.key !== 'Enter' && ev.key !== ' ') return;
+        if (!(window.GuestParts && GuestParts.blocks(el.dataset.type))) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        GuestParts.promptType(el.dataset.type);
+      });
     });
+    if (window.GuestParts && GuestParts.syncPalette) GuestParts.syncPalette(document);
+    if (window.UI2 && UI2.afterPalette) UI2.afterPalette();
+    paintThumbs(jobs, thumb);
+  }
+  let thumbGen = 0;
+  function paintThumbs(jobs, thumb) {
+    const token = ++thumbGen;
+    const paintSome = (budget) => {
+      const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      const now = () => ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now());
+      while (jobs.length && now() - t0 < budget) {
+        const pair = jobs.shift();
+        const el = document.querySelector('.pitem[data-type="' + CSS.escape(pair[0]) + '"]');
+        if (!el || el.querySelector('svg')) continue;
+        el.insertAdjacentHTML('afterbegin', thumb(pair[0], pair[1]));
+      }
+    };
+    paintSome(12);
+    const step = (deadline) => {
+      if (token !== thumbGen) return;
+      let budget = 12;
+      if (deadline && typeof deadline.timeRemaining === 'function') budget = Math.max(4, Math.min(12, deadline.timeRemaining()));
+      paintSome(budget);
+      if (jobs.length && token === thumbGen) schedule();
+    };
+    const schedule = () => {
+      if (window.requestIdleCallback) requestIdleCallback(step, { timeout: 500 });
+      else setTimeout(() => step(null), 40);
+    };
+    if (jobs.length) schedule();
   }
   app.buildPalette = buildPalette;
   function about() {
@@ -1252,6 +1857,23 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (!top || top.clientWidth < 1) return false;
     return top.scrollWidth > top.clientWidth + 0.5;
   }
+  // The connection dot, including its glow, stays inside the header. A tighter
+  // gap is applied only when the measured edge would cross the bar or the viewport.
+  function pinConnDot(reset) {
+    const top = document.getElementById && document.getElementById('top');
+    const dot = document.getElementById && document.getElementById('connDot');
+    if (!top || !dot || !top.classList || typeof getComputedStyle !== 'function') return;
+    if (reset) top.classList.remove('hdr-tight');
+    const cs = getComputedStyle(dot);
+    if (cs.display === 'none' || cs.visibility === 'hidden') return;
+    const dr = dot.getBoundingClientRect();
+    if (dr.width < 1) return;
+    const tr = top.getBoundingClientRect();
+    const mark = dot.querySelector && dot.querySelector('i');
+    const glow = mark ? mark.getBoundingClientRect().right + 6 : dr.right;
+    const edge = Math.min(tr.right, document.documentElement.clientWidth);
+    if (Math.max(dr.right, glow) - edge > 0.5) top.classList.add('hdr-tight');
+  }
   function syncHeaderFit() {
     placeProj();
     syncProjTitle();
@@ -1284,6 +1906,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     }
     if ((headerOverflows() || titleNeedsRoom()) && tier < 1) { applyStatusTier(1); tier = 1; }
     if ((headerOverflows() || titleNeedsRoom()) && tier < 2) { applyStatusTier(2); tier = 2; }
+    pinConnDot(key !== headerFitKey);
     headerFitKey = key;
     syncDocTitle();
   }
@@ -1322,9 +1945,16 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
         const item = document.createElement('button');
         item.type = 'button';
         item.setAttribute('role', 'option');
+        const locked = window.GuestParts && GuestParts.exampleLocked(opt.value);
         item.textContent = opt.textContent;
+        if (locked) {
+          item.className = 'ex-locked';
+          item.setAttribute('aria-disabled', 'true');
+          item.setAttribute('aria-label', opt.textContent);
+        }
         item.addEventListener('click', (ev) => {
           ev.stopPropagation();
+          if (locked) { ev.stopPropagation(); if (window.GuestParts) GuestParts.promptExample(opt.value); closeExamples(); return; }
           sel.value = opt.value;
           sel.dispatchEvent(new Event('change'));
           closeExamples();
@@ -1382,6 +2012,33 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   app.syncHeaderFit = syncHeaderFit;
   app.syncExampleTip = syncExampleTip;
   app.setProjectTitle = setProjectTitle;
+  function fillExamples() {
+    const sel = document.getElementById('selExample');
+    if (!sel || !window.Examples) return;
+    const grp = {};
+    for (const [k, n, c] of Examples.LIST) {
+      const locked = window.GuestParts && GuestParts.exampleLocked(k);
+      const label = locked ? (n + ' — ' + GuestParts.SENTENCE) : n;
+      const row = `<option value="${P.esc(k)}"${locked ? ' data-locked="1"' : ''}>${P.esc(label)}</option>`;
+      (grp[c || 'ESP32 projects'] = grp[c || 'ESP32 projects'] || []).push(row);
+    }
+    sel.innerHTML = '<option value="">Examples…</option>' + Object.entries(grp).map(([c, o]) => `<optgroup label="${P.esc(c)}">${o.join('')}</optgroup>`).join('');
+    const mobile = document.getElementById('mSelExample');
+    if (mobile) mobile.innerHTML = sel.innerHTML;
+  }
+  function refreshGuestParts() {
+    // The palette is built once. A later session only changes which items are locked.
+    if (window.GuestParts && GuestParts.syncPalette) GuestParts.syncPalette(document);
+    fillExamples();
+    if (!app.proj || !window.GuestParts) return;
+    if (GuestParts.projectBlocked(app.proj)) setStatus('warn', GuestParts.SENTENCE);
+    else {
+      const live = document.getElementById('stLive');
+      if (live && live.textContent === GuestParts.SENTENCE) setStatus('idle', 'Idle');
+    }
+  }
+  app.fillExamples = fillExamples;
+  app.refreshGuestParts = refreshGuestParts;
   function init() {
     watchStripChrome();
     wireHeaderChrome();
@@ -1397,10 +2054,43 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       warnings: () => renderWarnings(),
       hover, state: (p) => app.sim ? app.sim.partState(p) : null, running: () => !!app.run || !espPart(), press,
     });
-    buildPalette(); about();
-    { const grp = {}; for (const [k, n, c] of Examples.LIST) (grp[c || 'ESP32 projects'] = grp[c || 'ESP32 projects'] || []).push(`<option value="${k}">${n}</option>`);
-      $('#selExample').innerHTML = '<option value="">Examples…</option>' + Object.entries(grp).map(([c, o]) => `<optgroup label="${P.esc(c)}">${o.join('')}</optgroup>`).join(''); }
-    $('#selExample').onchange = (e) => { if (e.target.value) loadExample(e.target.value); e.target.value = ''; };
+    buildPalette();
+    const fillAbout = () => { try { about(); } catch (e) { /* the about tab fills on the next open */ } };
+    if (window.requestIdleCallback) requestIdleCallback(fillAbout, { timeout: 1600 });
+    else setTimeout(fillAbout, 80);
+    fillExamples();
+    $('#selExample').onchange = (e) => {
+      const value = e.target.value;
+      e.target.value = '';
+      if (!value) return;
+      if (window.GuestParts && GuestParts.exampleLocked(value)) { e.stopPropagation(); GuestParts.promptExample(value); return; }
+      loadExample(value);
+    };
+    // The Examples button replaces the select once the top bar is narrow.
+    // Hide that select from the accessibility tree while the button is on
+    // screen, so the name "Examples" belongs to one control.
+    const syncExampleSelectA11y = () => {
+      const sel = document.getElementById('selExample');
+      const btn = document.getElementById('bExamples');
+      if (!sel || !btn) return;
+      const phone = window.matchMedia('(max-width: 820px), (pointer: coarse) and (max-height: 520px)').matches;
+      const replaced = getComputedStyle(btn).display !== 'none';
+      if (phone || replaced) {
+        sel.setAttribute('aria-hidden', 'true');
+        sel.removeAttribute('aria-label');
+        sel.tabIndex = -1;
+      } else {
+        sel.removeAttribute('aria-hidden');
+        sel.removeAttribute('tabindex');
+        sel.setAttribute('aria-label', 'Examples');
+      }
+    };
+    syncExampleSelectA11y();
+    window.addEventListener('resize', syncExampleSelectA11y);
+    const exampleMq = window.matchMedia('(max-width: 820px), (pointer: coarse) and (max-height: 520px)');
+    if (exampleMq.addEventListener) exampleMq.addEventListener('change', syncExampleSelectA11y);
+    const topBar = document.getElementById('top');
+    if (topBar && window.ResizeObserver) new ResizeObserver(syncExampleSelectA11y).observe(topBar);
     $('#selWireColor').innerHTML = ['auto', ...Object.keys(window.WIRE_COLORS)].map((c) => `<option>${c}</option>`).join(''); $('#selWireColor').onchange = (e) => app.editor.setWireColor(e.target.value);
     $('#bRun').onclick = startRun; $('#bStop').onclick = stopRun; $('#bReset').onclick = () => { app.sim.resetState(); app.editor.render(); };
     $('#bUndo').onclick = () => app.editor.undo(); $('#bRedo').onclick = () => app.editor.redo(); $('#bRot').onclick = () => app.editor.rotateSel(); $('#bDel').onclick = () => app.editor.deleteSel();
@@ -1409,20 +2099,16 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     $('#selMode').onchange = (e) => { beforeEdit(); app.proj.mode = e.target.value; autosave(); modeNote(); renderFileTabs(); };
     $('#fileTabs').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; syncCode(); if (b.dataset.f === '+') { const n = prompt('File name (e.g. config.h)'); if (!n || !/^[\w.-]+\.(h|hpp|c|cpp|ino)$/.test(n)) return; beforeEdit(); app.proj.files[n] = ''; autosave(); app.file = n; } else app.file = b.dataset.f; renderFileTabs(); loadCode(); };
     $('#code').addEventListener('beforeinput', beforeEdit); $('#inDefines').addEventListener('beforeinput', beforeEdit);
-    $('#code').addEventListener('input', () => { syncCode(); autosave(); }); $('#inDefines').addEventListener('input', () => { syncDefines(); autosave(); });
+    $('#code').addEventListener('input', () => {
+      syncCode(); autosave();
+      if (window.CompileHints && CompileHints.clear) CompileHints.clear(document);
+      if (app.codeview && typeof app.codeview.setLog === 'function') app.codeview.setLog('');
+    }); $('#inDefines').addEventListener('input', () => { syncDefines(); autosave(); });
     $('#bProjects').onclick = projectsDialog;
     $('#bRestart').onclick = () => { stopRun(); startRun(); };
     $('#cbFlow').checked = clStorage.local.getItem('esp32lab.flow') !== '0'; $('#stage').classList.toggle('flow', $('#cbFlow').checked);
     $('#cbFlow').onchange = (e) => { $('#stage').classList.toggle('flow', e.target.checked); clStorage.local.setItem('esp32lab.flow', e.target.checked ? '1' : '0'); };
-    if (window.Schematic) {
-      app.schematic = new Schematic.SchematicView($('#stageWrap'), {
-        select: (id) => app.editor.select(id ? { part: id } : null),
-        state: (p) => (app.sim ? app.sim.partState(p) : null),
-        voltage: (p, name) => app.sim.pinVoltage(p, name),
-        readout: (p) => app.sim.readout(p),
-      });
-      if (app.proj) app.schematic.setProject(app.proj);
-    }
+    mountSchematic();
     setupViewToggle();
     app.cmd = { run: startRun, stop: stopRun, restart: () => { stopRun(); startRun(); }, save, projects: projectsDialog, loadExample, makeCopy: () => makeCopy(false), toast, download, view3d: () => setViewMode('3d'), view2d: () => setViewMode('2d'), viewSch: () => setViewMode('schematic') };
     $('#cbOrtho').checked = clStorage.local.getItem('esp32lab.ortho') !== '0'; app.editor.ortho = $('#cbOrtho').checked; $('#cbOrtho').onchange = (e) => { app.editor.ortho = e.target.checked; clStorage.local.setItem('esp32lab.ortho', e.target.checked ? '1' : '0'); };
@@ -1437,10 +2123,30 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     $('#netFilter').oninput = (e) => { app.netlog.filter = e.target.value; app.netlog.dirty = true; app.netlog.render(); };
     $('#bNetClr').onclick = () => app.netlog.clear();
     $('#bNetCopy').onclick = async () => { const t = app.netlog.text(); try { await navigator.clipboard.writeText(t); toast('Network log copied (' + t.split('\n').length + ' lines)'); } catch (e) { const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); toast('Network log copied'); } };
-    if (window.Instruments) { Instruments.mount($('#tab-scope'), { app, toast }); Instruments.renderStrip(true); }
+    if (window.Instruments) { Instruments.mount($('#tab-scope'), { app, toast }); Instruments.renderStrip(true); Instruments.__mounted = true; }
+    if (window.__UI2 && window.__ui2Late && window.__ui2Late.art) {
+      const kickArt = () => { document.removeEventListener('pointerdown', kickArt, true); ensureArt(); };
+      document.addEventListener('pointerdown', kickArt, true);
+      setTimeout(kickArt, 12000);
+    }
     $('#insp').addEventListener('click', (e) => {   // Inspector → probe / pin-to-telemetry buttons
-      const b = e.target.closest('[data-probe],[data-watch]'); if (!b || !window.Instruments) return; const pr = JSON.parse(b.dataset.probe || b.dataset.watch);
-      if (b.dataset.watch) Instruments.watchProbe(pr); else { Instruments.probe(pr); if (document.body.classList.contains('m') && window.Mobile) Mobile.setSheet('scope'); else { const t = document.querySelector('#tabs [data-tab=scope]'); if (t && !t.classList.contains('on')) t.click(); } }
+      const b = e.target.closest('[data-probe],[data-watch]'); if (!b) return;
+      const pr = JSON.parse(b.dataset.probe || b.dataset.watch);
+      if (b.dataset.watch) { if (window.Instruments) Instruments.watchProbe(pr); return; }
+      const doProbe = () => {
+        Instruments.probe(pr);
+        if (document.body.classList.contains('m') && window.Mobile) {
+          // UI2 phone: click the dock Scope tab; original phone: open scope sheet.
+          const ui2Btn = document.querySelector('#ui2PhoneDock [data-tab=scope]');
+          if (ui2Btn) ui2Btn.click(); else Mobile.setSheet('scope');
+        } else {
+          // Desktop: UI2 dock bar first, then original #tabs fallback.
+          const scopeBtn = document.querySelector('#ui2DockBar [data-tab=scope]') || document.querySelector('#tabs [data-tab=scope]');
+          if (scopeBtn && !scopeBtn.classList.contains('on')) scopeBtn.click();
+        }
+      };
+      if (window.Instruments && window.Instruments.__mounted) doProbe();
+      else ensureScope().then(doProbe);
     });
     $('#inPsk').onchange = (e) => { app.world.tv.psk = e.target.value; app.devDirty = true; };
     $('#cbStandby').onchange = (e) => { app.world.tv.networkStandby = e.target.checked; app.devDirty = true; };
@@ -1451,10 +2157,20 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const sp = new URLSearchParams(location.search), q = sp.get('ex'), pid = sp.get('p'), saved = clStorage.local.getItem(STORE);
     if (saved && !store.list().length) { try { const o = JSON.parse(saved); if (!o.example) { o.name = o.name || 'My saved project'; store.importJson(o); } } catch (e) { /* ignore */ } clStorage.local.removeItem(STORE); }
     if (pid && store.get(pid)) openProject(pid);
-    else if (q && Examples.EX[q]) loadExample(q);
+    else if (q && window.Examples && Examples.EX[q]) loadExample(q, { keepLocked: true });
     else if (store.current() && store.get(store.current())) openProject(store.current());
-    else loadExample('blink');
-    fetch('api/health').then((r) => r.json()).then((h) => { app.health = h; $('#connDot').className = 'conn ' + (h.ok ? 'ok' : 'bad'); $('#connDot').title = h.ok ? 'Backend connected: arduino-cli + QEMU ready' : 'Backend missing QEMU/arduino-cli'; if (!h.ok) toast('Backend found but QEMU/arduino-cli missing — JS sketch mode only', true); }).catch(() => { $('#connDot').className = 'conn bad'; toast('No backend: real-firmware mode needs server/server.py (JS sketch mode still works)', true); });
+    else if (document.documentElement.dataset.ui === '2' && window.UI2 && UI2.freshStart) UI2.freshStart();
+    else if (window.Examples) loadExample('blink');
+    try {
+      const viewQ = sp.get('view');
+      if (viewQ === '2d' || viewQ === 'schematic' || viewQ === '3d') {
+        setViewMode(viewQ, true);
+        sp.delete('view');
+        history.replaceState(null, '', location.pathname + (sp.toString() ? '?' + sp.toString() : '') + location.hash);
+      }
+    } catch (e) { /* history or the address bar is unavailable */ }
+    if (window.StatusStrip && StatusStrip.enabled()) watchBackend();
+    else fetch('api/health').then((r) => r.json()).then((h) => { app.health = h; $('#connDot').className = 'conn ' + (h.ok ? 'ok' : 'bad'); $('#connDot').title = h.ok ? 'Backend connected: arduino-cli + QEMU ready' : 'Backend missing QEMU/arduino-cli'; if (!h.ok) toast('Backend found but QEMU/arduino-cli missing — JS sketch mode only', true); }).catch(() => { $('#connDot').className = 'conn bad'; toast('No backend: real-firmware mode needs server/server.py (JS sketch mode still works)', true); });
     requestAnimationFrame(tick); if (window.UI) window.UI.init(app);
     if (new URLSearchParams(location.search).get('resume') !== '0') setTimeout(() => app.resumeSavedRun(), 300);
     if (new URLSearchParams(location.search).get('tab')) document.querySelector(`[data-tab=${new URLSearchParams(location.search).get('tab')}]`).click();
@@ -1462,7 +2178,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
 
   // ---------------- 2D / 3D view ----------------
   let viewMode = '2d', view3dLoading = null, knob3d = null;
-  const VIEW3D_SRC = 'js/view3d.js?v=56';
+  const VIEW3D_SRC = 'js/view3d.js?v=57';
   const THREE_SRC = 'vendor/three.min.js?v=2';
   function loadScriptOnce(src) {
     return new Promise((res, rej) => {
@@ -1498,6 +2214,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     finally { window.__3dPrefetching = false; }
   }
   function schedule3dPrefetch() {
+    if (document.documentElement.dataset.ui === '2') return;
     if (no3dDevice()) return;
     let q = '';
     try { q = location.search || ''; } catch (_) {}
@@ -1538,6 +2255,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
           if (kind === 'knob') knob3d = null;
         },
         onFail: (e) => view3dFail(e),
+        onFirstFrame: () => { if (viewMode === '3d') show3dLoad(false); },
       });
       app.view3d = v; if (app.proj) v.setProject(app.proj); return v;
     })();
@@ -1553,6 +2271,11 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     const el = $('#view3dLoad');
     if (el) { el.hidden = !on; el.setAttribute('aria-busy', on ? 'true' : 'false'); }
     document.body.classList.toggle('view3d-busy', !!on);
+    const live = document.getElementById('stLive');
+    const st = document.getElementById('status');
+    if (!live) return;
+    if (on) live.textContent = 'Loading 3D view…';
+    else if (live.textContent === 'Loading 3D view…') live.textContent = (st && st.getAttribute('title')) || statusWord || 'Idle';
   }
   function paintFrame() { return new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res))); }
   function applyViewChrome() {
@@ -1598,6 +2321,9 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
   }
   async function setViewMode(mode, quiet) {
     if (mode === '3d' && applyNo3d()) { mode = '2d'; if (!quiet) toast('3D view is desktop-only for now — staying in 2D'); }
+    if (mode === 'schematic' && !app.schematic && document.documentElement.dataset.ui === '2') {
+      try { await ensureSchematic(); } catch (e) { console.warn(e); }
+    }
     if (mode === 'schematic' && !app.schematic) mode = '2d';
     const seq = ++viewSeq;
     viewMode = mode === '3d' ? '3d' : mode === 'schematic' ? 'schematic' : '2d';
@@ -1610,6 +2336,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
     if (viewMode === '2d') {
       try { clStorage.local.removeItem(LSV); } catch (_) {}
       leaveSchematic();
+      syncExampleReady();
       try { app.editor && app.editor.render && app.editor.render(); } catch (_) {}
       const z = $('#zoomPct'); if (z && app.editor) z.textContent = Math.round(app.editor.view.s * 100) + '%';
       return;
@@ -1618,6 +2345,7 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       try { clStorage.local.removeItem(LSV); } catch (_) {}
       app.schematic.setProject(app.proj);
       app.schematic.setActive(true);
+      syncExampleReady();
       if (!quiet) toast('Schematic — view only · select a part to inspect · pan and zoom · edit in 2D');
       return;
     }
@@ -1639,6 +2367,111 @@ async function fetchRetry(u,o,n=4){for(let i=0;;i++){try{const r=await fetch(u,o
       if (!quiet) toast('3D view — drag orbit · pinch/wheel zoom · Esc or Back to 2D to exit');
     } catch (e) { if (seq === viewSeq) view3dFail(e); show3dLoad(false); }
   }
+  function mountSchematic() {
+    if (app.schematic || !window.Schematic) return app.schematic || null;
+    app.schematic = new Schematic.SchematicView($('#stageWrap'), {
+      select: (id) => app.editor.select(id ? { part: id } : null),
+      state: (p) => (app.sim ? app.sim.partState(p) : null),
+      voltage: (p, name) => app.sim.pinVoltage(p, name),
+      readout: (p) => app.sim.readout(p),
+    });
+    if (app.proj) app.schematic.setProject(app.proj);
+    return app.schematic;
+  }
+  function flushAddonExamples() {
+    const reg = window.PartsReg, E = window.Examples;
+    if (!reg || !reg.EXS || !E || !E.EX || !E.LIST) return;
+    for (const [key, name, factory, group] of reg.EXS) {
+      if (E.EX[key]) continue;
+      E.EX[key] = factory;
+      if (!E.LIST.some((row) => row[0] === key)) E.LIST.push(group ? [key, name, group] : [key, name]);
+    }
+  }
+  let examplesReady = null, partsReady = null;
+  function ensureExamples() {
+    if (!examplesReady) {
+      examplesReady = (async () => {
+        if (!(window.Examples && Examples.LIST)) {
+          const list = (window.__ui2Late && window.__ui2Late.examples) || ['js/examples.js?v=45', 'js/basic.js?v=41'];
+          for (const src of list) { try { await loadScriptOnce(src); } catch (e) { console.warn(e); } }
+          if (window.__ui2Late) window.__ui2Late.examples = null;
+        }
+        if (window.Examples && Examples.EX && typeof Examples.EX.remote === 'function' && !Examples.EX.remote.__ui2wrap) {
+          const remoteFactory = Examples.EX.remote;
+          const wrappedRemote = () => { const e = remoteFactory(); e.files = {}; return e; };
+          wrappedRemote.__ui2wrap = 1;
+          Examples.EX.remote = wrappedRemote;
+        }
+        flushAddonExamples();
+        fillExamples();
+      })().catch((e) => { examplesReady = null; throw e; });
+    }
+    return examplesReady;
+  }
+  function ensureParts() {
+    if (window.__ui2PartsReady) return Promise.resolve();
+    if (!partsReady) {
+      partsReady = (async () => {
+        await ensureExamples();
+        const late = window.__ui2Late;
+        const list = late && late.parts;
+        if (list && list.length) {
+          for (const src of list) { try { await loadScriptOnce(src); } catch (e) { console.warn(e); } }
+          late.parts = null;
+          buildPalette();
+        }
+        window.__ui2PartsReady = true;
+      })().catch((e) => { partsReady = null; throw e; });
+    }
+    return partsReady;
+  }
+  async function ensureSchematic() {
+    if (app.schematic) return app.schematic;
+    const src = (window.__ui2Late && window.__ui2Late.schematic) || 'js/schematic.js?v=75';
+    if (!window.Schematic) { try { await loadScriptOnce(src); } catch (e) { console.warn(e); return null; } }
+    return mountSchematic();
+  }
+  function loadLate(key) {
+    const late = window.__ui2Late;
+    const src = late && late[key];
+    if (!src) return Promise.resolve();
+    late[key] = null;
+    return loadScriptOnce(src);
+  }
+  let artPromise = null;
+  function ensureArt() {
+    if (window.__ui2ArtReady) return Promise.resolve();
+    if (!artPromise) {
+      artPromise = loadLate('art').then(() => {
+        window.__ui2ArtReady = true;
+        try { if (app.editor) app.editor.render(); } catch (e) { /* the basic artwork stays until the next edit */ }
+        try { buildPalette(); } catch (e) { /* thumbs refresh on the next parts open */ }
+      }).catch((e) => { artPromise = null; console.warn(e); });
+    }
+    return artPromise;
+  }
+  let scopePromise = null;
+  function ensureScope() {
+    if (window.Instruments && window.Instruments.__mounted) return Promise.resolve(window.Instruments);
+    if (!scopePromise) {
+      scopePromise = loadLate('scope').then(() => {
+        if (window.Instruments && !window.Instruments.__mounted) {
+          Instruments.mount($('#tab-scope'), { app, toast });
+          Instruments.renderStrip(true);
+          if (app.proj) Instruments.setProject(app.proj, app.sim);
+          Instruments.__mounted = true;
+          if (window.Mobile) Mobile.installProbeHooks();
+        }
+        return window.Instruments;
+      }).catch((e) => { scopePromise = null; throw e; });
+    }
+    return scopePromise;
+  }
+  app.ensureExamples = ensureExamples;
+  app.ensureParts = ensureParts;
+  app.ensureSchematic = ensureSchematic;
+  app.ensureArt = ensureArt;
+  app.ensureScope = ensureScope;
   function setupViewToggle() {
     const b2 = $('#bView2d'), b3 = $('#bView3d'), bs = $('#bViewSch'); if (!b2 || !b3) return;
     b2.onclick = () => setViewMode('2d'); b3.onclick = () => setViewMode('3d');

@@ -1,0 +1,6 @@
+sketch.ino: In function ‘void setup()’:
+sketch.ino:2:11: error: invalid conversion from ‘const char*’ to ‘int’ [-fpermissive]
+    2 |   int n = "hello";
+      |           ^~~~~~~
+      |           |
+      |           const char*

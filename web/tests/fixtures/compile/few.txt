@@ -1,0 +1,7 @@
+sketch.ino: In function ‘void setup()’:
+sketch.ino:3:15: error: too few arguments to function ‘void digitalWrite(unsigned char, unsigned char)’
+    3 |   digitalWrite(2);
+      |   ~~~~~~~~~~~~^~~
+sketch.ino:1:6: note: declared here
+    1 | void digitalWrite(unsigned char pin, unsigned char val);
+      |      ^~~~~~~~~~~~
