@@ -4,9 +4,11 @@ import fs from 'fs';
 import { test, expect, type Page } from '@playwright/test';
 
 const SIZES = [
-  { width: 390, height: 664, name: '390x664' },
   { width: 360, height: 640, name: '360x640' },
   { width: 375, height: 667, name: '375x667' },
+  { width: 390, height: 664, name: '390x664' },
+  { width: 390, height: 844, name: '390x844' },
+  { width: 414, height: 736, name: '414x736' },
   { width: 844, height: 390, name: '844x390' },
 ];
 
@@ -66,6 +68,13 @@ test.describe('phone sheets stay in the visual viewport', () => {
   for (const size of SIZES) {
     test(size.name, async ({ page }) => {
       await install(page);
+      await page.addInitScript(() => {
+        const root = document.documentElement;
+        root.style.setProperty('--sai-t', '47px');
+        root.style.setProperty('--sai-b', '34px');
+        root.style.setProperty('--sai-l', '0px');
+        root.style.setProperty('--sai-r', '0px');
+      });
       await page.setViewportSize({ width: size.width, height: size.height });
       const client = await page.context().newCDPSession(page);
       await client.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
@@ -85,6 +94,28 @@ test.describe('phone sheets stay in the visual viewport', () => {
         return bar.top - pop.bottom;
       });
       expect(gap).toBeGreaterThanOrEqual(-1);
+      const abovePuck = await page.evaluate(() => {
+        const pop = document.getElementById('ui2Pop')!.getBoundingClientRect();
+        const puck = document.querySelector('#ui2Phone [data-a="run"]')!.getBoundingClientRect();
+        return pop.bottom <= puck.top + 1 && pop.width <= 420.5;
+      });
+      expect(abovePuck).toBe(true);
+      if (size.height <= 520) {
+        const cols = await page.locator('#ui2Pop').evaluate((el) => getComputedStyle(el).gridTemplateColumns);
+        expect(cols.split(' ').length).toBeGreaterThanOrEqual(2);
+      }
+      const restart = page.locator('#ui2Pop button', { hasText: 'Restart' });
+      await restart.scrollIntoViewIfNeeded();
+      await expectInside(page, '#ui2Pop');
+      const restartClear = await page.evaluate(() => {
+        const item = [...document.querySelectorAll('#ui2Pop button')].find((b) => b.textContent === 'Restart')!;
+        const r = item.getBoundingClientRect();
+        const puck = document.querySelector('#ui2Phone [data-a="run"]')!.getBoundingClientRect();
+        const vv = window.visualViewport;
+        const vh = vv ? vv.height : window.innerHeight;
+        return r.bottom <= puck.top + 1 && r.top >= -1 && r.bottom <= vh + 1 && r.height > 20;
+      });
+      expect(restartClear).toBe(true);
       const buttons = page.locator('#ui2Pop button');
       const count = await buttons.count();
       expect(count).toBeGreaterThan(8);
@@ -98,11 +129,42 @@ test.describe('phone sheets stay in the visual viewport', () => {
       await page.locator('#ui2Phone [data-a="parts"]').tap();
       await expect(page.locator('#palette')).toBeVisible();
       await expectInside(page, '#palette');
+      if (size.name === '844x390') {
+        await page.locator('#ui2PalTools [data-set="all"]').click();
+        await expect.poll(() => page.locator('#mTrack .pitem').count()).toBeGreaterThan(40);
+        const scrolled = await page.evaluate(() => {
+          const items = [...document.querySelectorAll('#mTrack .pitem')] as HTMLElement[];
+          const last = items[items.length - 1];
+          const track = document.getElementById('mTrack')!;
+          track.scrollTop = track.scrollHeight;
+          const r = last.getBoundingClientRect();
+          const sheet = document.getElementById('palette')!.getBoundingClientRect();
+          const vh = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+          return r.height > 8 && r.top >= sheet.top - 2 && r.bottom <= Math.min(sheet.bottom, vh) + 2;
+        });
+        expect(scrolled).toBe(true);
+      }
       await page.evaluate(() => { const M = (window as unknown as { Mobile?: { setSheet?: (s: string | null) => void } }).Mobile; if (M && M.setSheet) M.setSheet(null); });
 
+      if (size.width === 360) {
+        await expect(page.locator('#ui2Name')).toHaveText('Blink');
+      }
       await page.locator('#ui2Phone [data-a="code"]').tap();
       await expect(page.locator('#dock')).toBeVisible();
       await expectInside(page, '#dock');
+      await expect(page.locator('#ui2PhoneDock [data-tab="serial"]')).toBeVisible();
+      await expect(page.locator('#ui2PhoneDock [data-tab="scope"]')).toBeVisible();
+      await expect(page.locator('#ui2SymBar')).toBeHidden();
+      const symH = await page.locator('#ui2Sym').evaluate((el) => el.getBoundingClientRect().height);
+      expect(symH).toBeGreaterThan(20);
+      expect(symH).toBeLessThanOrEqual(44);
+      await page.locator('#ui2Sym').click();
+      const rowH = await page.locator('#ui2SymBar').evaluate((el) => el.getBoundingClientRect().height);
+      expect(rowH).toBeLessThanOrEqual(56);
+      await page.locator('#ui2PhoneDock [data-tab="serial"]').click();
+      await expect(page.locator('#tab-serial')).toHaveClass(/on/);
+      await page.locator('#ui2PhoneDock [data-tab="scope"]').click();
+      await expect(page.locator('#tab-scope')).toHaveClass(/on/);
       await page.evaluate(() => { const M = (window as unknown as { Mobile?: { setSheet?: (s: string | null) => void } }).Mobile; if (M && M.setSheet) M.setSheet(null); });
 
       await page.evaluate(() => {
@@ -124,6 +186,21 @@ test.describe('phone sheets stay in the visual viewport', () => {
       await page.evaluate(() => (document.getElementById('ui2Examples') as HTMLButtonElement).click());
       await expect(page.locator('#ui2Ex .ui2-card')).toBeVisible();
       await expectInside(page, '#ui2Ex .ui2-card');
+      const examples = await page.evaluate(() => {
+        const card = document.querySelector('#ui2Ex .ui2-card') as HTMLElement;
+        const title = document.getElementById('ui2ExTitle')!;
+        card.scrollTop = card.scrollHeight;
+        const t = title.getBoundingClientRect();
+        const c = card.getBoundingClientRect();
+        const note = document.querySelector('.ui2-ex-notes') as HTMLElement | null;
+        const cs = note ? getComputedStyle(note) : null;
+        return {
+          sticky: t.top >= c.top - 2 && t.bottom <= c.bottom + 2,
+          clamp: !!cs && (cs as CSSStyleDeclaration & { webkitLineClamp?: string }).webkitLineClamp === '2' && cs.wordBreak === 'normal',
+        };
+      });
+      expect(examples.sticky).toBe(true);
+      expect(examples.clamp).toBe(true);
       await page.keyboard.press('Escape');
 
       await expect.poll(() => page.locator('#bSignIn').count()).toBe(1);
@@ -139,7 +216,17 @@ test.describe('phone sheets stay in the visual viewport', () => {
       await expect(page.locator('.toast').last()).toBeVisible();
       await expectInside(page, '.toast');
 
+      if (size.name === '844x390' || size.name === '390x664') {
+        await page.goto('/?ui=2&resume=0');
+        await ready(page);
+        await expect(page.locator('#ui2StartTitle')).toBeVisible();
+        await expectInside(page, '#ui2StartTitle');
+        await page.locator('#ui2Start [data-go="close"]').scrollIntoViewIfNeeded();
+        await expectInside(page, '#ui2Start [data-go="close"]');
+      }
       if (size.name === '390x664') {
+        await page.goto('/?ui=2&ex=blink&resume=0');
+        await ready(page);
         await page.evaluate(() => { document.documentElement.dataset.clEnv = 'staging'; });
         const clear = await page.evaluate(() => {
           const banner = document.getElementById('stageBanner')!.getBoundingClientRect();

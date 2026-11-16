@@ -376,17 +376,9 @@
       return best;
     }
     pinAtEvent(ev) {
-      // ui2: a pin is live within 16px on a mouse and 44px on a finger, without drawing a bigger pad.
-      if (ui2On() && this.proj && ev && ev.target && ev.target.closest && !ev.target.closest('.w-bend') && !ev.target.closest('.wire')) {
-        const wpt = this.toWorld(ev);
-        const near = this.pinNear(wpt, ev);
-        if (near) {
-          const fat = ev.pointerType === 'touch' || (document.body && document.body.classList.contains('m'));
-          const limit = fat ? 22 : 8;
-          const sd = Math.hypot(near.pos.x - wpt.x, near.pos.y - wpt.y) * (this.view.s || 1);
-          if (sd <= limit + 0.5) return near;
-        }
-      }
+      // A wire starts on the pin or hole under the pointer, or within the
+      // component-pin slop. Breadboard holes are one grid step apart, so the
+      // slop must not treat the plastic between them as a hole.
       const el = ev.target && ev.target.closest && ev.target.closest('[data-pin]');
       if (el) { const g = el.closest('.part'); const p = g && this.part(this._partIdOf(g)); const pin = p && P.T[p.type].pins(p).find((q) => q.name === el.dataset.pin); if (pin) { const near = this.pinNear(this.toWorld(ev), ev); if (near && !near.bb && near.part && near.part.id !== p.id) return near; return { part: p, pin, pos: P.pinWorld(p, pin), bb: p.type === 'breadboard' }; } }
       if (ev.target && ev.target.closest && ev.target.closest('.w-bend')) return null;
@@ -394,7 +386,16 @@
       // A part body, lead, or label selects the part. It must not snap to a nearby leg and start a wire.
       if (part && part.type !== 'breadboard') return null;
       const onWire = ev.target && ev.target.closest && ev.target.closest('.wire');
-      return this.pinNear(this.toWorld(ev), ev, onWire ? 5 : 14);
+      const near = this.pinNear(this.toWorld(ev), ev, onWire ? 5 : 14);
+      if (!near || near.bb) return null;
+      if (ui2On()) {
+        const wpt = this.toWorld(ev);
+        const fat = ev.pointerType === 'touch' || (document.body && document.body.classList.contains('m'));
+        const limit = fat ? 22 : 8;
+        const sd = Math.hypot(near.pos.x - wpt.x, near.pos.y - wpt.y) * (this.view.s || 1);
+        if (sd > limit + 0.5) return null;
+      }
+      return near;
     }
     pinLabel(h) {
       if (!h) return ''; const p = h.part, n = h.pin.name, d = P.T[p.type] || {};
@@ -522,27 +523,18 @@
       const pinEl = ev.target.closest && ev.target.closest('[data-pin]');
       const onBody = !!(p && p.type !== 'breadboard' && !pinEl);
       const w = this.toWorld(ev);
-      let pin = null;
-      if (ui2On()) {
-        const slop = this.pinAtEvent(ev);
-        const pinHit = !!(slop && !slop.bb);
-        if (onBody && !pinHit && this.mode && this.mode.k === 'wire') this.cancelWire();
-        pin = slop;
-      } else {
-        // A body tap selects, even mid-wire. It must not drop a bend or land the wire on a nearby pin.
-        if (onBody && this.mode && this.mode.k === 'wire') this.cancelWire();
-        pin = onBody ? null : this.pinAtEvent(ev);
-      }
+      // A body tap selects, even mid-wire. It must not drop a bend or land the wire on a nearby pin.
+      if (onBody && this.mode && this.mode.k === 'wire') this.cancelWire();
+      const pin = onBody ? null : this.pinAtEvent(ev);
       if (this.mode && this.mode.k === 'wire') {
         const m = this.mode;
         if (pin) { if (pin.pos.x === m.a.x && pin.pos.y === m.a.y && !m.pts.length) { this.cancelWire(); return; } this._finishWire(pin.pos, pin); return; }
-        const last = m.pts.length ? m.pts[m.pts.length - 1] : m.a; const q = { x: snap(w.x), y: snap(w.y) };
-        if (ev.detail >= 2) { this._finishWire(q); return; }   // double click ends a wire on empty space
-        m.pts.push(...this._ortho(last, q)); this._drawWirePreview(w); return;
+        // Empty canvas cancels. A click that is not on a pin must not extend the wire or start another one.
+        this.cancelWire(); return;
       }
       const bEl = ev.target.closest && ev.target.closest('.w-bend');
       if (bEl) { const wid = bEl.closest('.wire').dataset.wid; this.push(); this.mode = { k: 'bend', w: this.wire(wid), i: +bEl.dataset.bend }; svg_capture(this.svg, ev); return; }
-      if (pin && !(p && p.type === 'breadboard' && ev.shiftKey)) { this.closeMenu(); this.mode = { k: 'wire', a: pin.pos, pts: [], start: pin, t0: Date.now() }; this._drawWirePreview(w); this.highlight(pin); this.setHint(`Wiring from ${this.pinLabel(pin)} — click the target pin · click empty space to add a bend · Esc / right-click cancels`); return; }
+      if (pin && !(p && p.type === 'breadboard' && ev.shiftKey)) { this.closeMenu(); this.mode = { k: 'wire', a: pin.pos, pts: [], start: pin, t0: Date.now() }; this._drawWirePreview(w); this.highlight(pin); this.setHint(`Wiring from ${this.pinLabel(pin)} — click the target pin · Esc / right-click / empty canvas cancels`); return; }
       const wEl = ev.target.closest('.wire');
       if (wEl) { const dbl = this._lastWireDown && this._lastWireDown.id === wEl.dataset.wid && Date.now() - this._lastWireDown.t < 450; this._lastWireDown = { id: wEl.dataset.wid, t: Date.now() };
         if (dbl && this.sel && this.sel.wire === wEl.dataset.wid) { this._lastWireDown = null; this._dblBend = Date.now(); this.addBend(wEl.dataset.wid, w); return; } this.select({ wire: wEl.dataset.wid }); return; }

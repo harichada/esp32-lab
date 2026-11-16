@@ -7,7 +7,9 @@
 @font-face{font-family:'JetBrains Mono';src:url(../fonts/JetBrainsMono-600.woff2) format('woff2');font-weight:600;font-style:normal;font-display:swap}
 
 html[data-ui="2"]{
-  --ui2-vv-top:0px;--ui2-vv-bottom:0px;--ui2-vv-height:100dvh;
+  --ui2-vv-top:0px;--ui2-vv-bottom:0px;--ui2-vv-height:100dvh;--ui2-puck:20px;
+  --sai-t:env(safe-area-inset-top, 0px);--sai-b:env(safe-area-inset-bottom, 0px);
+  --sai-l:env(safe-area-inset-left, 0px);--sai-r:env(safe-area-inset-right, 0px);
   --bg:#0c0e12;--l0:#101216;--l1:#16191f;--l2:#1c2128;--l3:#252b33;--l4:#313842;
   --line:#2a313a;--line2:#3a424c;--hair:rgba(255,255,255,.06);
   --txt:#e8eaee;--txt2:#c5cbd3;--mut:#a8b1bc;
@@ -53,7 +55,8 @@ html[data-ui="2"] .ui2-mark{
 html[data-ui="2"] .ui2-mark svg{width:13px;height:13px}
 html[data-ui="2"] .ui2-name{
   background:transparent;border:0;height:32px;padding:0 4px;font-weight:600;font-size:14px;letter-spacing:-.01em;
-  max-width:28ch;overflow:hidden;text-overflow:ellipsis;color:var(--txt);opacity:1;
+  max-width:28ch;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;word-break:keep-all;
+  color:var(--txt);opacity:1;
 }
 html[data-ui="2"][data-theme="light"] #ui2top #ui2Name{
   color:#1c1915!important;-webkit-text-fill-color:#1c1915!important;opacity:1!important;font-weight:600!important;
@@ -116,8 +119,11 @@ html[data-ui="2"] body.m #ui2Copy:not([hidden]){
 html[data-ui="2"] body.m .ui2-name{flex:1;min-width:4ch;max-width:none}
 html[data-ui="2"] #ui2PalTools{display:flex;flex-direction:column;gap:8px;padding:8px 8px 0}
 html[data-ui="2"] .ui2-sets{display:flex;gap:4px}
-html[data-ui="2"] .ui2-sets button{flex:1;justify-content:center;height:30px}
-html[data-ui="2"] .ui2-sets button[aria-checked="true"]{border-color:var(--acc-d);color:var(--txt);background:var(--acc-bg)}
+html[data-ui="2"] .ui2-sets button{flex:1;justify-content:center;height:30px;background:var(--l3);color:var(--txt);border-color:var(--line2);transition:none}
+html[data-ui="2"] .ui2-sets button[aria-checked="true"]{background:#8d5314;border-color:#7a4810;color:#fff8ee}
+html[data-ui="2"] body.m .m-sh-t{color:var(--txt)!important;transition:none}
+html[data-ui="2"] body.m .m-sheet{background:var(--l0)}
+html[data-ui="2"][data-theme="light"] body.m .m-sheet{background:#f7f5f1}
 html[data-ui="2"] #ui2Chips{
   display:flex;flex-wrap:nowrap;gap:6px;overflow-x:auto;overflow-y:hidden;padding:0 32px 2px 0;
   scrollbar-width:none;-webkit-mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 28px),transparent);
@@ -125,7 +131,7 @@ html[data-ui="2"] #ui2Chips{
 }
 html[data-ui="2"] #ui2Chips::-webkit-scrollbar{display:none}
 html[data-ui="2"] #ui2Recent{display:flex;gap:6px;overflow:auto;padding-bottom:2px}
-html[data-ui="2"] #ui2Chips button,#ui2Recent button{height:26px;border-radius:99px;background:var(--l2);color:var(--txt2);padding:0 10px;font-size:12px}
+html[data-ui="2"] #ui2Chips button,#ui2Recent button{height:26px;border-radius:99px;background:var(--l2);color:var(--txt);padding:0 10px;font-size:12px;transition:none}
 html[data-ui="2"] #ui2Chips button{flex:none;white-space:nowrap}
 html[data-ui="2"] #ui2Chips button[aria-pressed="true"]{background:var(--l4);color:var(--txt);border-color:var(--line2)}
 html[data-ui="2"] body.m .m-chips{display:none!important}
@@ -225,7 +231,8 @@ html[data-ui="2"] .ui2-pop{
 }
 html[data-ui="2"] .ui2-pop button{width:100%;justify-content:flex-start;height:36px;background:transparent;border-color:transparent}
 html[data-ui="2"] .ui2-pop button:hover{background:var(--l3)}
-html[data-ui="2"] .modal{animation:none}
+html[data-ui="2"] .modal{animation:none;overflow:auto;align-items:flex-start;box-sizing:border-box;max-height:100dvh}
+html[data-ui="2"] #ui2Start .ui2-card,html[data-ui="2"] body.m #ui2Start .ui2-card{max-height:none;overflow:visible}
 html[data-ui="2"] .ui2-card{
   width:min(460px,calc(100vw - 24px));background:var(--l1);color:var(--txt);border:1px solid var(--line2);
   border-radius:16px;box-shadow:var(--sh2);padding:20px;max-height:calc(100vh - 32px);max-height:calc(100dvh - 32px);overflow:auto;
@@ -260,7 +267,12 @@ html[data-ui="2"] .ui2-diff,html[data-ui="2"] .ui2-ex .ui2-badge{
   position:static;font-family:var(--mono);font-size:12px;font-weight:500;line-height:1.3;
   padding:1px 7px;border-radius:99px;border:1px solid var(--line2);color:var(--txt2);background:var(--l0);
 }
-html[data-ui="2"] .ui2-ex-notes{color:var(--txt2);font-size:12px;font-weight:450;line-height:1.35;white-space:normal;word-break:normal;overflow-wrap:break-word}
+html[data-ui="2"] #ui2Ex .row{position:sticky;top:0;z-index:2;background:var(--l1);padding-bottom:8px}
+html[data-ui="2"] .ui2-ex-notes{
+  color:var(--txt2);font-size:12px;font-weight:450;line-height:1.35;white-space:normal;
+  word-break:normal;overflow-wrap:normal;hyphens:manual;
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;
+}
 html[data-ui="2"] .ui2-ex-chips{display:flex;flex-wrap:wrap;gap:4px}
 html[data-ui="2"] .ui2-ex-chips span{font-size:12px;line-height:1.3;padding:2px 7px;border-radius:99px;background:var(--l3);color:var(--txt2);white-space:nowrap}
 @media (max-width:720px){html[data-ui="2"] .ui2-ex{grid-template-columns:minmax(0,1fr)}}
@@ -277,15 +289,15 @@ html[data-ui="2"] #ui2PinList button{height:44px;justify-content:flex-start;back
 
 /* Phone. Sheets sit in the visual viewport (100dvh / visualViewport), above the bottom bar and the home indicator. */
 html[data-ui="2"] body.m{
-  --mTop:calc(52px + env(safe-area-inset-top));
-  --ui2-topbar:calc(52px + env(safe-area-inset-top) + var(--ui2-vv-top));
-  --ui2-bar:calc(64px + env(safe-area-inset-bottom));
-  --ui2-sheet-bottom:calc(var(--ui2-bar) + var(--ui2-vv-bottom));
+  --mTop:calc(52px + var(--sai-t));
+  --ui2-topbar:calc(52px + var(--sai-t) + var(--ui2-vv-top));
+  --ui2-bar:calc(64px + var(--sai-b));
+  --ui2-sheet-bottom:calc(var(--ui2-bar) + var(--ui2-puck) + var(--ui2-vv-bottom));
 }
 html[data-ui="2"][data-cl-env=staging] body.m{--ui2-topbar:calc(52px + var(--stage-offset, 56px) + var(--ui2-vv-top))}
 html[data-ui="2"] body.m #ui2top{
-  display:flex;top:var(--ui2-vv-top);height:calc(52px + env(safe-area-inset-top));
-  padding:env(safe-area-inset-top) 8px 0;gap:8px;box-sizing:border-box;z-index:62;
+  display:flex;top:var(--ui2-vv-top);height:calc(52px + var(--sai-t));
+  padding:var(--sai-t) 8px 0;gap:8px;box-sizing:border-box;z-index:62;
 }
 html[data-ui="2"][data-cl-env=staging] body.m #ui2top{
   top:calc(var(--ui2-vv-top) + var(--stage-offset, 56px));padding-top:0;height:52px;
@@ -301,8 +313,8 @@ html[data-ui="2"] body.m #main{top:var(--ui2-topbar);bottom:var(--ui2-sheet-bott
 html[data-ui="2"] body.m #mDial,html[data-ui="2"] body.m #mIgnite,html[data-ui="2"] body.m #mTicker,html[data-ui="2"] body.m #mCount,html[data-ui="2"] body.m #mFlash,html[data-ui="2"] body.m #mParts,
 html[data-ui="2"] body.m .canvas-tools,html[data-ui="2"] body.m .zoom-tools,html[data-ui="2"] body.m .hint{display:none!important}
 html[data-ui="2"] #ui2Phone{
-  display:none;position:fixed;left:0;right:0;bottom:var(--ui2-vv-bottom, 0px);z-index:42;height:calc(64px + env(safe-area-inset-bottom));
-  padding:6px max(6px, env(safe-area-inset-right)) calc(6px + env(safe-area-inset-bottom)) max(6px, env(safe-area-inset-left));
+  display:none;position:fixed;left:0;right:0;bottom:var(--ui2-vv-bottom, 0px);z-index:42;height:calc(64px + var(--sai-b));
+  padding:6px max(6px, var(--sai-r)) calc(6px + var(--sai-b)) max(6px, var(--sai-l));
   gap:2px;align-items:flex-end;justify-content:space-around;
   background:var(--l0);border-top:1px solid var(--line);box-sizing:border-box;
 }
@@ -316,6 +328,21 @@ html[data-ui="2"][data-theme="light"] #ui2Phone button:not([data-a="run"]),
 html[data-ui="2"][data-theme="light"] #ui2Phone button:not([data-a="run"]) span{
   color:#1c1915!important;opacity:1!important;
 }
+html[data-ui="2"] #ui2Phone button[data-a="wire"][aria-pressed="true"],
+html[data-ui="2"] #ui2Phone button[data-a="wire"][aria-pressed="true"] span{
+  background:#8d5314;color:#fff8ee!important;-webkit-text-fill-color:#fff8ee;border-radius:10px;
+}
+html[data-ui="2"] #ui2WireBanner{
+  position:fixed;z-index:64;left:max(12px, var(--sai-l));right:max(12px, var(--sai-r));
+  top:calc(var(--ui2-topbar, 52px) + 8px);
+  display:flex;align-items:center;gap:10px;padding:8px 8px 8px 14px;border-radius:12px;
+  background:var(--l1);border:1px solid var(--line);color:var(--txt);font-size:14px;font-weight:600;
+  box-shadow:var(--sh1);
+}
+html[data-ui="2"] #ui2WireBanner[hidden]{display:none!important}
+html[data-ui="2"] #ui2WireBanner span{flex:1}
+html[data-ui="2"] #ui2WireBanner button{min-height:44px;min-width:72px;padding:0 14px;border-radius:10px;background:#8d5314;border-color:#7a4810;color:#fff8ee}
+html[data-ui="2"] #mWireBar{display:none!important}
 html[data-ui="2"] #ui2Phone button[data-a="run"]{
   flex:0 0 64px;height:56px;transform:translateY(-12px);border-radius:16px;background:#8d5314;border-color:#7a4810;color:#fff8ee;
 }
@@ -335,8 +362,9 @@ html[data-ui="2"] body.m .m-sheet{
   padding-bottom:12px!important;border-radius:16px 16px 0 0;box-shadow:var(--sh2);overflow:hidden;
 }
 html[data-ui="2"] body.m[data-msheet=parts] #palette{
-  height:auto;top:auto;
-  max-height:min(70dvh, calc(var(--ui2-vv-height) - var(--ui2-topbar) - var(--ui2-sheet-bottom) - 8px));
+  top:auto;
+  height:calc(var(--ui2-vv-height) - var(--ui2-topbar) - var(--ui2-sheet-bottom) - 8px);
+  max-height:calc(var(--ui2-vv-height) - var(--ui2-topbar) - var(--ui2-sheet-bottom) - 8px);
 }
 html[data-ui="2"] body.m[data-msheet=code] #dock,
 html[data-ui="2"] body.m[data-msheet=serial] #dock,
@@ -346,13 +374,34 @@ html[data-ui="2"] body.m[data-msheet=dock] #dock{
 html[data-ui="2"] body.m #mMore .m-more-b,
 html[data-ui="2"] body.m #dock .tab,
 html[data-ui="2"] body.m #side #insp{flex:1;min-height:0;overflow:auto;-webkit-overflow-scrolling:touch}
+html[data-ui="2"] #ui2PhoneDock{display:none}
+html[data-ui="2"] body.m #ui2PhoneDock{
+  display:flex;flex:none;gap:4px;padding:4px 8px;background:var(--l1);border-bottom:1px solid var(--line);
+}
+html[data-ui="2"] body.m #ui2PhoneDock button{flex:1;height:36px;justify-content:center;background:transparent;border-color:transparent;color:var(--txt2)}
+html[data-ui="2"] body.m #ui2PhoneDock button.on{color:var(--txt);box-shadow:inset 0 -2px 0 var(--acc2)}
+html[data-ui="2"] #ui2Sym{display:none}
+html[data-ui="2"] body.m #ui2Sym{display:inline-flex;height:36px;margin:0 8px;align-self:flex-start}
+html[data-ui="2"] body.m .m-symbar{flex-wrap:nowrap;max-height:48px;overflow-x:auto;overflow-y:hidden}
 html[data-ui="2"] body.m #ui2Pop.ui2-pop-sheet{
-  left:max(8px, env(safe-area-inset-left));right:max(8px, env(safe-area-inset-right));
-  top:auto;width:auto;min-width:0;max-width:none;
+  left:auto;right:max(8px, var(--sai-r));
+  top:auto;width:min(420px, calc(100vw - 16px));min-width:0;max-width:420px;
   bottom:calc(var(--ui2-sheet-bottom) + 8px);
-  max-height:min(70dvh, calc(var(--ui2-vv-height) - var(--ui2-topbar) - var(--ui2-sheet-bottom) - 16px));
+  max-height:calc(var(--ui2-vv-height) - var(--ui2-topbar) - var(--ui2-sheet-bottom) - 16px);
 }
 html[data-ui="2"] body.m #ui2Pop.ui2-pop-sheet button{height:44px;min-height:44px}
+@media (max-height:520px){
+  html[data-ui="2"] body.m #ui2Pop.ui2-pop-sheet{display:grid;grid-template-columns:1fr 1fr;align-content:start}
+  html[data-ui="2"] body.m .m-sh-h{padding:2px 8px 0}
+  html[data-ui="2"] body.m .m-sh-row{min-height:32px}
+  html[data-ui="2"] body.m .m-sh-t{font-size:14px}
+  html[data-ui="2"] body.m .pal-search{padding:2px 10px}
+  html[data-ui="2"] body.m .pal-search input{height:36px}
+  html[data-ui="2"] body.m #ui2PalTools{gap:4px;padding:4px 8px 0}
+  html[data-ui="2"] body.m .ui2-sets button{height:28px}
+  html[data-ui="2"] body.m #mTrack .pitem{min-height:72px}
+  html[data-ui="2"] body.m #mTrack .pitem svg{height:40px}
+}
 html[data-ui="2"] body.m #ui2Connect{
   bottom:var(--ui2-sheet-bottom);
   max-height:min(70dvh, calc(var(--ui2-vv-height) - var(--ui2-topbar) - var(--ui2-sheet-bottom) - 8px));
@@ -369,7 +418,7 @@ html[data-ui="2"] body.m .auth-dlg .modal-box{
 }
 html[data-ui="2"] body.m .auth-dlg.modal{align-items:flex-start;justify-content:flex-start}
 html[data-ui="2"] body.m #mTrack.m-only{
-  display:grid!important;flex:1 1 auto;grid-template-columns:repeat(3,minmax(0,1fr));grid-auto-rows:minmax(96px,auto);
+  display:grid!important;flex:1 1 0!important;height:0!important;grid-template-columns:repeat(3,minmax(0,1fr));grid-auto-rows:minmax(96px,auto);
   overflow:auto!important;overflow-x:hidden!important;scroll-snap-type:none!important;align-content:start;
   min-height:0!important;padding:8px!important;gap:8px!important;touch-action:pan-y;
 }

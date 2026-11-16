@@ -29,6 +29,8 @@
     hookEditor();
     hookKeys();
     watchViewport();
+    buildPhoneDock();
+    tameSymbols();
     const obs = new MutationObserver(syncChrome);
     obs.observe(document.body, { attributes: true, attributeFilter: ['class'] });
     if (app().proj) ed().fit();
@@ -114,10 +116,25 @@
   function syncId() {
     const name = $('#ui2Name'), save = $('#ui2Save'), p = app() && app().proj;
     if (!name) return;
-    if (!p) { name.textContent = 'No project'; if (save) save.textContent = ''; syncCopy(); return; }
-    name.textContent = p.name || 'Untitled';
+    if (!p) { paintName(name, 'No project'); if (save) save.textContent = ''; syncCopy(); return; }
+    paintName(name, p.name || 'Untitled');
     if (save) save.textContent = app().readOnly ? 'Example' : (p.id ? 'Saved' : 'Not saved');
     syncCopy();
+  }
+  function paintName(el, full) {
+    const text = String(full || 'Untitled');
+    el.title = text;
+    const phone = document.body.classList.contains('m');
+    const short = phone ? (text.replace(/\s*\([^)]*\)/g, '').replace(/\s+/g, ' ').trim() || text) : text;
+    el.textContent = short;
+    if (!phone || el.scrollWidth <= el.clientWidth + 1) return;
+    const words = short.split(' ');
+    let n = words.length;
+    while (n > 1) {
+      n -= 1;
+      el.textContent = words.slice(0, n).join(' ') + '…';
+      if (el.scrollWidth <= el.clientWidth + 1) return;
+    }
   }
   function syncCopy() {
     const phone = document.body.classList.contains('m');
@@ -219,8 +236,37 @@
     document.body.classList.remove('ui2-dock-min');
     if (!document.documentElement.style.getPropertyValue('--ui2dock')) document.documentElement.style.setProperty('--ui2dock', '32vh');
     const b = document.querySelector(`#tabs [data-tab="${tab}"]`); if (b) b.click();
-    document.querySelectorAll('#ui2DockBar [data-tab]').forEach((x) => x.classList.toggle('on', x.dataset.tab === tab));
-    if (document.body.classList.contains('m') && window.Mobile && Mobile.setSheet) Mobile.setSheet(tab === 'scope' ? 'scope' : tab === 'serial' ? 'serial' : 'code');
+    document.querySelectorAll('#ui2DockBar [data-tab], #ui2PhoneDock [data-tab]').forEach((x) => x.classList.toggle('on', x.dataset.tab === tab));
+    if (document.body.classList.contains('m') && window.Mobile && Mobile.setSheet) Mobile.setSheet('dock');
+  }
+  function buildPhoneDock() {
+    const dock = $('#dock');
+    if (!dock || $('#ui2PhoneDock')) return;
+    const bar = document.createElement('div');
+    bar.id = 'ui2PhoneDock';
+    bar.setAttribute('role', 'tablist');
+    bar.setAttribute('aria-label', 'Code panels');
+    bar.innerHTML = '<button type="button" role="tab" data-tab="code">Code</button><button type="button" role="tab" data-tab="serial">Serial</button><button type="button" role="tab" data-tab="scope">Scope</button>';
+    const head = dock.querySelector('.m-sh-h');
+    if (head) head.after(bar); else dock.prepend(bar);
+    bar.onclick = (e) => { const b = e.target.closest('[data-tab]'); if (b) openDock(b.dataset.tab); };
+  }
+  function tameSymbols() {
+    const bar = document.querySelector('.m-symbar');
+    if (!bar || $('#ui2Sym')) return;
+    bar.id = 'ui2SymBar';
+    bar.hidden = true;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.id = 'ui2Sym';
+    btn.textContent = 'Symbols';
+    btn.setAttribute('aria-pressed', 'false');
+    btn.setAttribute('aria-controls', 'ui2SymBar');
+    bar.before(btn);
+    btn.addEventListener('click', () => {
+      bar.hidden = !bar.hidden;
+      btn.setAttribute('aria-pressed', bar.hidden ? 'false' : 'true');
+    });
   }
 
   function buildPalette() {
@@ -368,7 +414,7 @@
       const a = b.dataset.a;
       if (a === 'parts' && window.Mobile) Mobile.setSheet('parts');
       else if (a === 'code') openDock('code');
-      else if (a === 'wire') { if (window.Mobile) Mobile.setSheet(null); if (app().cmd) app().cmd.toast('Tap a pin, then choose Connect to…'); }
+      else if (a === 'wire') { if (window.Mobile) Mobile.setSheet(null); toggleWireArm(); }
       else if (a === 'run') $('#ui2Run').click();
       else openMenu(b);
     };
@@ -397,6 +443,33 @@
     const n = $('#modeNote'), d = $('#ui2Firm'); if (n && d) d.innerHTML = n.innerHTML;
   }
 
+  let wireArm = false;
+  function syncWireUi() {
+    const editor = ed();
+    const wiring = !!(editor && editor.mode && editor.mode.k === 'wire');
+    const show = document.body.classList.contains('m') && (wireArm || wiring);
+    const btn = document.querySelector('#ui2Phone [data-a="wire"]');
+    if (btn) btn.setAttribute('aria-pressed', show ? 'true' : 'false');
+    let bar = document.getElementById('ui2WireBanner');
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'ui2WireBanner';
+      bar.setAttribute('role', 'status');
+      bar.hidden = true;
+      bar.innerHTML = '<span>Wiring — tap a pin</span><button type="button" id="ui2WireX">Cancel</button>';
+      (document.getElementById('stageWrap') || document.body).appendChild(bar);
+      const x = bar.querySelector('#ui2WireX');
+      if (x) x.onclick = (e) => { e.stopPropagation(); wireArm = false; const live = ed(); if (live) live.cancelWire(); syncWireUi(); };
+    }
+    bar.hidden = !show;
+  }
+  function toggleWireArm() {
+    const editor = ed();
+    const on = wireArm || !!(editor && editor.mode && editor.mode.k === 'wire');
+    wireArm = !on;
+    if (on && editor) editor.cancelWire();
+    syncWireUi();
+  }
   function hookEditor() {
     const editor = ed();
     if (window.Editor && !Editor.prototype._ui2Fit) {
@@ -423,14 +496,15 @@
     };
     const prevCh = editor.hooks.changed;
     editor.hooks.changed = (topo) => { if (typeof prevCh === 'function') prevCh(topo); syncId(); if (coach) scoreCoach(); };
+    const prevCancel = editor.cancelWire.bind(editor);
+    editor.cancelWire = function () { wireArm = false; prevCancel(); syncWireUi(); };
     const prevDown = editor._down.bind(editor);
     editor._down = function (ev) {
       prevDown(ev);
-      if (document.body.classList.contains('m') && editor.mode && editor.mode.k === 'wire' && editor.mode.start && !editor.mode._sheet) {
-        editor.mode._sheet = true;
-        openConnect(editor.mode.start);
-      }
+      if (!(editor.mode && editor.mode.k === 'wire')) wireArm = false;
+      syncWireUi();
     };
+    syncWireUi();
   }
   function partBounds(editor) {
     const P = window.Parts; if (!P || !editor.proj) return null;
@@ -517,6 +591,8 @@
       root.style.setProperty('--ui2-vv-top', Math.max(0, frame.top) + 'px');
       root.style.setProperty('--ui2-vv-bottom', Math.max(0, window.innerHeight - frame.bottom) + 'px');
       root.style.setProperty('--ui2-vv-height', frame.height + 'px');
+      const name = $('#ui2Name');
+      if (name && name.title) paintName(name, name.title);
       const pop = $('#ui2Pop');
       if (pop) fitPop(pop);
     };
@@ -535,17 +611,20 @@
     const margin = 8;
     if (phone) {
       const bar = $('#ui2Phone');
+      const puck = bar && bar.querySelector('[data-a="run"]');
       const topBar = $('#ui2top');
-      const barTop = bar ? bar.getBoundingClientRect().top - frame.top : frame.height - 64;
+      const anchorTop = (puck || bar) ? (puck || bar).getBoundingClientRect().top - frame.top : frame.height - 84;
       const topLimit = (topBar ? topBar.getBoundingClientRect().bottom - frame.top : 52) + margin;
-      const maxBottom = Math.min(frame.height, barTop) - margin;
-      const maxH = Math.max(120, maxBottom - topLimit);
+      const maxBottom = Math.min(frame.height - margin, anchorTop - margin);
+      const maxH = Math.max(96, maxBottom - topLimit);
+      const maxW = Math.min(420, Math.max(160, frame.width - margin * 2));
       pop.style.maxHeight = maxH + 'px';
       pop.style.bottom = (window.innerHeight - (frame.top + maxBottom)) + 'px';
       pop.style.top = 'auto';
-      pop.style.left = Math.max(margin, frame.left) + 'px';
-      pop.style.right = margin + 'px';
-      pop.style.width = 'auto';
+      pop.style.width = maxW + 'px';
+      pop.style.right = 'auto';
+      pop.style.left = (frame.left + Math.max(margin, frame.width - margin - maxW)) + 'px';
+      if (frame.height <= 520) pop.classList.add('ui2-pop-cols');
       return;
     }
     const r = pop.getBoundingClientRect();
