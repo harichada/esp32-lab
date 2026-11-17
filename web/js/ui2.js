@@ -855,7 +855,11 @@
     grid.onclick = (e) => {
       const b = e.target.closest('[data-ex]'); if (!b) return;
       const key = b.dataset.ex;
-      if (window.GuestParts && GuestParts.exampleLocked(key)) { GuestParts.promptExample(key); return; }
+      if (window.GuestParts && GuestParts.exampleLocked(key)) {
+        try { sessionStorage.setItem('__pendingEx', key); } catch (e) { /* private mode */ }
+        GuestParts.promptExample(key);
+        return;
+      }
       d.hidden = true;
       window.__ui2NeedStart = false;
       app().cmd.loadExample(key);
