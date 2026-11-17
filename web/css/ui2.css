@@ -93,14 +93,30 @@ html[data-ui="2"] #ui2SideTabs{
 }
 html[data-ui="2"] #ui2SideTabs button{height:28px;border:0;background:transparent;color:var(--txt2);border-radius:7px;padding:0 10px}
 html[data-ui="2"] #ui2SideTabs button[aria-checked="true"]{background:var(--l3);color:var(--txt)}
-html[data-ui="2"] #ui2SideClose{margin-left:auto;width:28px;padding:0;flex:none;font-size:14px}
+html[data-ui="2"] #ui2SideMove{margin-left:auto;width:28px;padding:0;flex:none;font-size:17px;line-height:1}
+html[data-ui="2"] #ui2SideClose{margin-left:0;width:28px;padding:0;flex:none;font-size:14px}
 html[data-ui="2"] #ui2SideClose::after{content:'‹'}
 html[data-ui="2"] body:not(.m).ui2-side-min #main{grid-template-columns:minmax(0,1fr) 0px}
 html[data-ui="2"] body:not(.m).ui2-side-min #palette,html[data-ui="2"] body:not(.m).ui2-side-min #side{display:none}
 html[data-ui="2"] body:not(.m).ui2-side-min #ui2SideTabs{width:36px;padding:0 4px}
-html[data-ui="2"] body:not(.m).ui2-side-min #ui2SideTabs [data-side]{display:none}
+html[data-ui="2"] body:not(.m).ui2-side-min #ui2SideTabs [data-side],html[data-ui="2"] body:not(.m).ui2-side-min #ui2SideMove{display:none}
 html[data-ui="2"] body:not(.m).ui2-side-min #ui2SideClose{margin-left:0}
 html[data-ui="2"] body:not(.m).ui2-side-min #ui2SideClose::after{content:'›'}
+/* Side panel on left */
+html[data-ui="2"] body:not(.m).ui2-side-left #main{grid-template-columns:300px minmax(0,1fr)}
+html[data-ui="2"] body:not(.m).ui2-side-left #palette,html[data-ui="2"] body:not(.m).ui2-side-left #side{grid-column:1;border-left:0;border-right:1px solid var(--line)}
+html[data-ui="2"] body:not(.m).ui2-side-left #center{grid-column:2}
+html[data-ui="2"] body:not(.m).ui2-side-left #ui2SideTabs{right:auto;left:0;border-left:0;border-right:1px solid var(--line)}
+html[data-ui="2"] body:not(.m).ui2-side-left #ui2SideClose::after{content:'›'}
+html[data-ui="2"] body:not(.m).ui2-side-left.ui2-side-min #main{grid-template-columns:0px minmax(0,1fr)}
+html[data-ui="2"] body:not(.m).ui2-side-left.ui2-side-min #ui2SideTabs{left:0;right:auto}
+html[data-ui="2"] body:not(.m).ui2-side-left.ui2-side-min #ui2SideClose::after{content:'‹'}
+
+/* Panel position menu */
+html[data-ui="2"] .ui2-panel-menu{position:fixed;z-index:200;background:var(--l2);border:1px solid var(--line2);border-radius:8px;padding:4px;display:flex;flex-direction:column;gap:1px;min-width:120px;box-shadow:var(--sh3)}
+html[data-ui="2"] .ui2-panel-menu button{height:28px;border:0;background:transparent;color:var(--txt2);border-radius:5px;text-align:left;padding:0 10px;cursor:pointer;width:100%}
+html[data-ui="2"] .ui2-panel-menu button:hover{background:var(--l4);color:var(--txt)}
+html[data-ui="2"] .ui2-panel-menu button.on{background:var(--l3);color:var(--txt);font-weight:500}
 
 html[data-ui="2"] body:not(.m) #dockResizer{display:none}
 html[data-ui="2"] body:not(.m).c-dock #dock{display:flex!important}
@@ -119,7 +135,23 @@ html[data-ui="2"] body:not(.m).ui2-dock-min #dock .tab{display:none!important}
 html[data-ui="2"] #ui2DockBar{height:36px;display:flex;align-items:center;gap:2px;padding:0 8px;flex:none;background:var(--l1)}
 html[data-ui="2"] #ui2DockBar button{height:28px;border:0;background:transparent;color:var(--txt2);border-radius:7px}
 html[data-ui="2"] #ui2DockBar button.on{color:var(--txt);box-shadow:inset 0 -2px 0 var(--acc2)}
+html[data-ui="2"] #ui2CodeMove{padding:0 6px;font-size:17px;line-height:1}
 html[data-ui="2"] #ui2DockGrip{margin-left:auto;width:44px;height:18px;border-radius:99px;border:1px solid var(--line2);background:var(--l3);cursor:ns-resize}
+/* Code panel on top */
+html[data-ui="2"] body:not(.m).ui2-code-top #center{flex-direction:column-reverse}
+html[data-ui="2"] body:not(.m).ui2-code-top #dock{border-top:0;border-bottom:1px solid var(--line)}
+/* Code panel on left */
+html[data-ui="2"] body:not(.m).ui2-code-left #center{display:grid;grid-template-columns:var(--ui2dock,300px) minmax(0,1fr);grid-template-rows:1fr}
+html[data-ui="2"] body:not(.m).ui2-code-left #stageWrap{grid-column:2;grid-row:1;flex:none;min-height:0;min-width:0}
+html[data-ui="2"] body:not(.m).ui2-code-left #dock{grid-column:1;grid-row:1;height:auto!important;max-height:none!important;min-height:0!important;border-top:0;border-right:1px solid var(--line);display:flex!important;flex-direction:column;overflow:hidden}
+html[data-ui="2"] body:not(.m).ui2-code-left #ui2DockGrip{cursor:ew-resize}
+html[data-ui="2"] body:not(.m).ui2-code-left.ui2-dock-min #center{grid-template-columns:36px minmax(0,1fr)}
+/* Code panel on right */
+html[data-ui="2"] body:not(.m).ui2-code-right #center{display:grid;grid-template-columns:minmax(0,1fr) var(--ui2dock,300px);grid-template-rows:1fr}
+html[data-ui="2"] body:not(.m).ui2-code-right #stageWrap{grid-column:1;grid-row:1;flex:none;min-height:0;min-width:0}
+html[data-ui="2"] body:not(.m).ui2-code-right #dock{grid-column:2;grid-row:1;height:auto!important;max-height:none!important;min-height:0!important;border-top:0;border-left:1px solid var(--line);display:flex!important;flex-direction:column;overflow:hidden}
+html[data-ui="2"] body:not(.m).ui2-code-right #ui2DockGrip{cursor:ew-resize}
+html[data-ui="2"] body:not(.m).ui2-code-right.ui2-dock-min #center{grid-template-columns:minmax(0,1fr) 36px}
 html[data-ui="2"] #tab-scope{overflow:auto!important;min-height:0;-webkit-overflow-scrolling:touch}
 html[data-ui="2"] #scopeInst{flex:none;height:auto;min-height:0;overflow:visible}
 html[data-ui="2"] #scopeInst .inst-body{flex:none;min-height:200px}

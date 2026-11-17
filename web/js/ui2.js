@@ -29,6 +29,7 @@
     hookEditor();
     hookKeys();
     watchViewport();
+    applySavedLayout();
     buildPhoneDock();
     tameSymbols();
     const obs = new MutationObserver(syncChrome);
@@ -192,7 +193,7 @@
     tabs.id = 'ui2SideTabs';
     tabs.setAttribute('role', 'radiogroup');
     tabs.setAttribute('aria-label', 'Side panel');
-    tabs.innerHTML = '<button type="button" role="radio" data-side="parts" aria-checked="true">Parts</button><button type="button" role="radio" data-side="props" aria-checked="false">Properties</button><button type="button" id="ui2SideClose" aria-label="Toggle side panel" title="Collapse panel"></button>';
+    tabs.innerHTML = '<button type="button" role="radio" data-side="parts" aria-checked="true">Parts</button><button type="button" role="radio" data-side="props" aria-checked="false">Properties</button><button type="button" id="ui2SideMove" title="Move panel" aria-label="Move side panel">⋮</button><button type="button" id="ui2SideClose" aria-label="Toggle side panel" title="Collapse panel"></button>';
     const host = document.getElementById('main') || document.body;
     host.appendChild(tabs);
     const live = document.createElement('div');
@@ -203,6 +204,7 @@
       document.querySelectorAll('body > .toast').forEach((t) => live.appendChild(t));
     }).observe(document.body, { childList: true });
     tabs.onclick = (e) => {
+      if (e.target.closest('#ui2SideMove')) { showPanelMenu('side', e.target.closest('#ui2SideMove')); return; }
       if (e.target.closest('#ui2SideClose')) { document.body.classList.toggle('ui2-side-min'); return; }
       const b = e.target.closest('[data-side]'); if (!b) return;
       document.body.classList.remove('ui2-side-min');
@@ -215,35 +217,113 @@
     document.querySelectorAll('#ui2SideTabs [data-side]').forEach((b) => b.setAttribute('aria-checked', (b.dataset.side === 'props') === props ? 'true' : 'false'));
   }
 
+  /* ── Panel layout: persist side-panel (left/right) and code-panel (bottom/left/right/top) ── */
+  let _panelMenu = null;
+  function applySavedLayout() {
+    let layout;
+    try { layout = JSON.parse((window.clStorage && clStorage.local.getItem('esp32lab.panelLayout')) || '{}'); } catch (e) { layout = {}; }
+    if (layout.side === 'left') document.body.classList.add('ui2-side-left');
+    if (layout.code === 'left') document.body.classList.add('ui2-code-left');
+    else if (layout.code === 'right') document.body.classList.add('ui2-code-right');
+    else if (layout.code === 'top') document.body.classList.add('ui2-code-top');
+  }
+  function savePanelLayout() {
+    const b = document.body.classList;
+    const layout = {
+      side: b.contains('ui2-side-left') ? 'left' : 'right',
+      code: b.contains('ui2-code-left') ? 'left' : b.contains('ui2-code-right') ? 'right' : b.contains('ui2-code-top') ? 'top' : 'bottom',
+    };
+    try { if (window.clStorage) clStorage.local.setItem('esp32lab.panelLayout', JSON.stringify(layout)); } catch (e) {}
+  }
+  function setSidePos(pos) {
+    document.body.classList.toggle('ui2-side-left', pos === 'left');
+    savePanelLayout();
+  }
+  function setCodePos(pos) {
+    document.body.classList.remove('ui2-code-left', 'ui2-code-right', 'ui2-code-top');
+    if (pos !== 'bottom') document.body.classList.add('ui2-code-' + pos);
+    if (pos === 'left' || pos === 'right') {
+      const cur = parseInt(document.documentElement.style.getPropertyValue('--ui2dock')) || 0;
+      if (cur < 180) document.documentElement.style.setProperty('--ui2dock', '300px');
+    } else if (pos === 'bottom' || pos === 'top') {
+      const cur = parseInt(document.documentElement.style.getPropertyValue('--ui2dock')) || 0;
+      if (cur < 100) document.documentElement.style.setProperty('--ui2dock', '32vh');
+    }
+    document.body.classList.remove('ui2-dock-min');
+    savePanelLayout();
+  }
+  function showPanelMenu(type, anchor) {
+    if (_panelMenu) { _panelMenu.remove(); _panelMenu = null; }
+    const menu = document.createElement('div');
+    menu.className = 'ui2-panel-menu';
+    menu.setAttribute('role', 'menu');
+    const items = type === 'side' ? [['Left', 'left'], ['Right', 'right']] : [['Top', 'top'], ['Bottom', 'bottom'], ['Left', 'left'], ['Right', 'right']];
+    const b = document.body.classList;
+    const curPos = type === 'side'
+      ? (b.contains('ui2-side-left') ? 'left' : 'right')
+      : (b.contains('ui2-code-left') ? 'left' : b.contains('ui2-code-right') ? 'right' : b.contains('ui2-code-top') ? 'top' : 'bottom');
+    items.forEach(([label, pos]) => {
+      const btn = document.createElement('button');
+      btn.type = 'button'; btn.setAttribute('role', 'menuitem'); btn.textContent = label;
+      if (pos === curPos) btn.classList.add('on');
+      btn.addEventListener('click', () => {
+        if (type === 'side') setSidePos(pos); else setCodePos(pos);
+        menu.remove(); _panelMenu = null;
+      });
+      menu.appendChild(btn);
+    });
+    document.body.appendChild(menu);
+    _panelMenu = menu;
+    const r = anchor.getBoundingClientRect();
+    menu.style.top = (r.bottom + 4) + 'px';
+    menu.style.left = Math.min(r.left, window.innerWidth - 150) + 'px';
+    setTimeout(() => {
+      function outside(ev) { if (!menu.contains(ev.target)) { menu.remove(); _panelMenu = null; document.removeEventListener('click', outside); } }
+      document.addEventListener('click', outside);
+    }, 0);
+  }
+
   let dockTab = null;
   function buildDockBar() {
     const dock = $('#dock'); if (!dock) return;
     const bar = document.createElement('div');
     bar.id = 'ui2DockBar';
-    bar.innerHTML = '<button type="button" data-tab="code">Code</button><button type="button" data-tab="serial">Serial</button><button type="button" data-tab="scope">Scope</button><button type="button" id="ui2DockGrip" aria-label="Resize code drawer"></button>';
+    bar.innerHTML = '<button type="button" data-tab="code">Code</button><button type="button" data-tab="serial">Serial</button><button type="button" data-tab="scope">Scope</button><button type="button" id="ui2CodeMove" title="Move panel" aria-label="Move code panel">⋮</button><button type="button" id="ui2DockGrip" aria-label="Resize code drawer"></button>';
     dock.prepend(bar);
     bar.onclick = (e) => {
+      if (e.target.closest('#ui2CodeMove')) { showPanelMenu('code', e.target.closest('#ui2CodeMove')); return; }
       const b = e.target.closest('[data-tab]'); if (!b) return;
-      if (b.dataset.tab === dockTab && !document.body.classList.contains('ui2-dock-min')) {
+      const isSide = document.body.classList.contains('ui2-code-left') || document.body.classList.contains('ui2-code-right');
+      if (!isSide && b.dataset.tab === dockTab && !document.body.classList.contains('ui2-dock-min')) {
         document.body.classList.add('ui2-dock-min');
       } else {
         openDock(b.dataset.tab);
       }
     };
     const grip = $('#ui2DockGrip');
-    let y0 = 0, h0 = 0;
+    let dragStart = null;
     grip.addEventListener('pointerdown', (e) => {
-      y0 = e.clientY; h0 = dock.getBoundingClientRect().height; grip.setPointerCapture(e.pointerId);
+      const r = dock.getBoundingClientRect();
+      dragStart = { x: e.clientX, y: e.clientY, w: r.width, h: r.height };
+      grip.setPointerCapture(e.pointerId);
       document.body.classList.remove('ui2-dock-min');
     });
     grip.addEventListener('pointermove', (e) => {
-      if (!y0) return;
-      const top = ($('#ui2top') && $('#ui2top').getBoundingClientRect().height) || 48;
-      const max = Math.max(180, Math.round(window.innerHeight - top - 8));
-      const next = Math.max(120, Math.min(max, h0 + (y0 - e.clientY)));
-      document.documentElement.style.setProperty('--ui2dock', next + 'px');
+      if (!dragStart) return;
+      if (document.body.classList.contains('ui2-code-left')) {
+        const next = Math.max(180, Math.min(window.innerWidth - 180, dragStart.w + (e.clientX - dragStart.x)));
+        document.documentElement.style.setProperty('--ui2dock', next + 'px');
+      } else if (document.body.classList.contains('ui2-code-right')) {
+        const next = Math.max(180, Math.min(window.innerWidth - 180, dragStart.w - (e.clientX - dragStart.x)));
+        document.documentElement.style.setProperty('--ui2dock', next + 'px');
+      } else {
+        const top = ($('#ui2top') && $('#ui2top').getBoundingClientRect().height) || 48;
+        const max = Math.max(180, Math.round(window.innerHeight - top - 8));
+        const next = Math.max(120, Math.min(max, dragStart.h + (dragStart.y - e.clientY)));
+        document.documentElement.style.setProperty('--ui2dock', next + 'px');
+      }
     });
-    grip.addEventListener('pointerup', () => { y0 = 0; });
+    grip.addEventListener('pointerup', () => { dragStart = null; });
   }
   function openDock(tab) {
     dockTab = tab;
