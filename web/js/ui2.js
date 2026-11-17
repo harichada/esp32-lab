@@ -684,6 +684,10 @@
       ['Command palette', 'bCmdk'], ['Keyboard shortcuts', 'bKeys'], ['Theme', 'bTheme'],
       ['Restart', 'bRestart'], ['Reset', 'bReset'], ['About', 'about'],
     ];
+    const signOut = document.getElementById('bSignOut') || document.getElementById('mSignOut');
+    const signIn  = document.getElementById('bSignIn')  || document.getElementById('mSignIn');
+    if (signOut) items.push(['Sign out', 'bSignOut']);
+    else if (signIn) items.push(['Sign in', 'bSignIn']);
     pop.innerHTML = items.map(([label, id]) => `<button type="button" role="menuitem" data-go="${id}">${label}</button>`).join('');
     document.body.appendChild(pop);
     if (!phone) {
@@ -705,7 +709,11 @@
       closePop();
       if (go.indexOf('view:') === 0) setView(go.slice(5));
       else if (go === 'about') { syncFirm(); openDock('about'); if (document.body.classList.contains('m') && window.Mobile) Mobile.openDock('about'); }
-      else { const el = document.getElementById(go); if (el) el.click(); }
+      else {
+        const mAlias = go === 'bSignIn' ? 'mSignIn' : go === 'bSignOut' ? 'mSignOut' : null;
+        const el = document.getElementById(go) || (mAlias && document.getElementById(mAlias));
+        if (el) el.click();
+      }
     };
     const first = pop.querySelector('button'); if (first) first.focus();
     setTimeout(() => {
