@@ -42,6 +42,28 @@ import { chromium, test, expect, type Page } from '@playwright/test';
 import fs from 'fs';
 import path from 'path';
 
+// Finds Chrome in standard locations so tests work when Chrome is not on PATH
+// under the playwright channel name (e.g. in WSL2 with a user install).
+function findChrome(): string | undefined {
+  const candidates = [
+    process.env.CHROME_PATH,
+    '/opt/google/chrome/chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/google-chrome',
+    '/home/nvidia/.local/bin/google-chrome',
+  ].filter(Boolean) as string[];
+  for (const p of candidates) {
+    try { fs.accessSync(p, fs.constants.X_OK); return p; } catch {}
+  }
+  return undefined;
+}
+function launchChrome(opts: { headless: boolean; args?: string[] } = { headless: true }) {
+  const exe = findChrome();
+  return exe
+    ? chromium.launch({ executablePath: exe, headless: opts.headless, args: opts.args })
+    : chromium.launch({ channel: 'chrome',   headless: opts.headless, args: opts.args });
+}
+
 const BUILDING = 'Building your code… the first build takes longer.';
 const QUEUED = 'Preparing network stack (first run after restart), about 40 s…';
 const LONG_TITLE = 'Blink (real firmware) (copy 17)';
@@ -631,6 +653,73 @@ test('header name stays together after copy and rename', async () => {
       const renamed = 'Blink renamed';
       await renameProject(page, renamed);
       await expectHeaderName(page, renamed);
+    }
+  } finally {
+    await context.close();
+    await browser.close();
+  }
+});
+
+// Regression guard: on mobile viewports, Sign in / Sign out must always be reachable
+// via the phone bottom bar's More sheet. The desktop header's .ui2-actions has zero
+// layout dimensions at ≤820 px, so #ui2Phone [data-a="more"] is the only path.
+// The test verifies that opening the sheet when mSignIn (or mSignOut) is in the DOM
+// produces a tappable "Sign in" (or "Sign out") item with the correct data-go target.
+test('UI2 mobile More sheet exposes Sign in and Sign out', async () => {
+  const browser = await launchChrome();
+  // ?ui=2 activates UI2 without needing the server to inject <meta name="ui2">
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const page = await context.newPage();
+  try {
+    await install(page);
+    await page.goto('/?ex=blink&ui=2');
+    await expect(page.locator('#stText')).toHaveText('Idle');
+    await expect.poll(() => page.evaluate(() => !!(window as unknown as { app?: { setCompilePhase?: unknown } }).app?.setCompilePhase)).toBe(true);
+    await expect(page.locator('#ui2Phone')).toBeAttached();
+
+    for (const width of [390, 375]) {
+      await page.setViewportSize({ width, height: 844 });
+      await expect.poll(() => page.evaluate(() => document.body.classList.contains('m'))).toBe(true);
+
+      // The only accessible auth entry point at mobile widths — #ui2More in the desktop
+      // header has zero layout dimensions when body.m is set.
+      const moreBtn = page.locator('#ui2Phone [data-a="more"]');
+      await expect(moreBtn).toBeVisible();
+
+      // --- Sign in scenario ---
+      // Strip all auth buttons, inject only the sign-in sentinel (as auth.js would create).
+      await page.evaluate(() => {
+        for (const id of ['bSignOut', 'mSignOut', 'bSignIn', 'mSignIn']) document.getElementById(id)?.remove();
+        const btn = document.createElement('button');
+        btn.id = 'mSignIn'; btn.type = 'button'; btn.style.display = 'none';
+        document.body.appendChild(btn);
+      });
+      await moreBtn.dispatchEvent('click');
+      await expect(page.locator('#ui2Pop')).toBeAttached();
+      const popSignIn = page.locator('#ui2Pop button[data-go="bSignIn"]');
+      await expect(popSignIn).toBeVisible();
+      await expect(popSignIn).toHaveText('Sign in');
+      // Verify data-go points to something the click dispatcher can resolve.
+      const signInTarget = await popSignIn.getAttribute('data-go');
+      expect(['bSignIn', 'mSignIn']).toContain(signInTarget);
+      await page.keyboard.press('Escape');
+
+      // --- Sign out scenario ---
+      // Strip all auth buttons, inject only the sign-out sentinel.
+      await page.evaluate(() => {
+        for (const id of ['bSignOut', 'mSignOut', 'bSignIn', 'mSignIn']) document.getElementById(id)?.remove();
+        const btn = document.createElement('button');
+        btn.id = 'mSignOut'; btn.type = 'button'; btn.style.display = 'none';
+        document.body.appendChild(btn);
+      });
+      await moreBtn.dispatchEvent('click');
+      await expect(page.locator('#ui2Pop')).toBeAttached();
+      const popSignOut = page.locator('#ui2Pop button[data-go="bSignOut"]');
+      await expect(popSignOut).toBeVisible();
+      await expect(popSignOut).toHaveText('Sign out');
+      const signOutTarget = await popSignOut.getAttribute('data-go');
+      expect(['bSignOut', 'mSignOut']).toContain(signOutTarget);
+      await page.keyboard.press('Escape');
     }
   } finally {
     await context.close();
