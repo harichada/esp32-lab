@@ -857,6 +857,12 @@
       const key = b.dataset.ex;
       if (window.GuestParts && GuestParts.exampleLocked(key)) {
         try { sessionStorage.setItem('__pendingEx', key); } catch (e) { /* private mode */ }
+        try {
+          const u = new URL(location.href);
+          u.searchParams.delete('ex'); u.searchParams.delete('p'); u.searchParams.delete('t');
+          u.searchParams.set('ex', key);
+          history.replaceState(null, '', u);
+        } catch (e) { /* ignore */ }
         GuestParts.promptExample(key);
         return;
       }
