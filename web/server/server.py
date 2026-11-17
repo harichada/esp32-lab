@@ -685,6 +685,8 @@ def _compile_plan(req: dict):
     files = req.get('files', {}) or {}
     if not isinstance(sketch, str) or not isinstance(files, dict) or not all(isinstance(v, str) for v in files.values()):
         return JSONResponse({'ok': False, 'log': 'bad request'}, 400)
+    if not sketch.strip():
+        return JSONResponse({'ok': False, 'log': 'Sketch is empty.'}, 400)
     if len(sketch) + sum(len(v) for v in files.values()) > MAX_BODY:
         return JSONResponse({'ok': False, 'log': 'sources too large'}, 413)
     blocked = diskkeep.blocked_define_reason(req.get('defines'))
