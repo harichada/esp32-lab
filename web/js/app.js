@@ -70,6 +70,9 @@ async function fetchRetry(u, o, n = 4) {
     // A click on a locked example opens sign-in and leaves the current circuit
     // alone. A shared link (?ex=) still draws the circuit; Run stays blocked.
     if (!(opts && opts.keepLocked) && window.GuestParts && GuestParts.exampleLocked(k)) {
+      // Store the example key in the URL before triggering sign-in so the OAuth
+      // return URL carries it. After redirect the startup ?ex= handler resumes it.
+      setUrl({ ex: k });
       GuestParts.promptExample(k);
       return;
     }
