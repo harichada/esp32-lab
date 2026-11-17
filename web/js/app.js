@@ -70,12 +70,16 @@ async function fetchRetry(u, o, n = 4) {
     // A click on a locked example opens sign-in and leaves the current circuit
     // alone. A shared link (?ex=) still draws the circuit; Run stays blocked.
     if (!(opts && opts.keepLocked) && window.GuestParts && GuestParts.exampleLocked(k)) {
-      // Store the example key in the URL before triggering sign-in so the OAuth
-      // return URL carries it. After redirect the startup ?ex= handler resumes it.
+      // Persist the pending example key so it survives the OAuth redirect.
+      // sessionStorage: same-origin, survives page reload, cleared on tab close.
+      // ?ex=k in URL: backup so the startup handler can resume without noteSession.
+      try { sessionStorage.setItem('__pendingEx', k); } catch (e) { /* private mode */ }
       setUrl({ ex: k });
       GuestParts.promptExample(k);
       return;
     }
+    // Clear any pending key — this call is actually loading the example.
+    try { sessionStorage.removeItem('__pendingEx'); } catch (e) { /* ignore */ }
     const ex = Examples.EX[k](); ex.example = k;
     if (ex.fetch) {
       for (const [name, url] of Object.entries(ex.fetch)) {
@@ -2033,6 +2037,16 @@ async function fetchRetry(u, o, n = 4) {
     // The palette is built once. A later session only changes which items are locked.
     if (window.GuestParts && GuestParts.syncPalette) GuestParts.syncPalette(document);
     fillExamples();
+    // Resume a pending example when the user just signed in.
+    if (window.GuestParts && GuestParts.signedIn && GuestParts.signedIn()) {
+      let pendingEx;
+      try { pendingEx = sessionStorage.getItem('__pendingEx'); } catch (e) { /* ignore */ }
+      if (pendingEx && window.Examples && Examples.EX[pendingEx]) {
+        try { sessionStorage.removeItem('__pendingEx'); } catch (e) { /* ignore */ }
+        loadExample(pendingEx);
+        return;
+      }
+    }
     if (!app.proj || !window.GuestParts) return;
     if (GuestParts.projectBlocked(app.proj)) setStatus('warn', GuestParts.SENTENCE);
     else {
