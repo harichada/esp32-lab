@@ -1707,6 +1707,9 @@ async function fetchRetry(u, o, n = 4) {
     const chord = Editor.editChord(e);
     if (chord === 'undo') { e.preventDefault(); app.editor.undo(); return; }
     if (chord === 'redo') { e.preventDefault(); app.editor.redo(); return; }
+    if (chord === 'copy') { e.preventDefault(); app.editor.copySel(); return; }
+    if (chord === 'paste') { e.preventDefault(); app.editor.pasteSel(); return; }
+    if (chord === 'selectAll') { e.preventDefault(); app.editor.selectAll(); return; }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     const kp = app.run ? keyPart(e.key) : null; if (kp) { e.preventDefault(); if (!e.repeat) press(kp, true); return; }   // labelled keys only act as buttons while running
     if (e.key === 'Escape') { app.editor.cancelWire(); app.editor.select(null); if (app.schematic) app.schematic.select(null); }

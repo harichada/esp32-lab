@@ -438,7 +438,12 @@
       svg.addEventListener('wheel', (ev) => this._wheel(ev), { passive: false });
       svg.addEventListener('contextmenu', (ev) => {
         ev.preventDefault(); if (this.mode && this.mode.k === 'wire') { this.cancelWire(); return; }
-        const wEl = ev.target.closest && ev.target.closest('.wire'); if (wEl) { this.select({ wire: wEl.dataset.wid }); this.wireMenu(wEl.dataset.wid, ev); }
+        const wEl = ev.target.closest && ev.target.closest('.wire'); if (wEl) { this.select({ wire: wEl.dataset.wid }); this.wireMenu(wEl.dataset.wid, ev); return; }
+        if (!ui2On()) return;
+        const pg = ev.target.closest && ev.target.closest('.part');
+        const p = pg && this.part(pg.dataset.id);
+        if (p) { if (!this.multi.has(p.id)) this.select({ part: p.id }); this._partMenu(p, ev); }
+        else this._canvasMenu(ev);
       });
       svg.addEventListener('dblclick', (ev) => { { const pg = ev.target.closest && ev.target.closest('.part'), pp = pg && this.part(pg.dataset.id); if (pp && P.T[pp.type].dblclick) { this.push(); if (P.T[pp.type].dblclick(pp)) { this.render(); this.hooks.changed(true); this.hooks.selected(this.sel); } return; } } const t = document.elementFromPoint(ev.clientX, ev.clientY) || ev.target, wEl = t.closest && t.closest('.wire'); if (wEl && !(this.mode && this.mode.k === 'wire') && !(Date.now() - (this._dblBend || 0) < 600)) this.addBend(wEl.dataset.wid, this.toWorld(ev)); });
       window.addEventListener('pointerdown', (ev) => { if (this.menu && !this.menu.contains(ev.target)) this.closeMenu(); }, true);
@@ -500,6 +505,40 @@
         if (box.bottom > window.innerHeight - pad) m.style.top = Math.max(pad, (ev.clientY - r.top) - box.height) + 'px';
       }
     }
+    _partMenu(p, ev) {
+      const count = this.multi && this.multi.size > 1 ? this.multi.size : 1;
+      const items = count > 1
+        ? [['Copy ' + count + ' parts', () => this.copySel()], ['Duplicate', () => this.duplicateSel()], ['Delete', () => this.deleteSel()]]
+        : [['Copy', () => this.copySel()], ['Duplicate', () => this.duplicateSel()], ['Delete', () => this.deleteSel()]];
+      this._showCtxMenu(items, ev);
+    }
+    _canvasMenu(ev) {
+      const items = [];
+      if (this._clip && this._clip.parts && this._clip.parts.length) items.push(['Paste', () => this.pasteSel()]);
+      if (this.proj && this.proj.parts.some((p) => p.type !== 'breadboard')) items.push(['Select All', () => this.selectAll()]);
+      if (!items.length) return;
+      this._showCtxMenu(items, ev);
+    }
+    _showCtxMenu(items, ev) {
+      this.closeMenu();
+      const wrap = this.svg.parentElement, r = wrap.getBoundingClientRect();
+      const m = document.createElement('div');
+      m.className = 'ctxmenu';
+      m.setAttribute('role', 'menu');
+      items.forEach(([label, action]) => {
+        const b = document.createElement('button');
+        b.type = 'button'; b.textContent = label;
+        b.addEventListener('click', () => { this.closeMenu(); action(); });
+        m.appendChild(b);
+      });
+      m.style.left = (ev.clientX - r.left) + 'px';
+      m.style.top = (ev.clientY - r.top) + 'px';
+      wrap.appendChild(m); this.menu = m;
+      const box = m.getBoundingClientRect(), pad = 8;
+      if (box.right > window.innerWidth - pad) m.style.left = Math.max(pad, (ev.clientX - r.left) - box.width) + 'px';
+      if (box.bottom > window.innerHeight - pad) m.style.top = Math.max(pad, (ev.clientY - r.top) - box.height) + 'px';
+      m.firstChild && m.firstChild.focus();
+    }
     _emitHover(h) {
       this._hover = h || null;
       if (!h) this.hoverPin = null;
@@ -549,6 +588,7 @@
         if (d.wheel && !ev.shiftKey) { this.select({ part: p.id }); this.mode = { k: 'knob', p, sy: ev.clientY, sx: ev.clientX, pos0: +p.props.pos }; svg_capture(this.svg, ev); return; }
         if (this.hooks.running() && d.interactive && !ev.shiftKey) { const kEl = ev.target.closest && ev.target.closest('[data-key]'); if (d.keyAt && !kEl) { /* keypad body: fall through to drag */ } else { this.hooks.press(p, true, kEl ? +kEl.dataset.key : undefined); this.mode = { k: 'press', p }; svg_capture(this.svg, ev); return; } }
         if (d.click && !ev.shiftKey && this.hooks.running()) { if (d.click(p)) { this.render(); this.hooks.changed(false); } return; }
+        if (ev.ctrlKey || ev.metaKey) { this._toggleMulti(p.id); return; }
         this.select({ part: p.id });
         this.mode = { k: 'drag', p, ox: p.x, oy: p.y, sx: w.x, sy: w.y, moved: false };
         return;
@@ -704,6 +744,15 @@
       return made;
     }
     duplicateSel() { return this.copySel() ? this.pasteSel() : null; }
+    selectAll() {
+      if (!this.proj) return;
+      const ids = this.proj.parts.filter((p) => p.type !== 'breadboard').map((p) => p.id);
+      if (!ids.length) return;
+      this.multi = new Set(ids);
+      this._keepMulti = true;
+      this.select({ part: ids[ids.length - 1] });
+      this._keepMulti = false;
+    }
     nudge(dx, dy) {
       const ids = this.multi && this.multi.size ? [...this.multi] : (this.sel && this.sel.part ? [this.sel.part] : []);
       if (!ids.length || (!dx && !dy)) return;
@@ -814,6 +863,12 @@
     if (z && e.shiftKey) return 'redo';
     if (z) return 'undo';
     if (y) return 'redo';
+    const c = k === 'c' || e.code === 'KeyC';
+    const v = k === 'v' || e.code === 'KeyV';
+    const a = k === 'a' || e.code === 'KeyA';
+    if (c) return 'copy';
+    if (v) return 'paste';
+    if (a) return 'selectAll';
     return null;
   }
   Editor.editChord = editChord;
