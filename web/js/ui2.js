@@ -909,14 +909,27 @@
       lesson.id = 'ui2CoachCode'; lesson.className = 'ui2-code-guide';
       lesson.setAttribute('aria-labelledby', 'ui2CoachCodeTitle');
       lesson.innerHTML = `<div class="ui2-code-guide-head"><h2 id="ui2CoachCodeTitle">Step 4 of 5. Understand the sketch</h2><button type="button" id="ui2CoachCodeHide" aria-describedby="ui2CoachCodeHelp">Dismiss guide</button></div>
-        <div id="ui2CoachCodeHelp">
-          <p>The starter sketch is already in the editor below. It uses Arduino C++; <code>LED_BUILTIN</code> is GPIO 2 (D2) on this ESP32.</p>
+        <div class="ui2-code-guide-body">
+          <p id="ui2CoachCodeHelp">The starter sketch is already in the editor below. These Arduino C++ snippets explain it without changing your code.</p>
           <ol>
-            <li><code>setup()</code> runs once. <code>pinMode(LED_BUILTIN, OUTPUT)</code> lets the code drive the LED.</li>
-            <li><code>loop()</code> repeats. <code>digitalWrite(..., HIGH)</code> turns the LED on; <code>LOW</code> turns it off.</li>
-            <li><code>delay(1000)</code> waits 1000 milliseconds (one second) after each change.</li>
+            <li><strong>Choose the GPIO.</strong> GPIO means general-purpose input/output: a pin your code can read or drive. <code>LED_BUILTIN</code> is GPIO 2 (D2) on this ESP32, matching the D2 wire you connected to the resistor and LED.</li>
+            <li><strong>Initialize the pin in <code>setup()</code>.</strong> <code>setup()</code> runs once when the ESP32 starts. Configure the pin before trying to turn the LED on:
+              <pre><code>void setup() {
+  pinMode(LED_BUILTIN, OUTPUT);
+}</code></pre>
+              <code>pinMode()</code> takes the pin and its direction. <code>OUTPUT</code> lets the GPIO drive an electrical signal; <code>INPUT</code> is for reading a signal, such as a button. This LED needs <code>OUTPUT</code>. You only need to configure it once, not on every blink.
+            </li>
+            <li><strong>Switch the LED in <code>loop()</code>.</strong> <code>loop()</code> repeats after reaching its end. The first <code>digitalWrite(LED_BUILTIN, HIGH)</code> drives D2 high (about 3.3 V), turning the LED on. <code>LOW</code> drives it to 0 V, turning it off. The resistor limits the LED current.
+              <pre><code>void loop() {
+  digitalWrite(LED_BUILTIN, HIGH);
+  delay(1000);
+  digitalWrite(LED_BUILTIN, LOW);
+  delay(1000);
+}</code></pre>
+            </li>
+            <li><strong>Set the timing.</strong> <code>delay(1000)</code> waits 1000 milliseconds (one second) after each change. One second on plus one second off makes a two-second blink cycle.</li>
           </ol>
-          <p>Try both delays at <code>500</code> for a faster blink. If running, Stop before editing, then Run again. Keep <strong>Run as</strong> set to <strong>Arduino C++ (ESP32)</strong> for this starter sketch.</p>
+          <p>Try both delays at <code>500</code> for half a second on and half a second off. If running, Stop before editing, then Run again. Keep <strong>Run as</strong> set to <strong>Arduino C++ (ESP32)</strong> for this starter sketch.</p>
         </div>
         <button type="button" id="ui2CoachCodeNext">Continue to Run</button>`;
       $('#codeWrap').before(lesson);

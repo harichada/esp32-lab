@@ -174,14 +174,23 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 360, height: 640 
     await expect(lesson).toBeVisible();
     await expect(page.locator('#codeWrap')).toBeVisible();
     await expect(lesson).toContainText('GPIO 2 (D2)');
+    await expect(lesson).toContainText('general-purpose input/output');
     await expect(lesson).toContainText('setup() runs once');
+    await expect(lesson.locator('pre').first()).toContainText('pinMode(LED_BUILTIN, OUTPUT);');
+    await expect(lesson).toContainText('OUTPUT lets the GPIO drive an electrical signal');
+    await expect(lesson).toContainText('INPUT is for reading a signal');
     await expect(lesson).toContainText('loop() repeats');
-    await expect(lesson).toContainText('digitalWrite(..., HIGH)');
+    await expect(lesson.locator('pre').last()).toContainText('digitalWrite(LED_BUILTIN, HIGH);');
+    await expect(lesson.locator('pre').last()).toContainText('digitalWrite(LED_BUILTIN, LOW);');
     await expect(lesson).toContainText('delay(1000) waits 1000 milliseconds');
     await expect(page.locator('#code')).toHaveValue(starter);
+    await lesson.locator('li').nth(1).scrollIntoViewIfNeeded();
+    await shot(page, `guided-gpio-initialization-${viewport.width}.png`);
     if (viewport.width < 820) {
-      await page.locator('#ui2CoachCodeNext').scrollIntoViewIfNeeded();
+      expect(await lesson.locator('pre').evaluateAll(blocks => blocks.every(block => block.scrollWidth <= block.clientWidth))).toBe(true);
+      await lesson.locator('li').last().scrollIntoViewIfNeeded();
       await expect(lesson.locator('li').last()).toBeInViewport({ ratio: 1 });
+      await page.locator('#ui2CoachCodeNext').scrollIntoViewIfNeeded();
       const clear = await page.locator('#ui2CoachCodeNext').evaluate(button => {
         const r = button.getBoundingClientRect(), panel = document.getElementById('tab-code')!.getBoundingClientRect();
         return r.top >= panel.top && r.bottom <= panel.bottom;

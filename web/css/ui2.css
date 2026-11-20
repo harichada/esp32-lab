@@ -325,9 +325,15 @@ html[data-ui="2"] .ui2-code-guide{flex:none;padding:8px 0 12px;border-bottom:1px
 html[data-ui="2"] .ui2-code-guide[hidden]{display:none!important}
 html[data-ui="2"] .ui2-code-guide-head{display:flex;flex-wrap:wrap;align-items:flex-start;gap:12px}
 html[data-ui="2"] .ui2-code-guide h2{flex:1;margin:0 0 8px;font-size:15px;line-height:1.4}
+html[data-ui="2"] .ui2-code-guide-body{max-width:75ch}
 html[data-ui="2"] .ui2-code-guide p{margin:8px 0}
 html[data-ui="2"] .ui2-code-guide ol{margin:8px 0;padding-left:22px}
 html[data-ui="2"] .ui2-code-guide li{margin:6px 0}
+html[data-ui="2"] .ui2-code-guide pre{
+  margin:8px 0;padding:8px 10px;background:var(--l0);border:1px solid var(--line);border-radius:var(--r2);
+  font:12.5px/1.6 var(--mono);white-space:pre-wrap;
+}
+html[data-ui="2"] .ui2-code-guide pre code{font:inherit;background:none;padding:0;border-radius:0}
 html[data-ui="2"] body:not(.m) #dock:has(#ui2CoachCode:not([hidden])){height:max(var(--ui2dock,256px),min(520px,65vh))}
 html[data-ui="2"] #ui2Ex .ui2-card{width:min(840px,calc(100vw - 24px))}
 html[data-ui="2"] .ui2-ex{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:8px}
