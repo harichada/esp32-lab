@@ -380,6 +380,11 @@ async function fetchRetry(u, o, n = 4) {
   }
   app.openCodeFile = openCodeFile;
   function modeNote() {
+    const hint = $('#executionHint');
+    if (hint) hint.textContent = app.proj.mode === 'qemu'
+      ? 'Arduino C++ is compiled on the server and runs on a virtual ESP32. No physical board needed.'
+      : app.proj.mode === 'circuit' ? 'Simulates the electrical circuit only. Your code is not executed.'
+      : 'JavaScript runs in this browser without compiling. Use JavaScript setup() and loop() functions.';
     $('#modeNote').innerHTML = app.proj.mode === 'qemu'
       ? '<b>Real firmware.</b> Compiled by arduino-cli (esp32 core 3.3, DOIT DevKit V1) and executed in Espressif QEMU (Xtensa LX6). GPIO out/in/enable, pull-ups, RMT (IR) and UART0 are bridged to this circuit. ADC (SAR with a typical chip’s non-linear response + eFuse Vref, so analogReadMilliVolts is right up to 3.13 V), LEDC PWM + hardware fades, I²C (SSD1306, BME280, MPU6050) and SPI (ILI9341 TFT, MCP3008, microSD/FAT) are bridged; Wi-Fi sketches run real lwIP (TCP/HTTP + UDP) over QEMU’s open_eth NIC. <span class="warn">Not emulated: the 802.11 radio, Bluetooth, deep sleep.</span>'
       : app.proj.mode === 'circuit' ? '<b>Basic circuit (no ESP32).</b> No code and no compile step: the circuit is solved live (MNA + Newton-Raphson, backward-Euler transient). Press switches/buttons, turn knobs and watch LEDs, lamps, motors and meters respond. Over-current burns out LEDs, resistors and lamps — press Run (or Stop/Run) to reset.'
@@ -1734,7 +1739,11 @@ async function fetchRetry(u, o, n = 4) {
 <h3>Circuit solver</h3><p>Modified nodal analysis with Newton–Raphson (diode/LED Shockley, zener breakdown, Ebers–Moll BJT, square-law MOSFET, LDO), backward-Euler transient for capacitors. LEDs burn out above 2× their rating; supply/GPIO shorts are flagged.</p>
 <h3>Shortcuts</h3><p>Ctrl+Enter run · click pin → click pin to wire · R rotate · F flip (two-lead parts, or the schematic symbol) · Shift+F fit · Del/Backspace delete · right-click wire for menu · double-click wire adds a bend · Ctrl+Z / Ctrl+Y undo/redo · Ctrl+S save (examples: makes a copy) · Esc cancel · keys/buttons respond to their labelled keyboard key while running.</p>`;
   }
-  function typingTarget(e) { const tag = e && e.target && e.target.tagName; return /INPUT|TEXTAREA|SELECT/.test(tag || ''); }
+  function typingTarget(e) {
+    const target = e && e.target, tag = target && target.tagName;
+    return /INPUT|TEXTAREA|SELECT/.test(tag || '') || !!(target && target.closest
+      && target.closest('button,a,summary,[contenteditable]:not([contenteditable="false"]),[role="button"],[role="radio"],[role="menuitem"],[role="dialog"]'));
+  }
   function keyPart(k) {
     if (!app.proj || !app.proj.parts) return null;
     const kp = app.proj.parts.find((q) => q.type === 'keypad' && P.T.keypad.keyAt(q, k) >= 0);
@@ -1742,6 +1751,7 @@ async function fetchRetry(u, o, n = 4) {
     return app.proj.parts.find((q) => P.T[q.type] && P.T[q.type].interactive && q.props.key && (q.props.key === k || q.props.key.toLowerCase() === String(k).toLowerCase()));
   }
   function onWindowKeyDown(e) {
+    if (e.defaultPrevented || (e.target && e.target.closest && e.target.closest('[role="dialog"][aria-modal="true"]'))) return;
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); if (app.proj) startRun(); return; }
     if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); if (app.proj) save(); return; }
     // Value fields keep native text undo. A project that is still loading (?ex= fetch) has no proj yet.
@@ -1764,7 +1774,7 @@ async function fetchRetry(u, o, n = 4) {
     }
   }
   function onWindowKeyUp(e) {
-    if (typingTarget(e) || !app.proj || !app.sim) return;
+    if (!app.proj || !app.sim) return;
     const kp = keyPart(e.key);
     if (kp && app.sim.partState(kp).pressed) press(kp, false);
   }

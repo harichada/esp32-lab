@@ -1,6 +1,5 @@
 // Phone sheets must stay inside the visual viewport, including short
 // screens where the browser toolbar eats part of 100vh.
-import fs from 'fs';
 import { test, expect, type Page } from '@playwright/test';
 
 const SIZES = [
@@ -118,24 +117,31 @@ test.describe('phone sheets stay in the visual viewport', () => {
     test(size.name, async ({ page }) => {
       await install(page);
       await page.addInitScript(() => {
-        const root = document.documentElement;
-        root.style.setProperty('--sai-t', '47px');
-        root.style.setProperty('--sai-b', '34px');
-        root.style.setProperty('--sai-l', '0px');
-        root.style.setProperty('--sai-r', '0px');
+        const applyInsets = () => {
+          const root = document.documentElement;
+          root.style.setProperty('--sai-t', '47px');
+          root.style.setProperty('--sai-b', '34px');
+          root.style.setProperty('--sai-l', '0px');
+          root.style.setProperty('--sai-r', '0px');
+        };
+        if (document.documentElement) applyInsets();
+        else document.addEventListener('DOMContentLoaded', applyInsets, { once: true });
       });
       await page.setViewportSize({ width: size.width, height: size.height });
       const client = await page.context().newCDPSession(page);
       await client.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
       await page.goto('/?ui=2&ex=blink&resume=0');
       await ready(page);
+      expect(await page.evaluate(() => {
+        const style = getComputedStyle(document.documentElement);
+        return { top: style.getPropertyValue('--sai-t').trim(), bottom: style.getPropertyValue('--sai-b').trim() };
+      })).toEqual({ top: '47px', bottom: '34px' });
 
       await page.locator('#ui2Phone [data-a="more"]').tap();
       await expect(page.locator('#ui2Pop')).toBeVisible();
       await expectInside(page, '#ui2Pop');
       if (size.name === '390x664') {
-        fs.mkdirSync('/opt/cursor/artifacts', { recursive: true });
-        await page.screenshot({ path: '/opt/cursor/artifacts/ui2-after-phone-more.png' });
+        await page.screenshot({ path: test.info().outputPath('ui2-after-phone-more.png') });
       }
       const abovePuck = await page.evaluate(() => {
         const pop = document.getElementById('ui2Pop')!.getBoundingClientRect();
@@ -266,7 +272,7 @@ test.describe('phone sheets stay in the visual viewport', () => {
           return bar.top >= banner.bottom - 1;
         });
         expect(clear).toBe(true);
-        await page.screenshot({ path: '/opt/cursor/artifacts/ui2-after-phone-banner.png' });
+        await page.screenshot({ path: test.info().outputPath('ui2-after-phone-banner.png') });
       }
     });
   }

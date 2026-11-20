@@ -232,7 +232,7 @@
     const c = frame.clear;
     return { x: (c.left + c.right) / 2, y: (c.top + c.bottom) / 2 };
   }
-  const CHROME = 'header#top, #mTicker, .projbanner, #bCopy, #mParts, .zoom-tools, .canvas-tools, .hint, #mIgnite, #mHub, #mSel, .exit3d, #schLayout';
+  const CHROME = 'header#top, #mTicker, .projbanner, #bCopy, #mParts, .zoom-tools, .canvas-tools, .hint, #mIgnite, #mHub, #mSel, .exit3d, #schLayout, #ui2Fit, #ui2Coach';
   function frameOf(el) {
     const s = el.getBoundingClientRect();
     const stage = { left: s.left, top: s.top, right: s.right, bottom: s.bottom, width: s.width, height: s.height };

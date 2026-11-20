@@ -4,6 +4,7 @@
   const STARTER = ['esp32', 'breadboard', 'led', 'resistor', 'pushbutton', 'potentiometer', 'buzzer', 'ground', 'vcc33', 'vcc5', 'label'];
   const starterSet = new Set(STARTER);
   let setName = 'starter', chip = 'All', recent = [], coach = false;
+  let coachTimer = 0, coachProjectId = null, coachRun = null, coachOn = false, coachOff = false, coachCodeSeen = false;
 
   function on() { return document.documentElement.getAttribute('data-ui') === '2'; }
   function freshStart() { window.__ui2NeedStart = true; }
@@ -42,6 +43,25 @@
     if (!document.body.classList.contains('m')) openDock('code');
   }
 
+  function syncRadioTabs(group) {
+    group.querySelectorAll('[role="radio"]').forEach((b) => { b.tabIndex = b.getAttribute('aria-checked') === 'true' ? 0 : -1; });
+  }
+  function bindRadioKeys(group) {
+    syncRadioTabs(group);
+    group.addEventListener('keydown', (e) => {
+      const current = e.target.closest('[role="radio"]');
+      if (!current || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(e.key)) return;
+      const buttons = [...group.querySelectorAll('[role="radio"]')].filter((b) => !b.disabled);
+      const index = buttons.indexOf(current);
+      if (index < 0) return;
+      e.preventDefault();
+      const next = e.key === 'Home' ? 0 : e.key === 'End' ? buttons.length - 1
+        : (index + (e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 1) + buttons.length) % buttons.length;
+      buttons[next].focus();
+      buttons[next].click();
+    });
+  }
+
   function injectSymbols() {
     if ($('#i-flip')) return;
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -50,7 +70,6 @@
     svg.innerHTML = '<symbol id="i-flip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h10M7 7l3-3M7 7l3 3"/><path d="M17 17H7M17 17l-3 3M17 17l-3-3"/></symbol>';
     document.body.prepend(svg);
   }
-
   function buildTop() {
     const bar = document.createElement('header');
     bar.id = 'ui2top';
@@ -72,6 +91,7 @@
         <button type="button" id="ui2Sign" hidden>Sign in</button>
       </div>`;
     document.body.prepend(bar);
+    bindRadioKeys(bar.querySelector('.ui2-views'));
     $('#ui2Menu').onclick = () => openMenu($('#ui2Menu'));
     $('#ui2Name').onclick = rename;
     bar.querySelector('.ui2-views').onclick = (e) => {
@@ -101,14 +121,14 @@
       run.innerHTML = onRun ? ic('i-stop') + '<span>Stop</span>' : ic('i-play') + '<span>Run</span>';
       run.setAttribute('aria-label', onRun ? 'Stop' : 'Run');
     }
-    const phoneRun = $('#ui2Phone [data-a="run"]');
-    if (phoneRun) {
-      phoneRun.innerHTML = onRun ? ic('i-stop') + '<span>Stop</span>' : ic('i-play') + '<span>Run</span>';
-      phoneRun.setAttribute('aria-label', onRun ? 'Stop' : 'Run');
-    }
+    document.querySelectorAll('#ui2Phone [data-a="run"], #ui2CodeRun').forEach((button) => {
+      button.innerHTML = onRun ? ic('i-stop') + '<span>Stop</span>' : ic('i-play') + '<span>Run</span>';
+      button.setAttribute('aria-label', onRun ? 'Stop' : 'Run');
+    });
     const sch = document.body.classList.contains('viewsch');
     const mode = document.body.classList.contains('view3d') ? '3d' : sch ? 'schematic' : '2d';
     document.querySelectorAll('#ui2top [data-view]').forEach((b) => b.setAttribute('aria-checked', b.dataset.view === mode ? 'true' : 'false'));
+    syncRadioTabs($('#ui2top .ui2-views'));
     const lay = $('#ui2Sch'); if (lay) lay.hidden = !sch;
     const tidy = document.getElementById('schLayTidy'), board = document.getElementById('schLayBoard');
     const sel = $('#ui2SchMode');
@@ -196,6 +216,7 @@
     tabs.innerHTML = '<button type="button" role="radio" data-side="parts" aria-checked="true">Parts</button><button type="button" role="radio" data-side="props" aria-checked="false">Properties</button><button type="button" id="ui2SideMove" title="Move panel" aria-label="Move side panel">⋮</button><button type="button" id="ui2SideClose" aria-label="Toggle side panel" title="Collapse panel"></button>';
     const host = document.getElementById('main') || document.body;
     host.appendChild(tabs);
+    bindRadioKeys(tabs);
     const live = document.createElement('div');
     live.id = 'ui2Live';
     live.setAttribute('aria-live', 'polite');
@@ -215,6 +236,7 @@
   function paintSide() {
     const props = document.body.classList.contains('ui2-props');
     document.querySelectorAll('#ui2SideTabs [data-side]').forEach((b) => b.setAttribute('aria-checked', (b.dataset.side === 'props') === props ? 'true' : 'false'));
+    syncRadioTabs($('#ui2SideTabs'));
   }
 
   /* ── Panel layout: persist side-panel (left/right) and code-panel (bottom/left/right/top) ── */
@@ -343,12 +365,13 @@
     if (!dock || $('#ui2PhoneDock')) return;
     const bar = document.createElement('div');
     bar.id = 'ui2PhoneDock';
-    bar.setAttribute('role', 'tablist');
-    bar.setAttribute('aria-label', 'Code panels');
-    bar.innerHTML = '<button type="button" role="tab" data-tab="code">Code</button><button type="button" role="tab" data-tab="serial">Serial</button><button type="button" role="tab" data-tab="scope">Scope</button>';
+    bar.setAttribute('role', 'toolbar');
+    bar.setAttribute('aria-label', 'Code panels and simulation');
+    bar.innerHTML = '<div class="ui2-phone-tabs" role="tablist" aria-label="Code panels"><button type="button" role="tab" data-tab="code">Code</button><button type="button" role="tab" data-tab="serial">Serial</button><button type="button" role="tab" data-tab="scope">Scope</button></div><button type="button" id="ui2CodeRun" class="primary" aria-label="Run">' + ic('i-play') + '<span>Run</span></button>';
     const head = dock.querySelector('.m-sh-h');
     if (head) head.after(bar); else dock.prepend(bar);
     bar.onclick = (e) => { const b = e.target.closest('[data-tab]'); if (b) openDock(b.dataset.tab); };
+    $('#ui2CodeRun').onclick = () => $('#ui2Run').click();
   }
   function tameSymbols() {
     const bar = document.querySelector('.m-symbar');
@@ -388,10 +411,12 @@
     tools.querySelector('.ui2-sets').onclick = async (e) => {
       const b = e.target.closest('[data-set]'); if (!b) return; setName = b.dataset.set;
       tools.querySelectorAll('[data-set]').forEach((x) => x.setAttribute('aria-checked', x === b ? 'true' : 'false'));
+      syncRadioTabs(tools.querySelector('.ui2-sets'));
       if (setName === 'all' && app() && app().ensureParts) { try { await app().ensureParts(); } catch (err) { /* starter parts stay usable */ } }
       applyFilter();
     };
     hookSearch();
+    bindRadioKeys(tools.querySelector('.ui2-sets'));
     if (window.GuestParts && GuestParts.syncPalette && !GuestParts._ui2) {
       const orig = GuestParts.syncPalette;
       GuestParts.syncPalette = function (scope) { orig(scope); badgeLocks(); applyFilter(); };
@@ -521,6 +546,11 @@
       <button type="button" data-a="run" class="primary" aria-label="Run">${ic('i-play')}<span>Run</span></button>
       <button type="button" data-a="more" aria-label="More" aria-haspopup="menu" aria-expanded="false" aria-controls="ui2Pop">${ic('i-more')}<span>More</span></button>`;
     document.body.appendChild(nav);
+    const fit = document.createElement('button');
+    fit.type = 'button'; fit.id = 'ui2Fit'; fit.setAttribute('aria-label', 'Fit circuit to view');
+    fit.innerHTML = ic('i-fit') + '<span>Fit</span>';
+    $('#stageWrap').appendChild(fit);
+    fit.onclick = () => { const b = $('#bFit'); if (b) b.click(); };
     nav.onclick = (e) => {
       const b = e.target.closest('[data-a]'); if (!b) return;
       const a = b.dataset.a;
@@ -607,7 +637,11 @@
       ensurePhone();
     };
     const prevCh = editor.hooks.changed;
-    editor.hooks.changed = (topo) => { if (typeof prevCh === 'function') prevCh(topo); syncId(); if (coach) scoreCoach(); };
+    editor.hooks.changed = (topo) => {
+      if (typeof prevCh === 'function') prevCh(topo);
+      syncId();
+      if (coach) { resetCoachEvidence(); scoreCoach(true); }
+    };
     const prevCancel = editor.cancelWire.bind(editor);
     editor.cancelWire = function () { wireArm = false; prevCancel(); syncWireUi(); };
     const prevDown = editor._down.bind(editor);
@@ -642,23 +676,18 @@
     const clear = Pinch.resolveClear(frame, bb, 28, limits);
     const fit = Pinch.fitView(bb, frame.stage, clear, 28, limits);
     if (!fit || !isFinite(fit.s)) return false;
-    let s = fit.s;
-    const phone = document.body.classList.contains('m');
-    const minS = phone ? 1.6 : 1.4;
-    if (bb.w * minS <= r.width - 32 && bb.h * minS <= r.height - 32) s = Math.max(s, minS);
-    s = Math.min(limits.max, Math.max(limits.min, s));
-    const cx = bb.x + bb.w / 2, cy = bb.y + bb.h / 2;
-    editor.view = { s: s, x: cx - (r.width / s) / 2, y: cy - (r.height / s) / 2 };
+    editor.view = { s: fit.s, x: fit.x, y: fit.y };
     editor._autoFit = true;
     editor._fitSize = Math.round(r.width) + 'x' + Math.round(r.height);
     editor.applyView();
     const z = document.getElementById('zoomPct');
-    if (z && !document.body.classList.contains('viewsch') && !document.body.classList.contains('view3d')) z.textContent = Math.round(s * 100) + '%';
+    if (z && !document.body.classList.contains('viewsch') && !document.body.classList.contains('view3d')) z.textContent = Math.round(fit.s * 100) + '%';
     return true;
   }
 
   function hookKeys() {
     window.addEventListener('keydown', (e) => {
+      if (e.defaultPrevented) return;
       const k = String(e.key || '').toLowerCase();
       if (k === 'escape') {
         const start = $('#ui2Start');
@@ -669,7 +698,8 @@
         const c = $('#ui2Connect'); if (c && !c.hidden) { c.hidden = true; return; }
       }
       const tag = (e.target && e.target.tagName) || '';
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (e.defaultPrevented || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+        || (e.target && e.target.closest && e.target.closest('button,a,summary,[contenteditable]:not([contenteditable="false"]),[role="button"],[role="radio"],[role="menuitem"],[role="dialog"]'))) return;
       const editor = ed(); if (!editor) return;
       const meta = e.ctrlKey || e.metaKey;
       if (meta && k === 'c') { if (editor.copySel()) e.preventDefault(); return; }
@@ -762,7 +792,7 @@
       ['Projects', 'bProjects'], ['Examples', 'ui2Examples'], ['Save', 'bSave'], ['Download', 'bDownload'], ['Import', 'fileIn'],
       ['Breadboard view', 'view:2d'], ['Schematic view', 'view:schematic'], ['3D view', 'view:3d'],
       ['Command palette', 'bCmdk'], ['Keyboard shortcuts', 'bKeys'], ['Theme', 'bTheme'],
-      ['Restart', 'bRestart'], ['Reset', 'bReset'], ['About', 'about'],
+      ['Getting started', 'guide'], ['Restart', 'bRestart'], ['Reset', 'bReset'], ['About', 'about'],
     ];
     const signOut = document.getElementById('bSignOut') || document.getElementById('mSignOut');
     const signIn  = document.getElementById('bSignIn')  || document.getElementById('mSignIn');
@@ -787,7 +817,8 @@
       const b = e.target.closest('[data-go]'); if (!b) return;
       const go = b.dataset.go;
       closePop();
-      if (go.indexOf('view:') === 0) setView(go.slice(5));
+      if (go === 'guide') showStart();
+      else if (go.indexOf('view:') === 0) setView(go.slice(5));
       else if (go === 'about') { syncFirm(); openDock('about'); if (document.body.classList.contains('m') && window.Mobile) Mobile.openDock('about'); }
       else {
         const mAlias = go === 'bSignIn' ? 'mSignIn' : go === 'bSignOut' ? 'mSignOut' : null;
@@ -803,58 +834,127 @@
   }
 
   function showStart() {
-    if ($('#ui2Start')) { $('#ui2Start').hidden = false; return; }
+    if ($('#ui2Start')) { $('#ui2Start').hidden = false; $('#ui2Start [data-go="guide"]').focus(); return; }
     const d = document.createElement('div');
     d.id = 'ui2Start'; d.className = 'modal';
     d.innerHTML = `<div class="ui2-card" role="dialog" aria-modal="true" aria-labelledby="ui2StartTitle" tabindex="0">
       <h2 id="ui2StartTitle">Start a circuit</h2>
-      <p>A blank board, the Blink example, or a four-step build. Nothing is read-only until you open an example.</p>
-      <button type="button" class="ui2-choice primary" data-go="new">New blank ESP32</button>
+      <p>Build a virtual ESP32 circuit. No hardware needed. New here? Follow a five-step LED build, including the code.</p>
+      <button type="button" class="ui2-choice primary" data-go="guide">Start guided Blink</button>
       <button type="button" class="ui2-choice" data-go="blink">Open Blink example</button>
-      <h3 style="margin:12px 0 4px;font-size:14px">Guided Blink</h3>
-      <ol class="ui2-steps"><li>Add an LED</li><li>Add a resistor</li><li>Wire D2 to the resistor, the resistor to the LED, and the LED to GND</li><li>Run</li></ol>
-      <button type="button" class="ui2-choice" data-go="guide">Start guided Blink</button>
+      <button type="button" class="ui2-choice" data-go="new">New blank ESP32</button>
+      <p>Examples are read-only; editing makes your own copy. You can reopen this guide from Getting started in the menu.</p>
       <button type="button" data-go="close">Close</button>
     </div>`;
     document.body.appendChild(d);
+    d.addEventListener('keydown', (e) => {
+      if (e.key !== 'Tab') return;
+      const buttons = [...d.querySelectorAll('button:not([disabled])')];
+      const i = buttons.indexOf(document.activeElement);
+      if (!buttons.length) return;
+      if (e.shiftKey && i <= 0) { e.preventDefault(); buttons[buttons.length - 1].focus(); }
+      else if (!e.shiftKey && (i < 0 || i === buttons.length - 1)) { e.preventDefault(); buttons[0].focus(); }
+    });
     d.onclick = async (e) => {
       const b = e.target.closest('[data-go]'); if (!b && e.target === d) { d.hidden = true; return; }
       if (!b) return;
       const go = b.dataset.go;
       if (go === 'close') { d.hidden = true; return; }
-      d.hidden = true;
-      window.__ui2NeedStart = false;
-      if (app().ensureExamples) { try { await app().ensureExamples(); } catch (err) { return; } }
-      if (!window.Examples) return;
-      if (go === 'blink') { app().cmd.loadExample('blink'); syncId(); return; }
+      if (app().ensureExamples) {
+        const choices = d.querySelectorAll('.ui2-choice');
+        choices.forEach((choice) => { choice.disabled = true; });
+        d.setAttribute('aria-busy', 'true');
+        try { await app().ensureExamples(); }
+        catch (err) { console.warn('Could not load the starter circuits', err); app().cmd.toast('Could not load starter circuits. Please try again.'); return; }
+        finally { choices.forEach((choice) => { choice.disabled = false; }); d.removeAttribute('aria-busy'); }
+      }
+      if (d.hidden) return;
+      if (!window.Examples) { app().cmd.toast('Starter circuits are unavailable. Reload this page to try again.', true); return; }
+      if (go === 'blink') {
+        if (await app().cmd.loadExample('blink')) { d.hidden = true; window.__ui2NeedStart = false; syncId(); }
+        return;
+      }
       const raw = window.Examples.newBlank('esp32');
       if (go === 'guide') { raw.code = window.Examples.BLINK; raw.name = 'Blink'; }
-      if (!app().importProject(raw)) return;
+      try { if (!app().importProject(raw)) return; }
+      catch (err) { console.warn('Could not start the circuit', err); app().cmd.toast('Could not start the circuit. Free up browser storage and try again.', true); return; }
+      d.hidden = true;
+      window.__ui2NeedStart = false;
       syncId();
-      if (go === 'guide') { coach = true; showCoach(); scoreCoach(); }
+      if (go === 'guide') {
+        stopCoach();
+        coach = true; coachProjectId = app().proj.id;
+        showCoach(); scoreCoach(true);
+        coachTimer = setInterval(() => scoreCoach(), 100);
+      }
     };
-    const first = d.querySelector('[data-go="new"]'); if (first) first.focus();
+    const first = d.querySelector('[data-go="guide"]'); if (first) first.focus();
   }
   function showCoach() {
     let c = $('#ui2Coach');
     if (!c) {
       c = document.createElement('div');
       c.id = 'ui2Coach'; c.className = 'ui2-coach'; c.setAttribute('role', 'status');
-      c.innerHTML = '<p id="ui2CoachNow">Step 1 of 4. Add an LED.</p><button type="button" id="ui2CoachHide">Dismiss</button>';
+      c.innerHTML = '<p id="ui2CoachNow">Step 1 of 5. Add an LED.</p><button type="button" id="ui2CoachCodeOpen" hidden aria-expanded="false">Open code</button><button type="button" id="ui2CoachHide">Dismiss</button>';
       $('#stageWrap').appendChild(c);
-      $('#ui2CoachHide').onclick = () => { coach = false; c.hidden = true; };
+      $('#ui2CoachHide').onclick = stopCoach;
+      $('#ui2CoachCodeOpen').onclick = showCoachCode;
     }
     c.hidden = false;
   }
-  function scoreCoach() {
-    const proj = app() && app().proj; if (!proj) return;
+  function showCoachCode() {
+    let lesson = $('#ui2CoachCode');
+    if (!lesson) {
+      lesson = document.createElement('section');
+      lesson.id = 'ui2CoachCode'; lesson.className = 'ui2-code-guide';
+      lesson.setAttribute('aria-labelledby', 'ui2CoachCodeTitle');
+      lesson.innerHTML = `<div class="ui2-code-guide-head"><h2 id="ui2CoachCodeTitle">Step 4 of 5. Understand the sketch</h2><button type="button" id="ui2CoachCodeHide" aria-describedby="ui2CoachCodeHelp">Dismiss guide</button></div>
+        <div id="ui2CoachCodeHelp">
+          <p>The starter sketch is already in the editor below. It uses Arduino C++; <code>LED_BUILTIN</code> is GPIO 2 (D2) on this ESP32.</p>
+          <ol>
+            <li><code>setup()</code> runs once. <code>pinMode(LED_BUILTIN, OUTPUT)</code> lets the code drive the LED.</li>
+            <li><code>loop()</code> repeats. <code>digitalWrite(..., HIGH)</code> turns the LED on; <code>LOW</code> turns it off.</li>
+            <li><code>delay(1000)</code> waits 1000 milliseconds (one second) after each change.</li>
+          </ol>
+          <p>Try both delays at <code>500</code> for a faster blink. If running, Stop before editing, then Run again. Keep <strong>Run as</strong> set to <strong>Arduino C++ (ESP32)</strong> for this starter sketch.</p>
+        </div>
+        <button type="button" id="ui2CoachCodeNext">Continue to Run</button>`;
+      $('#codeWrap').before(lesson);
+      $('#ui2CoachCodeHide').onclick = () => { stopCoach(); focusCoachRun(); };
+      $('#ui2CoachCodeNext').onclick = () => {
+        coachCodeSeen = true; hideCoachCode(); scoreCoach();
+        focusCoachRun();
+      };
+    }
+    lesson.hidden = false;
+    $('#ui2CoachCodeOpen').setAttribute('aria-controls', 'ui2CoachCode');
+    $('#ui2CoachCodeOpen').setAttribute('aria-expanded', 'true');
+    openDock('code');
+    $('#ui2CoachCodeHide').focus();
+  }
+  function focusCoachRun() {
+    const button = $(document.body.classList.contains('m') ? '#ui2CodeRun' : '#ui2Run');
+    if (button) button.focus();
+  }
+  function hideCoachCode() {
+    const lesson = $('#ui2CoachCode'); if (lesson) lesson.hidden = true;
+    const button = $('#ui2CoachCodeOpen'); if (button) button.setAttribute('aria-expanded', 'false');
+  }
+  function resetCoachEvidence() { coachRun = null; coachOn = false; coachOff = false; }
+  function stopCoach() {
+    coach = false; coachCodeSeen = false; clearInterval(coachTimer); coachTimer = 0; resetCoachEvidence(); hideCoachCode();
+    const c = $('#ui2Coach'); if (c) c.hidden = true;
+  }
+  function scoreCoach(settle) {
+    const proj = app() && app().proj; if (!proj) { stopCoach(); return; }
+    if (!coach || proj.id !== coachProjectId) { stopCoach(); return; }
     const led = proj.parts.find((p) => p.type === 'led');
     const res = proj.parts.find((p) => p.type === 'resistor');
     const esp = proj.parts.find((p) => p.type === 'esp32');
     let wired = false;
     if (led && res && esp && app().sim && app().sim.netAt) {
       try {
-        if (app().sim.settle) app().sim.settle();
+        if (settle && app().sim.settle) app().sim.settle();
         const net = (part, name) => {
           const pin = window.Parts.T[part.type].pins(part).find((q) => q.name === name);
           if (!pin) return -1;
@@ -864,16 +964,45 @@
         const d2 = net(esp, 'D2'), r1 = net(res, '1'), r2 = net(res, '2'), a = net(led, 'A'), cth = net(led, 'C');
         const g1 = net(esp, 'GND.1'), g2 = net(esp, 'GND.2');
         const join = (x, y) => x != null && x >= 0 && x === y;
-        const gnd = (n) => n === 0 || n === g1 || n === g2;
-        wired = (join(d2, r1) || join(d2, r2)) && (join(a, r1) || join(a, r2)) && (gnd(cth));
-      } catch (e) { wired = false; }
+        const gnd = (n) => n != null && n >= 0 && (n === 0 || join(n, g1) || join(n, g2));
+        const resistance = +res.props.r;
+        wired = Number.isFinite(resistance) && resistance > 0 && d2 !== a && !gnd(d2) && !gnd(a)
+          && ((join(d2, r1) && join(a, r2)) || (join(d2, r2) && join(a, r1))) && gnd(cth);
+      } catch (err) {
+        console.warn('Could not inspect the guided circuit', err);
+        stopCoach(); app().cmd.toast('Could not inspect this circuit. Reopen Getting started to try again.', true); return;
+      }
     }
-    const running = document.body.classList.contains('running') || app().compilePhase === 'running';
-    const steps = [!!led, !!res, wired, running];
-    const labels = ['Add an LED.', 'Add a resistor.', 'Wire D2 to the resistor, the resistor to the LED, and the LED to GND.', 'Run.'];
+    const run = app().run;
+    if (!wired || coachRun !== run) { resetCoachEvidence(); coachRun = run; }
+    const running = !!run && (run.kind === 'qemu' || run.kind === 'js') && document.body.classList.contains('running');
+    if (wired && running) {
+      const state = app().sim.partState(led), current = Math.abs(state.i), voltage = app().sim.pinVoltage(esp, 'D2');
+      if (state.burned) { resetCoachEvidence(); coachRun = run; }
+      if (!state.burned && Number.isFinite(current) && Number.isFinite(voltage)) {
+        if (voltage > 2.5 && current > 0.001) coachOn = true;
+        if (coachOn && voltage < 0.2 && current < 0.0001) coachOff = true;
+      }
+    }
+    const codeButton = $('#ui2CoachCodeOpen');
+    if (codeButton) {
+      if (codeButton.hidden !== !wired) codeButton.hidden = !wired;
+      const label = coachCodeSeen ? 'Review code' : 'Open code';
+      if (codeButton.textContent !== label) codeButton.textContent = label;
+    }
+    const next = $('#ui2CoachCodeNext');
+    if (next) {
+      const label = running ? 'Watch the LED' : 'Continue to Run';
+      if (next.textContent !== label) next.textContent = label;
+    }
+    const steps = [!!led, !!res, wired, coachCodeSeen, running && coachOn && coachOff];
+    const labels = ['Add an LED.', 'Add a resistor.', 'Wire D2 to the resistor, the resistor to the LED, and the LED to GND.', 'Open code to learn how the sketch makes the LED blink.', 'Run the sketch and watch the LED.'];
     const i = steps.findIndex((ok) => !ok);
     const el = $('#ui2CoachNow'); if (!el) return;
-    el.textContent = i < 0 ? 'Blink is ready.' : `Step ${i + 1} of 4. ${labels[i]}`;
+    const text = i < 0 ? 'Blink is working. The LED has turned on and off.'
+      : i === 4 && running ? 'Step 5 of 5. Waiting for the LED to turn on and off.'
+      : `Step ${i + 1} of 5. ${labels[i]}`;
+    if (el.textContent !== text) el.textContent = text;
   }
 
   function partThumb(part) {

@@ -86,3 +86,42 @@ test('keydown and keyup do not throw while app.proj is still null', () => {
     fire('keyup', 'Enter');
   });
 });
+
+test('part shortcuts ignore focused controls and already-handled events but work on the canvas', () => {
+  const previous = { proj: app.proj, editor: app.editor, Editor: global.Editor };
+  let edits = 0;
+  app.proj = { parts: [] };
+  app.editor = { deleteSel() { edits++; }, rotateSel() { edits++; }, flipSel() { edits++; } };
+  global.Editor = { editChord() { return null; } };
+  try {
+    fire('keydown', 'Delete');
+    assert.equal(edits, 1);
+    for (const tag of ['BUTTON', 'A', 'SUMMARY', 'DIV']) {
+      const target = { tagName: tag, closest(selector) { return selector.includes('button,a,summary') ? this : null; } };
+      fire('keydown', 'Delete', { target });
+      fire('keydown', 'r', { target });
+      fire('keydown', 'f', { target });
+    }
+    fire('keydown', 'Delete', { defaultPrevented: true });
+    assert.equal(edits, 1);
+  } finally {
+    app.proj = previous.proj; app.editor = previous.editor; global.Editor = previous.Editor;
+  }
+});
+
+test('a held virtual key releases even after focus moves to a toolbar button', () => {
+  const previous = { proj: app.proj, editor: app.editor, sim: app.sim, run: app.run };
+  const state = { pressed: true };
+  let refreshed = 0;
+  app.proj = { parts: [{ id: 'KEY1', type: 'pushbutton', props: { key: 'a' } }] };
+  app.sim = { partState() { return state; } };
+  app.editor = { refreshDynamic() { refreshed++; } };
+  app.run = { kind: 'js' };
+  try {
+    fire('keyup', 'a', { target: { tagName: 'BUTTON' } });
+    assert.equal(state.pressed, false);
+    assert.equal(refreshed, 1);
+  } finally {
+    app.proj = previous.proj; app.editor = previous.editor; app.sim = previous.sim; app.run = previous.run;
+  }
+});

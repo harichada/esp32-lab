@@ -18,6 +18,27 @@ const RULES = [
 ];
 
 const ALLOW = 'esp32,breadboard,led,resistor,pushbutton,potentiometer,buzzer,ground,vcc33,vcc5,label';
+type Part = { id: string; type: string; x: number; y: number; props: Record<string, unknown> };
+type Project = { id: string; code: string; parts: Part[]; wires: unknown[]; defines: string[] };
+type WorkbenchWindow = Window & {
+  app: {
+    proj: Project; run: { kind: string } | null;
+    ensureParts(): Promise<void>;
+    store: { get(id: string): Project; save(project: Project): boolean };
+    cmd: { save(): boolean };
+    editor: {
+      addPart(type: string, x: number, y: number): void;
+      renderWires(): void; hooks: { changed(topo: boolean): void };
+      select(selection: { part: string }): void; svg: SVGSVGElement;
+      view: { x: number; y: number; s: number };
+    };
+  };
+  Parts: {
+    T: Record<string, { pins(part: Part): { name: string }[] }>;
+    pinWorld(part: Part, pin: { name: string }): { x: number; y: number };
+  };
+  savedStoreSave?: (project: Project) => boolean;
+};
 
 async function install(page: Page, opts?: { guest?: boolean }) {
   const errors: string[] = [];
@@ -72,8 +93,213 @@ async function axe(page: Page) {
 }
 
 async function shot(page: Page, name: string) {
-  await page.screenshot({ path: '/opt/cursor/artifacts/' + name });
+  await page.screenshot({ path: test.info().outputPath(name) });
 }
+
+async function wireGuide(page: Page, bypass: boolean, reversed = false) {
+  await page.evaluate(({ bypass, reversed }) => {
+    const root = window as WorkbenchWindow, editor = root.app.editor;
+    if (!root.app.proj.parts.some(p => p.type === 'led')) editor.addPart('led', 400, 200);
+    if (!root.app.proj.parts.some(p => p.type === 'resistor')) editor.addPart('resistor', 300, 200);
+    const parts = root.app.proj.parts;
+    const esp = parts.find(p => p.type === 'esp32')!;
+    const led = parts.find(p => p.type === 'led')!;
+    const resistor = parts.find(p => p.type === 'resistor')!;
+    const pin = (part: Part, name: string) => root.Parts.pinWorld(part, root.Parts.T[part.type].pins(part).find(p => p.name === name)!);
+    const wire = (id: string, a: { x: number; y: number }, b: { x: number; y: number }) => ({ id, a, b, pts: [], color: 'green' });
+    const input = reversed ? '2' : '1', output = reversed ? '1' : '2';
+    root.app.proj.wires = [
+      wire('drive', pin(esp, 'D2'), pin(resistor, input)),
+      wire('led', pin(resistor, bypass ? input : output), pin(led, 'A')),
+      wire('ground', pin(led, 'C'), pin(esp, 'GND.1')),
+    ];
+    editor.renderWires();
+    editor.hooks.changed(true);
+  }, { bypass, reversed });
+}
+
+test('guide rejects a bypassed resistor and waits for real blinking on every run', async ({ page }) => {
+  await install(page);
+  await page.goto('/?ui=2&resume=0');
+  await ready(page);
+  await page.getByRole('button', { name: 'Start guided Blink', exact: true }).click();
+  await expect(page.locator('#ui2Start')).toBeHidden();
+  await wireGuide(page, true);
+  await expect(page.locator('#ui2CoachNow')).toContainText('Step 3 of 5');
+  await wireGuide(page, false);
+  await expect(page.locator('#ui2CoachNow')).toContainText('Step 4 of 5');
+  await page.evaluate(() => {
+    const root = window as WorkbenchWindow;
+    root.app.proj.wires.pop();
+    root.app.editor.hooks.changed(true);
+  });
+  await expect(page.locator('#ui2CoachNow')).toContainText('Step 3 of 5');
+  await wireGuide(page, false, true);
+  await expect(page.locator('#ui2CoachNow')).toContainText('Step 4 of 5');
+  await page.locator('#ui2CoachCodeOpen').click();
+  await page.locator('#ui2CoachCodeNext').click();
+  await page.locator('#ui2Run').click();
+  await expect(page.locator('body')).toHaveClass(/running/);
+  await page.waitForTimeout(500);
+  await expect(page.locator('#ui2CoachNow')).toContainText('Waiting for the LED');
+  await page.locator('#ui2Run').click();
+
+  await page.locator('#selMode').selectOption('js');
+  await page.locator('#code').fill('function setup(){pinMode(2,OUTPUT)}\nfunction loop(){digitalWrite(2,HIGH);delay(200);digitalWrite(2,LOW);delay(200)}');
+  await page.locator('#ui2Run').click();
+  await expect(page.locator('#ui2CoachNow')).toHaveText('Blink is working. The LED has turned on and off.');
+  await shot(page, 'guided-blink-working-desktop.png');
+  await page.locator('#ui2Run').click();
+  await page.locator('#code').fill('function setup(){pinMode(2,OUTPUT);digitalWrite(2,HIGH)}\nfunction loop(){delay(200)}');
+  await page.locator('#ui2Run').click();
+  await page.waitForTimeout(600);
+  await expect(page.locator('#ui2CoachNow')).toContainText('Waiting for the LED');
+  await page.locator('#ui2Run').click();
+});
+
+for (const viewport of [{ width: 1280, height: 800 }, { width: 360, height: 640 }]) {
+  test(`guided code walkthrough teaches the starter without replacing edits at ${viewport.width}px`, async ({ page }) => {
+    const errors = await install(page);
+    await page.setViewportSize(viewport);
+    await page.goto('/?ui=2&resume=0');
+    await ready(page);
+    await page.getByRole('button', { name: 'Start guided Blink', exact: true }).click();
+    await expect(page.locator('#ui2Start')).toBeHidden();
+    const id = await page.evaluate(() => (window as WorkbenchWindow).app.proj.id);
+    const starter = await page.locator('#code').inputValue();
+    await wireGuide(page, false);
+    await expect(page.locator('#ui2CoachNow')).toContainText('Open code');
+    await page.locator('#ui2CoachCodeOpen').click();
+    const lesson = page.locator('#ui2CoachCode');
+    await expect(lesson).toBeVisible();
+    await expect(page.locator('#codeWrap')).toBeVisible();
+    await expect(lesson).toContainText('GPIO 2 (D2)');
+    await expect(lesson).toContainText('setup() runs once');
+    await expect(lesson).toContainText('loop() repeats');
+    await expect(lesson).toContainText('digitalWrite(..., HIGH)');
+    await expect(lesson).toContainText('delay(1000) waits 1000 milliseconds');
+    await expect(page.locator('#code')).toHaveValue(starter);
+    if (viewport.width < 820) {
+      await page.locator('#ui2CoachCodeNext').scrollIntoViewIfNeeded();
+      await expect(lesson.locator('li').last()).toBeInViewport({ ratio: 1 });
+      const clear = await page.locator('#ui2CoachCodeNext').evaluate(button => {
+        const r = button.getBoundingClientRect(), panel = document.getElementById('tab-code')!.getBoundingClientRect();
+        return r.top >= panel.top && r.bottom <= panel.bottom;
+      });
+      expect(clear).toBe(true);
+    }
+    await axe(page);
+    await shot(page, `guided-blink-code-${viewport.width}.png`);
+    await page.locator('#ui2CoachCodeNext').click();
+    await expect(lesson).toBeHidden();
+    await expect(page.locator('#ui2CoachNow')).toContainText('Step 5 of 5');
+    await expect(page.locator(viewport.width < 820 ? '#ui2CodeRun' : '#ui2Run')).toBeFocused();
+    const edited = starter.replace(/delay\(1000\)/g, 'delay(500)');
+    await page.locator('#code').fill(edited);
+    if (viewport.width < 820) await page.locator('#dock .m-x').click();
+    await page.getByRole('button', { name: 'Review code', exact: true }).click();
+    await expect(lesson).toBeVisible();
+    await expect(page.locator('#code')).toHaveValue(edited);
+    expect(await page.evaluate(() => (window as WorkbenchWindow).app.proj.id)).toBe(id);
+    if (viewport.width >= 820) {
+      await page.locator('#ui2More').click();
+      await page.getByRole('menuitem', { name: 'Getting started', exact: true }).click();
+      await page.getByRole('button', { name: 'New blank ESP32', exact: true }).click();
+      await expect(page.locator('#ui2Start')).toBeHidden();
+      expect(await page.evaluate(id => (window as WorkbenchWindow).app.store.get(id).code, id)).toBe(edited);
+    } else {
+      await page.getByRole('button', { name: 'Dismiss guide', exact: true }).click();
+      await expect(page.locator('#ui2CodeRun')).toBeFocused();
+    }
+    await expect(lesson).toBeHidden();
+    await expect(page.locator('#ui2Coach')).toBeHidden();
+    expect(errors.filter(e => !/favicon/i.test(e))).toEqual([]);
+  });
+}
+
+test('Getting started preserves pending edits and refuses replacement when saving fails', async ({ page }) => {
+  await install(page);
+  await page.goto('/?ui=2&resume=0');
+  await ready(page);
+  await expect(page.locator('#ui2Start .ui2-choice').first()).toHaveText('Start guided Blink');
+  await expect(page.getByRole('button', { name: 'Start guided Blink', exact: true })).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(page.locator('#ui2Start [data-go="close"]')).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(page.getByRole('button', { name: 'Start guided Blink', exact: true })).toBeFocused();
+  await page.getByRole('button', { name: 'New blank ESP32', exact: true }).click();
+  await expect(page.locator('#ui2Start')).toBeHidden();
+  const id = await page.evaluate(() => (window as WorkbenchWindow).app.proj.id);
+  await page.evaluate(() => {
+    const root = window as WorkbenchWindow;
+    root.savedStoreSave = root.app.store.save;
+    root.app.store.save = () => false;
+  });
+  await page.locator('#code').fill('// keep these pending edits');
+  await page.locator('#ui2More').click();
+  await page.getByRole('menuitem', { name: 'Getting started', exact: true }).click();
+  expect(await page.evaluate(() => (window as WorkbenchWindow).app.proj.id)).toBe(id);
+  await page.getByRole('button', { name: 'Start guided Blink', exact: true }).click();
+  await expect(page.locator('#ui2Start')).toBeVisible();
+  expect(await page.evaluate(() => (window as WorkbenchWindow).app.proj.id)).toBe(id);
+  expect(await page.evaluate(() => (window as WorkbenchWindow).app.proj.code)).toBe('// keep these pending edits');
+  await page.evaluate(() => {
+    const root = window as WorkbenchWindow;
+    root.app.store.save = root.savedStoreSave!;
+    root.app.cmd.save();
+  });
+  await page.getByRole('button', { name: 'Start guided Blink', exact: true }).click();
+  await expect(page.locator('#ui2Start')).toBeHidden();
+  expect(await page.evaluate(() => (window as WorkbenchWindow).app.proj.id)).not.toBe(id);
+  expect(await page.evaluate(id => (window as WorkbenchWindow).app.store.get(id).code, id)).toBe('// keep these pending edits');
+});
+
+test('radio arrows and focused controls never edit the selected circuit', async ({ page }) => {
+  await install(page);
+  await page.goto('/?ui=2&ex=blink&resume=0');
+  await ready(page);
+  await page.locator('#bCopy').click();
+  const before = await page.evaluate(() => {
+    const root = window as WorkbenchWindow;
+    const esp = root.app.proj.parts.find(p => p.type === 'esp32')!;
+    root.app.editor.select({ part: esp.id });
+    return { id: esp.id, x: esp.x, y: esp.y, count: root.app.proj.parts.length };
+  });
+  await page.locator('#ui2SideTabs [data-side="parts"]').focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(page.locator('#ui2SideTabs [data-side="props"]')).toBeFocused();
+  await expect(page.locator('#ui2SideTabs [data-side="props"]')).toHaveAttribute('aria-checked', 'true');
+  await page.keyboard.press('Delete');
+  const after = await page.evaluate(id => {
+    const root = window as WorkbenchWindow, p = root.app.proj.parts.find(p => p.id === id)!;
+    return { x: p.x, y: p.y, count: root.app.proj.parts.length };
+  }, before.id);
+  expect(after).toEqual({ x: before.x, y: before.y, count: before.count });
+  await page.evaluate(() => (window as WorkbenchWindow).app.editor.svg.focus());
+  await page.keyboard.press('ArrowRight');
+  expect(await page.evaluate(id => (window as WorkbenchWindow).app.proj.parts.find(p => p.id === id)!.x, before.id)).toBe(before.x + 10);
+  await page.keyboard.press('Control+c');
+  await page.keyboard.press('Control+v');
+  expect(await page.evaluate(() => (window as WorkbenchWindow).app.proj.parts.length)).toBe(before.count + 1);
+});
+
+test('execution labels explain the language and Advanced retains compiler definitions', async ({ page }) => {
+  await install(page);
+  await page.goto('/?ui=2&ex=blink&resume=0');
+  await ready(page);
+  await expect(page.locator('#executionHint')).toContainText('compiled on the server');
+  await expect(page.locator('#inDefines')).toBeHidden();
+  await page.locator('#codeAdvanced summary').click();
+  await page.locator('#inDefines').fill('SIM, GUIDE_CHECK');
+  await page.locator('#code').click();
+  await page.evaluate(() => (window as WorkbenchWindow).app.cmd.save());
+  expect(await page.evaluate(() => (window as WorkbenchWindow).app.proj.defines)).toEqual(['SIM', 'GUIDE_CHECK']);
+  await page.locator('#selMode').selectOption('js');
+  await expect(page.locator('#executionHint')).toContainText('JavaScript runs in this browser');
+  await page.locator('#selMode').selectOption('circuit');
+  await expect(page.locator('#executionHint')).toContainText('code is not executed');
+  await expect(page.getByRole('textbox', { name: 'Search parts', exact: true })).toBeVisible();
+});
 
 test('first-run card, Blink in 15 clicks, copy and the lock bar', async ({ page }) => {
   const errors = await install(page, { guest: true });
@@ -130,12 +356,14 @@ test('first-run card, Blink in 15 clicks, copy and the lock bar', async ({ page 
   await clickPin(led.id, 'C');
   await clickPin(esp.id, 'GND.1');
   await expect.poll(() => page.evaluate(() => (window as unknown as { app: { proj: { wires: unknown[] } } }).app.proj.wires.length)).toBe(3);
+  await page.locator('#ui2CoachCodeOpen').click();
+  await page.locator('#ui2CoachCodeNext').click();
   await page.locator('#ui2Run').click();
   await expect.poll(() => page.evaluate(() => (window as unknown as { app?: { compilePhase?: string } }).app?.compilePhase)).toBe('running');
   const clicks = await page.evaluate(() => (window as unknown as { __clicks: number }).__clicks);
   expect(clicks).toBeLessThanOrEqual(15);
-  fs.mkdirSync('/opt/cursor/artifacts', { recursive: true });
-  fs.writeFileSync('/opt/cursor/artifacts/ui2-blink-clicks.json', JSON.stringify({ clicks, target: 15 }) + '\n');
+  fs.mkdirSync(test.info().outputDir, { recursive: true });
+  fs.writeFileSync(test.info().outputPath('ui2-blink-clicks.json'), JSON.stringify({ clicks, target: 15 }) + '\n');
 
   const before = await page.evaluate(() => (window as unknown as { app: { proj: { parts: unknown[] } } }).app.proj.parts.length);
   await page.evaluate(({ ledId, resId }) => {
@@ -157,6 +385,7 @@ test('first-run card, Blink in 15 clicks, copy and the lock bar', async ({ page 
 
   await page.locator('#ui2SideTabs [data-side="parts"]').click();
   await page.locator('#ui2PalTools [data-set="all"]').click();
+  await page.evaluate(() => (window as WorkbenchWindow).app.ensureParts());
   const bar = page.locator('#ui2Lock');
   await expect(bar).toBeVisible();
   await expect(bar).toHaveText('Sign in to unlock all parts');
@@ -205,6 +434,87 @@ test('desktop light and the running canvas', async ({ page }) => {
 
 test.describe('phone', () => {
   test.use({ hasTouch: true, viewport: { width: 390, height: 844 } });
+  test('the guide and Fit stay separate and Help does not replace a circuit', async ({ page }) => {
+    await install(page);
+    await page.goto('/?ui=2&resume=0');
+    await ready(page);
+    await page.getByRole('button', { name: 'Start guided Blink', exact: true }).tap();
+    await expect(page.locator('#ui2Start')).toBeHidden();
+    await expect(page.locator('#ui2CoachNow')).toContainText('Step 1 of 5');
+    const id = await page.evaluate(() => (window as WorkbenchWindow).app.proj.id);
+    await shot(page, 'mobile-guided-blink.png');
+    await page.evaluate(() => {
+      const root = window as WorkbenchWindow;
+      root.app.editor.addPart('resistor', 300, 650);
+      root.app.editor.addPart('led', 300, 800);
+    });
+    await page.locator('#ui2Fit').tap();
+    const clear = await page.evaluate(() => {
+      const root = window as WorkbenchWindow;
+      const activeIds = new Set(root.app.proj.parts.filter(p => p.type !== 'breadboard').map(p => p.id));
+      const blockers = ['ui2Coach', 'ui2Fit'].map(id => document.getElementById(id)!.getBoundingClientRect());
+      return [...document.querySelectorAll('#lParts [data-id]')].filter(el => activeIds.has(el.getAttribute('data-id')!)).every(el => {
+        const r = el.getBoundingClientRect();
+        return blockers.every(b => r.right <= b.left || r.left >= b.right || r.bottom <= b.top || r.top >= b.bottom);
+      });
+    });
+    expect(clear).toBe(true);
+    await page.locator('#ui2CoachHide').tap();
+    await expect(page.locator('#ui2Coach')).toBeHidden();
+    await page.locator('#ui2Phone [data-a="more"]').tap();
+    await page.getByRole('menuitem', { name: 'Getting started', exact: true }).tap();
+    await expect(page.locator('#ui2Start')).toBeVisible();
+    expect(await page.evaluate(() => (window as WorkbenchWindow).app.proj.id)).toBe(id);
+    await page.locator('#ui2Start [data-go="close"]').tap();
+  });
+  test('Run and Stop work with Code open, and Fit survives resize without resetting manual zoom', async ({ page }) => {
+    await install(page);
+    await page.goto('/?ui=2&ex=blink&resume=0');
+    await ready(page);
+    await page.locator('#ui2Phone [data-a="code"]').tap();
+    await page.locator('#codeAdvanced summary').tap();
+    await page.locator('#inDefines').fill('SIM, MOBILE_UI');
+    const advancedBox = await page.locator('#inDefines').evaluate(el => {
+      const r = el.getBoundingClientRect();
+      return { left: r.left, right: r.right, bottom: r.bottom, width: innerWidth, height: innerHeight };
+    });
+    expect(advancedBox.left).toBeGreaterThanOrEqual(0);
+    expect(advancedBox.right).toBeLessThanOrEqual(advancedBox.width);
+    expect(advancedBox.bottom).toBeLessThanOrEqual(advancedBox.height);
+    await page.locator('#codeAdvanced summary').tap();
+    await page.locator('#selMode').selectOption('js');
+    await page.locator('#code').fill('function setup(){pinMode(2,OUTPUT)}\nfunction loop(){digitalWrite(2,HIGH);delay(200);digitalWrite(2,LOW);delay(200)}');
+    await page.locator('#ui2CodeRun').tap();
+    await expect(page.locator('body')).toHaveClass(/running/);
+    await shot(page, 'mobile-code-run.png');
+    await page.locator('#ui2Phone [data-a="run"]').tap();
+    await expect(page.locator('body')).not.toHaveClass(/running/);
+    await expect(page.locator('body')).toHaveAttribute('data-msheet', 'dock');
+    await expect(page.locator('#ui2CodeRun')).toHaveAccessibleName('Run');
+    await page.locator('#dock .m-x').tap();
+    await page.locator('#ui2Fit').tap();
+    const fits = () => page.evaluate(() => {
+      const root = window as WorkbenchWindow;
+      const activeIds = new Set(root.app.proj.parts.filter(p => p.type !== 'breadboard').map(p => p.id));
+      const stage = document.getElementById('stage')!.getBoundingClientRect();
+      const parts = [...document.querySelectorAll('#lParts [data-id]')].filter(el => activeIds.has(el.getAttribute('data-id')!));
+      return parts.length >= 3 && parts.every(el => {
+        const r = el.getBoundingClientRect();
+        return r.left >= stage.left - 2 && r.top >= stage.top - 2 && r.right <= stage.right + 2 && r.bottom <= stage.bottom + 2;
+      });
+    });
+    await expect.poll(fits).toBe(true);
+    await page.setViewportSize({ width: 390, height: 664 });
+    await expect.poll(fits).toBe(true);
+    await page.mouse.move(190, 300);
+    await page.mouse.wheel(0, -120);
+    const manual = await page.evaluate(() => ({ ...(window as WorkbenchWindow).app.editor.view }));
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForTimeout(300);
+    expect(await page.evaluate(() => (window as WorkbenchWindow).app.editor.view)).toEqual(manual);
+    await page.locator('#ui2Fit').tap();
+    await shot(page, 'ui2-usability-phone-code-and-fit.png');
+  });
   test('one tap adds one part, and light and dark stay clear', async ({ page }) => {
     const errors = await install(page, { guest: true });
     await page.goto('/?ui=2&ex=blink&resume=0');

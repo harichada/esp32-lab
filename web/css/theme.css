@@ -165,7 +165,14 @@ body.c-palette [data-reopen=palette],body.c-side [data-reopen=side],body.c-dock 
 .term .ln{display:block}.term .ts{color:var(--mut);margin-right:10px;user-select:none}.term .ln.err{color:var(--err)}.term .ln.wrn{color:var(--warn)}.term .ln.ok{color:var(--ok)}.term .ln.sys{color:var(--mut)}.term .ln.net{color:#7dd3fc}.term .ln.http{color:#a5b4fc}.term .ln.boot{color:#566170}.term .ln.in{color:var(--acc)}
 .term .empty-t{color:var(--mut);font-family:var(--font)}
 #netPanel .nlr{padding:1px 0}.nlr.k-wifi,.nlr.k-dhcp{color:var(--ok)}.nlr.k-dns{color:#c4b5fd}.nlr.k-http,.nlr.k-tcp{color:#7dd3fc}.nlr.k-udp{color:var(--warn)}.nlr.k-dev{color:var(--txt)}.nlr.k-fw{color:#a7f3d0}.nlr.k-info{color:var(--mut)}.nlr.bad{color:var(--err)}
-.codebar{flex-wrap:wrap}.filetabs{display:flex;gap:2px}.filetabs button{height:26px;padding:0 10px;font-size:12px;font-family:var(--mono);background:transparent;border-color:transparent;color:var(--mut)}.filetabs button.on{background:var(--l3);border-color:var(--line2);color:var(--txt)}
+.codebar{flex-wrap:wrap;position:relative}.filetabs{display:flex;gap:2px}.filetabs button{height:26px;padding:0 10px;font-size:12px;font-family:var(--mono);background:transparent;border-color:transparent;color:var(--mut)}.filetabs button.on{background:var(--l3);border-color:var(--line2);color:var(--txt)}
+.execution-hint{margin:0 0 8px;color:var(--txt2);font-size:14px;line-height:1.45}
+.code-advanced{flex:none}
+.code-advanced summary{cursor:pointer;padding:8px;color:var(--txt2);border:1px solid var(--line2);border-radius:6px}
+.code-advanced summary:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.code-advanced-body{position:absolute;right:0;top:calc(100% + 4px);z-index:20;width:min(320px,calc(100vw - 32px));padding:12px;background:var(--l1);color:var(--txt);border:1px solid var(--line2);border-radius:8px;box-shadow:var(--sh1)}
+.code-advanced-body .fld{display:flex;flex-direction:column;align-items:stretch;gap:8px}
+.code-advanced-body p{margin:8px 0 0;color:var(--txt2);font-size:14px;line-height:1.45}
 .note{background:var(--l2);border:1px solid var(--line);border-radius:var(--r2);padding:8px 10px;color:var(--txt2);font-size:12px;line-height:1.5}
 #buildLog{max-height:none;font-size:11.5px}#buildDet summary{color:var(--mut);cursor:pointer;margin-bottom:6px}
 /* code editor (textarea over highlighted pre) */
