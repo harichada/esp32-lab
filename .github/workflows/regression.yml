@@ -33,8 +33,6 @@ jobs:
       SIM_PREWARM: '0'
       SIM_NETSTACK_WARM: '0'
       AUTH_ENABLED: '0'
-      SIM_PROJECT_DIR: ${{ runner.temp }}/regression-projects
-      SIM_BUILD_DIR: ${{ runner.temp }}/regression-builds
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -44,6 +42,9 @@ jobs:
           cache-dependency-path: web/tests/requirements.txt
       - run: python -m pip install -r web/tests/requirements.txt
       - working-directory: web
+        env:
+          SIM_PROJECT_DIR: ${{ runner.temp }}/regression-projects
+          SIM_BUILD_DIR: ${{ runner.temp }}/regression-builds
         run: python -m unittest tests.health_route_test tests.auth_test -v
 
   browser:
