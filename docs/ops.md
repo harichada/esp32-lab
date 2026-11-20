@@ -61,3 +61,9 @@ Rollback is either of these:
 - Delete `.github/workflows/uptime.yml`.
 
 Neither touches the server or its configuration.
+
+## Pull-request regression checks
+
+`.github/workflows/regression.yml` runs on pull requests, pushes to main, and manual dispatch. Its three read-only jobs cover selected core JavaScript regressions, mocked Linux backend contracts, and mocked browser persistence. It has no deployment step, account credentials or production requests. See `web/tests/README` for commands, the explicit initial coverage boundary, and outstanding full-suite failures.
+
+Required-status/branch-protection settings are not changed by this workflow. Real sandboxed compilation and QEMU execution remain a separate acceptance gate; mocked checks do not prove toolchain readiness.

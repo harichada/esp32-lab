@@ -1,3 +1,25 @@
+Initial PR regression gates (.github/workflows/regression.yml), from the repository root:
+
+    npm run test:core
+    npm ci
+    npx playwright install chromium
+    npm run test:smoke
+
+The core gate covers the solver, netlist, JS runner, compile status, storage wrapper, account adoption, project save/navigation lifecycle, new-project entry points and sign-in UI contracts. Browser smoke uses a local static server with mocked API/WebSocket traffic; non-local requests are blocked. It covers phone/desktop fast-switch persistence, save failures and retry, header/define retention, Tab copy-on-edit, storage-full Export, and sign-in-off parity. CI uses bundled Chromium. Locally Chrome is the default; PLAYWRIGHT_BROWSER_CHANNEL=chromium selects the installed Playwright browser. On Windows, set PLAYWRIGHT_PYTHON="py -3.13" (and use npm.cmd) rather than changing execution policy or a Windows Store Python alias.
+
+Backend contract checks require Linux (or WSL), not native Windows:
+
+    python3 -m venv .venv
+    .venv/bin/python -m pip install -r web/tests/requirements.txt
+    cd web
+    ../.venv/bin/python -m unittest tests.health_route_test tests.auth_test -v
+
+Use an environment outside the checkout or ignore it locally. The dependency file pins the direct test dependencies for Python 3.10 or newer; the backend CI gate uses the locally verified Linux Python 3.10 combination. Backend checks use local provider stand-ins and temporary data; CI explicitly isolates SIM_PROJECT_DIR/SIM_BUILD_DIR and disables warm-up. The broader compile_guard_test suite is not in this initial gate: a Linux run without the compiler, patched QEMU or bwrap had 7 failures, 2 errors and 15 skips, including infrastructure-dependent expectations and QEMU/probe mock mismatches. Investigate these in the supported-toolchain setup work before making them required. A green mocked gate is not a real firmware/sandbox certification.
+
+The full Node suite is NOT gated yet. At the pre-change 6a842e9 baseline it ran 342 tests: 305 passed, 33 failed and 4 skipped. Failures included stale compile/theme and historical schematic fixture assertions, compile-hint expectations, a palette fake-DOM gap, and a Linux-only Chrome launcher on Windows. The core selection is explicit, not a claim that these failures were fixed or that the wider suite passes. Run all web/tests/*.test.js when expanding coverage; bring each failing area into the gate after investigating its baseline failures.
+
+Real toolchain smoke (separate from the mocked PR gates):
+
 Fresh sandboxed compile (real bwrap, real esp-x32 toolchain, same path as /api/compile), then a fresh Blink whose returned id is opened on /api/run and must toggle GPIO2. Skips only when bwrap, the toolchain, or the patched QEMU is missing; SIM_REQUIRE_TOOLCHAIN_TEST=1 makes a missing piece a failure:
 
     cd web && SIM_REQUIRE_TOOLCHAIN_TEST=1 python3 -m unittest tests.sandbox_toolchain_test -v

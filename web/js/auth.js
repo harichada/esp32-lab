@@ -388,10 +388,11 @@
       if (!res.ok) throw new Error('load');
       const data = await res.json();
       if (!data || !data.proj || !root.Projects) throw new Error('load');
+      if (root.app && root.app.flushAutosave && !root.app.flushAutosave()) { setBusy(btn, false); return; }
       const saved = new root.Projects.ProjectStore().adoptAccount(data.proj);
+      if (root.app && root.app.openProject && !root.app.openProject(saved.id)) { setBusy(btn, false); return; }
       const dlg = document.getElementById('projDlg');
       if (dlg) dlg.hidden = true;
-      if (root.app && root.app.openProject) root.app.openProject(saved.id);
     } catch (e) {
       setBusy(btn, false);
       toast("Couldn't open that project. Try again.", true);

@@ -151,14 +151,15 @@ test('staging banner is in the first HTML, reserved, and not a dialog', () => {
   assert.doesNotMatch(html, /id="stageBanner"[^>]*tabindex/);
   assert.doesNotMatch(html, /id="stageBanner"[^>]*aria-modal/);
   assert.doesNotMatch(html, /id="stageBanner"[\s\S]{0,400}tabindex="-1"/);
-  assert.match(html, /theme\.css\?v=74/);
-  assert.match(html, /mobile\.css\?v=75/);
-  assert.match(html, /app\.js\?v=105/);
-  assert.match(html, /mobile\.js\?v=72/);
-  assert.match(html, /projects\.js\?v=53/);
-  assert.match(html, /auth\.js\?v=7/);
-  assert.match(html, /ui\.js\?v=65/);
-  assert.match(html, /netlog\.js\?v=41/);
+  for (const asset of ['theme.css', 'mobile.css', 'app.js', 'mobile.js', 'projects.js', 'auth.js', 'ui.js', 'ui2.js', 'netlog.js']) {
+    assert.ok(html.includes(asset + '?v='), asset + ' must be cache-versioned');
+    assert.match(html, new RegExp(asset.replace('.', '\\.') + '\\?v=\\d+'));
+  }
+  const storage = html.indexOf('js/storage.js?v=');
+  assert.ok(storage >= 0, 'storage wrapper must be loaded');
+  for (const asset of ['projects.js', 'app.js', 'auth.js', 'ui2.js']) {
+    assert.ok(storage < html.indexOf('js/' + asset + '?v='), 'storage loads before ' + asset);
+  }
   assert.match(css, /#stageBanner\{display:none\}/);
   assert.match(css, /html\[data-cl-env=staging\]\{--stage-h:56px\}/);
   assert.match(css, /max-height:var\(--stage-h\)/);

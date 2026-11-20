@@ -18,7 +18,7 @@ async function fetchRetry(u, o, n = 4) {
   const P = window.Parts, { Sim } = window.SimCore, R = window.RemoteLogic, $ = (s) => document.querySelector(s);
   const STORE = 'esp32lab.project.v1';
   const store = new Projects.ProjectStore();
-  const app = window.app = { store, readOnly: false, netlog: new NetLogMod.NetLog(), proj: null, sim: null, world: new Devices.MockWorld(), run: null, serialText: '', file: 'sketch', irFrames: [], lastBits: null };
+  const app = window.app = { store, readOnly: false, saveState: 'saved', netlog: new NetLogMod.NetLog(), proj: null, sim: null, world: new Devices.MockWorld(), run: null, serialText: '', file: 'sketch', irFrames: [], lastBits: null };
   // ---------------- project ----------------
   function normalize(p) {
     p.parts = p.parts || []; p.wires = p.wires || []; p.files = p.files || {}; p.mode = p.mode || 'qemu'; p.defines = p.defines || []; p.code = p.code ?? '';
@@ -27,6 +27,7 @@ async function fetchRetry(u, o, n = 4) {
     return p;
   }
   function setProject(p, opts) {
+    if (!flushAutosave()) return false;
     const prev = app.proj;
     if (prev && prev !== p && !prev.id && prev.draftId && window.Schematic && Schematic.releaseDraft) {
       try { Schematic.releaseDraft(prev); } catch (e) { /* the draft key stays until the next sweep */ }
@@ -34,6 +35,7 @@ async function fetchRetry(u, o, n = 4) {
     stopRun(); app.readOnly = !!(opts && opts.readOnly);
     if (window.Netlist) { try { Netlist.migrate(p); } catch (e) { /* open the board even if its netlist cannot be built */ } }
     app.proj = normalize(p); app.sim = new Sim(app.proj); app.file = 'sketch'; app.world = new Devices.MockWorld(); app.world.onchange = () => (app.devDirty = true); app.world.onlog = (e) => app.netlog.add({ k: 'dev', msg: `${e.proto}: ${e.summary}`, ok: !(e.code < 0 || e.code >= 400) });
+    app.saveState = app.readOnly ? 'example' : (app.proj.id ? 'saved' : 'unsaved');
     app.editor.setProject(app.proj);
     // Editor.setProject drops the selection without notifying the Inspector.
     app.editor.select(null);
@@ -50,6 +52,7 @@ async function fetchRetry(u, o, n = 4) {
     if (app.view3d) app.view3d.setProject(app.proj);
     if (app.schematic) { app.schematic.sel = null; app.schematic.setProject(app.proj); }
     syncExampleReady();
+    return true;
   }
   // Stays set for the life of the view. The e2e helper waits on this instead of a toast,
   // which is removed on a timer and is gone before a slow assertion notices it.
@@ -70,16 +73,17 @@ async function fetchRetry(u, o, n = 4) {
     // A click on a locked example opens sign-in and leaves the current circuit
     // alone. A shared link (?ex=) still draws the circuit; Run stays blocked.
     if (!(opts && opts.keepLocked) && window.GuestParts && GuestParts.exampleLocked(k)) {
+      if (!flushAutosave()) return false;
       // Persist the pending example key so it survives the OAuth redirect.
       // sessionStorage: same-origin, survives page reload, cleared on tab close.
       // ?ex=k in URL: backup so the startup handler can resume without noteSession.
-      try { sessionStorage.setItem('__pendingEx', k); } catch (e) { /* private mode */ }
+      try { clStorage.session.setItem('__pendingEx', k); } catch (e) { /* the URL below is the backup */ }
       setUrl({ ex: k });
       GuestParts.promptExample(k);
       return;
     }
     // Clear any pending key — this call is actually loading the example.
-    try { sessionStorage.removeItem('__pendingEx'); } catch (e) { /* ignore */ }
+    try { clStorage.session.removeItem('__pendingEx'); } catch (e) { /* optional resume marker */ }
     const ex = Examples.EX[k](); ex.example = k;
     if (ex.fetch) {
       for (const [name, url] of Object.entries(ex.fetch)) {
@@ -88,7 +92,9 @@ async function fetchRetry(u, o, n = 4) {
         ex.files = ex.files || {};
       }
     }
-    setProject(ex, { readOnly: true }); setUrl({ ex: k });
+    if (!setProject(ex, { readOnly: true })) return false;
+    setUrl({ ex: k });
+    return true;
   }
   if (window.Examples && Examples.EX && typeof Examples.EX.remote === 'function' && !Examples.EX.remote.__ui2wrap) {
     const remoteFactory = Examples.EX.remote;
@@ -148,6 +154,7 @@ async function fetchRetry(u, o, n = 4) {
   }
   window.onStorageFull = showStorageFull;
   function makeCopy(auto) {
+    if (!app.readOnly && !flushAutosave()) return null;
     syncDefines(); syncCode(); const was = app.proj.name;
     let carried = '';
     try { if (window.Schematic && Schematic.storedLayout) carried = Schematic.storedLayout(app.proj) || ''; } catch (e) { carried = ''; }
@@ -159,8 +166,8 @@ async function fetchRetry(u, o, n = 4) {
       try { Schematic.releaseDraft(app.proj); } catch (e) { delete app.proj.draftId; }
     }
     app.readOnly = false;
-    try { store.save(app.proj); }
-    catch (e) { showStorageFull(); return app.proj; }
+    clearTimeout(saveT); saveT = 0; pendingSave = null;
+    app.saveState = 'saved';
     if (carried && window.Schematic && Schematic.writeLayout) {
       try { Schematic.writeLayout(app.proj, carried); } catch (e) { /* the copy still opens on Tidy; writeLayout reports a full disk */ }
     }
@@ -168,24 +175,58 @@ async function fetchRetry(u, o, n = 4) {
     toast(auto ? `Examples are read-only — your change is in a copy: “${app.proj.name}” (My Projects)` : `Copied “${was}” to My Projects as “${app.proj.name}”`);
     return app.proj;
   }
-  function beforeEdit() { if (app.readOnly) makeCopy(true); }
-  let saveT = 0;
-  function autosave() {
-    if (app.readOnly || !app.proj) return;
-    clearTimeout(saveT);
-    saveT = setTimeout(() => {
-      try { syncCode(); store.save(app.proj); }
-      catch (e) { showStorageFull(); return; }
-      renderBanner(true);
-    }, 600);
+  function beforeEdit(e) {
+    if (app.readOnly && !makeCopy(true)) {
+      if (e && e.preventDefault) e.preventDefault();
+      return false;
+    }
+    return true;
   }
+  let saveT = 0, pendingSave = null;
+  function autosave() {
+    if (!app.proj) return;
+    pendingSave = app.proj;
+    app.saveState = 'unsaved';
+    renderBanner();
+    clearTimeout(saveT);
+    saveT = setTimeout(flushAutosave, 600);
+  }
+  function flushAutosave() {
+    clearTimeout(saveT); saveT = 0;
+    if (!pendingSave) return true;
+    const target = pendingSave;
+    if (target === app.proj) {
+      syncCode(); syncDefines();
+      if (app.readOnly && !makeCopy(true)) return false;
+    }
+    try { store.save(target); }
+    catch (e) {
+      pendingSave = target; app.saveState = 'unsaved'; renderBanner();
+      showStorageFull(); return false;
+    }
+    pendingSave = null;
+    if (target === app.proj) { app.saveState = 'saved'; renderBanner(true); }
+    return true;
+  }
+  window.addEventListener('pagehide', flushAutosave);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) flushAutosave(); });
+  window.addEventListener('beforeunload', (e) => {
+    if (!flushAutosave()) { e.preventDefault(); e.returnValue = ''; }
+  });
   function syncDefines() { if (app.proj) app.proj.defines = $('#inDefines').value.split(',').map((x) => x.trim()).filter(Boolean); }
   function openProject(id) {
+    if (!flushAutosave()) return false;
     const p = store.get(id); if (!p) { toast('Project not found', true); return false; }
-    setProject(p); setUrl({ p: id });
-    try { store.save(app.proj); }
-    catch (e) { showStorageFull(); }
+    try { if (store.current() !== id) store.save(p); }
+    catch (e) { showStorageFull(); return false; }
+    if (!setProject(p)) return false;
+    setUrl({ p: id });
     return true;
+  }
+  function importProject(raw) {
+    if (!flushAutosave()) return false;
+    const p = store.importJson(raw);
+    return openProject(p.id);
   }
   function setProjectTitle(name) {
     const el = document.getElementById && document.getElementById('projTitle');
@@ -198,23 +239,24 @@ async function fetchRetry(u, o, n = 4) {
     }
   }
   function renderBanner(saved) {
+    if (window.dispatchEvent && typeof CustomEvent === 'function') window.dispatchEvent(new CustomEvent('projectchange'));
     const b = $('#projBanner'); if (!b || !app.proj) return;
     if (app.readOnly) b.innerHTML = `<span class="pb-ex">📘 Example: <b>${P.esc(app.proj.name || '')}</b> — read-only</span><button id="bCopy" class="primary">Make a copy</button><span class="muted">editing anything makes a copy automatically</span>`;
-    else b.innerHTML = `<span class="pb-my">✎ My project: <b id="pbName" title="Click to rename">${P.esc(app.proj.name || 'Untitled')}</b></span><span class="muted">${saved ? 'saved ' + new Date().toLocaleTimeString() : 'auto-saved'}</span>`;
+    else b.innerHTML = `<span class="pb-my">✎ My project: <b id="pbName" title="Click to rename">${P.esc(app.proj.name || 'Untitled')}</b></span><span class="muted">${app.saveState === 'unsaved' ? 'Not saved' : saved ? 'saved ' + new Date().toLocaleTimeString() : 'Saved locally'}</span>`;
     setProjectTitle(app.proj.name);
     const k = $('#projKind'); if (k) { k.textContent = app.readOnly ? 'Example · read-only' : 'My project'; k.className = 'chip-tag ' + (app.readOnly ? 'ex' : 'mine'); }
     syncExampleTip(); syncDocTitle();
     const bc = $('#bCopy'); if (bc) bc.onclick = () => makeCopy(false);
-    const pn = $('#pbName'); if (pn) pn.onclick = () => { const n = prompt('Rename project', app.proj.name); if (n) { app.proj.name = n; store.rename(app.proj.id, n); renderBanner(true); } };
+    const pn = $('#pbName'); if (pn) pn.onclick = () => { const n = prompt('Rename project', app.proj.name); if (n) { app.proj.name = n; save(); } };
   }
   function save() {
+    if (!app.proj) return false;
     syncCode(); syncDefines();
-    try {
-      if (app.readOnly) { makeCopy(false); return; }
-      store.save(app.proj);
-    } catch (e) { showStorageFull(); return; }
-    renderBanner(true);
-    toast('Saved “' + app.proj.name + '” to My Projects' + (store.serverSync ? ' (+ server copy)' : ''));
+    if (app.readOnly) return !!makeCopy(false);
+    pendingSave = app.proj;
+    if (!flushAutosave()) return false;
+    toast('Saved “' + app.proj.name + '” locally in My Projects');
+    return true;
   }
   function projectsDialog() {
     let d = $('#projDlg'); if (!d) { d = document.createElement('div'); d.id = 'projDlg'; d.className = 'modal'; document.body.appendChild(d); }
@@ -231,17 +273,17 @@ async function fetchRetry(u, o, n = 4) {
       if (e.target === d) { d.hidden = true; return; }
       const b = e.target.closest('[data-a]'); if (!b) return; const id = b.closest('tr') && b.closest('tr').dataset.id; const a = b.dataset.a;
       if (a === 'close') d.hidden = true;
-      else if (a === 'new') newBlankDialog(b, (kind) => { const p = store.importJson(Examples.newBlank(kind)); openProject(p.id); d.hidden = true; });
-      else if (a === 'open') { openProject(id); d.hidden = true; }
-      else if (a === 'ren') { const n = prompt('Rename project', store.list().find((x) => x.id === id).name); if (n) { store.rename(id, n); if (app.proj.id === id) { app.proj.name = n; renderBanner(true); } projectsDialog(); } }
-      else if (a === 'dup') { store.duplicate(id); projectsDialog(); }
+      else if (a === 'new') newBlankDialog(b, (kind) => { if (importProject(Examples.newBlank(kind))) d.hidden = true; });
+      else if (a === 'open') { if (openProject(id)) d.hidden = true; }
+      else if (a === 'ren') { const n = prompt('Rename project', store.list().find((x) => x.id === id).name); if (n) { if (app.proj.id === id) { app.proj.name = n; if (!save()) return; } else { try { store.rename(id, n); } catch (er) { showStorageFull(); return; } } projectsDialog(); } }
+      else if (a === 'dup') { if (!flushAutosave()) return; store.duplicate(id); projectsDialog(); }
       else if (a === 'exp') { const t = store.exportJson(id); const bl = new Blob([t], { type: 'application/json' }); const l = document.createElement('a'); l.href = URL.createObjectURL(bl); l.download = (JSON.parse(t).name || 'project').replace(/[^\w.-]+/g, '_') + '.json'; l.click(); }
-      else if (a === 'del') { if (confirm('Delete this project? (Export it first if you want a backup)')) { store.remove(id); if (app.proj.id === id) loadExample('blink'); projectsDialog(); } }
+      else if (a === 'del') { if (confirm('Delete this project? (Export it first if you want a backup)')) { store.remove(id); if (app.proj.id === id) { clearTimeout(saveT); saveT = 0; pendingSave = null; loadExample('blink'); } projectsDialog(); } }
       else if (a === 'srv') { try { const S = await store.listServer(); $('#srvList').innerHTML = '<h4>On the server</h4>' + (S.map((x) => `<div class="row"><span style="flex:1">${P.esc(x.name)}</span><button data-a="pull" data-sid="${P.esc(x.id)}">Open</button></div>`).join('') || '<p class="muted">none</p>'); } catch (er) { toast('Server list failed', true); } }
-      else if (a === 'pull') { try { await store.pullServer(b.dataset.sid); openProject(b.dataset.sid); d.hidden = true; } catch (er) { toast(er.message, true); } }
+      else if (a === 'pull') { try { await store.pullServer(b.dataset.sid, flushAutosave); if (openProject(b.dataset.sid)) d.hidden = true; } catch (er) { toast(er.message, true); } }
     };
-    $('#cbSrv').onchange = (e) => { store.serverSync = e.target.checked; if (e.target.checked && !app.readOnly) store.save(app.proj); };
-    $('#projImp').onchange = (e) => { const f = e.target.files[0]; if (!f) return; f.text().then((t) => { try { const o = JSON.parse(t); const p = store.importJson(o.connections && o.parts && !o.wires ? importWokwi(o) : o); openProject(p.id); d.hidden = true; toast('Imported ' + f.name); } catch (er) { toast('Could not import: ' + er.message, true); } }); };
+    $('#cbSrv').onchange = (e) => { store.serverSync = e.target.checked; if (e.target.checked && !app.readOnly) save(); };
+    $('#projImp').onchange = (e) => { const f = e.target.files[0]; if (!f) return; f.text().then((t) => { try { const o = JSON.parse(t); if (!importProject(o.connections && o.parts && !o.wires ? importWokwi(o) : o)) return; d.hidden = true; toast('Imported ' + f.name); } catch (er) { toast('Could not import: ' + er.message, true); } }); };
   }
   // "+ New blank" chooser: Basic circuit (bare breadboard, no ESP32) vs ESP32 (DevKit V1, empty sketch, real firmware).
   // Cancel / ✕ / Esc / backdrop close it without touching the current project. Focus is trapped while open.
@@ -281,9 +323,9 @@ async function fetchRetry(u, o, n = 4) {
     d.hidden = false; const first = d.querySelector('.nb-opt'); if (first) first.focus();
   }
   app.newBlankDialog = newBlankDialog;
-  app.makeCopy = makeCopy; app.openProject = openProject;
+  app.makeCopy = makeCopy; app.openProject = openProject; app.flushAutosave = flushAutosave; app.importProject = importProject;
   function download() {
-    syncCode();
+    syncCode(); syncDefines();
     let mode = '';
     try { if (window.Schematic && Schematic.storedLayout) mode = Schematic.storedLayout(app.proj) || ''; } catch (e) { mode = ''; }
     const text = store.downloadJson(app.proj, mode);
@@ -291,7 +333,7 @@ async function fetchRetry(u, o, n = 4) {
   }
   function openFile(f) {
     const rd = new FileReader();
-    rd.onload = () => { try { const o = JSON.parse(rd.result); const p = store.importJson(o.connections && o.parts && !o.wires ? importWokwi(o) : o); openProject(p.id); toast('Loaded ' + f.name + ' into My Projects'); } catch (e) { toast('Could not load: ' + e.message, true); } };
+    rd.onload = () => { try { const o = JSON.parse(rd.result); if (importProject(o.connections && o.parts && !o.wires ? importWokwi(o) : o)) toast('Loaded ' + f.name + ' into My Projects'); } catch (e) { toast('Could not load: ' + e.message, true); } };
     rd.readAsText(f);
   }
   // ---------------- third-party diagram.json import (interoperability) ----------------
@@ -2043,9 +2085,9 @@ async function fetchRetry(u, o, n = 4) {
     // Resume a pending example when the user just signed in.
     if (window.GuestParts && GuestParts.signedIn && GuestParts.signedIn()) {
       let pendingEx;
-      try { pendingEx = sessionStorage.getItem('__pendingEx'); } catch (e) { /* ignore */ }
+      try { pendingEx = clStorage.session.getItem('__pendingEx'); } catch (e) { /* the URL is the backup */ }
       if (pendingEx && window.Examples && Examples.EX[pendingEx]) {
-        try { sessionStorage.removeItem('__pendingEx'); } catch (e) { /* ignore */ }
+        try { clStorage.session.removeItem('__pendingEx'); } catch (e) { /* optional resume marker */ }
         loadExample(pendingEx);
         return;
       }
@@ -2116,8 +2158,8 @@ async function fetchRetry(u, o, n = 4) {
     $('#bUndo').onclick = () => app.editor.undo(); $('#bRedo').onclick = () => app.editor.redo(); $('#bRot').onclick = () => app.editor.rotateSel(); $('#bDel').onclick = () => app.editor.deleteSel();
     $('#bSave').onclick = save; $('#bDownload').onclick = download; $('#fileIn').onchange = (e) => { if (e.target.files[0]) openFile(e.target.files[0]); e.target.value = ''; }; $('#bFit').onclick = () => { if (viewMode === '3d' && app.view3d && app.view3d.fit) app.view3d.fit(); else if (viewMode === 'schematic' && app.schematic) app.schematic.fit(); else app.editor.fit(); };
     $('#tabs').onclick = (e) => { if (!UI.dockTabClick(e)) return; const tab = UI.restoreDock(); if (tab === 'dev') { renderDevices(); drawIr(); } if (tab === 'net') { app.netlog.dirty = true; app.netlog.render(); } };
-    $('#selMode').onchange = (e) => { beforeEdit(); app.proj.mode = e.target.value; autosave(); modeNote(); renderFileTabs(); };
-    $('#fileTabs').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; syncCode(); if (b.dataset.f === '+') { const n = prompt('File name (e.g. config.h)'); if (!n || !/^[\w.-]+\.(h|hpp|c|cpp|ino)$/.test(n)) return; beforeEdit(); app.proj.files[n] = ''; autosave(); app.file = n; } else app.file = b.dataset.f; renderFileTabs(); loadCode(); };
+    $('#selMode').onchange = (e) => { if (!beforeEdit()) { e.target.value = app.proj.mode; return; } app.proj.mode = e.target.value; autosave(); modeNote(); renderFileTabs(); };
+    $('#fileTabs').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; syncCode(); if (b.dataset.f === '+') { const n = prompt('File name (e.g. config.h)'); if (!n || !/^[\w.-]+\.(h|hpp|c|cpp|ino)$/.test(n)) return; if (!beforeEdit()) return; app.proj.files[n] = ''; autosave(); app.file = n; } else app.file = b.dataset.f; renderFileTabs(); loadCode(); };
     $('#code').addEventListener('beforeinput', beforeEdit); $('#inDefines').addEventListener('beforeinput', beforeEdit);
     $('#code').addEventListener('input', () => {
       syncCode(); autosave();
@@ -2133,7 +2175,7 @@ async function fetchRetry(u, o, n = 4) {
     app.cmd = { run: startRun, stop: stopRun, restart: () => { stopRun(); startRun(); }, save, projects: projectsDialog, loadExample, makeCopy: () => makeCopy(false), toast, download, view3d: () => setViewMode('3d'), view2d: () => setViewMode('2d'), viewSch: () => setViewMode('schematic') };
     $('#cbOrtho').checked = clStorage.local.getItem('esp32lab.ortho') !== '0'; app.editor.ortho = $('#cbOrtho').checked; $('#cbOrtho').onchange = (e) => { app.editor.ortho = e.target.checked; clStorage.local.setItem('esp32lab.ortho', e.target.checked ? '1' : '0'); };
     app.editor.setHint();
-    $('#code').addEventListener('keydown', (e) => { if (e.key === 'Tab') { e.preventDefault(); const t = e.target, s = t.selectionStart; t.setRangeText('  ', s, t.selectionEnd, 'end'); syncCode(); } });
+    $('#code').addEventListener('keydown', (e) => { if (e.key === 'Tab') { e.preventDefault(); if (!beforeEdit()) return; const t = e.target, s = t.selectionStart; t.setRangeText('  ', s, t.selectionEnd, 'end'); syncCode(); autosave(); } });
     $('#serialIn').addEventListener('keydown', (e) => { if (e.key === 'Enter') { sendRun({ t: 'uart', d: e.target.value + '\n' }); serialAppend('» ' + e.target.value + '\n'); e.target.value = ''; } });
     $('#bSerialClr').onclick = serialClear; serialClear();
     $('#cbSerTs').onchange = serialRender; $('#cbFollow').onchange = serialRender;

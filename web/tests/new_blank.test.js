@@ -91,10 +91,11 @@ test('opening or replacing a project clears the selection and empties the Inspec
   // The Inspector is filled only from this hook, so select(null) is what paints it empty.
   assert.match(src, /selected:\s*\(s\)\s*=>\s*\{\s*renderInspector\(s\)/);
   assert.match(src, /function renderInspector\(sel\)[\s\S]*?if \(!sel\) \{ el\.innerHTML = '<p class="muted">Select a part or wire\.<\/p>'/);
-  // Every replace path goes through setProject (New blank and file open via openProject).
+  // File and New imports flush through importProject, then activate via openProject.
   assert.match(src, /function openProject\(id\)[\s\S]*?setProject\(p\)/);
   assert.match(src, /async function loadExample\(k[\s\S]*?setProject\(ex/);
-  assert.match(src, /function openFile\(f\)[\s\S]*?openProject\(p\.id\)/);
+  assert.match(src, /function importProject\(raw\)[\s\S]*?flushAutosave\(\)[\s\S]*?openProject\(p\.id\)/);
+  assert.match(src, /function openFile\(f\)[\s\S]*?importProject\(/);
   const neu = src.split('\n').find((l) => /a === 'new'/.test(l));
-  assert.match(neu, /openProject\(p\.id\)/);
+  assert.match(neu, /importProject\(Examples\.newBlank\(kind\)\)/);
 });

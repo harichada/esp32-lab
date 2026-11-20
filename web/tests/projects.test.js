@@ -111,3 +111,46 @@ test('an account project opens as a local copy and keeps a different local proje
   assert.strictEqual(named.name, 'Desk lamp (copy 2)');
   assert.strictEqual(s.get(local.id).name, 'Desk lamp');
 });
+
+test('account adoption preserves differences outside the main sketch', () => {
+  for (const change of [
+    { files: { 'config.h': '#define LED 4' } },
+    { defines: ['SIM'] },
+    { mode: 'js' },
+    { notes: 'Account version' },
+    { devices: [{ id: 'lamp', type: 'http' }] },
+    { scope: { div: 0.25 } },
+  ]) {
+    const s = new ProjectStore(mem(), null);
+    const local = s.copy(ex());
+    const original = s.get(local.id);
+    const incoming = { ...original, ...change };
+    const adopted = s.adoptAccount(incoming);
+    assert.notStrictEqual(adopted.id, local.id, JSON.stringify(change));
+    assert.deepStrictEqual(s.get(local.id), original);
+    for (const [key, value] of Object.entries(change)) assert.deepStrictEqual(adopted[key], value);
+  }
+});
+
+test('account adoption ignores object key order and local provenance, not durable content', () => {
+  const s = new ProjectStore(mem(), null);
+  const local = s.copy(ex());
+  local.files = { 'config.h': 'settings', 'helpers.h': 'helpers' };
+  local.mode = 'qemu';
+  local.defines = [];
+  s.save(local);
+  const incoming = {
+    id: local.id, wires: [], parts: local.parts, code: local.code, name: local.name,
+    files: { 'helpers.h': 'helpers', 'config.h': 'settings' },
+  };
+  assert.strictEqual(s.adoptAccount(incoming).id, local.id);
+  assert.strictEqual(s.list().length, 1);
+});
+
+test('a server download does not overwrite local data when the outgoing save fails', async () => {
+  const s = new ProjectStore(mem(), async () => ({ ok: true, json: async () => ({ ...ex(), code: 'server version' }) }));
+  const local = s.copy(ex());
+  const before = s.get(local.id);
+  await assert.rejects(s.pullServer(local.id, () => false), /Current project is not saved/);
+  assert.deepStrictEqual(s.get(local.id), before);
+});

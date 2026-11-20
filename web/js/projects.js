@@ -172,7 +172,17 @@ function notifyStorageFull(root, err) {
       delete incoming.example; delete incoming.readOnly; delete incoming.draftId; delete incoming.schLayout;
       const id = typeof incoming.id === 'string' ? incoming.id : '';
       const local = id ? this.get(id) : null;
-      const shape = (p) => JSON.stringify({ name: p.name || '', code: p.code || '', parts: p.parts, wires: p.wires || [] });
+      const ordered = (value) => {
+        if (Array.isArray(value)) return value.map(ordered);
+        if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map((key) => [key, ordered(value[key])]));
+        return value;
+      };
+      const shape = (p) => {
+        const body = clone(p);
+        for (const key of ['id', 'example', 'readOnly', 'draftId', 'schLayout', 'copiedFrom']) delete body[key];
+        Object.assign(body, { name: p.name || '', code: p.code || '', wires: p.wires || [], files: p.files || {}, defines: p.defines || [], mode: p.mode || 'qemu' });
+        return JSON.stringify(ordered(body));
+      };
       if (local && shape(local) === shape(incoming)) return local;
       const names = new Set(this.list().map((e) => e.name));
       let n = incoming.name || 'Untitled';
@@ -198,7 +208,7 @@ function notifyStorageFull(root, err) {
     set serverSync(v) { this.ls.setItem(SRV, v ? '1' : '0'); }
     async pushServer(p) { if (!this.fetch) return false; const r = await this._ask('api/projects/' + encodeURIComponent(p.id), { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(p) }); return r.ok; }
     async listServer() { const r = await this._ask('api/projects'); return r.ok ? r.json() : []; }
-    async pullServer(id) { const r = await this._ask('api/projects/' + encodeURIComponent(id)); if (!r.ok) throw new Error('server: ' + r.status); const p = await r.json(); p.id = id; const all = this._all(); all[id] = { id, name: p.name || id, updated: Date.now(), from: p.copiedFrom || '', proj: p }; this._put(all); return p; }
+    async pullServer(id, beforeSave) { const r = await this._ask('api/projects/' + encodeURIComponent(id)); if (!r.ok) throw new Error('server: ' + r.status); const p = await r.json(); if (beforeSave && !beforeSave()) throw new Error('Current project is not saved. Export it or free browser storage before opening another project.'); p.id = id; const all = this._all(); all[id] = { id, name: p.name || id, updated: Date.now(), from: p.copiedFrom || '', proj: p }; this._put(all); return p; }
   }
   const api = { ProjectStore, newId };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

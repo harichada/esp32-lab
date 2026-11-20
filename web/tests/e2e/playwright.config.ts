@@ -15,14 +15,14 @@ export default defineConfig({
   reporter: [['list']],
   use: {
     baseURL: 'http://127.0.0.1:4173',
-    channel: 'chrome',
+    channel: process.env.PLAYWRIGHT_BROWSER_CHANNEL || (process.env.CI ? 'chromium' : 'chrome'),
     headless: true,
     screenshot: 'off',
     trace: 'off',
     video: 'off',
   },
   webServer: {
-    command: 'python3 -m http.server 4173 --bind 127.0.0.1',
+    command: `${process.env.PLAYWRIGHT_PYTHON || 'python3'} -m http.server 4173 --bind 127.0.0.1`,
     cwd: web,
     url: 'http://127.0.0.1:4173/',
     reuseExistingServer: false,

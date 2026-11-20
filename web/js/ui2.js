@@ -34,6 +34,7 @@
     tameSymbols();
     const obs = new MutationObserver(syncChrome);
     obs.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+    window.addEventListener('projectchange', syncId);
     document.body.classList.remove('c-dock');
     if (app().proj) ed().fit();
     syncChrome();
@@ -121,7 +122,7 @@
     if (!name) return;
     if (!p) { paintName(name, 'No project'); if (save) save.textContent = ''; syncCopy(); return; }
     paintName(name, p.name || 'Untitled');
-    if (save) save.textContent = app().readOnly ? 'Example' : (p.id ? 'Saved' : 'Not saved');
+    if (save) save.textContent = app().saveState === 'unsaved' ? 'Not saved' : app().readOnly ? 'Example' : 'Saved locally';
     syncCopy();
   }
   function paintName(el, full) {
@@ -165,7 +166,7 @@
     if (!n || !String(n).trim()) return;
     p.name = String(n).trim();
     const t = document.getElementById('projTitle'); if (t) t.textContent = p.name;
-    if (p.id && app().store) { try { app().store.save(p); } catch (e) { /* the name stays on the project */ } }
+    app().cmd.save();
     syncId();
   }
   function setView(mode) {
@@ -181,8 +182,7 @@
     if (!window.Examples) return;
     app().newBlankDialog(opener, (kind) => {
       const raw = window.Examples.newBlank(kind);
-      const p = app().store.importJson(raw);
-      app().openProject(p.id);
+      if (!app().importProject(raw)) return;
       window.__ui2NeedStart = false;
       syncId();
     });
@@ -829,8 +829,7 @@
       if (go === 'blink') { app().cmd.loadExample('blink'); syncId(); return; }
       const raw = window.Examples.newBlank('esp32');
       if (go === 'guide') { raw.code = window.Examples.BLINK; raw.name = 'Blink'; }
-      const p = app().store.importJson(raw);
-      app().openProject(p.id);
+      if (!app().importProject(raw)) return;
       syncId();
       if (go === 'guide') { coach = true; showCoach(); scoreCoach(); }
     };
@@ -936,7 +935,8 @@
       const b = e.target.closest('[data-ex]'); if (!b) return;
       const key = b.dataset.ex;
       if (window.GuestParts && GuestParts.exampleLocked(key)) {
-        try { sessionStorage.setItem('__pendingEx', key); } catch (e) { /* private mode */ }
+        if (!app().flushAutosave()) return;
+        try { clStorage.session.setItem('__pendingEx', key); } catch (e) { /* sign-in still opens without the resume marker */ }
         try {
           const u = new URL(location.href);
           u.searchParams.delete('ex'); u.searchParams.delete('p'); u.searchParams.delete('t');
