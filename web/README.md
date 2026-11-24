@@ -224,21 +224,60 @@ Rollback: recreate `esp32lab` from the saved inspect without `SIM_STAGING_UPSTRE
 
 ## Sign-in
 
-Off unless `AUTH_ENABLED=1`. With the flag unset, `/auth` and `/auth/*` are the same 404 as any other unknown path, including POST, and the page does not request `/auth/session`. Google and GitHub each need their own flag and both client values. `AUTH_GOOGLE=0` removes the Google button. Live keeps `AUTH_GOOGLE=0` until the Google consent screen is published.
+Off unless `AUTH_ENABLED=1`. With the flag unset, `/auth` and `/auth/*` are the same 404 as any other unknown path, including POST, and the page does not request `/auth/session`. Google and GitHub each need their own flag and both client values. `AUTH_GOOGLE=0` removes the Google button; enable it only after the Google consent screen is ready for the intended audience. Email-code sign-in is separately opt-in, as described below.
 
 The callback is `AUTH_BASE_URL` plus `/auth/google/callback` or `/auth/github/callback`. The Host header is not an input. Google's scope is `openid email profile`. GitHub's scope is `read:user user:email`. The session cookie is `cl_session`: HttpOnly, SameSite=Lax, no Domain. It is marked Secure on a direct https connection, or when the TCP peer is in `TRUSTED_PROXY_IPS` and sends `X-Forwarded-Proto: https`. A spoofed proto from any other peer is ignored. Sign-out is `POST /auth/logout` with the CSRF token. An `Origin` or `Referer` from another site is rejected even when the token is present.
 
 Account data is `<SIM_PROJECT_DIR>/accounts/auth.sqlite` (directory `0700`, database and SQLite sidecars `0600`). `TRUSTED_PROXY_IPS` is a comma-separated list of exact IPs, with no ranges or wildcards. Empty trusts nobody. Production uses `172.30.0.250`. `X-Forwarded-For` changes the sign-in rate-limit address only when the direct peer is in that list, and the address used is the rightmost one that is not itself a trusted proxy.
 
-After sign-in, if this device has N guest projects, the page asks "Save your N projects to your account?". Save uploads them. Not now, and Escape, leave them on the device. Not now is focused.
+The first successful sign-in creates an account; returning with the same provider identity reopens it. Google, GitHub, and email identities are **separate accounts**, even when their email address matches. They are never automatically linked.
 
-`GET /auth/projects` lists that account's projects (name and last saved). `GET /auth/projects/<id>` returns one of them. Both are 401 when signed out, and neither returns another user's project. Opening one in My Projects saves a local copy and does not replace a different local project. At 390, More shows Sign in (or the signed-in name and Sign out) first, with no Account section. A sign-out cancelled by navigation is ignored. A 429 from the sign-in rate limit logs one line, `auth rate_limit status=429 client=<prefix> source=peer|forwarded`, with IPv4 cut to /24 and IPv6 cut to /48. `TRUSTED_PROXY_IPS` logs one warning at startup when a value is not an exact IP, and that warning does not include the value.
+After sign-in, if this device has N local projects, the page asks "Save your N projects to your account?". **Not now** is focused. Saving requires an explicit choice and keeps the prompt open on failures, with progress and **Try again**. Requests are split at the server's count and byte limits; retries are idempotent. Canceling stops further requests, but an already submitted request may finish. Originals always stay on the device.
+
+**Save current project to account** remains available later in My Projects and the workbench account/More menu, including after choosing Not now. It saves the latest local edits as an account snapshot and shows the server save time. Further edits and the ordinary Save action remain local until another explicit account save; this is **not continuous cloud sync**. Changed snapshots preserve earlier account versions. The older **server copy** checkbox uses the separate, token-gated `/api/projects` storage and is not account saving.
+
+`GET /auth/projects` lists that account's snapshots (name and last saved). `GET /auth/projects/<id>` returns one of them. Both are 401 when signed out, and neither returns another user's project. Opening one in My Projects saves a local copy and does not replace a different local project. `POST /auth/projects/import` returns `imported`, `unchanged`, `rejected` (id, name, reason), and `last_saved`. A partial save is HTTP 207; all-rejected input is 422. Limits are 40 projects and 1,000,000 request bytes per batch, 100,000 stored JSON bytes per project, and 500 snapshots per account. Invalid, oversized, full-account, and identifier-conflict cases are reported rather than silently skipped. A larger project can still be kept locally and exported as JSON.
+
+The workbench displays the current account and provider, places account actions first on phones, and restores focus to the actual sign-in trigger after dismissing the dialog. A failed `/auth/session` keeps a visible sign-in/retry entry without blocking guest work. A sign-out cancelled by navigation is ignored. A 429 from the sign-in rate limit logs one line, `auth rate_limit status=429 client=<prefix> source=peer|forwarded`, with IPv4 cut to /24 and IPv6 cut to /48. `TRUSTED_PROXY_IPS` logs one warning at startup when a value is not an exact IP, and that warning does not include the value.
 
 Rollback: set `AUTH_ENABLED=0` and restart. The database file stays on the projects volume and is not read.
 
 `GUEST_PARTS_LIMIT` defaults on when `AUTH_ENABLED=1` and off otherwise. `0`, `false`, `no`, or `off` turns the limit off while sign-in stays on. A signed-out visitor may place and run only the starter parts: `esp32`, `breadboard`, `led`, `resistor`, `pushbutton`, `potentiometer`, `buzzer`, plus the schematic symbols `ground`, `vcc33` (3.3 V), `vcc5` (5 V), and `label` (a net label). Those four are not real components, so Pot, Fade, and Pot (JS) stay open. `GUEST_PARTS` is an optional comma list that replaces that set. Locked parts and locked examples show "Sign in free to use this part" and open the sign-in window. A saved project that already uses other parts still opens, and its saved data is not rewritten, but Run is refused until the visitor signs in. `POST /api/compile` allows a body that does not name parts (a code-only compile). A named circuit with a locked part is HTTP 403 `{"ok":false,"error":"guest_parts",...}`. `GET` is not used. The run socket requires `?parts=` for a guest and sends the same error when the list is missing or locked. Signed-in sessions are not limited. With `AUTH_ENABLED=0` the page is unchanged and every part is open.
 
 Sign-in links, the "Try again" link on a provider error, and the callback redirect stay under `AUTH_BASE_URL`'s path. On staging that is `/staging/auth/...`, not `/auth/...` on the live site. The page reads `<meta name="cl-auth-base">` for the same prefix.
+
+### Email signup and login
+
+Email uses a **six-digit, one-time code**, not a password. Requesting a code does not create an account; successful verification does. Existing Google/GitHub behavior is unchanged.
+
+Configure these values through the server environment or its protected OAuth env file. Do not commit credentials or paste them into chat.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `AUTH_EMAIL` | `0` | Set to `1` to enable email when delivery is configured. Requires `AUTH_ENABLED=1` and a valid `AUTH_BASE_URL`. |
+| `AUTH_SMTP_HOST` | empty | SMTP hostname, without a URL scheme. |
+| `AUTH_SMTP_SECURITY` | `starttls` | `starttls` or `ssl`; plaintext SMTP is not supported. TLS certificates and hostnames are verified. |
+| `AUTH_SMTP_PORT` | `587` (`465` for `ssl`) | SMTP submission port. |
+| `AUTH_SMTP_FROM` | empty | Verified sender mailbox accepted by your mail provider. |
+| `AUTH_SMTP_USER`, `AUTH_SMTP_PASSWORD` | empty | Set both for authenticated submission. Leaving both empty is only for a TLS relay you control. |
+
+With missing/invalid delivery configuration, email is not offered and its endpoints return 404. There is no debug-code response, production mailbox, or insecure-delivery fallback. Configure the sender domain and permitted outbound SMTP access, then verify actual delivery before enabling the feature for users.
+
+`POST /auth/email/start` accepts JSON `{email, next}` and returns a browser-bound `challenge`, pre-login `csrf`, `expires_in`, and `resend_after`. The code is emailed only; the database stores a code HMAC and challenge hash, not either raw value. This tab retains the challenge metadata in session storage so the code form can survive a reload; it never stores the entered six-digit code. `POST /auth/email/verify` accepts `{challenge, csrf, code}` plus `X-CSRF-Token` and the same session cookie. Both endpoints require same-origin Origin/Referer, JSON bodies, and the existing authentication rate limit.
+
+Codes expire after 10 minutes, can be used once, and allow five incorrect attempts. Resending invalidates the previous code, requires a 60-second cooldown, and is limited to five deliveries per address and thirty per client IP per hour. SMTP failures are explicit and revoke the pending code. Verification and session rotation are atomic. Logout clears the authenticated session. No passwords, mail credentials, or sign-in codes are logged.
+
+Focused backend coverage can run without starting QEMU or the emulator server:
+
+```
+python -m unittest discover -s web/tests -p auth_email_test.py
+npx playwright test --config web/tests/e2e/playwright.config.ts auth-workbench.spec.ts auth-off.spec.ts
+npx playwright test --config web/tests/auth_e2e/playwright.email.config.ts
+```
+
+Install `web/tests/requirements.txt` in the test Python environment. Set `PLAYWRIGHT_PYTHON` to that environment's Python executable when it is not `python3`. The final browser command starts a loopback-only auth app with a fake `example.test` mailbox and exercises the real code-verification, cookie, snapshot, ownership, and logout endpoints.
+
+The backend tests use an in-process auth ASGI app, fake mail delivery, and loopback Google/GitHub provider stand-ins. None of these tests prove production SMTP delivery or complete a real provider consent flow.
 
 ## Tests
 - `node --test tests/*.test.js`: solver, JS-sketch runner, remote logic and the network log.

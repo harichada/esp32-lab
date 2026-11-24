@@ -64,7 +64,7 @@ test('Google sign-in at 1280 keeps the project and view and saves local projects
   await expect(dialog.getByRole('button', { name: 'Not now' })).toBeFocused();
   expect(imports).toEqual([]);
   await dialog.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(page.getByText('3 projects saved to your account')).toBeVisible();
+  await expect(page.locator('.toast').filter({ hasText: '3 projects saved to your account' })).toBeVisible();
   expect(imports).toEqual(['POST']);
   await expect(page.locator('#authName')).toHaveText('Ada Lovelace');
   await expect(page.locator('body')).toHaveClass(/viewsch/);
@@ -182,7 +182,7 @@ test('cancel shows the exact sentence and leaves the project', async ({ page }) 
   await setMode(page, 'cancel');
   await page.goto(origin + '/?p=lamp1');
   await signIn(page, 'Google', 1280);
-  await expect(page.getByText(CANCELLED)).toBeVisible();
+  await expect(page.locator('.toast').filter({ hasText: CANCELLED })).toBeVisible();
   expect(page.url()).toContain('p=lamp1');
   const kept = await page.evaluate(() => localStorage.getItem('esp32lab.projects.v1'));
   expect(kept).toContain('Desk lamp');

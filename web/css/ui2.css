@@ -66,6 +66,8 @@ html[data-ui="2"] .ui2-views{display:inline-flex;padding:3px;gap:2px;background:
 html[data-ui="2"] .ui2-views button{height:28px;border:0;background:transparent;color:var(--txt2);border-radius:7px;padding:0 12px;font-size:13px}
 html[data-ui="2"] .ui2-views button[aria-checked="true"]{background:var(--l1);color:var(--txt);box-shadow:0 0 0 1px var(--line2)}
 html[data-ui="2"] .ui2-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px;min-width:0}
+html[data-ui="2"] #ui2Sign{display:block;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+html[data-ui="2"] #ui2Sign[hidden]{display:none}
 html[data-ui="2"] #ui2Menu{display:none}
 html[data-ui="2"] #ui2Run{min-width:84px;justify-content:center}
 html[data-ui="2"] button.primary{
@@ -297,6 +299,10 @@ html[data-ui="2"] .ui2-pop{
 }
 html[data-ui="2"] .ui2-pop button{width:100%;justify-content:flex-start;height:36px;background:transparent;border-color:transparent}
 html[data-ui="2"] .ui2-pop button:hover{background:var(--l3)}
+html[data-ui="2"] .ui2-account-summary{grid-column:1/-1;padding:6px 10px 10px;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
+html[data-ui="2"] .ui2-account-summary strong,html[data-ui="2"] .ui2-account-summary span{display:block}
+html[data-ui="2"] .ui2-account-summary strong{font-size:13px;font-weight:600}
+html[data-ui="2"] .ui2-account-summary span{margin-top:4px;font-size:12px;color:var(--txt2)}
 html[data-ui="2"] .modal{animation:none;overflow:auto;align-items:flex-start;box-sizing:border-box;max-height:100dvh}
 html[data-ui="2"] #ui2Start.modal{
   padding:0;align-items:flex-start;justify-content:center;overflow:hidden;box-sizing:border-box;

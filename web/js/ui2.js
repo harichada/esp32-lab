@@ -106,15 +106,27 @@
     $('#ui2New').onclick = () => { if (window.__ui2NeedStart && !app().proj) { showStart(); return; } newChooser($('#ui2New')); };
     $('#ui2Examples').onclick = () => showExamples();
     $('#ui2More').onclick = () => openMenu($('#ui2More'));
-    $('#ui2Sign').onclick = () => { const b = document.getElementById('bSignIn') || document.getElementById('mSignIn'); if (b) b.click(); };
+    $('#ui2Sign').onclick = () => {
+      const state = window.clAuth && clAuth.getState && clAuth.getState();
+      if (state && state.signed_in) openMenu($('#ui2Sign'));
+      else if (window.clAuth) clAuth.openWindow({ opener: $('#ui2Sign') });
+    };
+    window.addEventListener('authchange', syncSign);
     new MutationObserver(syncSign).observe(document.body, { childList: true, subtree: true });
     syncSign();
   }
 
   function syncSign() {
-    const src = document.getElementById('bSignIn') || document.getElementById('mSignIn');
     const btn = $('#ui2Sign'); if (!btn) return;
-    btn.hidden = !src;
+    const state = window.clAuth && clAuth.getState && clAuth.getState();
+    const visible = state && state.enabled && (state.signed_in || state.available || state.status === 'error' || state.status === 'loading');
+    btn.hidden = !visible;
+    if (!visible) return;
+    const label = state.signed_in ? state.display_name || 'Account' : state.status === 'error' ? 'Sign in (retry)' : 'Sign in';
+    if (btn.textContent !== label) btn.textContent = label;
+    btn.title = state.signed_in ? 'Account: ' + state.display_name + ' (' + state.provider + ')' : label;
+    btn.setAttribute('aria-label', state.signed_in ? btn.title : label);
+    btn.setAttribute('aria-haspopup', state.signed_in ? 'menu' : 'dialog');
   }
   function syncChrome() {
     const run = $('#ui2Run'), onRun = document.body.classList.contains('running');
@@ -782,24 +794,32 @@
       pop.style.top = next + 'px';
     } else if (top < margin) pop.style.top = (frame.top + margin) + 'px';
   }
-  function closePop() { const p = $('#ui2Pop'); if (p) p.remove(); const m = $('#ui2More'); if (m) m.setAttribute('aria-expanded', 'false'); const phone = document.querySelector('#ui2Phone [data-a="more"]'); if (phone) phone.setAttribute('aria-expanded', 'false'); }
+  function closePop() { const p = $('#ui2Pop'); if (p) p.remove(); const m = $('#ui2More'); if (m) m.setAttribute('aria-expanded', 'false'); const account = $('#ui2Sign'); if (account) account.setAttribute('aria-expanded', 'false'); const phone = document.querySelector('#ui2Phone [data-a="more"]'); if (phone) phone.setAttribute('aria-expanded', 'false'); }
   function openMenu(anchor) {
     closePop();
     const pop = document.createElement('div');
     pop.id = 'ui2Pop'; pop.className = 'ui2-pop'; pop.setAttribute('role', 'menu'); pop.tabIndex = 0;
     const phone = document.body.classList.contains('m');
     if (phone) pop.classList.add('ui2-pop-sheet');
-    const items = [
+    let items = [
       ['Projects', 'bProjects'], ['Examples', 'ui2Examples'], ['Save', 'bSave'], ['Download', 'bDownload'], ['Import', 'fileIn'],
       ['Breadboard view', 'view:2d'], ['Schematic view', 'view:schematic'], ['3D view', 'view:3d'],
       ['Command palette', 'bCmdk'], ['Keyboard shortcuts', 'bKeys'], ['Theme', 'bTheme'],
       ['Getting started', 'guide'], ['Restart', 'bRestart'], ['Reset', 'bReset'], ['About', 'about'],
     ];
-    const signOut = document.getElementById('bSignOut') || document.getElementById('mSignOut');
-    const signIn  = document.getElementById('bSignIn')  || document.getElementById('mSignIn');
-    if (signOut) items.push(['Sign out', 'bSignOut']);
-    else if (signIn) items.push(['Sign in', 'bSignIn']);
+    const auth = window.clAuth && clAuth.getState && clAuth.getState();
+    if (auth && auth.enabled && auth.signed_in) items = [['Save current project to account', 'account-save'], ['Sign out', 'bSignOut'], ...items];
+    else if (auth && auth.enabled && (auth.available || auth.status === 'error' || auth.status === 'loading')) {
+      items = [[auth.status === 'error' ? 'Sign in (retry)' : 'Sign in', 'bSignIn'], ...items];
+    }
     pop.innerHTML = items.map(([label, id]) => `<button type="button" role="menuitem" data-go="${id}">${label}</button>`).join('');
+    if (auth && auth.signed_in) {
+      const summary = document.createElement('div'); summary.className = 'ui2-account-summary'; summary.setAttribute('role', 'none');
+      const name = document.createElement('strong'); name.textContent = auth.display_name || 'Your account';
+      const method = document.createElement('span');
+      method.textContent = 'Signed in with ' + ({ google: 'Google', github: 'GitHub', email: 'email' }[auth.provider] || auth.provider);
+      summary.append(name, method); pop.prepend(summary);
+    }
     document.body.appendChild(pop);
     if (!phone) {
       const frame = visualFrame();
@@ -818,7 +838,10 @@
       const b = e.target.closest('[data-go]'); if (!b) return;
       const go = b.dataset.go;
       closePop();
-      if (go === 'guide') showStart();
+      if (go === 'bSignIn' && window.clAuth) clAuth.openWindow({ opener: anchor });
+      else if (go === 'bSignOut' && window.clAuth) clAuth.signOut(anchor);
+      else if (go === 'account-save' && window.clAuth) clAuth.saveCurrentProject();
+      else if (go === 'guide') showStart();
       else if (go.indexOf('view:') === 0) setView(go.slice(5));
       else if (go === 'about') { syncFirm(); openDock('about'); if (document.body.classList.contains('m') && window.Mobile) Mobile.openDock('about'); }
       else {

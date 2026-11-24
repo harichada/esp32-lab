@@ -1,4 +1,4 @@
-"""Google and GitHub sign-in. Off unless AUTH_ENABLED=1.
+"""Google, GitHub, and optional email-code sign-in. Off unless AUTH_ENABLED=1.
 
 The site with the flag unset is the same site as before: this middleware
 does not register routes, does not set a cookie, and does not add a header.
@@ -28,7 +28,8 @@ Secrets are read from the environment, including an --env-file. They are not
 logged and not copied into a response. RS256 is checked with hashlib and
 modular exponentiation, so this module adds no package.
 """
-import base64, hashlib, hmac, json, os, re, secrets, sqlite3, stat, threading, time, urllib.error, urllib.parse, urllib.request
+import base64, hashlib, hmac, json, os, re, secrets, smtplib, sqlite3, ssl, stat, threading, time, urllib.error, urllib.parse, urllib.request
+from email.message import EmailMessage
 from pathlib import Path
 
 import https
@@ -46,6 +47,12 @@ IMPORT_BATCH = 40
 PROJECT_MAX = 500
 CODE_MAX = 512
 NEXT_MAX = 512
+EMAIL_CODE_S = 600
+EMAIL_RESEND_S = 60
+EMAIL_ATTEMPTS = 5
+EMAIL_RATE_S = 3600
+EMAIL_ADDRESS_MAX = 5
+EMAIL_IP_MAX = 30
 GOOGLE_ISS = 'https://accounts.google.com'
 GOOGLE_SCOPE = 'openid email profile'
 GITHUB_SCOPE = 'read:user user:email'
@@ -54,7 +61,8 @@ _ENV_KEYS = frozenset({
     'AUTH_ENABLED', 'AUTH_GOOGLE', 'AUTH_GITHUB', 'AUTH_BASE_URL', 'AUTH_SESSION_DAYS',
     'AUTH_RATE_MAX', 'AUTH_RATE_WINDOW_S', 'AUTH_HTTP_TIMEOUT_S', 'AUTH_DB', 'AUTH_TEST_IDP',
     'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GITHUB_CLIENT_ID', 'GITHUB_CLIENT_SECRET',
-    'SIM_PROJECT_DIR',
+    'SIM_PROJECT_DIR', 'AUTH_EMAIL', 'AUTH_SMTP_HOST', 'AUTH_SMTP_PORT',
+    'AUTH_SMTP_USER', 'AUTH_SMTP_PASSWORD', 'AUTH_SMTP_FROM', 'AUTH_SMTP_SECURITY',
 })
 _CODE_RE = re.compile(r'[A-Za-z0-9._~/-]{1,%d}' % CODE_MAX)
 _STATE_RE = re.compile(r'[A-Za-z0-9_-]{32,128}')
@@ -64,6 +72,13 @@ _EMAIL_RE = re.compile(r'^[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,190}$')
 ENABLED = False
 GOOGLE = False
 GITHUB = False
+EMAIL = False
+SMTP_HOST = ''
+SMTP_PORT = 587
+SMTP_USER = ''
+SMTP_PASSWORD = ''
+SMTP_FROM = ''
+SMTP_SECURITY = 'starttls'
 BASE = ''
 SESSION_S = DEFAULT_SESSION_DAYS * 86400
 RATE_MAX = DEFAULT_RATE_MAX
@@ -241,6 +256,7 @@ def apply_env(env=None):
     """Read flags and secrets. A dict from a test replaces the process environment."""
     global ENABLED, GOOGLE, GITHUB, BASE, SESSION_S, RATE_MAX, RATE_WINDOW, TIMEOUT
     global DB_PATH, PROJECTS_DIR, TEST_IDP, GOOGLE_ID, GOOGLE_SECRET, GITHUB_ID, GITHUB_SECRET
+    global EMAIL, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM, SMTP_SECURITY
     env = os.environ if env is None else env
     ENABLED = _flag(env, 'AUTH_ENABLED')
     GOOGLE = _flag(env, 'AUTH_GOOGLE')
@@ -258,6 +274,18 @@ def apply_env(env=None):
     GOOGLE_SECRET = str(env.get('GOOGLE_CLIENT_SECRET', '') or '').strip()
     GITHUB_ID = str(env.get('GITHUB_CLIENT_ID', '') or '').strip()
     GITHUB_SECRET = str(env.get('GITHUB_CLIENT_SECRET', '') or '').strip()
+    EMAIL = _flag(env, 'AUTH_EMAIL')
+    SMTP_HOST = str(env.get('AUTH_SMTP_HOST', '') or '').strip()
+    if not re.fullmatch(r'[A-Za-z0-9.:-]{1,253}', SMTP_HOST):
+        SMTP_HOST = ''
+    SMTP_SECURITY = str(env.get('AUTH_SMTP_SECURITY', 'starttls') or '').strip().lower()
+    SMTP_PORT = _int_env(env, 'AUTH_SMTP_PORT', 465 if SMTP_SECURITY == 'ssl' else 587, 1, 65535)
+    SMTP_USER = str(env.get('AUTH_SMTP_USER', '') or '').strip()
+    SMTP_PASSWORD = str(env.get('AUTH_SMTP_PASSWORD', '') or '')
+    SMTP_FROM = _clean_email(env.get('AUTH_SMTP_FROM'))
+    if EMAIL and not (SMTP_HOST and SMTP_FROM and SMTP_SECURITY in ('ssl', 'starttls')
+                      and bool(SMTP_USER) == bool(SMTP_PASSWORD)):
+        _log('auth email delivery is not configured; email sign-in is unavailable')
     TEST_IDP = _test_idp(env, BASE) if ENABLED else ''
     PROJECTS_DIR = str(projects_dir(env))
     DB_PATH = account_db_path(env)
@@ -309,7 +337,17 @@ def provider_on(name):
         return GOOGLE and bool(GOOGLE_ID) and bool(GOOGLE_SECRET)
     if name == 'github':
         return GITHUB and bool(GITHUB_ID) and bool(GITHUB_SECRET)
+    if name == 'email':
+        return bool(EMAIL and SMTP_HOST and SMTP_FROM and SMTP_SECURITY in ('ssl', 'starttls')
+                    and bool(SMTP_USER) == bool(SMTP_PASSWORD))
     return False
+
+
+def _providers():
+    result = {'google': provider_on('google'), 'github': provider_on('github')}
+    if EMAIL:
+        result['email'] = provider_on('email')
+    return result
 
 
 def redirect_uri(provider):
@@ -760,6 +798,15 @@ def _open_db():
         'user_id INTEGER NOT NULL, local_id TEXT NOT NULL, body_hash TEXT NOT NULL, '
         'project_id TEXT NOT NULL, PRIMARY KEY (user_id, local_id, body_hash))'
     )
+    conn.execute(
+        'CREATE TABLE IF NOT EXISTS email_codes ('
+        'token_hash TEXT PRIMARY KEY, session_id TEXT NOT NULL, email TEXT NOT NULL, '
+        'code_hash TEXT NOT NULL, next TEXT NOT NULL, expires INTEGER NOT NULL, attempts INTEGER NOT NULL)'
+    )
+    conn.execute(
+        'CREATE TABLE IF NOT EXISTS email_limits ('
+        'key TEXT PRIMARY KEY, started INTEGER NOT NULL, last_sent INTEGER NOT NULL, count INTEGER NOT NULL)'
+    )
     _secure_account_files(path)
     _db = conn
     return conn
@@ -767,13 +814,13 @@ def _open_db():
 
 def _db_call(fn):
     with _db_lock:
-        conn = _open_db()
-        if conn is None:
-            _log('auth store unavailable')
-            return None
         try:
+            conn = _open_db()
+            if conn is None:
+                _log('auth store unavailable')
+                return None
             return fn(conn)
-        except sqlite3.Error:
+        except (sqlite3.Error, OSError):
             _log('auth store unavailable')
             return None
 
@@ -820,7 +867,8 @@ def session_view(sid):
             'display_name': user['display_name'] if user else '',
             'provider': user['provider'] if user else '',
             'csrf': row['csrf'] if row else '',
-            'providers': {'google': provider_on('google'), 'github': provider_on('github')},
+            'providers': _providers(),
+            'limits': {'import_batch': IMPORT_BATCH, 'import_bytes': IMPORT_CAP, 'project_bytes': PROJECT_CAP},
             'auth_origin': BASE,
             'https_origin': '',
         }
@@ -828,8 +876,9 @@ def session_view(sid):
     if found is None:
         return {
             'signed_in': False, 'display_name': '', 'provider': '', 'csrf': '',
-            'providers': {'google': False, 'github': False},
-            'auth_origin': BASE, 'https_origin': '',
+            'providers': {provider: False for provider in _providers()},
+            'auth_origin': BASE, 'https_origin': '', 'unavailable': True,
+            'message': 'The account service is unavailable. Try again.',
         }
     return found
 
@@ -852,6 +901,7 @@ def begin_login(provider, nxt, sid):
             conn.execute('UPDATE sessions SET pending = ?, expires = ? WHERE id = ?', (pending, now + PENDING_S, new_sid))
             return new_sid, life
         life = max(60, int(row['expires']) - now)
+        conn.execute('DELETE FROM email_codes WHERE session_id = ?', (row['id'],))
         conn.execute('UPDATE sessions SET pending = ? WHERE id = ?', (pending, row['id']))
         return row['id'], life
 
@@ -904,30 +954,148 @@ def consume_pending(sid, state):
     return _db_call(run)
 
 
+def _finish_login_row(conn, old_sid, ident):
+    now = int(time.time())
+    row = conn.execute(
+        'SELECT id FROM users WHERE provider = ? AND provider_user_id = ?',
+        (ident['provider'], ident['provider_user_id']),
+    ).fetchone()
+    if row is None:
+        cur = conn.execute(
+            'INSERT INTO users (provider, provider_user_id, email, display_name, created) VALUES (?,?,?,?,?)',
+            (ident['provider'], ident['provider_user_id'], ident['email'], ident['display_name'], now),
+        )
+        user_id = cur.lastrowid
+    else:
+        user_id = row['id']
+        conn.execute(
+            'UPDATE users SET email = ?, display_name = ? WHERE id = ?',
+            (ident['email'], ident['display_name'], user_id),
+        )
+    sid, csrf, life = _new_session(conn, user_id, SESSION_S)
+    if old_sid:
+        conn.execute('DELETE FROM sessions WHERE id = ?', (old_sid,))
+        conn.execute('DELETE FROM email_codes WHERE session_id = ?', (old_sid,))
+    return sid, life
+
+
 def finish_login(old_sid, ident):
     """Upsert the account and rotate the session id. The old id stops working."""
     def run(conn):
+        with conn:
+            conn.execute('BEGIN IMMEDIATE')
+            return _finish_login_row(conn, old_sid, ident)
+    return _db_call(run)
+
+
+def _send_email_code(address, code):
+    message = EmailMessage()
+    message['From'] = SMTP_FROM
+    message['To'] = address
+    message['Subject'] = 'Your ESP32 Circuit Lab sign-in code'
+    message.set_content(
+        'Your ESP32 Circuit Lab sign-in code is: %s\n\n'
+        'It expires in 10 minutes and can be used once in the browser that requested it.\n'
+        'Enter it at %s. Never share this code.\n'
+        'If you did not request it, you can ignore this message.\n' % (code, BASE)
+    )
+    context = ssl.create_default_context()
+    if SMTP_SECURITY == 'ssl':
+        transport = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=TIMEOUT, context=context)
+    else:
+        transport = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=TIMEOUT)
+    with transport as smtp:
+        if SMTP_SECURITY == 'starttls':
+            smtp.ehlo()
+            smtp.starttls(context=context)
+            smtp.ehlo()
+        if SMTP_USER:
+            smtp.login(SMTP_USER, SMTP_PASSWORD)
+        refused = smtp.send_message(message)
+        if refused:
+            raise smtplib.SMTPException('delivery refused')
+
+
+def _prepare_email_code(address, nxt, sid, client_ip):
+    token = secrets.token_urlsafe(32)
+    code = '%06d' % secrets.randbelow(1_000_000)
+    token_hash = hashlib.sha256(token.encode('ascii')).hexdigest()
+    # The database stores neither the code nor the random browser-held HMAC key.
+    code_hash = hmac.new(token.encode('ascii'), code.encode('ascii'), hashlib.sha256).hexdigest()
+
+    def run(conn):
         now = int(time.time())
-        row = conn.execute(
-            'SELECT id FROM users WHERE provider = ? AND provider_user_id = ?',
-            (ident['provider'], ident['provider_user_id']),
-        ).fetchone()
-        if row is None:
-            cur = conn.execute(
-                'INSERT INTO users (provider, provider_user_id, email, display_name, created) VALUES (?,?,?,?,?)',
-                (ident['provider'], ident['provider_user_id'], ident['email'], ident['display_name'], now),
-            )
-            user_id = cur.lastrowid
-        else:
-            user_id = row['id']
+        with conn:
+            conn.execute('BEGIN IMMEDIATE')
+            current = _session_row(conn, sid)
+            if current and current['user_id']:
+                return {'error': 'signed_in'}
+            limits = [
+                ('address:' + hashlib.sha256(address.encode('utf-8')).hexdigest(), EMAIL_ADDRESS_MAX, EMAIL_RESEND_S),
+                ('ip:' + hashlib.sha256(client_ip.encode('utf-8')).hexdigest(), EMAIL_IP_MAX, 0),
+            ]
+            conn.execute('DELETE FROM email_limits WHERE started <= ?', (now - EMAIL_RATE_S,))
+            conn.execute('DELETE FROM email_codes WHERE expires <= ?', (now,))
+            conn.execute('DELETE FROM sessions WHERE user_id IS NULL AND expires < ?', (now,))
+            for key, maximum, cooldown in limits:
+                row = conn.execute('SELECT * FROM email_limits WHERE key = ?', (key,)).fetchone()
+                if row and row['count'] >= maximum:
+                    return {'error': 'rate', 'retry_after': max(1, row['started'] + EMAIL_RATE_S - now)}
+                if row and row['last_sent'] + cooldown > now:
+                    return {'error': 'rate', 'retry_after': row['last_sent'] + cooldown - now}
+            for key, _maximum, _cooldown in limits:
+                conn.execute(
+                    'INSERT INTO email_limits (key, started, last_sent, count) VALUES (?,?,?,1) '
+                    'ON CONFLICT(key) DO UPDATE SET last_sent = excluded.last_sent, count = count + 1',
+                    (key, now, now),
+                )
+            if current:
+                new_sid, csrf, life = current['id'], current['csrf'], PENDING_S
+                conn.execute('UPDATE sessions SET pending = NULL, expires = ? WHERE id = ?', (now + life, new_sid))
+            else:
+                new_sid, csrf, life = _new_session(conn, None, PENDING_S)
+            conn.execute('DELETE FROM email_codes WHERE session_id = ?', (new_sid,))
             conn.execute(
-                'UPDATE users SET email = ?, display_name = ? WHERE id = ?',
-                (ident['email'], ident['display_name'], user_id),
+                'INSERT INTO email_codes (token_hash, session_id, email, code_hash, next, expires, attempts) '
+                'VALUES (?,?,?,?,?,?,0)',
+                (token_hash, new_sid, address, code_hash, nxt, now + EMAIL_CODE_S),
             )
-        sid, csrf, life = _new_session(conn, user_id, SESSION_S)
-        if old_sid:
-            conn.execute('DELETE FROM sessions WHERE id = ?', (old_sid,))
-        return sid, life
+            return {'sid': new_sid, 'csrf': csrf, 'life': life, 'token': token, 'code': code}
+    return _db_call(run)
+
+
+def _verify_email_code(sid, csrf, token, code):
+    token_hash = hashlib.sha256(token.encode('ascii')).hexdigest()
+    expected_hash = hmac.new(token.encode('ascii'), code.encode('ascii'), hashlib.sha256).hexdigest()
+
+    def run(conn):
+        with conn:
+            conn.execute('BEGIN IMMEDIATE')
+            session = _session_row(conn, sid)
+            if not session or session['user_id'] or not _ct_eq(session['csrf'], csrf):
+                return {'error': 'csrf'}
+            pending = conn.execute(
+                'SELECT * FROM email_codes WHERE token_hash = ? AND session_id = ?', (token_hash, sid)
+            ).fetchone()
+            if pending is None:
+                return {'error': 'code_expired'}
+            if pending['expires'] <= int(time.time()):
+                conn.execute('DELETE FROM email_codes WHERE token_hash = ?', (token_hash,))
+                return {'error': 'code_expired'}
+            if not _ct_eq(pending['code_hash'], expected_hash):
+                attempts = pending['attempts'] + 1
+                if attempts >= EMAIL_ATTEMPTS:
+                    conn.execute('DELETE FROM email_codes WHERE token_hash = ?', (token_hash,))
+                    return {'error': 'code_locked'}
+                conn.execute('UPDATE email_codes SET attempts = ? WHERE token_hash = ?', (attempts, token_hash))
+                return {'error': 'code_invalid', 'attempts_left': EMAIL_ATTEMPTS - attempts}
+            address = pending['email']
+            ident = {
+                'provider': 'email', 'provider_user_id': hashlib.sha256(address.encode('utf-8')).hexdigest(),
+                'email': address, 'display_name': address,
+            }
+            new_sid, life = _finish_login_row(conn, sid, ident)
+            return {'sid': new_sid, 'life': life, 'next': pending['next']}
     return _db_call(run)
 
 
@@ -943,25 +1111,25 @@ def logout(sid, token):
 
 def _project_item(item):
     if not isinstance(item, dict):
-        return None
+        return None, 'invalid_project'
     pid = item.get('id')
     if not isinstance(pid, str) or re.fullmatch(r'[A-Za-z0-9_-]{1,40}', pid) is None:
-        return None
+        return None, 'invalid_project'
     proj = item.get('proj')
     if proj is None and isinstance(item.get('parts'), list):
         proj = item
     if not isinstance(proj, dict) or not isinstance(proj.get('parts'), list):
-        return None
+        return None, 'invalid_project'
     name = item.get('name') if isinstance(item.get('name'), str) else proj.get('name')
     name = _clean_name(name if isinstance(name, str) else '', 'Untitled')
     try:
         encoded = json.dumps(proj, separators=(',', ':'), sort_keys=True)
     except (TypeError, ValueError):
-        return None
+        return None, 'invalid_project'
     if len(encoded.encode('utf-8')) > PROJECT_CAP:
-        return None
+        return None, 'project_too_large'
     digest = hashlib.sha256(encoded.encode('utf-8')).hexdigest()
-    return pid, name, encoded, digest
+    return (pid, name, encoded, digest), ''
 
 
 def import_projects(sid, token, items):
@@ -974,11 +1142,17 @@ def import_projects(sid, token, items):
         if row is None or not row['user_id'] or not _ct_eq(row['csrf'], token or ''):
             return None
         user_id = row['user_id']
-        imported = 0
+        imported = unchanged = last_saved = 0
+        rejected = []
         now = int(time.time())
         for item in items:
-            parsed = _project_item(item)
+            parsed, reason = _project_item(item)
             if not parsed:
+                rejected.append({
+                    'id': str(item.get('id', ''))[:40] if isinstance(item, dict) else '',
+                    'name': _clean_name(item.get('name'), 'Untitled') if isinstance(item, dict) else 'Untitled',
+                    'reason': reason,
+                })
                 continue
             local_id, name, encoded, digest = parsed
             seen = conn.execute(
@@ -986,6 +1160,13 @@ def import_projects(sid, token, items):
                 (user_id, local_id, digest),
             ).fetchone()
             if seen is not None:
+                unchanged += 1
+                saved = conn.execute(
+                    'SELECT updated FROM owned_projects WHERE user_id = ? AND project_id = ?',
+                    (user_id, seen['project_id']),
+                ).fetchone()
+                if saved:
+                    last_saved = max(last_saved, saved['updated'])
                 continue
             count = conn.execute(
                 'SELECT COUNT(*) AS n FROM owned_projects WHERE user_id = ?', (user_id,)
@@ -996,12 +1177,18 @@ def import_projects(sid, token, items):
             ).fetchone()
             stored_id = local_id
             if current is not None and current['body_hash'] != digest:
-                stored_id = (local_id + '-' + digest[:8])[:40]
+                stored_id = local_id[:31] + '-' + digest[:8]
             if current is not None and current['body_hash'] == digest:
                 conn.execute(
                     'INSERT OR IGNORE INTO imports (user_id, local_id, body_hash, project_id) VALUES (?,?,?,?)',
                     (user_id, local_id, digest, local_id),
                 )
+                unchanged += 1
+                saved = conn.execute(
+                    'SELECT updated FROM owned_projects WHERE user_id = ? AND project_id = ?',
+                    (user_id, local_id),
+                ).fetchone()
+                last_saved = max(last_saved, saved['updated'])
                 continue
             occupied = conn.execute(
                 'SELECT body_hash FROM owned_projects WHERE user_id = ? AND project_id = ?',
@@ -1012,10 +1199,18 @@ def import_projects(sid, token, items):
                     'INSERT OR IGNORE INTO imports (user_id, local_id, body_hash, project_id) VALUES (?,?,?,?)',
                     (user_id, local_id, digest, stored_id),
                 )
+                unchanged += 1
+                saved = conn.execute(
+                    'SELECT updated FROM owned_projects WHERE user_id = ? AND project_id = ?',
+                    (user_id, stored_id),
+                ).fetchone()
+                last_saved = max(last_saved, saved['updated'])
                 continue
             if occupied is not None:
+                rejected.append({'id': local_id, 'name': name, 'reason': 'snapshot_conflict'})
                 continue
-            if count >= PROJECT_MAX and current is None:
+            if count >= PROJECT_MAX:
+                rejected.append({'id': local_id, 'name': name, 'reason': 'account_full'})
                 continue
             conn.execute(
                 'INSERT INTO owned_projects (user_id, project_id, name, body, body_hash, updated) VALUES (?,?,?,?,?,?)',
@@ -1026,7 +1221,8 @@ def import_projects(sid, token, items):
                 (user_id, local_id, digest, stored_id),
             )
             imported += 1
-        return imported
+            last_saved = max(last_saved, now)
+        return {'imported': imported, 'unchanged': unchanged, 'rejected': rejected, 'last_saved': last_saved}
     return _db_call(run)
 
 
@@ -1070,7 +1266,7 @@ def list_projects(sid):
         if row is None or not row['user_id']:
             return []
         rows = conn.execute(
-            'SELECT project_id, name, updated FROM owned_projects WHERE user_id = ? ORDER BY updated DESC',
+            'SELECT project_id, name, updated FROM owned_projects WHERE user_id = ? ORDER BY updated DESC, rowid DESC',
             (row['user_id'],),
         ).fetchall()
         return [{'id': r['project_id'], 'name': r['name'], 'updated': r['updated']} for r in rows]
@@ -1375,6 +1571,89 @@ def _csrf_from(headers_token, body_token):
     return ''
 
 
+async def _email_input(scope, receive):
+    if not _declared_origin(scope) or cross_site(scope):
+        return None, _cross_site_rejected()
+    if _header(scope, 'content-type').split(';', 1)[0].strip().lower() != 'application/json':
+        return None, _json({'ok': False, 'error': 'type', 'message': 'Send the email form as JSON.'}, 415)
+    body = await _read_body(receive, 8192)
+    if body is None:
+        return None, _json({'ok': False, 'error': 'closed', 'message': 'The request was interrupted. Try again.'}, 400)
+    if body is False:
+        return None, _json({'ok': False, 'error': 'size', 'message': 'That sign-in request is too large.'}, 413)
+    parsed = _json_bytes(body)
+    if not isinstance(parsed, dict):
+        return None, _json({'ok': False, 'error': 'body', 'message': 'Check the sign-in form and try again.'}, 400)
+    return parsed, None
+
+
+async def _handle_email_start(scope, receive):
+    parsed, error = await _email_input(scope, receive)
+    if error is not None:
+        return error
+    address = _clean_email(parsed.get('email'))
+    if not address:
+        return _json({'ok': False, 'error': 'email', 'message': 'Enter a valid email address.'}, 422)
+    nxt = safe_next(parsed.get('next', public_href('/')))
+    if nxt is None:
+        return _json({'ok': False, 'error': 'next', 'message': 'That return address was rejected.'}, 400)
+    prepared = _prepare_email_code(address, nxt, _cookies(scope).get(COOKIE, ''), _client_ip(scope))
+    if prepared is None:
+        return _json({'ok': False, 'error': 'store', 'message': 'Email sign-in is unavailable. Try again later.'}, 503)
+    if prepared.get('error') == 'signed_in':
+        return _json({'ok': False, 'error': 'signed_in', 'message': 'Sign out before using another account.'}, 409)
+    if prepared.get('error') == 'rate':
+        wait = prepared['retry_after']
+        return _json({'ok': False, 'error': 'rate', 'message': 'Please wait before requesting another code.',
+                      'retry_after': wait}, 429, {'Retry-After': str(wait)})
+    from starlette.concurrency import run_in_threadpool
+    try:
+        await run_in_threadpool(_send_email_code, address, prepared.pop('code'))
+    except (smtplib.SMTPException, OSError):
+        token_hash = hashlib.sha256(prepared['token'].encode('ascii')).hexdigest()
+        _db_call(lambda conn: conn.execute('DELETE FROM email_codes WHERE token_hash = ?', (token_hash,)))
+        _log('auth provider=email result=error reason=delivery')
+        return _stamp(_json({
+            'ok': False, 'error': 'delivery',
+            'message': 'The code could not be emailed. Check the address and try again in a minute.',
+            'retry_after': EMAIL_RESEND_S,
+        }, 503, {'Retry-After': str(EMAIL_RESEND_S)}), prepared['sid'], prepared['life'], scope)
+    return _stamp(_json({
+        'ok': True, 'challenge': prepared['token'], 'csrf': prepared['csrf'],
+        'expires_in': EMAIL_CODE_S, 'resend_after': EMAIL_RESEND_S,
+    }), prepared['sid'], prepared['life'], scope)
+
+
+async def _handle_email_verify(scope, receive):
+    parsed, error = await _email_input(scope, receive)
+    if error is not None:
+        return error
+    token = parsed.get('challenge')
+    code = parsed.get('code')
+    if not isinstance(token, str) or not _STATE_RE.fullmatch(token):
+        return _json({'ok': False, 'error': 'code_expired', 'message': 'Request a new sign-in code.'}, 410)
+    if not isinstance(code, str) or not re.fullmatch(r'[0-9]{6}', code):
+        return _json({'ok': False, 'error': 'code_invalid', 'message': 'Enter the six-digit code from your email.'}, 422)
+    csrf = _csrf_from(_header(scope, 'x-csrf-token'), parsed.get('csrf'))
+    verified = _verify_email_code(_cookies(scope).get(COOKIE, ''), csrf, token, code)
+    if verified is None:
+        return _json({'ok': False, 'error': 'store', 'message': 'Sign-in could not be completed. Try again.'}, 503)
+    reason = verified.get('error')
+    if reason:
+        messages = {
+            'csrf': 'This sign-in attempt is no longer active. Request a new code.',
+            'code_expired': 'That code has expired or was already used. Request a new code.',
+            'code_invalid': 'That code did not match. Check the email and try again.',
+            'code_locked': 'Too many incorrect codes. Request a new code.',
+        }
+        status = {'csrf': 403, 'code_expired': 410, 'code_invalid': 422, 'code_locked': 429}[reason]
+        return _json({'ok': False, 'error': reason, 'message': messages[reason],
+                      'attempts_left': verified.get('attempts_left', 0)}, status)
+    _log('auth provider=email result=ok')
+    return _stamp(_json({'ok': True, 'redirect': _with_flag(verified['next'], 'ok')}),
+                  verified['sid'], verified['life'], scope)
+
+
 def _cross_site_rejected():
     return _json(
         {'ok': False, 'error': 'csrf', 'message': 'That request was refused.'},
@@ -1413,7 +1692,7 @@ async def _handle_import(scope, receive):
     if body is None:
         return _json({'ok': False, 'error': 'closed'}, 400)
     if body is False:
-        return _page('That is too many projects to save at once.', link_href=public_href('/'), link_label='Back')
+        return _json({'ok': False, 'error': 'size', 'message': 'That batch is too large. Save fewer projects at once.'}, 413)
     if _header(scope, 'content-type').split(';', 1)[0].strip().lower() != 'application/json':
         return _json({'ok': False, 'error': 'type'}, 415)
     parsed = _json_bytes(body)
@@ -1422,19 +1701,27 @@ async def _handle_import(scope, receive):
     token = _csrf_from(_header(scope, 'x-csrf-token'), parsed.get('csrf'))
     items = parsed.get('projects')
     sid = _cookies(scope).get(COOKIE, '')
+    view = session_view(sid)
+    if view.get('unavailable'):
+        return _json({'ok': False, 'error': 'store', 'message': view['message']}, 503)
     # A guest account-save that names a locked part is refused before any row
     # is written. A signed-in save, and a guest save that names no locked part,
     # keep the existing checks (including the sign-in requirement).
     import guestparts
     if guestparts.blocks(
         guestparts.named_types(parsed),
-        signed_in=bool(session_view(sid).get('signed_in')),
+        signed_in=bool(view.get('signed_in')),
     ):
         return guestparts.denied_response()
-    imported = import_projects(sid, token, items)
-    if imported is None:
+    if not view.get('signed_in'):
+        return _json({'ok': False, 'error': 'auth', 'message': 'Sign in again before saving to your account.'}, 403)
+    if not isinstance(items, list) or len(items) > IMPORT_BATCH:
+        return _json({'ok': False, 'error': 'batch', 'message': 'Save at most %d projects per request.' % IMPORT_BATCH}, 400)
+    saved = import_projects(sid, token, items)
+    if saved is None:
         return _json({'ok': False, 'error': 'csrf', 'message': 'Sign-in is needed before projects can be saved to the account.'}, 403)
-    return _json({'ok': True, 'imported': imported})
+    status = 200 if not saved['rejected'] else 207 if saved['imported'] or saved['unchanged'] else 422
+    return _json({'ok': not saved['rejected'], **saved}, status)
 
 
 def _provider_prefix(path):
@@ -1442,6 +1729,8 @@ def _provider_prefix(path):
         return 'google'
     if path == '/auth/github' or path.startswith('/auth/github/'):
         return 'github'
+    if path == '/auth/email' or path.startswith('/auth/email/'):
+        return 'email'
     return ''
 
 
@@ -1464,7 +1753,10 @@ def _account_list(scope):
     if cross_site(scope):
         return _cross_site_rejected()
     sid = _cookies(scope).get(COOKIE, '')
-    if not session_view(sid).get('signed_in'):
+    view = session_view(sid)
+    if view.get('unavailable'):
+        return _json({'ok': False, 'error': 'store', 'message': view['message']}, 503)
+    if not view.get('signed_in'):
         return _account_denied()
     return _json({'projects': list_projects(sid)})
 
@@ -1473,7 +1765,10 @@ def _account_one(scope, raw_id):
     if cross_site(scope):
         return _cross_site_rejected()
     sid = _cookies(scope).get(COOKIE, '')
-    if not session_view(sid).get('signed_in'):
+    view = session_view(sid)
+    if view.get('unavailable'):
+        return _json({'ok': False, 'error': 'store', 'message': view['message']}, 503)
+    if not view.get('signed_in'):
         return _account_denied()
     project_id = urllib.parse.unquote(raw_id or '')
     if '/' in project_id or project_id == 'import':
@@ -1493,7 +1788,12 @@ def _dispatch(method, path, scope, receive):
         return _not_found()
     if path == '/auth/session' and method == 'GET':
         sid = _cookies(scope).get(COOKIE, '')
-        return _json(session_view(sid))
+        view = session_view(sid)
+        return _json(view, 503 if view.get('unavailable') else 200)
+    if path in ('/auth/email/start', '/auth/email/verify'):
+        if method != 'POST':
+            return _json({'ok': False, 'error': 'method', 'message': 'Use the email sign-in form.'}, 405)
+        return _handle_email_start(scope, receive) if path.endswith('/start') else _handle_email_verify(scope, receive)
     if path == '/auth/projects' and method == 'GET':
         return _account_list(scope)
     if path.startswith('/auth/projects/') and path != '/auth/projects/import' and method == 'GET':
@@ -1517,7 +1817,7 @@ def _dispatch(method, path, scope, receive):
     if path == '/auth/projects/import' and method != 'POST':
         return _page('That action is not available.', status=405, link_href=public_href('/'), link_label='Back')
     provider = path.split('/')[2] if path.startswith('/auth/') and path.count('/') >= 2 else ''
-    if provider and provider not in ('google', 'github', 'session', 'logout', 'projects'):
+    if provider and provider not in ('google', 'github', 'email', 'session', 'logout', 'projects'):
         return _page('That sign-in option is not available.', status=404, link_href=public_href('/'), link_label='Back')
     return _page('That page is not part of sign-in.', status=404, link_href=public_href('/'), link_label='Back')
 
@@ -1549,6 +1849,14 @@ class AuthMiddleware:
         wait = rate_limit(scope)
         if wait:
             _log(https.rate_limit_log(scope))
+            if path == '/auth/session' or path.startswith(('/auth/email/', '/auth/projects')):
+                response = _json({
+                    'ok': False, 'error': 'rate',
+                    'message': 'Too many account requests. Wait a moment and try again.',
+                    'retry_after': wait,
+                }, 429, {'Retry-After': str(wait)})
+                await response(scope, receive, send)
+                return
             page = _page(
                 'Too many sign-in attempts. Wait a moment and try again.',
                 status=429, link_href=public_href('/'), link_label='Back',
