@@ -1,0 +1,623 @@
+1
+00:00:00,400 --> 00:00:10,157
+Welcome to ESP32 Circuit Lab. In this practical walkthrough, we
+will build a blinking LED, move it to a different GPIO, use
+
+2
+00:00:10,157 --> 00:00:15,035
+a pushbutton as an input, and control brightness with a
+potentiometer.
+
+3
+00:00:15,035 --> 00:00:23,352
+We will also inspect a waveform, experiment with a circuit that
+needs no code, and back up a project.
+
+4
+00:00:23,352 --> 00:00:28,231
+Everything shown is a virtual circuit. No physical board is
+required.
+
+5
+00:00:28,231 --> 00:00:32,469
+This recording uses the live website and separate demonstration
+storage.
+
+6
+00:00:33,847 --> 00:00:39,618
+The center is the circuit workspace. The right panel switches
+between Parts and Properties.
+
+7
+00:00:39,618 --> 00:00:48,425
+Selecting a component shows its values and electrical readouts.
+Code and output live in the lower drawer, and Run is at the
+
+8
+00:00:48,425 --> 00:00:53,437
+top. Fit brings the circuit back into view after zooming or
+panning.
+
+9
+00:00:53,437 --> 00:01:02,320
+Examples are useful starting points. An example opens read only;
+making a copy, or editing it, gives you your own project
+
+10
+00:01:02,320 --> 00:01:04,446
+instead of changing the original.
+
+11
+00:01:05,753 --> 00:01:11,138
+Run as selects the execution engine. JavaScript runs in this
+browser.
+
+12
+00:01:11,138 --> 00:01:20,054
+Circuit only runs no sketch. Arduino C plus plus compiles on the
+server and runs on a virtual ESP32.
+
+13
+00:01:20,054 --> 00:01:26,762
+The choices are not language converters. Arduino sketches use
+void setup and void loop.
+
+14
+00:01:26,762 --> 00:01:33,913
+Browser JavaScript uses function declarations against the circuit
+solver; it is not ESP32 machine code.
+
+15
+00:01:33,913 --> 00:01:37,267
+Choose the matching mode before pressing Run.
+
+16
+00:01:41,140 --> 00:01:47,724
+For the first scenario, open the menu, choose Getting started,
+and select Start guided Blink.
+
+17
+00:01:47,724 --> 00:01:56,124
+This creates a fresh project with an ESP32 and a starter sketch.
+The five-step guide begins with the components, then checks
+
+18
+00:01:56,124 --> 00:02:01,345
+the wiring, explains the code, and finally watches for real LED
+activity.
+
+19
+00:02:01,345 --> 00:02:06,491
+You can dismiss the guide at any time and reopen Getting started
+later.
+
+20
+00:02:06,491 --> 00:02:10,729
+For our first build, leave the GPIO selector at two.
+
+21
+00:02:12,120 --> 00:02:21,317
+Add an LED and a resistor from the Parts panel. The resistor must
+be in series with the LED; simply placing it nearby does
+
+22
+00:02:21,317 --> 00:02:27,958
+not limit current. For this demonstration we use the starter
+resistor value of two hundred twenty ohms.
+
+23
+00:02:27,958 --> 00:02:34,527
+The LED has an anode, marked A, and a cathode, marked C. Its
+direction matters.
+
+24
+00:02:34,527 --> 00:02:40,804
+Fit the view if needed, then look for D2 and a ground pin on the
+ESP32.
+
+25
+00:02:42,204 --> 00:02:47,134
+Create a wire by clicking its starting pin and then its
+destination.
+
+26
+00:02:47,134 --> 00:02:53,473
+Connect D2 to one resistor terminal. Connect the other resistor
+terminal to the LED anode.
+
+27
+00:02:53,473 --> 00:03:01,846
+Finally, connect the LED cathode to ground. Either resistor
+orientation works, but the LED must face the right way.
+
+28
+00:03:01,846 --> 00:03:06,776
+Notice that the guide advances only after finding a valid series
+path.
+
+29
+00:03:06,776 --> 00:03:13,897
+A wire that bypasses the resistor does not satisfy this check,
+even if the drawing looks close.
+
+30
+00:03:15,262 --> 00:03:23,177
+Open code to read the explanation alongside the sketch. On this
+ESP32, LED BUILTIN refers to GPIO two.
+
+31
+00:03:23,177 --> 00:03:28,213
+Setup runs once and configures the pin as an output using
+pinMode.
+
+32
+00:03:28,213 --> 00:03:34,929
+Loop then repeats: digitalWrite with HIGH drives the output high,
+and LOW drives it low.
+
+33
+00:03:34,929 --> 00:03:40,205
+A delay of one thousand means one thousand milliseconds, or one
+second.
+
+34
+00:03:40,205 --> 00:03:46,042
+One second on followed by one second off gives a complete two-
+second blink cycle.
+
+35
+00:03:47,440 --> 00:03:53,292
+Continue to Run, confirm Arduino C plus plus is selected, and
+press Run.
+
+36
+00:03:53,292 --> 00:04:01,280
+Compilation time depends on the server and its cache, so wait for
+the running state rather than clicking repeatedly.
+
+37
+00:04:01,280 --> 00:04:06,104
+This demonstration uses the real firmware backend, not a mock
+response.
+
+38
+00:04:06,104 --> 00:04:14,487
+Watch the external LED turn on and off. The guide marks Blink as
+working only after it observes both states.
+
+39
+00:04:14,487 --> 00:04:19,074
+The ESP32's blue IO2 indicator is separate from the external LED.
+
+40
+00:04:20,620 --> 00:04:28,558
+Now let us use a pin other than two. Stop the sketch first,
+reopen Review code, and select GPIO eighteen.
+
+41
+00:04:28,558 --> 00:04:36,425
+The guide updates its instructions and completion checks, but it
+does not rewrite your sketch or move a wire for you.
+
+42
+00:04:36,425 --> 00:04:41,670
+This is important: the selector is a learning aid, not automatic
+circuit conversion.
+
+43
+00:04:41,670 --> 00:04:50,033
+GPIO eighteen is labelled D18 on this board. We must change both
+the physical connection in the drawing and the pin used by
+
+44
+00:04:50,033 --> 00:04:50,955
+the code.
+
+45
+00:04:52,368 --> 00:05:00,875
+Keep the resistor, LED, and ground connections unchanged. Only
+the ESP32 end of the resistor feed needs to change.
+
+46
+00:05:00,875 --> 00:05:09,700
+In this demonstration, we remove the old D2 feed wire and draw a
+replacement from D18 to the same resistor terminal.
+
+47
+00:05:09,700 --> 00:05:18,366
+The selected GPIO must match this wire. Once the new path is
+correct, the guide returns to the code step.
+
+48
+00:05:18,366 --> 00:05:25,761
+Changing the selection also clears the previous completion
+evidence, so an earlier successful blink cannot pass a different
+
+49
+00:05:25,761 --> 00:05:26,397
+pin.
+
+50
+00:05:27,801 --> 00:05:32,579
+Declare a constant called LED PIN with the value eighteen above
+setup.
+
+51
+00:05:32,579 --> 00:05:36,978
+Use that same constant in pinMode and in both digitalWrite calls.
+
+52
+00:05:36,978 --> 00:05:43,879
+The complete reference example shows exactly where it belongs.
+You do not need to redefine LED BUILTIN.
+
+53
+00:05:43,879 --> 00:05:53,056
+A named constant keeps future changes in one place. Here we also
+change both delays to five hundred, giving half a second on
+
+54
+00:05:53,056 --> 00:05:58,820
+and half a second off. Keep Arduino C plus plus selected for this
+code.
+
+55
+00:06:00,230 --> 00:06:08,688
+Run the updated sketch and watch the external LED. It now blinks
+from GPIO eighteen, even though the built-in IO2 indicator
+
+56
+00:06:08,688 --> 00:06:17,680
+belongs to GPIO two. The guide verifies the chosen pin is
+configured as an output and that the LED actually turns on and
+
+57
+00:06:17,680 --> 00:06:23,471
+off through the resistor. The GPIO selectors are disabled while a
+sketch is running.
+
+58
+00:06:23,471 --> 00:06:32,234
+Stop before changing them. For another output pin later, update
+the constant, move the feed wire, and repeat this check.
+
+59
+00:06:33,611 --> 00:06:43,203
+If an LED does not blink, check three things together: the
+guide's selected GPIO, the pin number in the sketch, and the
+
+60
+00:06:43,203 --> 00:06:49,886
+actual wire endpoint. Then check OUTPUT initialization, LED
+direction, ground, and the resistor path.
+
+61
+00:06:49,886 --> 00:06:58,221
+Pins thirty-four through thirty-nine are input only on this ESP32
+and cannot drive an LED, so the guide excludes them.
+
+62
+00:06:58,221 --> 00:07:06,555
+Pins one and three share USB serial. Start with eighteen when you
+want a straightforward alternate output for this exercise.
+
+63
+00:07:07,938 --> 00:07:14,544
+For a digital input scenario, stop the current run and open
+Examples, then Button plus LED.
+
+64
+00:07:14,544 --> 00:07:20,706
+This circuit uses GPIO two for the button input and GPIO thirteen
+for the LED output.
+
+65
+00:07:20,706 --> 00:07:25,753
+A ten-kilohm pull-down resistor keeps the input low when the
+switch is released.
+
+66
+00:07:25,753 --> 00:07:30,059
+Pressing the button connects the input to three point three
+volts.
+
+67
+00:07:30,059 --> 00:07:37,927
+This example is already wired, which lets us focus on the
+difference between reading an input and driving an output.
+
+68
+00:07:40,996 --> 00:07:48,387
+Read the sketch before running it. Setup configures the LED pin
+as OUTPUT and the button pin as INPUT.
+
+69
+00:07:48,387 --> 00:07:57,315
+Loop reads the button with digitalRead. If the result is HIGH,
+the code turns the LED on; otherwise it turns it off.
+
+70
+00:07:57,315 --> 00:08:01,779
+This is level-sensitive behavior: the LED follows the current
+button state.
+
+71
+00:08:01,779 --> 00:08:10,414
+It is not a toggle that remembers each press. The example also
+assigns the letter B as a convenient keyboard control for the
+
+72
+00:08:10,414 --> 00:08:11,365
+virtual button.
+
+73
+00:08:12,942 --> 00:08:19,824
+Run this example in Arduino C plus plus mode. Press and hold the
+virtual button, then release it.
+
+74
+00:08:19,824 --> 00:08:25,942
+You can also hold B when focus is on the circuit rather than
+inside the code editor.
+
+75
+00:08:25,942 --> 00:08:34,354
+Observe the LED and its current changing with the input. If
+typing in code appears to do nothing to the circuit, that is
+
+76
+00:08:34,354 --> 00:08:37,552
+intentional: editing controls keep their normal keyboard
+behavior.
+
+77
+00:08:37,552 --> 00:08:40,541
+Stop the run when you finish the experiment.
+
+78
+00:08:42,062 --> 00:08:51,859
+Next, open Pot to PWM, the JavaScript sketch example. Notice that
+Run as now says JavaScript, and the code uses function
+
+79
+00:08:51,859 --> 00:08:58,893
+setup and function loop. The potentiometer's wiper feeds GPIO
+thirty-four, which is suitable for input.
+
+80
+00:08:58,893 --> 00:09:06,261
+The code reads an analog value and uses it to set the PWM output
+on GPIO twenty-five.
+
+81
+00:09:06,261 --> 00:09:14,886
+This demonstration runs locally in the browser. Do not copy this
+JavaScript syntax unchanged into the Arduino C plus plus
+
+82
+00:09:14,886 --> 00:09:15,556
+mode.
+
+83
+00:09:16,916 --> 00:09:24,065
+Run the sketch, hover over the potentiometer knob, and use the
+mouse wheel to change its position.
+
+84
+00:09:24,065 --> 00:09:28,477
+Open Serial to watch the reported reading and duty percentage
+change.
+
+85
+00:09:28,477 --> 00:09:36,767
+Compare those numbers with the LED's brightness. In browser mode,
+PWM is modelled as an average drive, so the visible
+
+86
+00:09:36,767 --> 00:09:44,829
+response also depends on the LED's voltage threshold. Use both
+the numeric output and the circuit, rather than expecting the
+
+87
+00:09:44,829 --> 00:09:48,479
+knob position alone to be a direct brightness percentage.
+
+88
+00:09:52,386 --> 00:10:00,595
+A waveform makes changing signals easier to understand. For this
+scope exercise, reopen Blink and use a small JavaScript
+
+89
+00:10:00,595 --> 00:10:07,748
+sketch that toggles GPIO two every half second. We explicitly
+select JavaScript because this version uses function
+
+90
+00:10:07,748 --> 00:10:13,925
+declarations and runs in the browser. The circuit still uses the
+real electronics solver.
+
+91
+00:10:13,925 --> 00:10:21,891
+The purpose here is to inspect voltage over time, not to
+demonstrate a second firmware compilation or claim that
+
+92
+00:10:21,891 --> 00:10:24,979
+JavaScript is running on an ESP32 processor.
+
+93
+00:10:26,887 --> 00:10:34,715
+Open Scope, choose Arm probe, and click D2 on the circuit. The
+selected channel now follows that pin.
+
+94
+00:10:34,715 --> 00:10:39,780
+Autoset helps fit the display, and Timebase controls the
+horizontal time scale.
+
+95
+00:10:39,780 --> 00:10:47,147
+With a half-second HIGH and a half-second LOW, expect a repeating
+square wave with a one-second full cycle.
+
+96
+00:10:47,147 --> 00:10:55,281
+The scope's own Run and Stop control freezes the display; the
+main Run control starts or stops the simulation itself.
+
+97
+00:10:55,281 --> 00:10:57,046
+These are different operations.
+
+98
+00:10:59,203 --> 00:11:06,391
+The system also handles circuits without a microcontroller. Here
+we import a prepared voltage-divider project: a five-volt
+
+99
+00:11:06,391 --> 00:11:15,633
+source, two equal resistors, and ground. Run as is Circuit only,
+so no sketch is executed and no firmware compilation is
+
+100
+00:11:15,633 --> 00:11:20,847
+needed. The resistor in the lower half connects the midpoint to
+ground.
+
+101
+00:11:20,847 --> 00:11:29,220
+Select it to inspect the pin voltages and current. With equal
+resistor values, the midpoint should be approximately half of
+
+102
+00:11:29,220 --> 00:11:30,642
+the source voltage.
+
+103
+00:11:32,175 --> 00:11:38,806
+Change the lower resistor from one thousand to two thousand ohms
+and commit the field by leaving it.
+
+104
+00:11:38,806 --> 00:11:44,725
+The midpoint rises from about two point five volts to about three
+point three three volts.
+
+105
+00:11:44,725 --> 00:11:49,217
+A larger lower resistor makes the midpoint closer to the supply
+voltage.
+
+106
+00:11:49,217 --> 00:11:56,989
+This is a useful way to build intuition: change one parameter,
+inspect the solved result, and compare it with your
+
+107
+00:11:56,989 --> 00:12:02,979
+prediction. These are idealized virtual measurements, not a
+replacement for checking a real hardware design.
+
+108
+00:12:04,766 --> 00:12:13,151
+Before leaving, open Projects and check your work. Saved locally
+means this browser has a stored copy; it does not
+
+109
+00:12:13,151 --> 00:12:21,535
+automatically mean a server or account backup exists. A private
+window, a different device, or clearing site data can remove
+
+110
+00:12:21,535 --> 00:12:27,381
+access to that local copy. Explicit Save is available in the menu
+as well.
+
+111
+00:12:27,381 --> 00:12:32,843
+In this recording, server copy stays unchecked and account sign-
+in is not demonstrated.
+
+112
+00:12:32,843 --> 00:12:36,920
+The demo projects are separate from any existing user projects.
+
+113
+00:12:38,585 --> 00:12:46,433
+Close the project list and choose Download from the menu. The
+application exports the current project as a JSON file
+
+114
+00:12:46,433 --> 00:12:53,748
+containing the circuit and sketch data. Keep this file somewhere
+you control, especially before clearing browser storage or
+
+115
+00:12:53,748 --> 00:13:00,911
+making a major change. It is a project backup, not a firmware
+binary or a video recording.
+
+116
+00:13:00,911 --> 00:13:05,331
+A clear project name makes the downloaded filename easier to
+recognize.
+
+117
+00:13:05,331 --> 00:13:10,893
+Exporting is also a simple way to share an editable circuit with
+someone else.
+
+118
+00:13:12,301 --> 00:13:19,656
+To restore a backup, choose Import and select the JSON file. The
+circuit reopens in My Projects.
+
+119
+00:13:19,656 --> 00:13:25,290
+Check the component values, wires, code, and execution mode
+before running it.
+
+120
+00:13:25,290 --> 00:13:29,437
+Here the two-thousand-ohm resistor and Circuit only mode are
+preserved.
+
+121
+00:13:29,437 --> 00:13:36,323
+Importing into this demonstration browser does not change
+somebody else's browser storage or update the public example.
+
+122
+00:13:36,323 --> 00:13:44,773
+For important work, verify a backup by reopening it instead of
+assuming that a downloaded file must contain the version you
+
+123
+00:13:44,773 --> 00:13:45,399
+intended.
+
+124
+00:13:47,389 --> 00:13:55,681
+You have now seen several complete workflows: real Arduino Blink,
+a different output GPIO, a button input, browser-based
+
+125
+00:13:55,681 --> 00:14:00,884
+analog control, voltage probing, and a passive circuit with no
+code.
+
+126
+00:14:00,884 --> 00:14:09,746
+For each new experiment, choose the correct execution mode, match
+the code to the wiring, and inspect the actual electrical
+
+127
+00:14:09,746 --> 00:14:17,062
+result. Stop before changing a running sketch, then run again.
+Finally, keep a JSON backup.
+
+128
+00:14:17,062 --> 00:14:24,298
+Start with a working example, change one idea at a time, and make
+the result explainable.

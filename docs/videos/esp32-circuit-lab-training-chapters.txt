@@ -1,0 +1,9 @@
+00:00:00  01  Welcome and workbench
+00:01:40  02  Build and run Guided Blink
+00:04:20  03  Change the GPIO and troubleshoot
+00:07:07  04  Read a digital pushbutton
+00:08:41  05  Explore analog input and PWM
+00:09:51  06  Inspect a waveform
+00:10:58  07  Solve a circuit without code
+00:12:04  08  Save, export, and restore projects
+00:13:46  09  A reliable experiment workflow

@@ -7,6 +7,17 @@ patched Espressif QEMU with virtual parts (LEDs, buttons, keypad, OLED/LCD/TFT, 
 
 Header fit on every UI change: `npm run test:e2e`
 
+## Training video
+
+[Watch or download the narrated walkthrough (14:25, MP4)](docs/videos/esp32-circuit-lab-training.mp4?raw=true).
+Recorded from the live `a435b02` release, with English synthetic narration and captions.
+It covers Guided Blink, changing GPIOs, button and analog inputs, Scope, passive circuits, and project backups.
+
+Companion files: [transcript](docs/videos/esp32-circuit-lab-training-transcript.txt),
+[captions (SRT)](docs/videos/esp32-circuit-lab-training.srt), and
+[chapter timestamps](docs/videos/esp32-circuit-lab-training-chapters.txt).
+The video is stored directly in Git (about 49 MiB) under `docs/videos/`, outside the deployed `web/` tree.
+
 ## Structure
 | Path | What |
 |---|---|

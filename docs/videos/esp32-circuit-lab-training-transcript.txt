@@ -1,0 +1,85 @@
+ESP32 Circuit Lab - Practical Training
+Duration: 00:14:25
+Source: https://esp32lab.duckdns.org/
+Published release: a435b028299e6b1eafc14dbdcdac6f420ec52f79
+English narration synthesized locally with Microsoft Zira Desktop.
+Demonstration browser storage is isolated; account sign-in and synchronization are not shown.
+Arduino scenarios use the real compiler and QEMU backend. JavaScript scenarios are explicitly identified.
+
+[00:00:00.000] 01  Welcome and workbench - What you will build
+Welcome to ESP32 Circuit Lab. In this practical walkthrough, we will build a blinking LED, move it to a different GPIO, use a pushbutton as an input, and control brightness with a potentiometer. We will also inspect a waveform, experiment with a circuit that needs no code, and back up a project. Everything shown is a virtual circuit. No physical board is required. This recording uses the live website and separate demonstration storage.
+
+[00:00:33.447] 01  Welcome and workbench - Find the circuit, parts, code, and Run controls
+The center is the circuit workspace. The right panel switches between Parts and Properties. Selecting a component shows its values and electrical readouts. Code and output live in the lower drawer, and Run is at the top. Fit brings the circuit back into view after zooming or panning. Examples are useful starting points. An example opens read only; making a copy, or editing it, gives you your own project instead of changing the original.
+
+[00:01:05.353] 01  Welcome and workbench - Choose the correct execution mode
+Run as selects the execution engine. JavaScript runs in this browser. Circuit only runs no sketch. Arduino C plus plus compiles on the server and runs on a virtual ESP32. The choices are not language converters. Arduino sketches use void setup and void loop. Browser JavaScript uses function declarations against the circuit solver; it is not ESP32 machine code. Choose the matching mode before pressing Run.
+
+[00:01:40.740] 02  Build and run Guided Blink - Start a guided project
+For the first scenario, open the menu, choose Getting started, and select Start guided Blink. This creates a fresh project with an ESP32 and a starter sketch. The five-step guide begins with the components, then checks the wiring, explains the code, and finally watches for real LED activity. You can dismiss the guide at any time and reopen Getting started later. For our first build, leave the GPIO selector at two.
+
+[00:02:11.720] 02  Build and run Guided Blink - Add the external LED and series resistor
+Add an LED and a resistor from the Parts panel. The resistor must be in series with the LED; simply placing it nearby does not limit current. For this demonstration we use the starter resistor value of two hundred twenty ohms. The LED has an anode, marked A, and a cathode, marked C. Its direction matters. Fit the view if needed, then look for D2 and a ground pin on the ESP32.
+
+[00:02:41.804] 02  Build and run Guided Blink - Connect D2, resistor, LED, and ground
+Create a wire by clicking its starting pin and then its destination. Connect D2 to one resistor terminal. Connect the other resistor terminal to the LED anode. Finally, connect the LED cathode to ground. Either resistor orientation works, but the LED must face the right way. Notice that the guide advances only after finding a valid series path. A wire that bypasses the resistor does not satisfy this check, even if the drawing looks close.
+
+[00:03:14.862] 02  Build and run Guided Blink - Understand initialization and the repeating loop
+Open code to read the explanation alongside the sketch. On this ESP32, LED BUILTIN refers to GPIO two. Setup runs once and configures the pin as an output using pinMode. Loop then repeats: digitalWrite with HIGH drives the output high, and LOW drives it low. A delay of one thousand means one thousand milliseconds, or one second. One second on followed by one second off gives a complete two-second blink cycle.
+
+[00:03:47.040] 02  Build and run Guided Blink - Compile real Arduino firmware and observe the LED
+Continue to Run, confirm Arduino C plus plus is selected, and press Run. Compilation time depends on the server and its cache, so wait for the running state rather than clicking repeatedly. This demonstration uses the real firmware backend, not a mock response. Watch the external LED turn on and off. The guide marks Blink as working only after it observes both states. The ESP32's blue IO2 indicator is separate from the external LED.
+
+[00:04:20.220] 03  Change the GPIO and troubleshoot - Select GPIO18 without overwriting your work
+Now let us use a pin other than two. Stop the sketch first, reopen Review code, and select GPIO eighteen. The guide updates its instructions and completion checks, but it does not rewrite your sketch or move a wire for you. This is important: the selector is a learning aid, not automatic circuit conversion. GPIO eighteen is labelled D18 on this board. We must change both the physical connection in the drawing and the pin used by the code.
+
+[00:04:51.968] 03  Change the GPIO and troubleshoot - Replace the GPIO feed wire
+Keep the resistor, LED, and ground connections unchanged. Only the ESP32 end of the resistor feed needs to change. In this demonstration, we remove the old D2 feed wire and draw a replacement from D18 to the same resistor terminal. The selected GPIO must match this wire. Once the new path is correct, the guide returns to the code step. Changing the selection also clears the previous completion evidence, so an earlier successful blink cannot pass a different pin.
+
+[00:05:27.401] 03  Change the GPIO and troubleshoot - Use one LED_PIN constant consistently
+Declare a constant called LED PIN with the value eighteen above setup. Use that same constant in pinMode and in both digitalWrite calls. The complete reference example shows exactly where it belongs. You do not need to redefine LED BUILTIN. A named constant keeps future changes in one place. Here we also change both delays to five hundred, giving half a second on and half a second off. Keep Arduino C plus plus selected for this code.
+
+[00:05:59.830] 03  Change the GPIO and troubleshoot - Verify the selected pin drives the external LED
+Run the updated sketch and watch the external LED. It now blinks from GPIO eighteen, even though the built-in IO2 indicator belongs to GPIO two. The guide verifies the chosen pin is configured as an output and that the LED actually turns on and off through the resistor. The GPIO selectors are disabled while a sketch is running. Stop before changing them. For another output pin later, update the constant, move the feed wire, and repeat this check.
+
+[00:06:33.211] 03  Change the GPIO and troubleshoot - Check the selected pin, code, and wiring together
+If an LED does not blink, check three things together: the guide's selected GPIO, the pin number in the sketch, and the actual wire endpoint. Then check OUTPUT initialization, LED direction, ground, and the resistor path. Pins thirty-four through thirty-nine are input only on this ESP32 and cannot drive an LED, so the guide excludes them. Pins one and three share USB serial. Start with eighteen when you want a straightforward alternate output for this exercise.
+
+[00:07:07.538] 04  Read a digital pushbutton - Open the Button + LED example
+For a digital input scenario, stop the current run and open Examples, then Button plus LED. This circuit uses GPIO two for the button input and GPIO thirteen for the LED output. A ten-kilohm pull-down resistor keeps the input low when the switch is released. Pressing the button connects the input to three point three volts. This example is already wired, which lets us focus on the difference between reading an input and driving an output.
+
+[00:07:40.596] 04  Read a digital pushbutton - Compare INPUT, OUTPUT, and digitalRead
+Read the sketch before running it. Setup configures the LED pin as OUTPUT and the button pin as INPUT. Loop reads the button with digitalRead. If the result is HIGH, the code turns the LED on; otherwise it turns it off. This is level-sensitive behavior: the LED follows the current button state. It is not a toggle that remembers each press. The example also assigns the letter B as a convenient keyboard control for the virtual button.
+
+[00:08:12.542] 04  Read a digital pushbutton - Press and release the virtual button
+Run this example in Arduino C plus plus mode. Press and hold the virtual button, then release it. You can also hold B when focus is on the circuit rather than inside the code editor. Observe the LED and its current changing with the input. If typing in code appears to do nothing to the circuit, that is intentional: editing controls keep their normal keyboard behavior. Stop the run when you finish the experiment.
+
+[00:08:41.662] 05  Explore analog input and PWM - Open the browser-based potentiometer example
+Next, open Pot to PWM, the JavaScript sketch example. Notice that Run as now says JavaScript, and the code uses function setup and function loop. The potentiometer's wiper feeds GPIO thirty-four, which is suitable for input. The code reads an analog value and uses it to set the PWM output on GPIO twenty-five. This demonstration runs locally in the browser. Do not copy this JavaScript syntax unchanged into the Arduino C plus plus mode.
+
+[00:09:16.516] 05  Explore analog input and PWM - Turn the knob and inspect Serial
+Run the sketch, hover over the potentiometer knob, and use the mouse wheel to change its position. Open Serial to watch the reported reading and duty percentage change. Compare those numbers with the LED's brightness. In browser mode, PWM is modelled as an average drive, so the visible response also depends on the LED's voltage threshold. Use both the numeric output and the circuit, rather than expecting the knob position alone to be a direct brightness percentage.
+
+[00:09:51.986] 06  Inspect a waveform - Prepare a simple browser-mode square wave
+A waveform makes changing signals easier to understand. For this scope exercise, reopen Blink and use a small JavaScript sketch that toggles GPIO two every half second. We explicitly select JavaScript because this version uses function declarations and runs in the browser. The circuit still uses the real electronics solver. The purpose here is to inspect voltage over time, not to demonstrate a second firmware compilation or claim that JavaScript is running on an ESP32 processor.
+
+[00:10:26.487] 06  Inspect a waveform - Arm the probe and select D2
+Open Scope, choose Arm probe, and click D2 on the circuit. The selected channel now follows that pin. Autoset helps fit the display, and Timebase controls the horizontal time scale. With a half-second HIGH and a half-second LOW, expect a repeating square wave with a one-second full cycle. The scope's own Run and Stop control freezes the display; the main Run control starts or stops the simulation itself. These are different operations.
+
+[00:10:58.803] 07  Solve a circuit without code - Import a prepared two-resistor divider
+The system also handles circuits without a microcontroller. Here we import a prepared voltage-divider project: a five-volt source, two equal resistors, and ground. Run as is Circuit only, so no sketch is executed and no firmware compilation is needed. The resistor in the lower half connects the midpoint to ground. Select it to inspect the pin voltages and current. With equal resistor values, the midpoint should be approximately half of the source voltage.
+
+[00:11:31.775] 07  Solve a circuit without code - Change a resistor and compare the voltage
+Change the lower resistor from one thousand to two thousand ohms and commit the field by leaving it. The midpoint rises from about two point five volts to about three point three three volts. A larger lower resistor makes the midpoint closer to the supply voltage. This is a useful way to build intuition: change one parameter, inspect the solved result, and compare it with your prediction. These are idealized virtual measurements, not a replacement for checking a real hardware design.
+
+[00:12:04.366] 08  Save, export, and restore projects - Understand Saved locally and My Projects
+Before leaving, open Projects and check your work. Saved locally means this browser has a stored copy; it does not automatically mean a server or account backup exists. A private window, a different device, or clearing site data can remove access to that local copy. Explicit Save is available in the menu as well. In this recording, server copy stays unchecked and account sign-in is not demonstrated. The demo projects are separate from any existing user projects.
+
+[00:12:38.185] 08  Save, export, and restore projects - Download a portable JSON backup
+Close the project list and choose Download from the menu. The application exports the current project as a JSON file containing the circuit and sketch data. Keep this file somewhere you control, especially before clearing browser storage or making a major change. It is a project backup, not a firmware binary or a video recording. A clear project name makes the downloaded filename easier to recognize. Exporting is also a simple way to share an editable circuit with someone else.
+
+[00:13:11.901] 08  Save, export, and restore projects - Reopen the exported project
+To restore a backup, choose Import and select the JSON file. The circuit reopens in My Projects. Check the component values, wires, code, and execution mode before running it. Here the two-thousand-ohm resistor and Circuit only mode are preserved. Importing into this demonstration browser does not change somebody else's browser storage or update the public example. For important work, verify a backup by reopening it instead of assuming that a downloaded file must contain the version you intended.
+
+[00:13:46.989] 09  A reliable experiment workflow - Build, inspect, run, observe, and back up
+You have now seen several complete workflows: real Arduino Blink, a different output GPIO, a button input, browser-based analog control, voltage probing, and a passive circuit with no code. For each new experiment, choose the correct execution mode, match the code to the wiring, and inspect the actual electrical result. Stop before changing a running sketch, then run again. Finally, keep a JSON backup. Start with a working example, change one idea at a time, and make the result explainable.
