@@ -5,6 +5,7 @@
   const starterSet = new Set(STARTER);
   let setName = 'starter', chip = 'All', recent = [], coach = false;
   let coachTimer = 0, coachProjectId = null, coachRun = null, coachOn = false, coachOff = false, coachCodeSeen = false;
+  let coachGPIO = 2, coachPins = [];
 
   function on() { return document.documentElement.getAttribute('data-ui') === '2'; }
   function freshStart() { window.__ui2NeedStart = true; }
@@ -891,16 +892,66 @@
     const first = d.querySelector('[data-go="guide"]'); if (first) first.focus();
   }
   function showCoach() {
+    const P = window.Parts;
+    coachPins = [...P.ESP_TOP, ...P.ESP_BOT].map((name) => ({ name, gpio: P.espGpio(name) }))
+      .filter((pin) => pin.gpio >= 0 && pin.gpio < 40 && !P.INPUT_ONLY.has(pin.gpio))
+      .sort((a, b) => a.gpio - b.gpio);
     let c = $('#ui2Coach');
     if (!c) {
       c = document.createElement('div');
       c.id = 'ui2Coach'; c.className = 'ui2-coach'; c.setAttribute('role', 'status');
-      c.innerHTML = '<p id="ui2CoachNow">Step 1 of 5. Add an LED.</p><button type="button" id="ui2CoachCodeOpen" hidden aria-expanded="false">Open code</button><button type="button" id="ui2CoachHide">Dismiss</button>';
+      c.innerHTML = '<p id="ui2CoachNow">Step 1 of 5. Add an LED.</p><label class="ui2-coach-pin" for="ui2CoachGPIO">GPIO <select id="ui2CoachGPIO" aria-label="LED GPIO" aria-describedby="ui2CoachGPIOHelp"></select></label><span id="ui2CoachGPIOHelp" class="sr-only">Choose an output pin. This changes the guide, not your code or wiring. Stop before changing the GPIO.</span><button type="button" id="ui2CoachCodeOpen" hidden aria-expanded="false">Open code</button><button type="button" id="ui2CoachHide">Dismiss</button>';
       $('#stageWrap').appendChild(c);
       $('#ui2CoachHide').onclick = stopCoach;
       $('#ui2CoachCodeOpen').onclick = showCoachCode;
     }
+    bindCoachGPIO($('#ui2CoachGPIO'));
+    syncCoachGPIO();
     c.hidden = false;
+  }
+  function bindCoachGPIO(select) {
+    select.innerHTML = coachPins.map((pin) => `<option value="${pin.gpio}">${pin.gpio} (${Parts.esc(pin.name)})</option>`).join('');
+    select.onchange = () => {
+      const pin = coachPins.find((p) => p.gpio === Number(select.value));
+      if (!pin) {
+        app().cmd.toast('Choose an output-capable GPIO from this board.', true);
+        syncCoachGPIO(); return;
+      }
+      if (app().run || document.body.classList.contains('running')) {
+        app().cmd.toast('Stop the running sketch before changing the GPIO.', true);
+        syncCoachGPIO(); return;
+      }
+      if (coachGPIO === pin.gpio) return;
+      coachGPIO = pin.gpio; coachCodeSeen = false; resetCoachEvidence();
+      syncCoachGPIO(); updateCoachCode(); scoreCoach(true);
+    };
+  }
+  function syncCoachGPIO() {
+    const disabled = !!app().run || document.body.classList.contains('running');
+    for (const id of ['#ui2CoachGPIO', '#ui2CoachCodeGPIO']) {
+      const select = $(id); if (!select) continue;
+      if (select.value !== String(coachGPIO)) select.value = String(coachGPIO);
+      if (select.disabled !== disabled) select.disabled = disabled;
+    }
+  }
+  function updateCoachCode() {
+    const lesson = $('#ui2CoachCode'); if (!lesson) return;
+    const pin = coachPins.find((p) => p.gpio === coachGPIO);
+    lesson.querySelectorAll('[data-coach-pin]').forEach((el) => { el.textContent = `GPIO ${pin.gpio} (${pin.name})`; });
+    lesson.querySelectorAll('[data-coach-pin-name]').forEach((el) => { el.textContent = pin.name; });
+    $('#ui2CoachPinDeclaration').textContent = `const int LED_PIN = ${pin.gpio};`;
+    $('#ui2CoachSketch').textContent = `const int LED_PIN = ${pin.gpio};
+
+void setup() {
+  pinMode(LED_PIN, OUTPUT);
+}
+
+void loop() {
+  digitalWrite(LED_PIN, HIGH);
+  delay(1000);
+  digitalWrite(LED_PIN, LOW);
+  delay(1000);
+}`;
   }
   function showCoachCode() {
     let lesson = $('#ui2CoachCode');
@@ -910,35 +961,30 @@
       lesson.setAttribute('aria-labelledby', 'ui2CoachCodeTitle');
       lesson.innerHTML = `<div class="ui2-code-guide-head"><h2 id="ui2CoachCodeTitle">Step 4 of 5. Understand the sketch</h2><button type="button" id="ui2CoachCodeHide" aria-describedby="ui2CoachCodeHelp">Dismiss guide</button></div>
         <div class="ui2-code-guide-body">
-          <p id="ui2CoachCodeHelp">The starter sketch is already in the editor below. These Arduino C++ snippets explain it without changing your code.</p>
+          <p id="ui2CoachCodeHelp">Use the same GPIO in your code and wiring. The starter uses <code>LED_BUILTIN</code>, which is GPIO 2 on this ESP32. For another pin, follow the steps below.</p>
+          <label class="ui2-coach-pin" for="ui2CoachCodeGPIO">LED GPIO <select id="ui2CoachCodeGPIO" aria-describedby="ui2CoachCodeGPIOHelp"></select></label>
+          <p id="ui2CoachCodeGPIOHelp">Selecting a GPIO updates these instructions and checks, not your code or wires. GPIO means general-purpose input/output. Pins 34&ndash;39 are input-only and cannot drive this LED; they are not selectable. GPIO 1 and 3 share USB serial, so prefer GPIO 18 if you need serial output.</p>
           <ol>
-            <li><strong>Choose the GPIO.</strong> GPIO means general-purpose input/output: a pin your code can read or drive. <code>LED_BUILTIN</code> is GPIO 2 (D2) on this ESP32, matching the D2 wire you connected to the resistor and LED.</li>
-            <li><strong>Initialize the pin in <code>setup()</code>.</strong> <code>setup()</code> runs once when the ESP32 starts. Configure the pin before trying to turn the LED on:
-              <pre><code>void setup() {
-  pinMode(LED_BUILTIN, OUTPUT);
-}</code></pre>
-              <code>pinMode()</code> takes the pin and its direction. <code>OUTPUT</code> lets the GPIO drive an electrical signal; <code>INPUT</code> is for reading a signal, such as a button. This LED needs <code>OUTPUT</code>. You only need to configure it once, not on every blink.
+            <li><strong>Choose your LED pin.</strong> The selected pin is <code data-coach-pin></code>. Stop a running sketch before changing the GPIO, code, or wiring. The ESP32's IO2 indicator stays on GPIO 2; watch the external LED you connected.</li>
+            <li><strong>Move the wire to match.</strong> Connect <code data-coach-pin-name></code> &rarr; resistor &rarr; LED anode (A), with LED cathode (C) &rarr; GND. When changing pins, move only the ESP32 end of the resistor wire to <code data-coach-pin-name></code>; leave the resistor, LED, and GND connections unchanged.</li>
+            <li><strong>Set the GPIO in your sketch.</strong> Add or update <code id="ui2CoachPinDeclaration"></code> above <code>setup()</code>, then use <code>LED_PIN</code> instead of <code>LED_BUILTIN</code> in <code>pinMode()</code> and both <code>digitalWrite()</code> calls. Next time, change only this constant and move the wire. This is a complete Arduino C++ example for the selected pin; your editor remains unchanged:
+              <pre><code id="ui2CoachSketch"></code></pre>
             </li>
-            <li><strong>Switch the LED in <code>loop()</code>.</strong> <code>loop()</code> repeats after reaching its end. The first <code>digitalWrite(LED_BUILTIN, HIGH)</code> drives D2 high (about 3.3 V), turning the LED on. <code>LOW</code> drives it to 0 V, turning it off. The resistor limits the LED current.
-              <pre><code>void loop() {
-  digitalWrite(LED_BUILTIN, HIGH);
-  delay(1000);
-  digitalWrite(LED_BUILTIN, LOW);
-  delay(1000);
-}</code></pre>
-            </li>
-            <li><strong>Set the timing.</strong> <code>delay(1000)</code> waits 1000 milliseconds (one second) after each change. One second on plus one second off makes a two-second blink cycle.</li>
+            <li><strong>Initialize, then switch the pin.</strong> <code>setup()</code> runs once. <code>pinMode(LED_PIN, OUTPUT)</code> configures the pin before use. <code>OUTPUT</code> lets the GPIO drive an electrical signal; <code>INPUT</code> is for reading a signal, such as a button. <code>loop()</code> repeats: <code>HIGH</code> drives the pin high (about 3.3 V), turning the LED on; <code>LOW</code> drives it to 0 V, turning it off. The resistor limits current.</li>
+            <li><strong>Try a faster blink.</strong> <code>delay(1000)</code> waits 1000 milliseconds (one second) after each change. Both delays at <code>1000</code> give one second on and one second off. Change both to <code>500</code> for half a second on and half a second off.</li>
           </ol>
-          <p>Try both delays at <code>500</code> for half a second on and half a second off. If running, Stop before editing, then Run again. Keep <strong>Run as</strong> set to <strong>Arduino C++ (ESP32)</strong> for this starter sketch.</p>
+          <p>Keep <strong>Run as</strong> set to <strong>Arduino C++ (ESP32)</strong> for this example. After updating the code and wire, continue to Run and watch the external LED turn on and off.</p>
         </div>
         <button type="button" id="ui2CoachCodeNext">Continue to Run</button>`;
       $('#codeWrap').before(lesson);
+      bindCoachGPIO($('#ui2CoachCodeGPIO'));
       $('#ui2CoachCodeHide').onclick = () => { stopCoach(); focusCoachRun(); };
       $('#ui2CoachCodeNext').onclick = () => {
         coachCodeSeen = true; hideCoachCode(); scoreCoach();
         focusCoachRun();
       };
     }
+    syncCoachGPIO(); updateCoachCode();
     lesson.hidden = false;
     $('#ui2CoachCodeOpen').setAttribute('aria-controls', 'ui2CoachCode');
     $('#ui2CoachCodeOpen').setAttribute('aria-expanded', 'true');
@@ -955,12 +1001,13 @@
   }
   function resetCoachEvidence() { coachRun = null; coachOn = false; coachOff = false; }
   function stopCoach() {
-    coach = false; coachCodeSeen = false; clearInterval(coachTimer); coachTimer = 0; resetCoachEvidence(); hideCoachCode();
+    coach = false; coachGPIO = 2; coachCodeSeen = false; clearInterval(coachTimer); coachTimer = 0; resetCoachEvidence(); hideCoachCode();
     const c = $('#ui2Coach'); if (c) c.hidden = true;
   }
   function scoreCoach(settle) {
     const proj = app() && app().proj; if (!proj) { stopCoach(); return; }
     if (!coach || proj.id !== coachProjectId) { stopCoach(); return; }
+    const pin = coachPins.find((p) => p.gpio === coachGPIO);
     const led = proj.parts.find((p) => p.type === 'led');
     const res = proj.parts.find((p) => p.type === 'resistor');
     const esp = proj.parts.find((p) => p.type === 'esp32');
@@ -974,13 +1021,13 @@
           const w = window.Parts.pinWorld(part, pin);
           return app().sim.netAt(w.x, w.y);
         };
-        const d2 = net(esp, 'D2'), r1 = net(res, '1'), r2 = net(res, '2'), a = net(led, 'A'), cth = net(led, 'C');
+        const drive = net(esp, pin.name), r1 = net(res, '1'), r2 = net(res, '2'), a = net(led, 'A'), cth = net(led, 'C');
         const g1 = net(esp, 'GND.1'), g2 = net(esp, 'GND.2');
         const join = (x, y) => x != null && x >= 0 && x === y;
         const gnd = (n) => n != null && n >= 0 && (n === 0 || join(n, g1) || join(n, g2));
         const resistance = +res.props.r;
-        wired = Number.isFinite(resistance) && resistance > 0 && d2 !== a && !gnd(d2) && !gnd(a)
-          && ((join(d2, r1) && join(a, r2)) || (join(d2, r2) && join(a, r1))) && gnd(cth);
+        wired = Number.isFinite(resistance) && resistance > 0 && drive !== a && !gnd(drive) && !gnd(a)
+          && ((join(drive, r1) && join(a, r2)) || (join(drive, r2) && join(a, r1))) && gnd(cth);
       } catch (err) {
         console.warn('Could not inspect the guided circuit', err);
         stopCoach(); app().cmd.toast('Could not inspect this circuit. Reopen Getting started to try again.', true); return;
@@ -989,10 +1036,12 @@
     const run = app().run;
     if (!wired || coachRun !== run) { resetCoachEvidence(); coachRun = run; }
     const running = !!run && (run.kind === 'qemu' || run.kind === 'js') && document.body.classList.contains('running');
+    syncCoachGPIO();
     if (wired && running) {
-      const state = app().sim.partState(led), current = Math.abs(state.i), voltage = app().sim.pinVoltage(esp, 'D2');
+      const state = app().sim.partState(led), current = Math.abs(state.i), voltage = app().sim.pinVoltage(esp, pin.name);
+      const output = app().sim.espRuntime(esp).pin(coachGPIO).out;
       if (state.burned) { resetCoachEvidence(); coachRun = run; }
-      if (!state.burned && Number.isFinite(current) && Number.isFinite(voltage)) {
+      if (output && !state.burned && Number.isFinite(current) && Number.isFinite(voltage)) {
         if (voltage > 2.5 && current > 0.001) coachOn = true;
         if (coachOn && voltage < 0.2 && current < 0.0001) coachOff = true;
       }
@@ -1009,11 +1058,11 @@
       if (next.textContent !== label) next.textContent = label;
     }
     const steps = [!!led, !!res, wired, coachCodeSeen, running && coachOn && coachOff];
-    const labels = ['Add an LED.', 'Add a resistor.', 'Wire D2 to the resistor, the resistor to the LED, and the LED to GND.', 'Open code to learn how the sketch makes the LED blink.', 'Run the sketch and watch the LED.'];
+    const labels = ['Add an LED.', 'Add a resistor.', `Wire ${pin.name} to the resistor, the resistor to the LED, and the LED to GND.`, 'Open code to learn how the sketch makes the LED blink.', 'Run the sketch and watch the LED.'];
     const i = steps.findIndex((ok) => !ok);
     const el = $('#ui2CoachNow'); if (!el) return;
     const text = i < 0 ? 'Blink is working. The LED has turned on and off.'
-      : i === 4 && running ? 'Step 5 of 5. Waiting for the LED to turn on and off.'
+      : i === 4 && running ? `Step 5 of 5. Waiting for the LED to turn on and off. If it stays off, check the sketch and ${pin.name} wire.`
       : `Step ${i + 1} of 5. ${labels[i]}`;
     if (el.textContent !== text) el.textContent = text;
   }

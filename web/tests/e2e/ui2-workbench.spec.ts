@@ -26,6 +26,11 @@ type WorkbenchWindow = Window & {
     ensureParts(): Promise<void>;
     store: { get(id: string): Project; save(project: Project): boolean };
     cmd: { save(): boolean };
+    sim: {
+      pinVoltage(part: Part, name: string): number;
+      partState(part: Part): { i: number };
+      espRuntime(part: Part): { pin(gpio: number): { out: boolean } };
+    };
     editor: {
       addPart(type: string, x: number, y: number): void;
       renderWires(): void; hooks: { changed(topo: boolean): void };
@@ -93,11 +98,11 @@ async function axe(page: Page) {
 }
 
 async function shot(page: Page, name: string) {
-  await page.screenshot({ path: test.info().outputPath(name) });
+  await page.screenshot({ path: test.info().outputPath(name), animations: 'disabled' });
 }
 
-async function wireGuide(page: Page, bypass: boolean, reversed = false) {
-  await page.evaluate(({ bypass, reversed }) => {
+async function wireGuide(page: Page, bypass: boolean, reversed = false, pinName = 'D2') {
+  await page.evaluate(({ bypass, reversed, pinName }) => {
     const root = window as WorkbenchWindow, editor = root.app.editor;
     if (!root.app.proj.parts.some(p => p.type === 'led')) editor.addPart('led', 400, 200);
     if (!root.app.proj.parts.some(p => p.type === 'resistor')) editor.addPart('resistor', 300, 200);
@@ -109,13 +114,13 @@ async function wireGuide(page: Page, bypass: boolean, reversed = false) {
     const wire = (id: string, a: { x: number; y: number }, b: { x: number; y: number }) => ({ id, a, b, pts: [], color: 'green' });
     const input = reversed ? '2' : '1', output = reversed ? '1' : '2';
     root.app.proj.wires = [
-      wire('drive', pin(esp, 'D2'), pin(resistor, input)),
+      wire('drive', pin(esp, pinName), pin(resistor, input)),
       wire('led', pin(resistor, bypass ? input : output), pin(led, 'A')),
       wire('ground', pin(led, 'C'), pin(esp, 'GND.1')),
     ];
     editor.renderWires();
     editor.hooks.changed(true);
-  }, { bypass, reversed });
+  }, { bypass, reversed, pinName });
 }
 
 test('guide rejects a bypassed resistor and waits for real blinking on every run', async ({ page }) => {
@@ -176,15 +181,16 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 360, height: 640 
     await expect(lesson).toContainText('GPIO 2 (D2)');
     await expect(lesson).toContainText('general-purpose input/output');
     await expect(lesson).toContainText('setup() runs once');
-    await expect(lesson.locator('pre').first()).toContainText('pinMode(LED_BUILTIN, OUTPUT);');
+    await expect(lesson.locator('pre')).toContainText('const int LED_PIN = 2;');
+    await expect(lesson.locator('pre')).toContainText('pinMode(LED_PIN, OUTPUT);');
     await expect(lesson).toContainText('OUTPUT lets the GPIO drive an electrical signal');
     await expect(lesson).toContainText('INPUT is for reading a signal');
     await expect(lesson).toContainText('loop() repeats');
-    await expect(lesson.locator('pre').last()).toContainText('digitalWrite(LED_BUILTIN, HIGH);');
-    await expect(lesson.locator('pre').last()).toContainText('digitalWrite(LED_BUILTIN, LOW);');
+    await expect(lesson.locator('pre')).toContainText('digitalWrite(LED_PIN, HIGH);');
+    await expect(lesson.locator('pre')).toContainText('digitalWrite(LED_PIN, LOW);');
     await expect(lesson).toContainText('delay(1000) waits 1000 milliseconds');
     await expect(page.locator('#code')).toHaveValue(starter);
-    await lesson.locator('li').nth(1).scrollIntoViewIfNeeded();
+    await lesson.locator('pre').scrollIntoViewIfNeeded();
     await shot(page, `guided-gpio-initialization-${viewport.width}.png`);
     if (viewport.width < 820) {
       expect(await lesson.locator('pre').evaluateAll(blocks => blocks.every(block => block.scrollWidth <= block.clientWidth))).toBe(true);
@@ -222,6 +228,116 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 360, height: 640 
     }
     await expect(lesson).toBeHidden();
     await expect(page.locator('#ui2Coach')).toBeHidden();
+    expect(errors.filter(e => !/favicon/i.test(e))).toEqual([]);
+  });
+
+  test(`selectable GPIO guide teaches rewiring and validates the chosen output at ${viewport.width}px`, async ({ page }) => {
+    const errors = await install(page);
+    await page.setViewportSize(viewport);
+    await page.goto('/?ui=2&resume=0');
+    await ready(page);
+    await page.getByRole('button', { name: 'Start guided Blink', exact: true }).click();
+    await expect(page.locator('#ui2CoachGPIO')).toHaveValue('2');
+    await expect(page.locator('#ui2CoachGPIO option[value="34"]')).toHaveCount(0);
+    await expect(page.locator('#ui2CoachGPIO option[value="36"]')).toHaveCount(0);
+    await wireGuide(page, false);
+    await page.locator('#ui2CoachCodeOpen').click();
+    const lesson = page.locator('#ui2CoachCode');
+    const edited = (await page.locator('#code').inputValue()).replace(/delay\(1000\)/g, 'delay(500)');
+    await page.locator('#code').fill(edited);
+    const before = await page.evaluate(() => {
+      const root = window as WorkbenchWindow;
+      return { id: root.app.proj.id, wires: root.app.proj.wires };
+    });
+    await page.locator('#ui2CoachCodeGPIO').selectOption('18');
+    await expect(page.locator('#ui2CoachGPIO')).toHaveValue('18');
+    await expect(lesson.locator('[data-coach-pin]')).toHaveText('GPIO 18 (D18)');
+    await expect(lesson.locator('pre')).toContainText('const int LED_PIN = 18;');
+    await expect(page.locator('#code')).toHaveValue(edited);
+    expect(await page.evaluate(() => {
+      const root = window as WorkbenchWindow;
+      return { id: root.app.proj.id, wires: root.app.proj.wires };
+    })).toEqual(before);
+    await expect(page.locator('#ui2CoachNow')).toContainText('Wire D18');
+    if (viewport.width < 820) {
+      await page.locator('#dock .m-x').click();
+      await expect(page.locator('body')).toHaveAttribute('data-msheet', '');
+    }
+    await shot(page, `guided-gpio-choice-${viewport.width}.png`);
+    await wireGuide(page, false, false, 'D18');
+    await expect(page.locator('#ui2CoachNow')).toContainText('Step 4 of 5');
+    await page.locator('#ui2CoachCodeOpen').click();
+    await lesson.locator('pre').scrollIntoViewIfNeeded();
+    await expect(lesson.locator('pre')).toBeInViewport({ ratio: 1 });
+    expect(await lesson.locator('pre').evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+    await axe(page);
+    await shot(page, `guided-gpio-18-code-${viewport.width}.png`);
+    await page.locator('#ui2CoachCodeNext').click();
+    await page.locator('#selMode').selectOption('js');
+    const run = page.locator(viewport.width < 820 ? '#ui2CodeRun' : '#ui2Run');
+    const sketch = (gpio: number) => `function setup(){pinMode(${gpio},OUTPUT)}\nfunction loop(){digitalWrite(${gpio},HIGH);delay(200);digitalWrite(${gpio},LOW);delay(200)}`;
+    await page.locator('#code').fill(sketch(2));
+    await run.click();
+    await page.waitForTimeout(600);
+    await expect(page.locator('#ui2CoachNow')).toContainText('Waiting for the LED');
+    await expect(page.locator('#ui2CoachGPIO')).toBeDisabled();
+    await expect(page.locator('#ui2CoachCodeGPIO')).toBeDisabled();
+    await run.click();
+    if (viewport.width >= 820) {
+      await page.evaluate(() => {
+        const root = window as WorkbenchWindow, esp = root.app.proj.parts.find(p => p.type === 'esp32')!;
+        const pin = (name: string) => root.Parts.pinWorld(esp, root.Parts.T.esp32.pins(esp).find(p => p.name === name)!);
+        root.app.proj.wires.push({ id: 'bridge', a: pin('D2'), b: pin('D18'), pts: [], color: 'green' });
+        root.app.editor.renderWires(); root.app.editor.hooks.changed(true);
+      });
+      await run.click();
+      await expect.poll(() => page.evaluate(() => {
+        const root = window as WorkbenchWindow, led = root.app.proj.parts.find(p => p.type === 'led')!;
+        return Math.abs(root.app.sim.partState(led).i);
+      })).toBeGreaterThan(0.001);
+      expect(await page.evaluate(() => {
+        const root = window as WorkbenchWindow, esp = root.app.proj.parts.find(p => p.type === 'esp32')!;
+        return root.app.sim.espRuntime(esp).pin(18).out;
+      })).toBe(false);
+      await page.waitForTimeout(600);
+      await expect(page.locator('#ui2CoachNow')).toContainText('Waiting for the LED');
+      await run.click();
+      await wireGuide(page, false, false, 'D18');
+    }
+    await page.locator('#code').fill(sketch(18));
+    await run.click();
+    await expect(page.locator('#ui2CoachNow')).toHaveText('Blink is working. The LED has turned on and off.');
+    await run.click();
+    for (const [gpio, pinName] of [[32, 'D32'], [16, 'RX2']] as const) {
+      if (viewport.width < 820) await page.locator('#dock .m-x').click();
+      await page.getByRole('button', { name: 'Review code', exact: true }).click();
+      await page.locator('#ui2CoachCodeGPIO').selectOption(String(gpio));
+      await expect(page.locator('#ui2CoachNow')).toContainText(`Wire ${pinName}`);
+      await expect(lesson.locator('pre')).toContainText(`const int LED_PIN = ${gpio};`);
+      await expect(page.locator('#code')).toHaveValue(sketch(gpio === 32 ? 18 : 32));
+      await wireGuide(page, false, false, pinName);
+      await expect(page.locator('#ui2CoachNow')).toContainText('Step 4 of 5');
+      await page.locator('#ui2CoachCodeNext').click();
+      await page.locator('#code').fill(sketch(gpio));
+      await run.click();
+      await expect(page.locator('#ui2CoachNow')).toHaveText('Blink is working. The LED has turned on and off.');
+      await run.click();
+    }
+    if (viewport.width < 820) await page.locator('#dock .m-x').click();
+    await page.getByRole('button', { name: 'Review code', exact: true }).click();
+    await page.locator('#ui2CoachCodeGPIO').evaluate(el => {
+      const select = el as HTMLSelectElement;
+      select.add(new Option('GPIO 34 (D34)', '34'));
+      select.value = '34'; select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await expect(page.getByText('Choose an output-capable GPIO from this board.', { exact: true })).toBeVisible();
+    await expect(page.locator('#ui2CoachCodeGPIO')).toHaveValue('16');
+    await expect(page.locator('#ui2CoachGPIO')).toHaveValue('16');
+    await expect(page.locator('#code')).toHaveValue(sketch(16));
+    await page.getByRole('button', { name: 'Dismiss guide', exact: true }).click();
+    await expect(lesson).toBeHidden();
+    await expect(page.locator('#ui2Coach')).toBeHidden();
+    expect(await page.evaluate(() => (window as WorkbenchWindow).app.proj.id)).toBe(before.id);
     expect(errors.filter(e => !/favicon/i.test(e))).toEqual([]);
   });
 }

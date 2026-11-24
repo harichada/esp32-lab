@@ -315,12 +315,16 @@ html[data-ui="2"] .ui2-card .ui2-choice{width:100%;justify-content:flex-start;he
 html[data-ui="2"] .ui2-steps{margin:8px 0 12px;padding-left:18px;color:var(--txt2)}
 html[data-ui="2"] .ui2-steps li{margin:4px 0}
 html[data-ui="2"] .ui2-coach{
-  position:absolute;top:12px;left:12px;right:12px;z-index:6;display:flex;align-items:center;gap:8px;
+  position:absolute;top:12px;left:12px;right:12px;z-index:6;display:flex;flex-wrap:wrap;align-items:center;gap:8px;
   max-width:520px;padding:8px 10px;background:var(--l1);border:1px solid var(--line2);border-radius:12px;box-shadow:var(--sh1);
 }
 html[data-ui="2"] .ui2-coach[hidden]{display:none!important}
 html[data-ui="2"] body.m .ui2-coach{right:88px;max-width:calc(100% - 100px);flex-wrap:wrap}
-html[data-ui="2"] #ui2CoachNow{margin:0;flex:1;font-size:13px}
+html[data-ui="2"] #ui2CoachNow{margin:0;flex:1 0 100%;font-size:13px}
+html[data-ui="2"] .ui2-coach-pin{display:inline-flex;flex-wrap:wrap;align-items:center;gap:6px;max-width:100%;font-size:13px}
+html[data-ui="2"] .ui2-coach-pin select{min-width:0;max-width:170px;height:32px;padding:4px 30px 4px 8px;font:inherit}
+html[data-ui="2"] body.m .ui2-coach-pin select{height:44px}
+html[data-ui="2"] .ui2-code-guide .ui2-coach-pin{margin:8px 0}
 html[data-ui="2"] .ui2-code-guide{flex:none;padding:8px 0 12px;border-bottom:1px solid var(--line);font-size:13px;line-height:1.5;overflow-wrap:anywhere}
 html[data-ui="2"] .ui2-code-guide[hidden]{display:none!important}
 html[data-ui="2"] .ui2-code-guide-head{display:flex;flex-wrap:wrap;align-items:flex-start;gap:12px}
