@@ -126,14 +126,14 @@
     // ---------- rendering ----------
     _viewWorld() {
       const r = this.svg.getBoundingClientRect(), s = this.view.s || 1;
-      return { x0: this.view.x, y0: this.view.y, x1: this.view.x + r.width / s, y1: this.view.y + r.height / s };
+      return { x0: this.view.x, y0: this.view.y, x1: this.view.x + r.width / s, y1: this.view.y + r.height / s, s: s };
     }
     partSvg(p) {
       const d = P.T[p.type]; const st = this.hooks.state ? this.hooks.state(p) : null;
       let paint = null;
       if (p.type === 'breadboard' && ui3On() && P.bbViewFor) {
         try { paint = P.bbViewFor(p, this._viewWorld()); } catch (e) { paint = null; }
-        if (paint) { root._bbView = root._bbView || {}; root._bbView[p.id] = paint.span; root._bbPaint = { id: p.id, span: paint.span, hole: paint.hole }; }
+        if (paint) { root._bbView = root._bbView || {}; root._bbView[p.id] = paint.span; root._bbPaint = { id: p.id, span: paint.span, hole: paint.hole, step: paint.step || 1 }; }
       }
       try { return d.svg(p, st); } catch (e) { return `<text class="plbl">${p.type}?</text>`; }
       finally { if (paint) root._bbPaint = null; }
@@ -441,6 +441,43 @@
       }
       return best;
     }
+    // Nearest breadboard hole within a few screen pixels. Wiring uses this, not the painted dots.
+    _snapBoardHole(ev, only) {
+      if (!P.bbNearest || !this.proj) return null;
+      const w = this.toWorld(ev);
+      const touch = !!(ev && (ev.pointerType === 'touch' || (document.body && document.body.classList.contains('m'))));
+      const limit = touch ? 18 : 8;
+      let best = null, bd = limit;
+      for (const p of (only ? [only] : this.proj.parts)) {
+        if (!p || p.type !== 'breadboard') continue;
+        const hit = P.bbNearest(p, w.x, w.y); if (!hit) continue;
+        const sd = Math.hypot(hit.x - w.x, hit.y - w.y) * (this.view.s || 1);
+        if (sd > bd) continue;
+        bd = sd;
+        best = { part: p, pin: { name: hit.name, x: hit.lx, y: hit.ly }, pos: { x: hit.x, y: hit.y }, bb: true };
+      }
+      return best;
+    }
+    // Part body under a point, including a few units of slop. Breadboard plastic is not a body.
+    _bodyNear(world) {
+      if (!this.proj || !world) return null;
+      const pad = 6;
+      let best = null, bd = Infinity;
+      for (const p of this.proj.parts) {
+        if (!p || p.type === 'breadboard' || p.type === 'label' || !P.T[p.type] || !P.T[p.type].size) continue;
+        const sz = P.T[p.type].size(p) || { w: 16, h: 16 };
+        const dx = world.x - p.x, dy = world.y - p.y, r = ((p.rot || 0) % 4 + 4) % 4;
+        let lx, ly;
+        if (r === 1) { lx = dy; ly = -dx; } else if (r === 2) { lx = -dx; ly = -dy; } else if (r === 3) { lx = -dy; ly = dx; } else { lx = dx; ly = dy; }
+        const bw = sz.w || 16, bh = sz.h || 16;
+        const ox = lx < 0 ? -lx : lx > bw ? lx - bw : 0;
+        const oy = ly < 0 ? -ly : ly > bh ? ly - bh : 0;
+        if (ox > pad || oy > pad) continue;
+        const d = ox * ox + oy * oy;
+        if (d < bd) { bd = d; best = p; }
+      }
+      return best;
+    }
     pinAtEvent(ev) {
       // A wire starts on the pin or hole under the pointer, or within the
       // component-pin slop. Breadboard holes are one grid step apart, so the
@@ -451,6 +488,18 @@
       const pg = ev.target && ev.target.closest && ev.target.closest('.part'), part = pg && this.part(this._partIdOf(pg));
       // A part body, lead, or label selects the part. It must not snap to a nearby leg and start a wire.
       if (part && part.type !== 'breadboard') return null;
+      // Studio Dark: a press on the board near a hole starts a wire even when that hole is not painted.
+      // A real component pin that is closer still wins, the same as a painted hole.
+      if (ui3On() && part && part.type === 'breadboard') {
+        const onWire = ev.target && ev.target.closest && (ev.target.closest('.wire') || ev.target.closest('.w-end'));
+        if (!onWire) {
+          const near = this.pinNear(this.toWorld(ev), ev);
+          if (near && !near.bb) return near;
+          const snapped = this._snapBoardHole(ev, part);
+          if (snapped) return snapped;
+        }
+        return null;
+      }
       const onWire = ev.target && ev.target.closest && ev.target.closest('.wire');
       const near = this.pinNear(this.toWorld(ev), ev, onWire ? 5 : 14);
       if (!near || near.bb) return null;
@@ -672,22 +721,25 @@
       const bEl = ev.target.closest && ev.target.closest('.w-bend');
       if (bEl) { const wid = bEl.closest('.wire').dataset.wid; this.push(); this.mode = { k: 'bend', w: this.wire(wid), i: +bEl.dataset.bend }; svg_capture(this.svg, ev); return; }
       // Shift used to grab the whole breadboard, including a press that landed on a hole.
-      // A hole still starts a wire, so Shift can invert 90° for that wire. The plastic does not.
-      const onHole = !!(pinEl && p && p.type === 'breadboard');
+      // A hole (painted or snapped) still starts a wire, so Shift can invert 90° for that wire. The open plastic does not.
+      const onHole = !!(pin && pin.bb) || !!(pinEl && p && p.type === 'breadboard');
       if (pin && !(p && p.type === 'breadboard' && ev.shiftKey && !onHole)) { this.closeMenu(); this.mode = { k: 'wire', a: pin.pos, pts: [], start: pin, t0: Date.now(), ptr: w }; this._drawWirePreview(w); this.highlight(pin); const flip = document.body.classList.contains('m') ? '' : ' · Shift flips 90°'; this.setHint(`Wiring from ${this.pinLabel(pin)} — click the target pin${flip} · Esc / right-click / empty canvas cancels`); return; }
       // Studio Dark: the plastic is the canvas. Dragging it pans. Holes still start wires.
       if (ui3On() && p && p.type === 'breadboard' && !pinEl) { this.select(null); this.mode = { k: 'pan', sx: ev.clientX, sy: ev.clientY, vx: this.view.x, vy: this.view.y }; return; }
-      const wEl = ev.target.closest('.wire');
-      if (wEl) { const dbl = this._lastWireDown && this._lastWireDown.id === wEl.dataset.wid && Date.now() - this._lastWireDown.t < 450; this._lastWireDown = { id: wEl.dataset.wid, t: Date.now() };
+      const wEl = ev.target.closest && ev.target.closest('.wire');
+      // While the sim is running, a press that lands on a wire but sits on a part body acts on the part.
+      const body = (ui3On() && this.hooks.running && this.hooks.running()) ? this._bodyNear(w) : null;
+      if (wEl && !body) { const dbl = this._lastWireDown && this._lastWireDown.id === wEl.dataset.wid && Date.now() - this._lastWireDown.t < 450; this._lastWireDown = { id: wEl.dataset.wid, t: Date.now() };
         if (dbl && this.sel && this.sel.wire === wEl.dataset.wid) { this._lastWireDown = null; this._dblBend = Date.now(); this.addBend(wEl.dataset.wid, w); return; } this.select({ wire: wEl.dataset.wid }); return; }
-      if (p) {
-        const d = P.T[p.type];
-        if (d.wheel && !ev.shiftKey) { this.select({ part: p.id }); this.mode = { k: 'knob', p, sy: ev.clientY, sx: ev.clientX, pos0: +p.props.pos }; svg_capture(this.svg, ev); return; }
-        if (this.hooks.running() && d.interactive && !ev.shiftKey) { const kEl = ev.target.closest && ev.target.closest('[data-key]'); if (d.keyAt && !kEl) { /* keypad body: fall through to drag */ } else { this.hooks.press(p, true, kEl ? +kEl.dataset.key : undefined); this.mode = { k: 'press', p }; svg_capture(this.svg, ev); return; } }
-        if (d.click && !ev.shiftKey && this.hooks.running()) { if (d.click(p)) { this.render(); this.hooks.changed(false); } return; }
-        if (ev.ctrlKey || ev.metaKey) { this._toggleMulti(p.id); return; }
-        this.select({ part: p.id });
-        this.mode = { k: 'drag', p, ox: p.x, oy: p.y, sx: w.x, sy: w.y, moved: false };
+      const hit = body || p;
+      if (hit) {
+        const d = P.T[hit.type];
+        if (d.wheel && !ev.shiftKey) { this.select({ part: hit.id }); this.mode = { k: 'knob', p: hit, sy: ev.clientY, sx: ev.clientX, pos0: +hit.props.pos }; svg_capture(this.svg, ev); return; }
+        if (this.hooks.running() && d.interactive && !ev.shiftKey) { const kEl = ev.target.closest && ev.target.closest('[data-key]'); if (d.keyAt && !kEl) { /* keypad body: fall through to drag */ } else { this.hooks.press(hit, true, kEl ? +kEl.dataset.key : undefined); this.mode = { k: 'press', p: hit }; svg_capture(this.svg, ev); return; } }
+        if (d.click && !ev.shiftKey && this.hooks.running()) { if (d.click(hit)) { this.render(); this.hooks.changed(false); } return; }
+        if (ev.ctrlKey || ev.metaKey) { this._toggleMulti(hit.id); return; }
+        this.select({ part: hit.id });
+        this.mode = { k: 'drag', p: hit, ox: hit.x, oy: hit.y, sx: w.x, sy: w.y, moved: false };
         return;
       }
       if (ui2On() && !ev.altKey && !this._spacePan) {

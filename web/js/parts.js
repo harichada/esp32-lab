@@ -133,13 +133,24 @@
     const takeR = Math.min(right, extra - takeL);
     return [s0 - takeL, s1 + takeR];
   }
-  function bbHolesSpan(s, hole, cap) {
-    const h = [];
+  // Screen pitch of one 0.1" column. Below ~3px the dots merge, so painting can skip columns.
+  function bbHoleStep(scale) {
+    const pitch = G * (Number(scale) > 0 ? Number(scale) : 1);
+    if (pitch >= 3) return 1;
+    return Math.max(1, Math.ceil(3 / pitch));
+  }
+  function bbCapStep(s, hole) {
     const cLo = hole ? Math.max(s.c0, hole.c0) : s.c0, cHi = hole ? Math.min(s.c1, hole.c1) : s.c1;
     const bLo = hole ? Math.max(s.b0, hole.b0) : s.b0, bHi = hole ? Math.min(s.b1, hole.b1) : s.b1;
     const cols = Math.max(1, cHi - cLo + 1), bands = Math.max(1, bHi - bLo + 1);
-    const step = cap ? Math.max(1, Math.ceil((cols * bands * 14) / cap)) : 1;
-    for (let b = bLo; b <= bHi; b++) for (let c = cLo; c <= cHi; c += step) {
+    return Math.max(1, Math.ceil((cols * bands * 14) / BB_HOLE_CAP));
+  }
+  function bbHolesSpan(s, hole, step) {
+    const h = [];
+    const cLo = hole ? Math.max(s.c0, hole.c0) : s.c0, cHi = hole ? Math.min(s.c1, hole.c1) : s.c1;
+    const bLo = hole ? Math.max(s.b0, hole.b0) : s.b0, bHi = hole ? Math.min(s.b1, hole.b1) : s.b1;
+    const stride = Math.max(1, step || 1);
+    for (let b = bLo; b <= bHi; b++) for (let c = cLo; c <= cHi; c += stride) {
       for (const r in BB_ROWS) { const q = bbXY(c, BB_ROWS[r], b); h.push({ name: bbName(r, c, b), x: q.x, y: q.y }); }
       if (bbRailSkip(c)) continue;
       for (const rl in BB_RAILS) { const q = bbXY(c, BB_RAILS[rl], b); h.push({ name: bbName(rl, c, b), x: q.x, y: q.y }); }
@@ -180,19 +191,28 @@
         s += `<text x="${x}" y="${y + 31}" class="bb-num">${c}</text><text x="${x}" y="${y + 166}" class="bb-num">${c}</text>`;
       }
     }
-    for (const h of bbHolesSpan(span, hole, BB_HOLE_CAP)) s += `<rect x="${h.x - 2.5}" y="${h.y - 2.5}" width="5" height="5" rx="1" class="hole" data-pin="${h.name}"/>`;
+    // Studio Dark passes a step from the screen pitch and a hole window that is only the
+    // visible columns. Off-screen holes are not painted. Classic expanded boards keep the count cap.
+    const step = paint ? (paint.step || 1) : bbCapStep(span, hole);
+    for (const h of bbHolesSpan(span, hole, step)) s += `<rect x="${h.x - 2.5}" y="${h.y - 2.5}" width="5" height="5" rx="1" class="hole" data-pin="${h.name}"/>`;
     return s;
   }
   // World rect the 2D view should paint, unioned with the saved board and capped.
+  // Holes are the columns actually on screen. rect.s is the view scale (world units to pixels).
   function bbViewFor(p, rect) {
     const saved = bbSpan(p);
-    const loc = bbBoxLocal(p, rect.x0, rect.y0, rect.x1, rect.y1);
+    const box = rect || { x0: 0, y0: 0, x1: 0, y1: 0 };
+    const loc = bbBoxLocal(p, box.x0, box.y0, box.x1, box.y1);
     const v0 = Math.floor((loc.x0 - 10) / G) + 1, v1 = Math.ceil((loc.x1 - 10) / G) + 1;
     const u0 = Math.floor((loc.y0 + 14) / BB_BAND), u1 = Math.floor((loc.y1 + 14) / BB_BAND);
     const [c0, c1] = bbUnion(saved.c0, saved.c1, v0, v1, BB_MAX_COLS);
     const [b0, b1] = bbUnion(saved.b0, saved.b1, u0, u1, BB_MAX_BANDS);
     const span = { c0: c0, c1: c1, b0: b0, b1: b1 };
-    return { span: span, hole: span };
+    let hc0 = Math.max(span.c0, v0 - 1), hc1 = Math.min(span.c1, v1 + 1);
+    let hb0 = Math.max(span.b0, u0), hb1 = Math.min(span.b1, u1);
+    if (hc1 < hc0) { hc0 = span.c0; hc1 = Math.min(span.c1, span.c0); }
+    if (hb1 < hb0) { hb0 = span.b0; hb1 = Math.min(span.b1, span.b0); }
+    return { span: span, hole: { c0: hc0, c1: hc1, b0: hb0, b1: hb1 }, step: bbHoleStep(box.s) };
   }
   // Nearest hole of this board (saved span, or the painted view when one is set). World coordinates in, world coordinates out.
   function bbNearest(p, wx, wy) {
