@@ -218,6 +218,76 @@ test('while the sim is running, a press on a wire that sits on a part body selec
   assert.equal(ed.sel && ed.sel.wire, 'w1');
 });
 
+test('a touch drag at phone zoom pans, and a desktop drag at 36% pans', () => {
+  const ed = editor({ state: false });
+  const hole = holeMark('a1');
+  ed.view = { x: 0, y: 0, s: 0.38 };
+  down(ed, hole, 10, 40, { pointerType: 'touch' });
+  assert.equal(ed.mode && ed.mode.k, 'arm', 'a finger on the hole does not start a wire');
+  move(ed, hole, 10 + 12 / ed.view.s, 40, { pointerType: 'touch' });
+  assert.equal(ed.mode.k, 'pan');
+  assert.equal(ed.proj.wires.length, 0);
+  ed._clearArm();
+  ed.mode = null;
+  ed.view = { x: 0, y: 0, s: 0.38 };
+  down(ed, hole, 10, 40, { pointerType: 'touch' });
+  up(ed, hole, 10, 40, { pointerType: 'touch' });
+  assert.equal(ed.mode && ed.mode.k, 'wire', 'a tap still starts a wire');
+  ed.cancelWire();
+
+  ed.view = { x: 0, y: 0, s: 0.36 };
+  down(ed, hole, 10, 40);
+  assert.equal(ed.mode && ed.mode.k, 'arm');
+  move(ed, hole, 10 + 8 / ed.view.s, 40);
+  assert.equal(ed.mode.k, 'pan');
+  assert.equal(ed.proj.wires.length, 0);
+  ed._clearArm();
+});
+
+function holeMark(name) {
+  const part = makeEl('g');
+  part.className = 'part';
+  part.dataset.id = 'bb1';
+  const hole = makeEl('circle');
+  hole.dataset.pin = name;
+  hole.closest = (sel) => {
+    const s = String(sel);
+    if (s.indexOf('data-pin') >= 0) return hole;
+    if (s === '.part') return part;
+    return null;
+  };
+  return hole;
+}
+
+test('a press on the LED dome selects the LED, and a press on its pin still starts a wire', () => {
+  const ed = editor({ state: false });
+  const led = { id: 'D1', type: 'led', x: 5, y: 58, rot: 0, props: { color: 'red', vf: 1.9, imax: 0.03 } };
+  ed.proj.parts.push(led);
+  const box = P.gfxBox(led);
+  assert.ok(box.x <= 10 && 10 <= box.x + box.w && box.y <= 40 && 40 <= box.y + box.h, 'the dome covers hole a1');
+  down(ed, holeMark('a1'), 10, 40);
+  assert.equal(ed.sel && ed.sel.part, 'D1');
+  assert.notEqual(ed.mode && ed.mode.k, 'wire');
+  ed.mode = null;
+  ed.sel = null;
+
+  const pin = makeEl('circle');
+  pin.dataset.pin = 'A';
+  const body = makeEl('g');
+  body.className = 'part';
+  body.dataset.id = 'D1';
+  pin.closest = (sel) => {
+    const s = String(sel);
+    if (s.indexOf('data-pin') >= 0) return pin;
+    if (s === '.part') return body;
+    return null;
+  };
+  down(ed, pin, 5, 58);
+  assert.equal(ed.mode && ed.mode.k, 'wire');
+  assert.equal(ed.mode.start.part.id, 'D1');
+  ed.cancelWire();
+});
+
 test('while the sim is running, a wire over the LED dome selects the LED', () => {
   const ed = editor({ state: true });
   ed.proj.parts.push({ id: 'D1', type: 'led', x: 400, y: 400, rot: 0, props: { color: 'red', vf: 1.9, imax: 0.03 } });

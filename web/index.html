@@ -20,7 +20,7 @@
 /* Workbench flag. Default off. UI2=1 injects meta name=ui2. ?ui=2 forces the workbench on.
    ?ui=3 forces Studio Dark. A saved esp32lab.ui of "3" opens Studio Dark on later visits.
    ?ui=0, ?ui=1, or ?ui=off forces the current interface for this load. ?ui=2 still wins over a saved Studio Dark choice. */
-(function(){try{var q=new URLSearchParams(location.search).get('ui');var forceOff=q==='0'||q==='1'||q==='off';var stored='';try{stored=clStorage.local.getItem('esp32lab.ui')||'';}catch(e){}var ui3=q==='3'||(!forceOff&&q!=='2'&&stored==='3');if(ui3){document.documentElement.setAttribute('data-ui','3');window.__UI3=true;document.write('<link rel="preload" href="fonts/Inter-var.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="fonts/JetBrainsMono-400.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="css/ui3.css?v=4">');return;}var meta=document.querySelector('meta[name="ui2"]');var raw=meta?String(meta.getAttribute('content')||'').trim().toLowerCase():'';var server=raw==='1'||raw==='true'||raw==='yes'||raw==='on';var on=q==='2'?true:forceOff?false:server;if(!on)return;document.documentElement.setAttribute('data-ui','2');window.__UI2=true;document.write('<link rel="preload" href="fonts/Inter-var.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="fonts/JetBrainsMono-400.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="css/ui2.css?v=13">');}catch(e){}})();
+(function(){try{var q=new URLSearchParams(location.search).get('ui');var forceOff=q==='0'||q==='1'||q==='off';var stored='';try{stored=clStorage.local.getItem('esp32lab.ui')||'';}catch(e){}var ui3=q==='3'||(!forceOff&&q!=='2'&&stored==='3');if(ui3){document.documentElement.setAttribute('data-ui','3');window.__UI3=true;document.write('<link rel="preload" href="fonts/Inter-var.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="fonts/JetBrainsMono-400.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="css/ui3.css?v=5">');return;}var meta=document.querySelector('meta[name="ui2"]');var raw=meta?String(meta.getAttribute('content')||'').trim().toLowerCase():'';var server=raw==='1'||raw==='true'||raw==='yes'||raw==='on';var on=q==='2'?true:forceOff?false:server;if(!on)return;document.documentElement.setAttribute('data-ui','2');window.__UI2=true;document.write('<link rel="preload" href="fonts/Inter-var.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="fonts/JetBrainsMono-400.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="css/ui2.css?v=13">');}catch(e){}})();
 </script>
 </head>
 <body>
@@ -219,7 +219,7 @@
 <script src="js/bom.js?v=41"></script>
 <script src="js/projects.js?v=54"></script>
 <script src="js/pinch.js?v=64"></script>
-<script src="js/editor.js?v=76"></script>
+<script src="js/editor.js?v=77"></script>
 <script src="js/codeview.js?v=40"></script>
 <script src="js/ui.js?v=66"></script>
 <script src="js/netlist.js?v=51"></script>
@@ -232,10 +232,10 @@
 })();
 </script>
 <script src="js/viewchrome.js?v=2"></script>
-<script src="js/app.js?v=112"></script>
+<script src="js/app.js?v=113"></script>
 <script src="js/mobile.js?v=72"></script>
 <script src="js/uitoggle.js?v=1"></script>
-<script>if(window.__UI2)document.write('<script src="js/ui2.js?v=15"><\/script>');if(window.__UI3)document.write('<script src="js/ui3.js?v=5"><\/script>');</script>
+<script>if(window.__UI2)document.write('<script src="js/ui2.js?v=15"><\/script>');if(window.__UI3)document.write('<script src="js/ui3.js?v=6"><\/script>');</script>
 <script src="js/auth.js?v=9"></script>
 <p id="mCompileToast" class="m-compile-toast" hidden aria-hidden="true"></p>
 <footer id="legalFoot"><span>Simulator for ESP32 &middot; &copy; 2026 Hari Kishore Chada. Not affiliated with or endorsed by Espressif Systems, Arduino SA, or Wokwi. ESP32, Arduino and Wokwi are trademarks of their respective owners.</span> <a href="notices.html" target="_blank" rel="noopener">Open-source notices</a></footer>

@@ -383,15 +383,29 @@
       const r = shownBox(el); if (!r) return;
       const originTop = w.top || 0, originLeft = w.left || 0;
       if (r.bottom <= originTop + 1 || r.top >= originTop + height - 1) return;
-      if (edge === 'left') x0 = Math.max(x0, r.right - originLeft + 8);
-      else if (edge === 'right') x1 = Math.min(x1, r.left - originLeft - 8);
-      else if (edge === 'top') y0 = Math.max(y0, r.bottom - originTop + 8);
+      if (r.right <= originLeft + 1 || r.left >= originLeft + width - 1) return;
+      let side = edge;
+      if (side === 'auto') {
+        const cx = (r.left + r.right) / 2 - originLeft;
+        const cy = (r.top + r.bottom) / 2 - originTop;
+        if (r.width >= r.height && cy > height * 0.45) side = 'bottom';
+        else if (cx > width * 0.62) side = 'right';
+        else side = 'left';
+      }
+      if (side === 'left') x0 = Math.max(x0, r.right - originLeft + 8);
+      else if (side === 'right') x1 = Math.min(x1, r.left - originLeft - 8);
+      else if (side === 'top') y0 = Math.max(y0, r.bottom - originTop + 8);
+      else if (side === 'bottom') y1 = Math.min(y1, r.top - originTop - 8);
     };
     eat(document.getElementById('ui3rail'), 'left');
     eat(document.getElementById('palette'), 'left');
     eat(document.getElementById('side'), 'right');
     if (document.body && document.body.classList.contains('ui3-code')) eat(document.getElementById('dock'), 'right');
     eat(document.getElementById('ui3top'), 'top');
+    eat(document.getElementById('ui3tabs'), 'bottom');
+    eat(document.getElementById('ui3tools'), 'auto');
+    eat(document.getElementById('ui3zoom'), 'auto');
+    eat(document.getElementById('ui3status'), 'auto');
     if (x1 < x0 + 48) x1 = x0 + 48;
     if (y1 < y0 + 36) y1 = y0 + 36;
     return { x0: x0, y0: y0, x1: x1, y1: y1 };

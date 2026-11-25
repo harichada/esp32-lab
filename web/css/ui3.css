@@ -275,10 +275,10 @@ html[data-ui="3"] body.ui3-home #ui3Peek,html[data-ui="3"] body.ui3-home .ui3-ru
 html[data-ui="3"] body.ui3-home .hint,html[data-ui="3"] body.ui3-home .projbanner{display:none!important}
 
 /* nets, glow, motion */
-html[data-ui="3"] .wire.net-sig .w-line,html[data-ui="3"] #stageSch .sch-wire.net-sig{stroke:#22d3ee!important}
-html[data-ui="3"] .wire.net-led .w-line,html[data-ui="3"] #stageSch .sch-wire.net-led{stroke:#a78bfa!important}
-html[data-ui="3"] .wire.net-gnd .w-line,html[data-ui="3"] #stageSch .sch-wire.net-gnd{stroke:#94a3b8!important}
-html[data-ui="3"] .wire.net-pwr .w-line{stroke:#fb7185!important}
+html[data-ui="3"] #stage .w-shadow{stroke:rgba(15,23,42,.72);stroke-width:4.4}
+html[data-ui="3"] #stageSch .sch-wire.net-sig{stroke:#22d3ee!important}
+html[data-ui="3"] #stageSch .sch-wire.net-led{stroke:#a78bfa!important}
+html[data-ui="3"] #stageSch .sch-wire.net-gnd{stroke:#94a3b8!important}
 html[data-ui="3"] #stage.flow.live .wire.net-sig .w-line{filter:drop-shadow(0 0 2px #22d3ee)}
 html[data-ui="3"] #stage.flow.live .wire.net-led .w-line{filter:drop-shadow(0 0 3px #8b5cf6)}
 html[data-ui="3"] #stage.flow.live .w-flow{stroke:#e0fbff;filter:drop-shadow(0 0 2px #22d3ee)}
@@ -312,7 +312,10 @@ html[data-ui="3"] #ui3more{display:none}
   html[data-ui="3"] #dock{
     top:64px;bottom:calc(72px + env(safe-area-inset-bottom));left:8px;right:8px;width:auto;max-width:none;min-width:0;border-radius:16px
   }
-  html[data-ui="3"] #ui3tools{left:8px;top:auto;bottom:calc(128px + env(safe-area-inset-bottom))}
+  html[data-ui="3"] #ui3tools{
+  left:8px;right:8px;top:auto;width:auto;max-height:56px;flex-direction:row;flex-wrap:wrap;
+  bottom:calc(128px + env(safe-area-inset-bottom))
+}
   html[data-ui="3"] #ui3views{top:64px;max-width:calc(100vw - 16px);overflow:auto}
   html[data-ui="3"] #ui3zoom,html[data-ui="3"] body:not(.ui3-side-min) #ui3zoom{right:8px;bottom:calc(76px + env(safe-area-inset-bottom))}
   html[data-ui="3"] #ui3status{left:8px;bottom:calc(76px + env(safe-area-inset-bottom));max-width:46vw}
@@ -320,7 +323,7 @@ html[data-ui="3"] #ui3more{display:none}
   html[data-ui="3"] #minimap{bottom:calc(130px + env(safe-area-inset-bottom))}
   html[data-ui="3"] .projbanner{top:118px;left:8px;right:8px;max-width:none}
   html[data-ui="3"] .hint{
-    top:auto;bottom:calc(136px + env(safe-area-inset-bottom));left:76px;right:8px;max-width:none;
+    top:auto;bottom:calc(196px + env(safe-area-inset-bottom));left:8px;right:8px;max-width:none;
     transform:none;text-align:left
   }
   html[data-ui="3"] #ui3ctx{left:8px!important;right:8px;top:auto!important;bottom:calc(120px + env(safe-area-inset-bottom));width:auto}

@@ -99,7 +99,14 @@
       const bb = this.bounds(); const r = this.svg.getBoundingClientRect(); if (!bb || r.width < 2 || r.height < 2) return;
       const frame = root.Pinch.frameOf(this.svg);
       const limits = { min: 0.15, max: 3 };
-      const clear = root.Pinch.resolveClear(frame, bb, 14, limits);
+      let clear = root.Pinch.resolveClear(frame, bb, 14, limits);
+      if (ui3On() && root.UI3 && root.UI3.canvasLimits) {
+        const host = this.svg.parentElement && this.svg.parentElement.getBoundingClientRect ? this.svg.parentElement.getBoundingClientRect() : r;
+        const box = root.UI3.canvasLimits(host);
+        const left = (host.left || 0) + box.x0, top = (host.top || 0) + box.y0;
+        const right = (host.left || 0) + box.x1, bottom = (host.top || 0) + box.y1;
+        if (right - left > 48 && bottom - top > 48) clear = { left: left, top: top, right: right, bottom: bottom, width: right - left, height: bottom - top };
+      }
       const fit = root.Pinch.fitView(bb, frame.stage, clear, 14, limits);
       const s = fit.s;
       this.view = { s: s, x: fit.x, y: fit.y };
@@ -472,6 +479,13 @@
       const touch = !!(ev && (ev.pointerType === 'touch' || (document.body && document.body.classList.contains('m'))));
       return touch ? 8 : 5;
     }
+    // Touch, and any pointer once the holes are under about 8px apart, cannot drag a wire out.
+    // A tap or a short hold still starts one. Desktop drag-from-hole stays at a normal zoom.
+    _dragStartsWire(ev) {
+      if (!ui3On()) return true;
+      if (ev && ev.pointerType === 'touch') return false;
+      return G * (this.view.s || 1) >= 8;
+    }
     _screenDist(world, pos) { return Math.hypot(pos.x - world.x, pos.y - world.y) * (this.view.s || 1); }
     _holePin(world) {
       if (!P.bbNearest || !this.proj) return null;
@@ -487,11 +501,15 @@
       return best;
     }
     _dotPin(dot) { return { part: null, pin: { name: 'dot', x: dot.x, y: dot.y }, pos: { x: dot.x, y: dot.y }, dot: true }; }
-    // A press on the mark itself can drag a wire out. The wide snap radius is only for a click or a short hold.
+    // A press on the mark itself can drag a wire out, except on touch and when the holes are packed on screen.
     _exactPin(ev) {
       const el = ev.target && ev.target.closest && ev.target.closest('[data-pin]');
-      if (el) { const got = this.pinAtEvent(ev); if (got) return got; }
-      if (!ui3On()) return null;
+      if (el) {
+        const got = this.pinAtEvent(ev);
+        if (got && got.part && got.part.type !== 'breadboard') return got;
+        if (got && this._dragStartsWire(ev)) return got;
+      }
+      if (!ui3On() || !this._dragStartsWire(ev)) return null;
       const w = this.toWorld(ev);
       const within = (pos) => this._screenDist(w, pos) <= 2;
       const near = this.pinNear(w, ev);
@@ -799,13 +817,19 @@
       if (onBody && this.mode && this.mode.k === 'wire') this.cancelWire();
       const onWireEl = !!(ev.target && ev.target.closest && (ev.target.closest('.wire') || ev.target.closest('.w-end')));
       const exact = (!onBody && !onWireEl && ui3On()) ? this._exactPin(ev) : null;
-      const pin = exact || (onBody ? null : this.pinAtEvent(ev));
+      let pin = exact || (onBody ? null : this.pinAtEvent(ev));
+      if (ui3On() && pin && (pin.bb || pin.dot || (pin.part && pin.part.type === 'breadboard')) && !this._dragStartsWire(ev)) pin = null;
+      // A drawn part covers the holes and dots under it. Its own pins still start wires.
+      const cover = (ui3On() && !(pin && pin.part && pin.part.type !== 'breadboard')) ? this._bodyNear(w) : null;
       if (this.mode && this.mode.k === 'wire') {
-        const m = this.mode;
-        const aim = pin || (ui3On() ? this._snapWirePoint(w, ev) : null);
-        if (aim) { if (aim.pos.x === m.a.x && aim.pos.y === m.a.y && !m.pts.length) { this.cancelWire(); return; } this._finishWire(aim.pos, aim); return; }
-        // Empty canvas cancels. A click that is not on a pin or dot must not extend the wire.
-        this.cancelWire(); return;
+        if (!cover) {
+          const m = this.mode;
+          const aim = pin || (ui3On() ? this._snapWirePoint(w, ev) : null);
+          if (aim) { if (aim.pos.x === m.a.x && aim.pos.y === m.a.y && !m.pts.length) { this.cancelWire(); return; } this._finishWire(aim.pos, aim); return; }
+          // Empty canvas cancels. A click that is not on a pin or dot must not extend the wire.
+          this.cancelWire(); return;
+        }
+        this.cancelWire();
       }
       const endEl = ev.target && ev.target.closest && ev.target.closest('.w-end');
       if (endEl && this.sel && this.sel.wire) {
@@ -824,10 +848,10 @@
       // Shift used to grab the whole breadboard, including a press that landed on a hole.
       // A hole (painted or snapped) still starts a wire, so Shift can invert 90° for that wire. The open plastic does not.
       const onHole = !!(pin && (pin.bb || pin.dot)) || !!(pinEl && p && p.type === 'breadboard');
-      if (pin && !(p && p.type === 'breadboard' && ev.shiftKey && !onHole)) { this._beginWire(pin, w); return; }
+      if (!cover && pin && !(p && p.type === 'breadboard' && ev.shiftKey && !onHole)) { this._beginWire(pin, w); return; }
       // Empty board or canvas: a click or a short hold snaps to a hole or dot. A drag pans.
       // Shift on the open plastic still pans, the same as before.
-      if (ui3On() && this._openCanvas(ev, p)) {
+      if (!cover && ui3On() && this._openCanvas(ev, p)) {
         if (ev.shiftKey) { this.select(null); this.mode = { k: 'pan', sx: ev.clientX, sy: ev.clientY, vx: this.view.x, vy: this.view.y }; return; }
         this._arm(ev, w); return;
       }
@@ -836,7 +860,7 @@
       const body = (ui3On() && this.hooks.running && this.hooks.running()) ? this._bodyNear(w) : null;
       if (wEl && !body) { const dbl = this._lastWireDown && this._lastWireDown.id === wEl.dataset.wid && Date.now() - this._lastWireDown.t < 450; this._lastWireDown = { id: wEl.dataset.wid, t: Date.now() };
         if (dbl && this.sel && this.sel.wire === wEl.dataset.wid) { this._lastWireDown = null; this._dblBend = Date.now(); this.addBend(wEl.dataset.wid, w); return; } this.select({ wire: wEl.dataset.wid }); return; }
-      const hit = body || p;
+      const hit = body || cover || p;
       if (hit) {
         const d = P.T[hit.type];
         if (d.wheel && !ev.shiftKey) { this.select({ part: hit.id }); this.mode = { k: 'knob', p: hit, sy: ev.clientY, sx: ev.clientX, pos0: +hit.props.pos }; svg_capture(this.svg, ev); return; }

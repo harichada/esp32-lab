@@ -1593,8 +1593,11 @@ async function fetchRetry(u, o, n = 4) {
       t = `<b>Wire ${P.esc(h.wire.id)}</b> · ${P.esc(h.wire.color || '')}<br>V <b>${P.fmt(flow.v, 'V')}</b> · I <b>${P.fmt(flow.i, 'A')}</b>`;
     } else if (h.pin) {
       const net = app.sim.netAt(h.pin.pos.x, h.pin.pos.y), v = app.sim.nodeVoltage(net);
-      const info = h.part.type === 'esp32' ? P.T.esp32.info(h.pin.pin.name) : '';
-      t = `<b>${P.esc(h.label || (h.part.id + '.' + h.pin.pin.name))}</b>${info ? ' · ' + P.esc(info) : ''}<br>${net < 0 ? 'unconnected' : net === 0 ? 'GND (0 V)' : 'node ' + net + ': <b>' + P.fmt(v, 'V') + '</b>'}`;
+      const part = h.part;
+      const pinName = (h.pin.pin && h.pin.pin.name) || '';
+      const info = part && part.type === 'esp32' ? P.T.esp32.info(pinName) : '';
+      const who = h.label || (part ? part.id + '.' + pinName : 'Dot');
+      t = `<b>${P.esc(who)}</b>${info ? ' · ' + P.esc(info) : ''}<br>${net < 0 ? 'unconnected' : net === 0 ? 'GND (0 V)' : 'node ' + net + ': <b>' + P.fmt(v, 'V') + '</b>'}`;
     } else if (h.part && h.part.type !== 'breadboard') {
       const r = app.sim.readout(h.part); t = `<b>${P.esc(h.part.id)}</b> ${P.esc(P.T[h.part.type].label)}${r ? '<br>' + P.esc(r) : ''}`;
     }

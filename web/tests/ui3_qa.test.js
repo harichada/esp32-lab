@@ -198,6 +198,28 @@ test('the More sheet hides 3D whenever 3D cannot open', () => {
   assert.equal(more3d.hidden, true);
 });
 
+test('Fit clears the inspector, and the phone wire toolbar does not cover the left edge', () => {
+  side._display = 'block';
+  const wrap = { left: 0, top: 0, right: 1440, bottom: 900, width: 1440, height: 900 };
+  const desk = UI3.canvasLimits(wrap);
+  assert.ok(desk.x1 <= 1140 - 8, 'the inspector is outside the fitted area');
+  const Pinch = require(path.join(__dirname, '..', 'js', 'pinch.js')) || global.Pinch;
+  const pinch = global.Pinch || Pinch;
+  const bounds = { x: 0, y: 0, w: 640, h: 220 };
+  const stage = { left: 0, top: 0, right: 1440, bottom: 900, width: 1440, height: 900 };
+  const clear = { left: desk.x0, top: desk.y0, right: desk.x1, bottom: desk.y1, width: desk.x1 - desk.x0, height: desk.y1 - desk.y0 };
+  const view = pinch.fitView(bounds, stage, clear, 14, { min: 0.15, max: 3 });
+  const right = (bounds.x + bounds.w - view.x) * view.s;
+  assert.ok(right <= desk.x1 + 1, 'the right side of the circuit stays left of the inspector');
+
+  side._display = 'none';
+  const tools = node('div', 'ui3tools');
+  tools.rect = { left: 8, top: 660, right: 382, bottom: 716, width: 374, height: 56 };
+  const phone = UI3.canvasLimits({ left: 0, top: 0, right: 390, bottom: 844, width: 390, height: 844 });
+  assert.ok(phone.x0 < 40, 'the left edge of the board stays clear of the wire toolbar');
+  assert.ok(phone.y1 <= tools.rect.top - 8, 'Fit sits the circuit above the toolbar');
+});
+
 test('the selection toolbar stays inside the canvas beside the inspector', () => {
   side._display = 'block';
   const wrap = { left: 0, top: 0, right: 1440, bottom: 900, width: 1440, height: 900 };
