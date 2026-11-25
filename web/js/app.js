@@ -2268,7 +2268,7 @@ async function fetchRetry(u, o, n = 4) {
 
   // ---------------- 2D / 3D view ----------------
   let viewMode = '2d', view3dLoading = null, knob3d = null;
-  const VIEW3D_SRC = 'js/view3d.js?v=57';
+  const VIEW3D_SRC = 'js/view3d.js?v=58';
   const THREE_SRC = 'vendor/three.min.js?v=2';
   function loadScriptOnce(src) {
     return new Promise((res, rej) => {
@@ -2325,6 +2325,14 @@ async function fetchRetry(u, o, n = 4) {
           hover({ wire: w, ev });
         },
         onPart: (id) => { app.editor.select({ part: id }); },
+        // A click that misses every part (or lands on the breadboard body) clears the
+        // selection in Studio Dark, the same as an empty 2D canvas click. Classic 3D
+        // keeps whatever was selected. An orbit drag never reaches this hook.
+        onEmpty: () => {
+          if (document.documentElement.getAttribute('data-ui') !== '3') return;
+          if (app.editor) app.editor.select(null);
+          if (app.schematic) app.schematic.select(null);
+        },
         // 3D part interaction mirrors the 2D editor: buttons press while running, click-parts toggle, pots turn by drag
         onPartDown: (id) => {
           const p = app.proj.parts.find((q) => q.id === id); if (!p) return false;
@@ -2567,7 +2575,20 @@ async function fetchRetry(u, o, n = 4) {
     b2.onclick = () => setViewMode('2d'); b3.onclick = () => setViewMode('3d');
     if (bs) bs.onclick = () => setViewMode('schematic');
     const ex = $('#bExit3d'); if (ex) ex.onclick = () => setViewMode('2d');
-    window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && viewMode === '3d' && !document.querySelector('#newBlankDlg:not([hidden])')) { e.preventDefault(); setViewMode('2d'); } }, true);
+    window.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape' || viewMode !== '3d' || document.querySelector('#newBlankDlg:not([hidden])')) return;
+      // Studio Dark: Escape clears a 3D selection and stays in the view. A second
+      // Escape, with nothing selected, still leaves 3D. Classic always leaves.
+      if (document.documentElement.getAttribute('data-ui') === '3' && app.editor && app.editor.sel) {
+        e.preventDefault();
+        app.editor.cancelWire();
+        app.editor.select(null);
+        if (app.schematic) app.schematic.select(null);
+        return;
+      }
+      e.preventDefault();
+      setViewMode('2d');
+    }, true);
     // HOTFIX: always boot in 2D and drop any saved 3D preference.
     try { clStorage.local.removeItem(LSV); } catch (_) {}
     const f2 = $('#bForce2d'); if (f2) f2.onclick = () => { if (viewMode === '2d') return; setViewMode('2d'); toast('2D editor'); };

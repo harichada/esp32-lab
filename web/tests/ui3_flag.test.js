@@ -41,6 +41,19 @@ test('Studio Dark does not add an AI prompt or a new service', () => {
   assert.match(ui3, /Board layout|aria-label', 'Board'/);
 });
 
+test('a 3D click on empty space clears a Studio Dark selection and the serial peek is styled', () => {
+  const view3d = fs.readFileSync(path.join(root, 'js', 'view3d.js'), 'utf8');
+  const app = fs.readFileSync(path.join(root, 'js', 'app.js'), 'utf8');
+  const css = fs.readFileSync(path.join(root, 'css', 'ui3.css'), 'utf8');
+  assert.match(view3d, /Math\.hypot\(e\.clientX - this\._ptr\.x, e\.clientY - this\._ptr\.y\) > 5/);
+  assert.match(view3d, /hooks\.onEmpty/);
+  assert.match(app, /onEmpty:\s*\(\)\s*=>/);
+  assert.match(app, /getAttribute\('data-ui'\) !== '3'/);
+  assert.match(app, /getAttribute\('data-ui'\) === '3' && app\.editor && app\.editor\.sel/);
+  assert.match(css, /#ui3Peek\{/);
+  assert.equal(css.includes('#ui3peek'), false);
+});
+
 test('closed Studio Dark panels have a way back, including Escape on My Projects', () => {
   const ui = fs.readFileSync(path.join(root, 'js', 'ui.js'), 'utf8');
   const app = fs.readFileSync(path.join(root, 'js', 'app.js'), 'utf8');

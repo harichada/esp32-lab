@@ -550,3 +550,173 @@ test('phone More sheet hides 3D when WebGL is missing and still closes', async (
   await expect(page.locator('#ui3more')).toBeHidden();
   await expect(page.locator('body')).toHaveClass(/viewsch/);
 });
+
+type Pick = { x: number; y: number; id: string; kind: string } | null;
+
+async function view3dReady(page: Page) {
+  await expect.poll(async () => page.evaluate(() => {
+    const app = (window as unknown as { app?: { view3d?: { ready?: boolean; camera?: object; canvas?: HTMLCanvasElement; _frames?: number } } }).app;
+    const v = app && app.view3d;
+    const loader = document.getElementById('view3dLoad');
+    return !!(v && v.ready && v.camera && v.canvas && loader && loader.hidden && (v._frames || 0) >= 1 && document.body.classList.contains('view3d'));
+  }), { timeout: 30_000 }).toBe(true);
+}
+
+async function pick3d(page: Page, want: 'part' | 'empty'): Promise<Pick> {
+  return page.evaluate((want) => {
+    const w = window as unknown as {
+      THREE: {
+        Vector2: new () => { set: (x: number, y: number) => void };
+        Vector3: new () => { project: (cam: object) => { x: number; y: number; z: number } };
+        Box3: new () => { setFromObject: (m: object) => { getCenter: (v: { project: (cam: object) => { x: number; y: number; z: number } }) => { project: (cam: object) => { x: number; y: number; z: number } } } };
+        Raycaster: new () => { setFromCamera: (m: object, c: object) => void; intersectObjects: (o: object[], deep: boolean) => { object: { parent?: object; userData?: { wid?: string } } }[] };
+      };
+      app: { view3d: { canvas: HTMLCanvasElement; camera: object; parts: Map<string, { mesh: { traverse: (fn: (c: object) => void) => void }; part: { type: string; id: string } }>; wires: Map<string, { group: object }> } };
+    };
+    const v = w.app.view3d;
+    const rect = v.canvas.getBoundingClientRect();
+    const ray = new w.THREE.Raycaster();
+    const classify = (x: number, y: number) => {
+      if (document.elementFromPoint(x, y) !== v.canvas) return { kind: 'chrome', id: '' };
+      const mouse = new w.THREE.Vector2();
+      mouse.set(((x - rect.left) / rect.width) * 2 - 1, -((y - rect.top) / rect.height) * 2 + 1);
+      ray.setFromCamera(mouse, v.camera);
+      const wires = [...v.wires.values()].map((q) => q.group);
+      for (const h of ray.intersectObjects(wires, true)) {
+        let o: { parent?: object; userData?: { wid?: string } } | null = h.object;
+        while (o && !(o.userData && o.userData.wid)) o = (o.parent as typeof o) || null;
+        if (o && o.userData && o.userData.wid) return { kind: 'wire', id: o.userData.wid };
+      }
+      const parts = [...v.parts.values()];
+      const hits = ray.intersectObjects(parts.map((p) => p.mesh), true);
+      if (hits[0]) {
+        for (const rec of parts) {
+          let found = false;
+          rec.mesh.traverse((c) => { if (c === hits[0].object) found = true; });
+          if (!found) continue;
+          return rec.part.type === 'breadboard' ? { kind: 'board', id: rec.part.id } : { kind: 'part', id: rec.part.id };
+        }
+      }
+      return { kind: 'empty', id: '' };
+    };
+    if (want === 'part') {
+      for (const [id, rec] of v.parts) {
+        if (rec.part.type === 'breadboard') continue;
+        const center = new w.THREE.Box3().setFromObject(rec.mesh).getCenter(new w.THREE.Vector3());
+        const p = center.project(v.camera);
+        if (p.z > 1) continue;
+        const x = rect.left + (p.x * 0.5 + 0.5) * rect.width;
+        const y = rect.top + (-p.y * 0.5 + 0.5) * rect.height;
+        const hit = classify(x, y);
+        if (hit.kind === 'part' && hit.id === id) return { x, y, id, kind: 'part' };
+      }
+      return null;
+    }
+    let board: { x: number; y: number; id: string; kind: string } | null = null;
+    for (let i = 1; i <= 10; i++) {
+      for (let j = 1; j <= 8; j++) {
+        const x = rect.left + (i / 11) * rect.width;
+        const y = rect.top + (j / 9) * rect.height;
+        const hit = classify(x, y);
+        if (hit.kind === 'empty') return { x, y, id: '', kind: 'empty' };
+        if (hit.kind === 'board' && !board) board = { x, y, id: hit.id, kind: 'board' };
+      }
+    }
+    return board;
+  }, want);
+}
+
+async function selection(page: Page) {
+  return page.evaluate(() => {
+    const app = (window as unknown as { app?: { editor?: { sel?: { part?: string; wire?: string } | null } } }).app;
+    const sel = app && app.editor && app.editor.sel;
+    return sel ? (sel.part || sel.wire || '') : '';
+  });
+}
+
+test('3D empty click, Escape, and delete clear the Studio Dark selection', async ({ page }) => {
+  const errors = await install(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/?ui=3&ex=blink&resume=0');
+  await ready(page);
+  await expect(page.locator('#ui3home')).toBeHidden();
+  const peek = page.locator('#ui3Peek');
+  await expect(peek).toBeVisible();
+  await inside(page, peek);
+  expect(await peek.evaluate((el) => getComputedStyle(el).position)).toBe('fixed');
+
+  await page.locator('#bView3d').click();
+  await view3dReady(page);
+  expect(await selection(page)).toBe('');
+  await expect(page.locator('#ui3ctx')).toBeHidden();
+
+  const part = await pick3d(page, 'part');
+  expect(part, 'a 3D part should be clickable').toBeTruthy();
+  await page.mouse.click(part!.x, part!.y);
+  await expect.poll(() => selection(page)).toBe(part!.id);
+  await expect(page.locator('#ui3ctx')).toBeVisible();
+  await expect(page.locator('#insp')).toContainText(part!.id);
+
+  const orbit = await pick3d(page, 'empty');
+  expect(orbit, 'the 3D view should have empty space').toBeTruthy();
+  await page.mouse.move(orbit!.x, orbit!.y);
+  await page.mouse.down();
+  await page.mouse.move(orbit!.x + 90, orbit!.y + 36, { steps: 8 });
+  await page.mouse.up();
+  expect(await selection(page)).toBe(part!.id);
+  await expect(page.locator('#ui3ctx')).toBeVisible();
+
+  const empty = await pick3d(page, 'empty');
+  expect(empty).toBeTruthy();
+  await page.mouse.click(empty!.x, empty!.y);
+  await expect.poll(() => selection(page)).toBe('');
+  await expect(page.locator('#ui3ctx')).toBeHidden();
+  await expect(page.locator('#insp')).toContainText('Select a part or wire');
+
+  const again = await pick3d(page, 'part');
+  expect(again).toBeTruthy();
+  await page.mouse.click(again!.x, again!.y);
+  await expect.poll(() => selection(page)).toBe(again!.id);
+  await page.evaluate(() => { const a = document.activeElement as HTMLElement | null; if (a && a.blur) a.blur(); });
+  await page.keyboard.press('Escape');
+  await expect.poll(() => selection(page)).toBe('');
+  await expect(page.locator('#ui3ctx')).toBeHidden();
+  await expect(page.locator('body')).toHaveClass(/view3d/);
+  await page.keyboard.press('Escape');
+  await expect(page.locator('body')).not.toHaveClass(/view3d/);
+
+  await page.locator('#bView3d').click();
+  await view3dReady(page);
+  expect(await selection(page)).toBe('');
+  const doomed = await pick3d(page, 'part');
+  expect(doomed).toBeTruthy();
+  await page.mouse.click(doomed!.x, doomed!.y);
+  await expect.poll(() => selection(page)).toBe(doomed!.id);
+  await page.locator('#ui3ctx [data-act="del"]').click();
+  await expect.poll(() => selection(page)).toBe('');
+  await expect(page.locator('#ui3ctx')).toBeHidden();
+  expect(await page.evaluate((id) => (window as unknown as { app: { proj: { parts: { id: string }[] } } }).app.proj.parts.some((p) => p.id === id), doomed!.id)).toBe(false);
+  expect(errors, errors.join('\n')).toEqual([]);
+});
+
+test('classic 3D keeps its selection on an empty click and on Escape', async ({ page }) => {
+  const errors = await install(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/?ex=blink&resume=0');
+  await expect(page.locator('html')).not.toHaveAttribute('data-ui', '3');
+  await page.locator('#bView3d').click();
+  await view3dReady(page);
+  expect(await selection(page)).toBe('');
+  const part = await pick3d(page, 'part');
+  expect(part, 'a classic 3D part should be clickable').toBeTruthy();
+  await page.mouse.click(part!.x, part!.y);
+  await expect.poll(() => selection(page)).toBe(part!.id);
+  const empty = await pick3d(page, 'empty');
+  expect(empty).toBeTruthy();
+  await page.mouse.click(empty!.x, empty!.y);
+  expect(await selection(page)).toBe(part!.id);
+  await page.keyboard.press('Escape');
+  await expect(page.locator('body')).not.toHaveClass(/view3d/);
+  expect(await selection(page)).toBe(part!.id);
+  expect(errors, errors.join('\n')).toEqual([]);
+});

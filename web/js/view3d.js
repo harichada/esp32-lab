@@ -1938,12 +1938,16 @@
           let found = false; rec.mesh.traverse((c) => { if (c === hits[0].object) found = true; });
           if (found) {
             // select only — no camera move on a single click (that read as "click zooms the canvas")
-            if (rec.part.type === 'breadboard') return;
-            if (this.hooks.onPart) this.hooks.onPart(id, e);
-            return;
+            // The board itself is the empty surface: a click there clears, it does not select the board.
+            if (rec.part.type !== 'breadboard') {
+              if (this.hooks.onPart) this.hooks.onPart(id, e);
+              return;
+            }
+            break;
           }
         }
       }
+      if (this.hooks.onEmpty) this.hooks.onEmpty();
     }
 
     _loop() {

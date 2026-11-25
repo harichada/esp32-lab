@@ -208,10 +208,13 @@ html[data-ui="3"] #ui3alert{
 }
 html[data-ui="3"] .toast{top:68px;bottom:auto}
 html[data-ui="3"] body.ui3-pal-min #ui3status{left:84px}
-html[data-ui="3"] #ui3peek{
-  position:fixed;z-index:32;left:auto;right:330px;bottom:16px;max-width:min(280px,40vw);height:32px;border-radius:999px;
-  border:1px solid var(--line);background:var(--l1);color:var(--txt2);padding:0 12px;overflow:hidden;text-overflow:ellipsis
+html[data-ui="3"] #ui3Peek{
+  position:fixed;z-index:32;left:364px;right:auto;bottom:56px;max-width:min(240px,28vw);height:32px;border-radius:999px;
+  border:1px solid var(--line);background:var(--l1);color:var(--txt2);padding:0 12px;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;font:600 12px/30px var(--font);cursor:pointer
 }
+html[data-ui="3"] body.ui3-pal-min #ui3Peek{left:84px}
+html[data-ui="3"] #ui3Peek:hover{color:var(--txt);border-color:var(--line2)}
 
 /* menus, context, welcome */
 html[data-ui="3"] .ui3-menu{
@@ -268,7 +271,7 @@ html[data-ui="3"] #ui3tour p{margin:0 0 8px}
 html[data-ui="3"] body.ui3-home #ui3rail,html[data-ui="3"] body.ui3-home #palette,html[data-ui="3"] body.ui3-home #side,
 html[data-ui="3"] body.ui3-home #ui3tools,html[data-ui="3"] body.ui3-home #ui3zoom,html[data-ui="3"] body.ui3-home #ui3views,
 html[data-ui="3"] body.ui3-home #dock,html[data-ui="3"] body.ui3-home #ui3ctx,html[data-ui="3"] body.ui3-home #ui3status,
-html[data-ui="3"] body.ui3-home #ui3peek,html[data-ui="3"] body.ui3-home .ui3-run,html[data-ui="3"] body.ui3-home .ui3-chip,
+html[data-ui="3"] body.ui3-home #ui3Peek,html[data-ui="3"] body.ui3-home .ui3-run,html[data-ui="3"] body.ui3-home .ui3-chip,
 html[data-ui="3"] body.ui3-home .hint,html[data-ui="3"] body.ui3-home .projbanner{display:none!important}
 
 /* nets, glow, motion */
@@ -313,7 +316,7 @@ html[data-ui="3"] #ui3more{display:none}
   html[data-ui="3"] #ui3views{top:64px;max-width:calc(100vw - 16px);overflow:auto}
   html[data-ui="3"] #ui3zoom,html[data-ui="3"] body:not(.ui3-side-min) #ui3zoom{right:8px;bottom:calc(76px + env(safe-area-inset-bottom))}
   html[data-ui="3"] #ui3status{left:8px;bottom:calc(76px + env(safe-area-inset-bottom));max-width:46vw}
-  html[data-ui="3"] #ui3peek{left:auto;right:8px;bottom:calc(76px + env(safe-area-inset-bottom));max-width:42vw}
+  html[data-ui="3"] #ui3Peek{display:none}
   html[data-ui="3"] #minimap{bottom:calc(130px + env(safe-area-inset-bottom))}
   html[data-ui="3"] .projbanner{top:118px;left:8px;right:8px;max-width:none}
   html[data-ui="3"] .hint{

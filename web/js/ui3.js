@@ -341,7 +341,7 @@
     alert.setAttribute('role', 'status');
     document.body.appendChild(alert);
     const peek = document.createElement('button');
-    peek.type = 'button'; peek.id = 'ui3Peek'; peek.textContent = 'Serial';
+    peek.type = 'button'; peek.id = 'ui3Peek'; peek.textContent = 'Serial'; peek.title = 'Open serial';
     peek.onclick = () => openDrawer('serial');
     document.body.appendChild(peek);
     const side = document.getElementById('side');
