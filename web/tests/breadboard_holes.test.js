@@ -1,5 +1,4 @@
-// Studio Dark paints every on-screen hole at Fit zoom, and a press snaps to the
-// nearest hole even when that column was not drawn.
+// Studio Dark: one classic board, wires from holes and canvas dots, and drags that pan.
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -13,35 +12,17 @@ function colsIn(svg, row) {
   while ((m = re.exec(svg))) found.add(+m[1]);
   return found;
 }
-function fitRect() {
-  const s = 0.96;
-  return { x0: -400, y0: -300, x1: -400 + 1600 / s, y1: -300 + 1000 / s, s: s };
-}
-
-test('Fit zoom paints every hole column in view, and only zooms under 3px thin them', () => {
-  const board = { id: 'bb', type: 'breadboard', x: 0, y: 0, rot: 0, props: { cols: 63 } };
-  const rect = fitRect();
-  const view = P.bbViewFor(board, rect);
-  const wide = (view.span.c1 - view.span.c0 + 1) * (view.span.b1 - view.span.b0 + 1) * 14;
-  assert.ok(Math.ceil(wide / 1800) > 1, 'this viewport used to skip columns under the 1800 cap');
-  assert.equal(view.step, 1, 'holes are still a few pixels apart, so every column is drawn');
-  global._bbPaint = { id: 'bb', span: view.span, hole: view.hole, step: view.step };
-  let svg = '';
-  try { svg = P.T.breadboard.svg(board); }
-  finally { global._bbPaint = null; }
+test('Studio Dark paints one classic board, and canvas dots thin only under 3px', () => {
+  const grown = { id: 'bb', type: 'breadboard', x: 0, y: 0, rot: 0, props: { cols: 160, c0: 1, c1: 160, b0: 0, b1: 2 } };
+  assert.equal(P.bbShown(grown).plain, true);
+  assert.equal(P.bbHoleStep(0.96), 1);
+  assert.ok(P.bbHoleStep(0.2) > 1, 'below ~3px per column, dot detail can drop');
+  const svg = P.T.breadboard.svg(grown);
   const painted = colsIn(svg, 'a');
-  for (let c = 1; c <= 63; c++) assert.ok(painted.has(c), 'column ' + c + ' is painted at Fit zoom');
-
-  const far = P.bbViewFor(board, { x0: -2000, y0: -2000, x1: 4000, y1: 4000, s: 0.2 });
-  assert.ok(far.step > 1, 'below ~3px per column, hole detail can drop');
-  global._bbPaint = { id: 'bb', span: far.span, hole: far.hole, step: far.step };
-  try { svg = P.T.breadboard.svg(board); }
-  finally { global._bbPaint = null; }
-  const thin = colsIn(svg, 'a');
-  const visible = [];
-  for (let c = far.hole.c0; c <= far.hole.c1; c++) if (c >= 1 && c <= 63) visible.push(c);
-  const kept = visible.filter((c) => thin.has(c));
-  assert.ok(visible.length > kept.length, 'off-pitch columns are not all painted when the dots would merge');
+  for (let c = 1; c <= 63; c++) assert.ok(painted.has(c), 'column ' + c + ' of the one board is painted');
+  assert.equal(painted.has(100), false);
+  assert.doesNotMatch(svg, /data-pin="a1@/);
+  assert.match(svg, /width="642"/);
 });
 
 function makeEl(tag) {
@@ -122,13 +103,16 @@ function plastic() {
   body.closest = (sel) => (sel === '.part' ? part : null);
   return body;
 }
-function down(ed, target, x, y, extra) {
+function pointer(ed, target, x, y, extra) {
   const s = ed.view.s;
-  ed._down(Object.assign({
+  return Object.assign({
     button: 0, clientX: x * s, clientY: y * s, target: target,
     altKey: false, shiftKey: false, pointerType: 'mouse', detail: 1,
-  }, extra));
+  }, extra);
 }
+function down(ed, target, x, y, extra) { ed._down(pointer(ed, target, x, y, extra)); }
+function move(ed, target, x, y, extra) { ed._move(pointer(ed, target, x, y, extra)); }
+function up(ed, target, x, y, extra) { ed._up(pointer(ed, target, x, y, extra)); }
 
 test('a press at Fit zoom starts a wire on every column, including ones the old cap skipped', () => {
   const ed = editor({ state: false });
@@ -143,14 +127,16 @@ test('a press at Fit zoom starts a wire on every column, including ones the old 
   }
 });
 
-test('a press near an unpainted hole snaps to it, and Shift still inverts 90°', () => {
+test('a click near a hole snaps to it, and Shift still inverts 90°', () => {
   const ed = editor({ state: false });
   const board = plastic();
   const s = ed.view.s;
   const hole = P.bbNearest(ed.proj.parts[0], 20, 40);
   assert.equal(hole.name, 'a2');
-  // 4 screen px off the hole, still on the plastic, with Shift already held.
-  down(ed, board, hole.x + 4 / s, hole.y, { shiftKey: true });
+  const x = hole.x + 4 / s;
+  down(ed, board, x, hole.y);
+  assert.equal(ed.mode && ed.mode.k, 'arm', 'a press off the hole mark does not start a wire yet');
+  up(ed, board, x, hole.y, { shiftKey: true });
   assert.equal(ed.mode && ed.mode.k, 'wire');
   assert.equal(ed.mode.start.pin.name, 'a2');
   assert.equal(ed._shift, true);
@@ -160,10 +146,57 @@ test('a press near an unpainted hole snaps to it, and Shift still inverts 90°',
   assert.doesNotMatch(ed.ovWire.innerHTML, /60,40/);
   ed.cancelWire();
 
-  // The channel between the row groups is farther than a few screen px from any hole.
+  // The channel is farther than the snap radius, so a click does not invent a hole.
   down(ed, board, 10, 97);
-  assert.equal(ed.mode && ed.mode.k, 'pan');
+  up(ed, board, 10, 97);
+  assert.notEqual(ed.mode && ed.mode.k, 'wire');
   assert.equal(ed.proj.wires.length, 0);
+});
+
+test('a mouse drag on the board pans, and a touch drag at 55% zoom pans', () => {
+  const ed = editor({ state: false });
+  const board = plastic();
+  const hole = P.bbNearest(ed.proj.parts[0], 20, 40);
+  down(ed, board, hole.x + 4 / ed.view.s, hole.y);
+  assert.equal(ed.mode.k, 'arm');
+  move(ed, board, hole.x + 4 / ed.view.s + 7 / ed.view.s, hole.y);
+  assert.equal(ed.mode.k, 'pan');
+  assert.notEqual(ed.view.x, 0);
+  assert.equal(ed.proj.wires.length, 0);
+  ed.mode = null;
+  ed._clearArm();
+
+  ed.view = { x: 0, y: 0, s: 0.55 };
+  down(ed, board, 15, 40, { pointerType: 'touch' });
+  assert.equal(ed.mode.k, 'arm', 'the gap between holes is not an exact hit');
+  move(ed, board, 15 + 10 / ed.view.s, 40, { pointerType: 'touch' });
+  assert.equal(ed.mode.k, 'pan');
+  assert.equal(ed.proj.wires.length, 0);
+
+  ed.view = { x: 0, y: 0, s: 0.96 };
+  ed.mode = null;
+  down(ed, board, hole.x, hole.y);
+  assert.equal(ed.mode.k, 'wire', 'a press on the hole itself still starts a wire');
+  move(ed, board, hole.x + 30, hole.y);
+  assert.equal(ed.mode.k, 'wire');
+  ed.cancelWire();
+});
+
+test('a press on a canvas dot starts a wire, and a drag on the empty canvas pans', () => {
+  const ed = editor({ state: false });
+  const canvas = makeEl('rect');
+  down(ed, canvas, 1000, 400);
+  assert.equal(ed.mode && ed.mode.k, 'wire');
+  assert.equal(ed.mode.a.x, 1000);
+  assert.equal(ed.mode.a.y, 400);
+  assert.equal(ed.mode.start.dot, true);
+  ed.cancelWire();
+
+  down(ed, canvas, 1005, 400, { pointerType: 'touch' });
+  assert.equal(ed.mode.k, 'arm');
+  move(ed, canvas, 1005 + 12 / ed.view.s, 400, { pointerType: 'touch' });
+  assert.equal(ed.mode.k, 'pan');
+  ed._clearArm();
 });
 
 test('while the sim is running, a press on a wire that sits on a part body selects the part', () => {
@@ -183,4 +216,19 @@ test('while the sim is running, a press on a wire that sits on a part body selec
   run.state = false;
   down(ed, wire, 220, 202);
   assert.equal(ed.sel && ed.sel.wire, 'w1');
+});
+
+test('while the sim is running, a wire over the LED dome selects the LED', () => {
+  const ed = editor({ state: true });
+  ed.proj.parts.push({ id: 'D1', type: 'led', x: 400, y: 400, rot: 0, props: { color: 'red', vf: 1.9, imax: 0.03 } });
+  const box = P.gfxBox(ed.proj.parts[1]);
+  assert.ok(box && box.y < 400 - 12, 'the dome sits above the pin box');
+  ed.proj.wires.push({ id: 'w1', a: { x: 390, y: 382 }, b: { x: 420, y: 382 }, pts: [], color: 'green' });
+  const wire = makeEl('g');
+  wire.className = 'wire';
+  wire.dataset.wid = 'w1';
+  wire.closest = (sel) => (sel === '.wire' ? wire : null);
+  down(ed, wire, 405, 382);
+  assert.equal(ed.sel && ed.sel.part, 'D1');
+  assert.notEqual(ed.sel && ed.sel.wire, 'w1');
 });

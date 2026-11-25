@@ -118,7 +118,7 @@
       }
       if (ui3On() && x0 > x1) {
         const bb = this.proj.parts.find((p) => p && p.type === 'breadboard');
-        if (bb) { const cols = (bb.props && bb.props.cols) || 63, w = cols * G + 10; const c = [[-6, -14], [w, 208]]; for (const [a, b] of c) { const [rx, ry] = P.orientPt(a, b, bb); add(bb.x + rx, bb.y + ry); } }
+        if (bb) { const shown = P.bbShown && P.bbShown(bb); const cols = shown && shown.classic ? (shown.c1 - shown.c0 + 1) : ((bb.props && bb.props.cols) || 63); const w = cols * G + 10; const c = [[-6, -14], [w, 208]]; for (const [a, b] of c) { const [rx, ry] = P.orientPt(a, b, bb); add(bb.x + rx, bb.y + ry); } }
       }
       for (const w of this.proj.wires) { add(w.a.x, w.a.y); add(w.b.x, w.b.y); for (const q of w.pts || []) add(q.x, q.y); }
       return x0 > x1 ? null : { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
@@ -130,44 +130,51 @@
     }
     partSvg(p) {
       const d = P.T[p.type]; const st = this.hooks.state ? this.hooks.state(p) : null;
-      let paint = null;
-      if (p.type === 'breadboard' && ui3On() && P.bbViewFor) {
-        try { paint = P.bbViewFor(p, this._viewWorld()); } catch (e) { paint = null; }
-        if (paint) { root._bbView = root._bbView || {}; root._bbView[p.id] = paint.span; root._bbPaint = { id: p.id, span: paint.span, hole: paint.hole, step: paint.step || 1 }; }
-      }
       try { return d.svg(p, st); } catch (e) { return `<text class="plbl">${p.type}?</text>`; }
-      finally { if (paint) root._bbPaint = null; }
     }
-    // Redraw visible tie points after a pan or zoom. The body tracks the view; holes stay inside it.
-    _paintBoard() {
-      if (!this.proj || !this.partEls) return;
+    // The breadboard stays one classic board. Pan and zoom only move the dot field.
+    _paintBoard() { this._paintDots(); }
+    _paintDots() {
+      if (!ui3On() || !this.svg || !this.proj || !document.createElementNS || !this.svg.querySelector || !this.svg.insertBefore) return;
       const rect = this._viewWorld();
-      const key = [Math.round(rect.x0 / 20), Math.round(rect.y0 / 20), Math.round(rect.x1 / 20), Math.round(rect.y1 / 20), Math.round((this.view.s || 1) * 20)].join(',');
-      if (key === this._bbKey) return;
-      this._bbKey = key;
-      for (const p of this.proj.parts) {
-        if (!p || p.type !== 'breadboard') continue;
-        const g = this.partEls.get(p.id); if (!g) continue;
-        const html = this.partSvg(p);
-        if (this.svgCache.get(p.id) !== html) { g.innerHTML = html; this.svgCache.set(p.id, html); }
+      const o = this._dotOrigin();
+      const step = P.bbHoleStep ? P.bbHoleStep(rect.s) : 1;
+      const pitch = G * Math.max(1, step);
+      const key = [o.x, o.y, pitch, Math.round(rect.x0), Math.round(rect.y0), Math.round(rect.x1), Math.round(rect.y1)].join(',');
+      if (key === this._dotKey) return;
+      this._dotKey = key;
+      let defs = this.svg.querySelector('defs');
+      if (!defs) { defs = document.createElementNS(NS, 'defs'); this.svg.insertBefore(defs, this.svg.firstChild || null); }
+      let pat = this.svg.querySelector('#ui3dot');
+      if (!pat) {
+        pat = document.createElementNS(NS, 'pattern');
+        pat.setAttribute('id', 'ui3dot');
+        pat.setAttribute('patternUnits', 'userSpaceOnUse');
+        const c = document.createElementNS(NS, 'circle');
+        c.setAttribute('cx', '0'); c.setAttribute('cy', '0'); c.setAttribute('r', '0.9');
+        c.setAttribute('fill', '#3d4754'); c.setAttribute('fill-opacity', '0.45');
+        pat.appendChild(c); defs.appendChild(pat);
       }
-    }
-    // Persist a larger tie-point span once a part or wire sits near the edge of the saved board.
-    _growBoard() {
-      if (!ui3On() || !this.proj || !P.bbCover) return false;
-      let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9, n = 0;
-      const add = (x, y) => { if (!Number.isFinite(x) || !Number.isFinite(y)) return; n++; x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); };
-      for (const p of this.proj.parts) {
-        if (!p || p.type === 'breadboard' || p.type === 'label' || !P.T[p.type]) continue;
-        for (const pin of this._pinWorlds(p)) add(pin.x, pin.y);
+      pat.setAttribute('x', String(o.x)); pat.setAttribute('y', String(o.y));
+      pat.setAttribute('width', String(pitch)); pat.setAttribute('height', String(pitch));
+      let box = this.svg.querySelector('#ui3Dots');
+      if (!box) {
+        box = document.createElementNS(NS, 'rect');
+        box.setAttribute('id', 'ui3Dots');
+        box.setAttribute('fill', 'url(#ui3dot)');
+        box.setAttribute('pointer-events', 'none');
+        const parts = this.svg.querySelector('#lParts');
+        if (parts && parts.parentNode && parts.parentNode.insertBefore) parts.parentNode.insertBefore(box, parts);
+        else this.svg.appendChild(box);
       }
-      for (const w of this.proj.wires || []) { add(w.a.x, w.a.y); add(w.b.x, w.b.y); for (const q of w.pts || []) add(q.x, q.y); }
-      if (!n) return false;
-      let grew = false;
-      for (const p of this.proj.parts) if (p && p.type === 'breadboard' && P.bbCover(p, x0, y0, x1, y1)) grew = true;
-      if (grew) { this._pinIdx = null; this._bbKey = ''; }
-      return grew;
+      const pad = pitch * 2;
+      box.setAttribute('x', String(rect.x0 - pad));
+      box.setAttribute('y', String(rect.y0 - pad));
+      box.setAttribute('width', String(Math.max(pitch, rect.x1 - rect.x0 + pad * 2)));
+      box.setAttribute('height', String(Math.max(pitch, rect.y1 - rect.y0 + pad * 2)));
     }
+    // Extra bands are not grown. Off-board space is the dotted canvas.
+    _growBoard() { return false; }
     render() {
       this._pinIdx = null; this.lParts.innerHTML = ''; this.partEls.clear(); this.svgCache.clear();
       const sorted = [...this.proj.parts].sort((a, b) => ((P.T[a.type] || {}).layer ?? 2) - ((P.T[b.type] || {}).layer ?? 2));
@@ -180,6 +187,7 @@
         this.lParts.appendChild(g); this.partEls.set(p.id, g);
       }
       this.renderWires();
+      if (ui3On()) this._paintDots();
     }
     autoColor(a, b) {
       const nm = (q) => q ? String((q.pin && q.pin.name) || q.name || '') : '', n = [nm(a), nm(b)].join(' ').toUpperCase();
@@ -233,7 +241,8 @@
       if (root.GuestParts && root.GuestParts.blocks(type)) { root.GuestParts.promptType(type); return null; }
       const d = P.T[type]; this.push();
       let n = 1; const pre = (d.prefix || type.slice(0, 3).toUpperCase()); while (this.proj.parts.some((p) => p.id === pre + n)) n++;
-      const p = { id: pre + n, type, x: snap(x), y: snap(y), rot: 0, props: JSON.parse(JSON.stringify(d.props || {})) };
+      const at = this._snapXY(x, y);
+      const p = { id: pre + n, type, x: at.x, y: at.y, rot: 0, props: JSON.parse(JSON.stringify(d.props || {})) };
       this.proj.parts.push(p); this._growBoard(); this.render(); this.select({ part: p.id }); this.hooks.changed(true);
       if (ui2On()) { try { this.fit(); } catch (e) { /* the part is already on the board */ } }
       return p;
@@ -243,7 +252,7 @@
     addPartInView(type) {
       const r = this.svg.getBoundingClientRect();
       const x = this.view.x + r.width / this.view.s / 2, y = this.view.y + r.height / this.view.s / 2;
-      const seat = ui2On() ? this.freeSeat(type, x, y) : (P.placeOnEmptyStrips ? P.placeOnEmptyStrips(this.proj.parts, type, x, y, 0) : { x, y });
+      const seat = ui2On() ? this.freeSeat(type, x, y) : ui3On() ? this._snapXY(x, y) : (P.placeOnEmptyStrips ? P.placeOnEmptyStrips(this.proj.parts, type, x, y, 0) : { x, y });
       return this.addPart(type, seat.x, seat.y);
     }
     freeSeat(type, x, y) {
@@ -419,7 +428,7 @@
     pinIndex() {   // world positions of every pin (non-breadboard first so they win ties with the hole underneath)
       if (!this.proj) return [];
       if (this._pinIdx) return this._pinIdx; const a = [];
-      for (const p of this.proj.parts) { const d = P.T[p.type]; if (!d) continue; if (p.type === 'breadboard' && P.bbClassic && !P.bbClassic(p)) continue; for (const pin of d.pins(p)) a.push({ part: p, pin, pos: P.pinWorld(p, pin), bb: p.type === 'breadboard' }); }
+      for (const p of this.proj.parts) { const d = P.T[p.type]; if (!d) continue; if (p.type === 'breadboard' && P.bbClassic && !P.bbClassic(p) && !ui3On()) continue; for (const pin of d.pins(p)) a.push({ part: p, pin, pos: P.pinWorld(p, pin), bb: p.type === 'breadboard' }); }
       a.sort((x, y) => x.bb - y.bb); return (this._pinIdx = a);
     }
     pinNear(w, ev, maxR) {   // nearest pin within a finger/cursor-sized radius (bigger for touch, constant on screen)
@@ -441,37 +450,134 @@
       }
       return best;
     }
-    // Nearest breadboard hole within a few screen pixels. Wiring uses this, not the painted dots.
-    _snapBoardHole(ev, only) {
-      if (!P.bbNearest || !this.proj) return null;
-      const w = this.toWorld(ev);
+    _dotOrigin() {
+      const b = this.proj && this.proj.parts && this.proj.parts.find((p) => p && p.type === 'breadboard');
+      return { x: b ? (b.x || 0) : 0, y: b ? (b.y || 0) : 0 };
+    }
+    _lattice(v, origin) { return origin + Math.round((v - origin) / G) * G; }
+    _dotAt(world) {
+      const o = this._dotOrigin();
+      return { x: this._lattice(world.x, o.x), y: this._lattice(world.y, o.y) };
+    }
+    _snapXY(x, y) {
+      if (!ui3On()) return { x: snap(x), y: snap(y) };
+      const o = this._dotOrigin();
+      return { x: this._lattice(x, o.x), y: this._lattice(y, o.y) };
+    }
+    _snapLimit(ev) {
       const touch = !!(ev && (ev.pointerType === 'touch' || (document.body && document.body.classList.contains('m'))));
-      const limit = touch ? 18 : 8;
-      let best = null, bd = limit;
-      for (const p of (only ? [only] : this.proj.parts)) {
+      return touch ? 18 : 8;
+    }
+    _panSlop(ev) {
+      const touch = !!(ev && (ev.pointerType === 'touch' || (document.body && document.body.classList.contains('m'))));
+      return touch ? 8 : 5;
+    }
+    _screenDist(world, pos) { return Math.hypot(pos.x - world.x, pos.y - world.y) * (this.view.s || 1); }
+    _holePin(world) {
+      if (!P.bbNearest || !this.proj) return null;
+      let best = null, bd = Infinity;
+      for (const p of this.proj.parts) {
         if (!p || p.type !== 'breadboard') continue;
-        const hit = P.bbNearest(p, w.x, w.y); if (!hit) continue;
-        const sd = Math.hypot(hit.x - w.x, hit.y - w.y) * (this.view.s || 1);
-        if (sd > bd) continue;
-        bd = sd;
+        const hit = P.bbNearest(p, world.x, world.y); if (!hit) continue;
+        const d = Math.hypot(hit.x - world.x, hit.y - world.y);
+        if (d >= bd) continue;
+        bd = d;
         best = { part: p, pin: { name: hit.name, x: hit.lx, y: hit.ly }, pos: { x: hit.x, y: hit.y }, bb: true };
       }
       return best;
     }
-    // Part body under a point, including a few units of slop. Breadboard plastic is not a body.
+    _dotPin(dot) { return { part: null, pin: { name: 'dot', x: dot.x, y: dot.y }, pos: { x: dot.x, y: dot.y }, dot: true }; }
+    // A press on the mark itself can drag a wire out. The wide snap radius is only for a click or a short hold.
+    _exactPin(ev) {
+      const el = ev.target && ev.target.closest && ev.target.closest('[data-pin]');
+      if (el) { const got = this.pinAtEvent(ev); if (got) return got; }
+      if (!ui3On()) return null;
+      const w = this.toWorld(ev);
+      const within = (pos) => this._screenDist(w, pos) <= 2;
+      const near = this.pinNear(w, ev);
+      if (near && !near.bb && within(near.pos)) return near;
+      const hole = this._holePin(w);
+      if (hole && within(hole.pos)) return hole;
+      if (this._onPlastic(w)) return null;
+      const dot = this._dotAt(w);
+      if (within(dot)) return this._dotPin(dot);
+      return null;
+    }
+    _onPlastic(world) {
+      if (!this.proj) return false;
+      for (const p of this.proj.parts) {
+        if (!p || p.type !== 'breadboard') continue;
+        const shown = P.bbShown && P.bbShown(p);
+        const cols = shown ? (shown.c1 - shown.c0 + 1) : ((p.props && p.props.cols) || 63);
+        const W = (cols || 63) * G + 10;
+        const dx = world.x - (p.x || 0), dy = world.y - (p.y || 0), r = ((p.rot || 0) % 4 + 4) % 4;
+        const loc = r === 1 ? { x: dy, y: -dx } : r === 2 ? { x: -dx, y: -dy } : r === 3 ? { x: -dy, y: dx } : { x: dx, y: dy };
+        if (loc.x >= -8 && loc.x <= W - 2 && loc.y >= -16 && loc.y <= 210) return true;
+      }
+      return false;
+    }
+    _snapWirePoint(world, ev) {
+      const limit = this._snapLimit(ev);
+      const near = this.pinNear(world, ev);
+      if (near && !near.bb && this._screenDist(world, near.pos) <= limit) return near;
+      const hole = this._holePin(world);
+      if (hole && this._screenDist(world, hole.pos) <= limit) return hole;
+      if (!ui3On() || this._onPlastic(world)) return null;
+      const dot = this._dotAt(world);
+      if (this._screenDist(world, dot) <= limit) return this._dotPin(dot);
+      return null;
+    }
+    _clearArm() { if (this._armTimer) { clearTimeout(this._armTimer); this._armTimer = 0; } }
+    _openCanvas(ev, p) {
+      if (p && p.type !== 'breadboard') return false;
+      const t = ev && ev.target;
+      if (t && t.closest && (t.closest('.wire') || t.closest('.w-end') || t.closest('.w-bend'))) return false;
+      return true;
+    }
+    _arm(ev, world) {
+      this._clearArm();
+      this.select(null);
+      this.mode = { k: 'arm', sx: ev.clientX, sy: ev.clientY, vx: this.view.x, vy: this.view.y, world: world, ev: ev };
+      svg_capture(this.svg, ev);
+      this._armTimer = setTimeout(() => {
+        this._armTimer = 0;
+        if (!this.mode || this.mode.k !== 'arm') return;
+        const pin = this._snapWirePoint(this.mode.world, this.mode.ev);
+        if (pin) this._beginWire(pin, this.mode.world);
+      }, 280);
+    }
+    _beginWire(pin, world) {
+      this._clearArm();
+      this.closeMenu();
+      this.mode = { k: 'wire', a: { x: pin.pos.x, y: pin.pos.y }, pts: [], start: pin, t0: Date.now(), ptr: world };
+      this._drawWirePreview(world);
+      this.highlight(pin);
+      const flip = document.body.classList.contains('m') ? '' : ' · Shift flips 90°';
+      this.setHint(`Wiring from ${this.pinLabel(pin)} — click the target pin${flip} · Esc / right-click / empty canvas cancels`);
+    }
+    // Part artwork under a point. The declared size box misses the LED dome and other drawings that sit off the pins.
     _bodyNear(world) {
       if (!this.proj || !world) return null;
-      const pad = 6;
+      const pad = 4;
       let best = null, bd = Infinity;
       for (const p of this.proj.parts) {
-        if (!p || p.type === 'breadboard' || p.type === 'label' || !P.T[p.type] || !P.T[p.type].size) continue;
-        const sz = P.T[p.type].size(p) || { w: 16, h: 16 };
-        const dx = world.x - p.x, dy = world.y - p.y, r = ((p.rot || 0) % 4 + 4) % 4;
-        let lx, ly;
-        if (r === 1) { lx = dy; ly = -dx; } else if (r === 2) { lx = -dx; ly = -dy; } else if (r === 3) { lx = -dy; ly = dx; } else { lx = dx; ly = dy; }
-        const bw = sz.w || 16, bh = sz.h || 16;
-        const ox = lx < 0 ? -lx : lx > bw ? lx - bw : 0;
-        const oy = ly < 0 ? -ly : ly > bh ? ly - bh : 0;
+        if (!p || p.type === 'breadboard' || p.type === 'label' || !P.T[p.type]) continue;
+        let box = null;
+        if (P.gfxBox) { try { box = P.gfxBox(p); } catch (e) { box = null; } }
+        let ox, oy;
+        if (box && box.w > 0 && box.h > 0) {
+          const x1 = box.x + box.w, y1 = box.y + box.h;
+          ox = world.x < box.x ? box.x - world.x : world.x > x1 ? world.x - x1 : 0;
+          oy = world.y < box.y ? box.y - world.y : world.y > y1 ? world.y - y1 : 0;
+        } else if (P.T[p.type].size) {
+          const sz = P.T[p.type].size(p) || { w: 16, h: 16 };
+          const dx = world.x - p.x, dy = world.y - p.y, r = ((p.rot || 0) % 4 + 4) % 4;
+          let lx, ly;
+          if (r === 1) { lx = dy; ly = -dx; } else if (r === 2) { lx = -dx; ly = -dy; } else if (r === 3) { lx = -dy; ly = dx; } else { lx = dx; ly = dy; }
+          const bw = sz.w || 16, bh = sz.h || 16;
+          ox = lx < 0 ? -lx : lx > bw ? lx - bw : 0;
+          oy = ly < 0 ? -ly : ly > bh ? ly - bh : 0;
+        } else continue;
         if (ox > pad || oy > pad) continue;
         const d = ox * ox + oy * oy;
         if (d < bd) { bd = d; best = p; }
@@ -488,18 +594,8 @@
       const pg = ev.target && ev.target.closest && ev.target.closest('.part'), part = pg && this.part(this._partIdOf(pg));
       // A part body, lead, or label selects the part. It must not snap to a nearby leg and start a wire.
       if (part && part.type !== 'breadboard') return null;
-      // Studio Dark: a press on the board near a hole starts a wire even when that hole is not painted.
-      // A real component pin that is closer still wins, the same as a painted hole.
-      if (ui3On() && part && part.type === 'breadboard') {
-        const onWire = ev.target && ev.target.closest && (ev.target.closest('.wire') || ev.target.closest('.w-end'));
-        if (!onWire) {
-          const near = this.pinNear(this.toWorld(ev), ev);
-          if (near && !near.bb) return near;
-          const snapped = this._snapBoardHole(ev, part);
-          if (snapped) return snapped;
-        }
-        return null;
-      }
+      // Plastic and the white canvas are not pins. A click or a short hold snaps; a drag pans.
+      if (ui3On() && part && part.type === 'breadboard') return null;
       const onWire = ev.target && ev.target.closest && ev.target.closest('.wire');
       const near = this.pinNear(this.toWorld(ev), ev, onWire ? 5 : 14);
       if (!near || near.bb) return null;
@@ -513,7 +609,9 @@
       return near;
     }
     pinLabel(h) {
-      if (!h) return ''; const p = h.part, n = h.pin.name, d = P.T[p.type] || {};
+      if (!h) return '';
+      if (!h.part) return 'Dot';
+      const p = h.part, n = h.pin.name, d = P.T[p.type] || {};
       if (p.type === 'esp32') { const g = P.espGpio ? P.espGpio(n) : -1; return `ESP32 ${g >= 0 ? 'GPIO' + g + (('D' + g) === n ? '' : ' (' + n + ')') : n}`; }
       if (p.type === 'breadboard') { const m = /^([a-j])(\d+)$/.exec(n); if (m) return `Breadboard ${n} (row ${m[2]} ${'abcde'.includes(m[1]) ? 'a–e' : 'f–j'})`; if (/^(tn|tp|bn|bp)\d+$/.test(n)) return `Breadboard rail ${n}`; return `Breadboard ${n}`; }
       return `${p.id} ${d.label || p.type} · pin ${n}`;
@@ -577,7 +675,7 @@
       });
       svg.addEventListener('drop', (ev) => {
         ev.preventDefault(); const t = ev.dataTransfer.getData('text/x-part'); this._clearGhost();
-        if (t && P.T[t]) { const w = this.toWorld(ev); const seat = ui2On() ? this.freeSeat(t, w.x, w.y) : (P.placeDroppedPart ? P.placeDroppedPart(this.proj.parts, t, w.x, w.y, 0) : w); this.addPart(t, seat.x, seat.y); }
+        if (t && P.T[t]) { const w = this.toWorld(ev); const seat = ui2On() ? this.freeSeat(t, w.x, w.y) : ui3On() ? this._snapXY(w.x, w.y) : (P.placeDroppedPart ? P.placeDroppedPart(this.proj.parts, t, w.x, w.y, 0) : w); this.addPart(t, seat.x, seat.y); }
       });
       window.addEventListener('dragend', () => this._clearGhost());
       svg.addEventListener('pointerleave', () => this._emitHover(null));
@@ -699,11 +797,14 @@
       const w = this.toWorld(ev);
       // A body tap selects, even mid-wire. It must not drop a bend or land the wire on a nearby pin.
       if (onBody && this.mode && this.mode.k === 'wire') this.cancelWire();
-      const pin = onBody ? null : this.pinAtEvent(ev);
+      const onWireEl = !!(ev.target && ev.target.closest && (ev.target.closest('.wire') || ev.target.closest('.w-end')));
+      const exact = (!onBody && !onWireEl && ui3On()) ? this._exactPin(ev) : null;
+      const pin = exact || (onBody ? null : this.pinAtEvent(ev));
       if (this.mode && this.mode.k === 'wire') {
         const m = this.mode;
-        if (pin) { if (pin.pos.x === m.a.x && pin.pos.y === m.a.y && !m.pts.length) { this.cancelWire(); return; } this._finishWire(pin.pos, pin); return; }
-        // Empty canvas cancels. A click that is not on a pin must not extend the wire or start another one.
+        const aim = pin || (ui3On() ? this._snapWirePoint(w, ev) : null);
+        if (aim) { if (aim.pos.x === m.a.x && aim.pos.y === m.a.y && !m.pts.length) { this.cancelWire(); return; } this._finishWire(aim.pos, aim); return; }
+        // Empty canvas cancels. A click that is not on a pin or dot must not extend the wire.
         this.cancelWire(); return;
       }
       const endEl = ev.target && ev.target.closest && ev.target.closest('.w-end');
@@ -722,10 +823,14 @@
       if (bEl) { const wid = bEl.closest('.wire').dataset.wid; this.push(); this.mode = { k: 'bend', w: this.wire(wid), i: +bEl.dataset.bend }; svg_capture(this.svg, ev); return; }
       // Shift used to grab the whole breadboard, including a press that landed on a hole.
       // A hole (painted or snapped) still starts a wire, so Shift can invert 90° for that wire. The open plastic does not.
-      const onHole = !!(pin && pin.bb) || !!(pinEl && p && p.type === 'breadboard');
-      if (pin && !(p && p.type === 'breadboard' && ev.shiftKey && !onHole)) { this.closeMenu(); this.mode = { k: 'wire', a: pin.pos, pts: [], start: pin, t0: Date.now(), ptr: w }; this._drawWirePreview(w); this.highlight(pin); const flip = document.body.classList.contains('m') ? '' : ' · Shift flips 90°'; this.setHint(`Wiring from ${this.pinLabel(pin)} — click the target pin${flip} · Esc / right-click / empty canvas cancels`); return; }
-      // Studio Dark: the plastic is the canvas. Dragging it pans. Holes still start wires.
-      if (ui3On() && p && p.type === 'breadboard' && !pinEl) { this.select(null); this.mode = { k: 'pan', sx: ev.clientX, sy: ev.clientY, vx: this.view.x, vy: this.view.y }; return; }
+      const onHole = !!(pin && (pin.bb || pin.dot)) || !!(pinEl && p && p.type === 'breadboard');
+      if (pin && !(p && p.type === 'breadboard' && ev.shiftKey && !onHole)) { this._beginWire(pin, w); return; }
+      // Empty board or canvas: a click or a short hold snaps to a hole or dot. A drag pans.
+      // Shift on the open plastic still pans, the same as before.
+      if (ui3On() && this._openCanvas(ev, p)) {
+        if (ev.shiftKey) { this.select(null); this.mode = { k: 'pan', sx: ev.clientX, sy: ev.clientY, vx: this.view.x, vy: this.view.y }; return; }
+        this._arm(ev, w); return;
+      }
       const wEl = ev.target.closest && ev.target.closest('.wire');
       // While the sim is running, a press that lands on a wire but sits on a part body acts on the part.
       const body = (ui3On() && this.hooks.running && this.hooks.running()) ? this._bodyNear(w) : null;
@@ -757,7 +862,7 @@
       return this._routeAround(a, q, basic);
     }   // L-shaped bends when 90° is on (Shift inverts it); ui2 steps around part bodies when that path is clear
     _drawWirePreview(w) {
-      const m = this.mode, last = m.pts.length ? m.pts[m.pts.length - 1] : m.a, tgt = this.pinNear(w), end = tgt ? tgt.pos : { x: snap(w.x), y: snap(w.y) };
+      const m = this.mode, last = m.pts.length ? m.pts[m.pts.length - 1] : m.a, tgt = ui3On() ? this._snapWirePoint(w, { pointerType: 'mouse' }) : this.pinNear(w), end = tgt ? tgt.pos : (ui3On() ? this._dotAt(w) : { x: snap(w.x), y: snap(w.y) });
       const pts = [m.a, ...m.pts, ...this._ortho(last, end)].map((q) => `${q.x},${q.y}`).join(' ');
       this.ovWire.innerHTML = `<polyline points="${pts}" class="w-preview" style="stroke:${this.wireColor === 'auto' ? this.autoColor(m.start, null) : (WIRE_COLORS[this.wireColor] || this.wireColor)}"/>` + (tgt ? `<circle cx="${end.x}" cy="${end.y}" r="5.5" class="hl-target"/>` : '');
     }
@@ -773,8 +878,9 @@
     // Move one end of an existing wire. The leg is the same route a new wire would take, including the Shift invert.
     _dragEnd(world) {
       const m = this.mode; if (!m || m.k !== 'end' || !m.w) return;
-      const pin = this.pinNear(world);
-      const q = pin ? { x: pin.pos.x, y: pin.pos.y } : { x: snap(world.x), y: snap(world.y) };
+      const pin = ui3On() ? this._snapWirePoint(world, { pointerType: 'mouse' }) : this.pinNear(world);
+      const loose = ui3On() ? this._dotAt(world) : { x: snap(world.x), y: snap(world.y) };
+      const q = pin ? { x: pin.pos.x, y: pin.pos.y } : loose;
       const fixed = m.end === 'a' ? m.w.b : m.w.a;
       if (q.x === fixed.x && q.y === fixed.y) return;
       const from = m.end === 'a' ? q : fixed, to = m.end === 'a' ? fixed : q;
@@ -797,13 +903,23 @@
         this.ovHl.innerHTML = `<rect x="${x}" y="${y}" width="${ww}" height="${hh}" class="ui2-marquee" pointer-events="none"/>`;
         return;
       }
-      if (m && m.k === 'pan') { if (ev.clientX !== m.sx || ev.clientY !== m.sy) this.markUserView(); this.view.x = m.vx - (ev.clientX - m.sx) / this.view.s; this.view.y = m.vy - (ev.clientY - m.sy) / this.view.s; this.applyView(); return; }
+      if (m && m.k === 'arm') {
+        if (Math.hypot(ev.clientX - m.sx, ev.clientY - m.sy) <= this._panSlop(m.ev)) return;
+        this._clearArm();
+        this.mode = { k: 'pan', sx: m.sx, sy: m.sy, vx: m.vx, vy: m.vy };
+      }
+      if (m && (m.k === 'pan' || (this.mode && this.mode.k === 'pan'))) {
+        const pan = this.mode.k === 'pan' ? this.mode : m;
+        if (ev.clientX !== pan.sx || ev.clientY !== pan.sy) this.markUserView();
+        this.view.x = pan.vx - (ev.clientX - pan.sx) / this.view.s; this.view.y = pan.vy - (ev.clientY - pan.sy) / this.view.s; this.applyView(); return;
+      }
       if (m && m.k === 'knob') { const dlt = ((ev.clientX - m.sx) - (ev.clientY - m.sy)) / 150; m.p.props.pos = Math.min(1, Math.max(0, m.pos0 + dlt)); this.hooks.changed(false); this.refreshDynamic(); this.hooks.selected(this.sel); return; }
-      if (m && m.k === 'wire') { m.ptr = w; this._drawWirePreview(w); const t = this.pinNear(w, ev); this.highlight(m.start, t ? [t.pos] : []); this._emitHover(t ? { ev, pin: t, part: t.part, world: w, label: this.pinLabel(t) } : null); return; }
+      if (m && m.k === 'wire') { m.ptr = w; this._drawWirePreview(w); const t = ui3On() ? this._snapWirePoint(w, ev) : this.pinNear(w, ev); this.highlight(m.start, t ? [t.pos] : []); this._emitHover(t ? { ev, pin: t, part: t.part, world: w, label: this.pinLabel(t) } : null); return; }
       if (m && m.k === 'end') { m.ptr = w; this._dragEnd(w); return; }
-      if (m && m.k === 'bend') { const q = { x: snap(w.x), y: snap(w.y) }; const b = m.w.pts[m.i]; if (b.x !== q.x || b.y !== q.y) { b.x = q.x; b.y = q.y; m.moved = true; this.renderWires(); } return; }
+      if (m && m.k === 'bend') { const q = this._snapXY(w.x, w.y); const b = m.w.pts[m.i]; if (b.x !== q.x || b.y !== q.y) { b.x = q.x; b.y = q.y; m.moved = true; this.renderWires(); } return; }
       if (m && m.k === 'drag') {
-        const nx = snap(m.ox + w.x - m.sx), ny = snap(m.oy + w.y - m.sy);
+        const moved = this._snapXY(m.ox + w.x - m.sx, m.oy + w.y - m.sy);
+        const nx = moved.x, ny = moved.y;
         if (nx !== m.p.x || ny !== m.p.y) {
           if (!m.moved) {
             this.push(); m.moved = true;
@@ -858,10 +974,17 @@
       if (m.k === 'drag') { this.mode = null; this.highlight(null); if (m.moved) { this._growBoard(); this._paintBoard(); this.hooks.changed(true); } return; }
       if (m.k === 'bend') { this.mode = null; if (m.moved) this.hooks.changed(false); else this.undoS.pop(); return; }
       if (m.k === 'end') { this.mode = null; if (m.moved) this.hooks.changed(true); else this.undoS.pop(); return; }
+      if (m.k === 'arm') {
+        this._clearArm();
+        const pin = this._snapWirePoint(this.toWorld(ev), ev);
+        this.mode = null;
+        if (pin) this._beginWire(pin, pin.pos);
+        return;
+      }
       if (m.k === 'pan') { this.mode = null; return; }
       if (m.k === 'knob') { this.mode = null; return; }
-      if (m.k === 'wire') {   // drag-release on a pin finishes a wire too
-        const pin = this.pinAtEvent(ev);
+      if (m.k === 'wire') {   // drag-release on a pin or dot finishes a wire too
+        const pin = this.pinAtEvent(ev) || (ui3On() ? this._snapWirePoint(this.toWorld(ev), ev) : null);
         if (pin && (pin.pos.x !== m.a.x || pin.pos.y !== m.a.y) && !m.pts.length) this._finishWire(pin.pos, pin);
       }
     }

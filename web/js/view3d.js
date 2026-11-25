@@ -877,7 +877,7 @@
     }
 
     _makeBreadboard(p, d) {
-      const span = root.Parts.bbSpan ? root.Parts.bbSpan(p) : null;
+      const span = root.Parts.bbShown ? root.Parts.bbShown(p) : (root.Parts.bbSpan ? root.Parts.bbSpan(p) : null);
       if (span && !span.classic) return this._makeBreadboardSpan(p, span);
       const THREE = root.THREE, cols = p.props.cols || 63;
       const W = cols * 10 + 10, D = 200, H = 9.5 * MM;

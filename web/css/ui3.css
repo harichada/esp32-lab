@@ -34,12 +34,12 @@ html[data-ui="3"] #main{
   position:fixed;inset:0;display:block;height:auto;grid-template-columns:none;background:transparent
 }
 html[data-ui="3"] #center,html[data-ui="3"] #stageWrap{position:absolute;inset:0;min-height:0}
-html[data-ui="3"] #stageWrap{
-  background:
-    radial-gradient(circle at 50% 40%, rgba(255,255,255,.03), transparent 42%),
-    var(--canvas)
-}
-html[data-ui="3"] #stage,html[data-ui="3"] #stageSch{background:transparent}
+html[data-ui="3"] #stageWrap{background:#fff}
+html[data-ui="3"] body.view3d #stageWrap{background:#07090d}
+html[data-ui="3"] #stage{background:#fff}
+html[data-ui="3"] #stageSch{background:var(--canvas)}
+html[data-ui="3"] #gridRect,html[data-ui="3"] #stage > rect[fill="url(#grid5)"]{display:none}
+html[data-ui="3"] #ui3Dots{pointer-events:none}
 html[data-ui="3"] #legalFoot,html[data-ui="3"] #dockResizer,html[data-ui="3"] #sideResizer,html[data-ui="3"] .reopen{display:none!important}
 html[data-ui="3"] .canvas-tools,html[data-ui="3"] .zoom-tools{display:none!important}
 

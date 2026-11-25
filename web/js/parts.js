@@ -98,6 +98,26 @@
     return { c0: c0, c1: c1, b0: b0, b1: b1, cols: cols, classic: false };
   }
   function bbClassic(p) { return bbSpan(p).classic; }
+  // Studio Dark is one classic board on a dotted canvas. Extra saved bands stay in the file
+  // but are not breadboard: parts keep their coordinates and those dots do not conduct.
+  function bbStudio() {
+    try {
+      const el = typeof document !== 'undefined' && document.documentElement;
+      if (!el) return false;
+      if (el.dataset && el.dataset.ui === '3') return true;
+      return !!(el.getAttribute && el.getAttribute('data-ui') === '3');
+    } catch (e) { return false; }
+  }
+  function bbShown(p) {
+    const saved = bbSpan(p);
+    if (!bbStudio() || saved.classic) return saved;
+    return { c0: 1, c1: 63, b0: 0, b1: 0, cols: 63, classic: true, plain: true };
+  }
+  function bbCols(p) {
+    const shown = bbShown(p);
+    if (shown.plain) return 63;
+    return (p && p.props && p.props.cols) || shown.cols || 63;
+  }
   function bbRailSkip(c) { return ((c - 1) % 6 + 6) % 6 === 5; }
   function bbName(row, c, band) { const base = row + c; return band ? base + '@' + band : base; }
   function bbXY(c, y, band) { return { x: 10 + (c - 1) * G, y: y + band * BB_BAND }; }
@@ -218,7 +238,7 @@
   function bbNearest(p, wx, wy) {
     const loc = bbLocal(p, wx, wy);
     const view = root._bbView && root._bbView[p.id];
-    const s = view || bbSpan(p);
+    const s = bbStudio() ? bbShown(p) : (view || bbSpan(p));
     const c = Math.round((loc.x - 10) / G) + 1;
     const cols = [];
     for (const dc of [-1, 0, 1]) { const cc = c + dc; if (cc >= s.c0 && cc <= s.c1) cols.push(cc); }
@@ -290,24 +310,24 @@
   def('breadboard', {
     label: 'Breadboard 830', cat: 'Boards', layer: 0,
     props: { cols: 63 },
-    pins: (p) => bbClassic(p) ? bbHoles(p.props.cols || 63) : bbHolesSpan(bbSpan(p)),
-    size: (p) => bbClassic(p) ? { w: (p.props.cols || 63) * G + 10, h: 200 } : (() => {
+    pins: (p) => bbShown(p).classic ? bbHoles(bbCols(p)) : bbHolesSpan(bbSpan(p)),
+    size: (p) => bbShown(p).classic ? { w: bbCols(p) * G + 10, h: 200 } : (() => {
       const s = bbSpan(p);
       const x1 = 10 + (Math.max(s.c1, 1) - 1) * G + 10;
       const y1 = 200 + Math.max(0, s.b1) * BB_BAND;
       return { w: Math.max(x1, (p.props.cols || 63) * G + 10), h: y1 };
     })(),
     groups(p) {
-      if (!bbClassic(p)) return bbGroupsSpan(bbSpan(p));
-      const cols = p.props.cols || 63, g = [];
+      if (!bbShown(p).classic) return bbGroupsSpan(bbSpan(p));
+      const cols = bbCols(p), g = [];
       for (let c = 1; c <= cols; c++) { g.push(['a', 'b', 'c', 'd', 'e'].map((r) => r + c)); g.push(['f', 'g', 'h', 'i', 'j'].map((r) => r + c)); }
       for (const rl in BB_RAILS) { const a = []; for (let c = 1; c <= cols; c++) if ((c - 1) % 6 !== 5) a.push(rl + c); g.push(a); }
       return g;
     },
     svg(p) {
-      const paint = root._bbPaint && root._bbPaint.id === p.id ? root._bbPaint : null;
-      if (!bbClassic(p) || paint) return bbSvgSpan(p, paint);
-      const cols = p.props.cols || 63, W = cols * G + 10;
+      const paint = !bbStudio() && root._bbPaint && root._bbPaint.id === p.id ? root._bbPaint : null;
+      if (!bbShown(p).classic || paint) return bbSvgSpan(p, paint);
+      const cols = bbCols(p), W = cols * G + 10;
       let s = `<rect x="-6" y="-14" width="${W + 2}" height="222" rx="6" class="bb-body" filter="url(#fShadow)"/><rect x="-6" y="-14" width="${W + 2}" height="222" rx="6" fill="url(#gGloss)" opacity=".25" pointer-events="none"/>`;
       s += `<rect x="-6" y="-14" width="${W + 2}" height="38" rx="6" class="bb-railband"/><rect x="-6" y="170" width="${W + 2}" height="38" rx="6" class="bb-railband"/>`;
       s += `<rect x="-6" y="91" width="${W + 2}" height="12" class="bb-channel"/><line x1="-6" y1="91.5" x2="${W - 4}" y2="91.5" class="bb-chedge"/><line x1="-6" y1="102.5" x2="${W - 4}" y2="102.5" class="bb-chedge2"/>`;
@@ -1344,7 +1364,7 @@
     return { x: x0 - 1, y: y0 - 1, w: x1 - x0 + 2, h: y1 - y0 + 2 };
   }
 
-  const api = { T, fmt, parseVal, parseProp, stampResistance, resistanceWarning, invalidValueWarning, WIRE_R, scopeChannel, bands, espGpio, ESP_TOP, ESP_BOT, INPUT_ONLY, STRAPPING, ADC1, ADC2, rotPt, orientPt, pinWorld, bodySpin, partTransform, canPhysicalFlip, isTwoTerminal, ALLOW_MIRROR_MULTIPIN, NO_FLIP_TIP, seating, placeNewPart, placeDroppedPart, placeOnEmptyStrips, reseat, gfxBox, G, VTH, esc, LEDCOL, bbClassic, bbSpan, bbNearest, bbStrip, bbCover, bbViewFor, BB_BAND };
+  const api = { T, fmt, parseVal, parseProp, stampResistance, resistanceWarning, invalidValueWarning, WIRE_R, scopeChannel, bands, espGpio, ESP_TOP, ESP_BOT, INPUT_ONLY, STRAPPING, ADC1, ADC2, rotPt, orientPt, pinWorld, bodySpin, partTransform, canPhysicalFlip, isTwoTerminal, ALLOW_MIRROR_MULTIPIN, NO_FLIP_TIP, seating, placeNewPart, placeDroppedPart, placeOnEmptyStrips, reseat, gfxBox, G, VTH, esc, LEDCOL, bbClassic, bbSpan, bbShown, bbHoleStep, bbNearest, bbStrip, bbCover, bbViewFor, BB_BAND };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.Parts = api;
 })(typeof window !== 'undefined' ? window : globalThis);
