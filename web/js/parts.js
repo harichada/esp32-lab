@@ -86,18 +86,207 @@
     for (const rl in BB_RAILS) for (let c = 1; c <= cols; c++) { if ((c - 1) % 6 === 5) continue; h.push({ name: rl + c, x: 10 + (c - 1) * G, y: BB_RAILS[rl] }); }
     return h;
   }
+  // Extra tie-point bands sit this far below the previous one. Band 0 keeps the classic y values.
+  const BB_BAND = 230, BB_MAX_COLS = 240, BB_MAX_BANDS = 8, BB_HOLE_CAP = 1800;
+  function bbSpan(p) {
+    const pr = (p && p.props) || {};
+    const cols = pr.cols || 63;
+    if (pr.c0 == null && pr.c1 == null && pr.b0 == null && pr.b1 == null) return { c0: 1, c1: cols, b0: 0, b1: 0, cols: cols, classic: true };
+    let c0 = pr.c0 | 0, c1 = pr.c1 == null ? cols : (pr.c1 | 0), b0 = pr.b0 | 0, b1 = pr.b1 | 0;
+    if (c1 < c0) { const t = c0; c0 = c1; c1 = t; }
+    if (b1 < b0) { const t = b0; b0 = b1; b1 = t; }
+    return { c0: c0, c1: c1, b0: b0, b1: b1, cols: cols, classic: false };
+  }
+  function bbClassic(p) { return bbSpan(p).classic; }
+  function bbRailSkip(c) { return ((c - 1) % 6 + 6) % 6 === 5; }
+  function bbName(row, c, band) { const base = row + c; return band ? base + '@' + band : base; }
+  function bbXY(c, y, band) { return { x: 10 + (c - 1) * G, y: y + band * BB_BAND }; }
+  function bbLocal(p, x, y) {
+    const dx = x - p.x, dy = y - p.y, r = ((p.rot || 0) % 4 + 4) % 4;
+    if (r === 1) return { x: dy, y: -dx };
+    if (r === 2) return { x: -dx, y: -dy };
+    if (r === 3) return { x: -dy, y: dx };
+    return { x: dx, y: dy };
+  }
+  function bbBoxLocal(p, x0, y0, x1, y1) {
+    let lx0 = 1e9, ly0 = 1e9, lx1 = -1e9, ly1 = -1e9;
+    for (const x of [x0, x1]) for (const y of [y0, y1]) {
+      const q = bbLocal(p, x, y);
+      lx0 = Math.min(lx0, q.x); ly0 = Math.min(ly0, q.y); lx1 = Math.max(lx1, q.x); ly1 = Math.max(ly1, q.y);
+    }
+    return { x0: lx0, y0: ly0, x1: lx1, y1: ly1 };
+  }
+  function bbClampPair(a, b, max) {
+    if (b - a + 1 <= max) return [a, b];
+    const mid = (a + b) / 2, half = Math.floor(max / 2);
+    const lo = Math.round(mid) - half;
+    return [lo, lo + max - 1];
+  }
+  // Keep the saved columns, then grow toward the view until the cap.
+  function bbUnion(s0, s1, v0, v1, max) {
+    let a = Math.min(s0, v0), b = Math.max(s1, v1);
+    if (b - a + 1 <= max) return [a, b];
+    if (s1 - s0 + 1 >= max) return [s0, s0 + max - 1];
+    let extra = max - (s1 - s0 + 1);
+    const left = Math.max(0, s0 - v0), right = Math.max(0, v1 - s1), sum = left + right || 1;
+    const takeL = Math.min(left, Math.ceil(extra * left / sum));
+    const takeR = Math.min(right, extra - takeL);
+    return [s0 - takeL, s1 + takeR];
+  }
+  function bbHolesSpan(s, hole, cap) {
+    const h = [];
+    const cLo = hole ? Math.max(s.c0, hole.c0) : s.c0, cHi = hole ? Math.min(s.c1, hole.c1) : s.c1;
+    const bLo = hole ? Math.max(s.b0, hole.b0) : s.b0, bHi = hole ? Math.min(s.b1, hole.b1) : s.b1;
+    const cols = Math.max(1, cHi - cLo + 1), bands = Math.max(1, bHi - bLo + 1);
+    const step = cap ? Math.max(1, Math.ceil((cols * bands * 14) / cap)) : 1;
+    for (let b = bLo; b <= bHi; b++) for (let c = cLo; c <= cHi; c += step) {
+      for (const r in BB_ROWS) { const q = bbXY(c, BB_ROWS[r], b); h.push({ name: bbName(r, c, b), x: q.x, y: q.y }); }
+      if (bbRailSkip(c)) continue;
+      for (const rl in BB_RAILS) { const q = bbXY(c, BB_RAILS[rl], b); h.push({ name: bbName(rl, c, b), x: q.x, y: q.y }); }
+    }
+    return h;
+  }
+  function bbGroupsSpan(s) {
+    const g = [];
+    for (let b = s.b0; b <= s.b1; b++) {
+      for (let c = s.c0; c <= s.c1; c++) {
+        g.push(['a', 'b', 'c', 'd', 'e'].map((r) => bbName(r, c, b)));
+        g.push(['f', 'g', 'h', 'i', 'j'].map((r) => bbName(r, c, b)));
+      }
+      for (const rl in BB_RAILS) {
+        const a = [];
+        for (let c = s.c0; c <= s.c1; c++) if (!bbRailSkip(c)) a.push(bbName(rl, c, b));
+        g.push(a);
+      }
+    }
+    return g;
+  }
+  function bbSvgSpan(p, paint) {
+    const saved = bbSpan(p);
+    const span = (paint && paint.span) || saved;
+    const hole = (paint && paint.hole) || null;
+    let s = '';
+    for (let b = span.b0; b <= span.b1; b++) {
+      const y = b * BB_BAND;
+      const x0 = 10 + (span.c0 - 1) * G - 16, x1 = 10 + (span.c1 - 1) * G + 16, w = Math.max(20, x1 - x0);
+      s += `<rect x="${x0}" y="${y - 14}" width="${w}" height="222" rx="6" class="bb-body" filter="url(#fShadow)"/>`;
+      s += `<rect x="${x0}" y="${y - 14}" width="${w}" height="38" rx="6" class="bb-railband"/><rect x="${x0}" y="${y + 170}" width="${w}" height="38" rx="6" class="bb-railband"/>`;
+      s += `<rect x="${x0}" y="${y + 91}" width="${w}" height="12" class="bb-channel"/>`;
+      s += `<rect x="${x0 + 10}" y="${y - 9.6}" width="${Math.max(8, w - 20)}" height="1.6" rx=".8" class="rail-n"/><rect x="${x0 + 10}" y="${y + 17.4}" width="${Math.max(8, w - 20)}" height="1.6" rx=".8" class="rail-p"/>`;
+      s += `<rect x="${x0 + 10}" y="${y + 171.4}" width="${Math.max(8, w - 20)}" height="1.6" rx=".8" class="rail-p"/><rect x="${x0 + 10}" y="${y + 197.4}" width="${Math.max(8, w - 20)}" height="1.6" rx=".8" class="rail-n"/>`;
+      const cLo = hole ? Math.max(span.c0, hole.c0) : span.c0, cHi = hole ? Math.min(span.c1, hole.c1) : span.c1;
+      for (let c = cLo; c <= cHi; c++) if (c === 1 || c % 5 === 0) {
+        const x = 10 + (c - 1) * G;
+        s += `<text x="${x}" y="${y + 31}" class="bb-num">${c}</text><text x="${x}" y="${y + 166}" class="bb-num">${c}</text>`;
+      }
+    }
+    for (const h of bbHolesSpan(span, hole, BB_HOLE_CAP)) s += `<rect x="${h.x - 2.5}" y="${h.y - 2.5}" width="5" height="5" rx="1" class="hole" data-pin="${h.name}"/>`;
+    return s;
+  }
+  // World rect the 2D view should paint, unioned with the saved board and capped.
+  function bbViewFor(p, rect) {
+    const saved = bbSpan(p);
+    const loc = bbBoxLocal(p, rect.x0, rect.y0, rect.x1, rect.y1);
+    const v0 = Math.floor((loc.x0 - 10) / G) + 1, v1 = Math.ceil((loc.x1 - 10) / G) + 1;
+    const u0 = Math.floor((loc.y0 + 14) / BB_BAND), u1 = Math.floor((loc.y1 + 14) / BB_BAND);
+    const [c0, c1] = bbUnion(saved.c0, saved.c1, v0, v1, BB_MAX_COLS);
+    const [b0, b1] = bbUnion(saved.b0, saved.b1, u0, u1, BB_MAX_BANDS);
+    const span = { c0: c0, c1: c1, b0: b0, b1: b1 };
+    return { span: span, hole: span };
+  }
+  // Nearest hole of this board (saved span, or the painted view when one is set). World coordinates in, world coordinates out.
+  function bbNearest(p, wx, wy) {
+    const loc = bbLocal(p, wx, wy);
+    const view = root._bbView && root._bbView[p.id];
+    const s = view || bbSpan(p);
+    const c = Math.round((loc.x - 10) / G) + 1;
+    const cols = [];
+    for (const dc of [-1, 0, 1]) { const cc = c + dc; if (cc >= s.c0 && cc <= s.c1) cols.push(cc); }
+    if (!cols.length) return null;
+    let best = null, bd = 1e18;
+    for (let b = s.b0; b <= s.b1; b++) {
+      const rows = [];
+      for (const r in BB_ROWS) rows.push([r, BB_ROWS[r], false]);
+      for (const rl in BB_RAILS) rows.push([rl, BB_RAILS[rl], true]);
+      for (const cc of cols) for (const row of rows) {
+        if (row[2] && bbRailSkip(cc)) continue;
+        const q = bbXY(cc, row[1], b), d = (q.x - loc.x) * (q.x - loc.x) + (q.y - loc.y) * (q.y - loc.y);
+        if (d >= bd) continue;
+        bd = d;
+        const pin = { name: bbName(row[0], cc, b), x: q.x, y: q.y };
+        const w = pinWorld(p, pin);
+        best = { name: pin.name, x: w.x, y: w.y, lx: pin.x, ly: pin.y };
+      }
+    }
+    return best;
+  }
+  function bbParse(name) {
+    const m = /^(tn|tp|bn|bp|[a-j])(-?\d+)(?:@(-?\d+))?$/.exec(name || '');
+    return m ? { row: m[1], c: +m[2], band: m[3] ? +m[3] : 0 } : null;
+  }
+  // World positions of the strip or rail that contains this hole.
+  function bbStrip(p, name) {
+    const hit = bbParse(name); if (!hit) return [];
+    const s = bbSpan(p), out = [];
+    const push = (pin) => { const w = pinWorld(p, pin); out.push({ x: w.x, y: w.y }); };
+    if (BB_ROWS[hit.row]) {
+      const rows = 'abcde'.includes(hit.row) ? ['a', 'b', 'c', 'd', 'e'] : ['f', 'g', 'h', 'i', 'j'];
+      for (const r of rows) { const q = bbXY(hit.c, BB_ROWS[r], hit.band); push({ name: bbName(r, hit.c, hit.band), x: q.x, y: q.y }); }
+    } else if (BB_RAILS[hit.row]) {
+      for (let c = s.c0; c <= s.c1; c++) {
+        if (bbRailSkip(c)) continue;
+        const q = bbXY(c, BB_RAILS[hit.row], hit.band);
+        push({ name: bbName(hit.row, c, hit.band), x: q.x, y: q.y });
+      }
+    }
+    return out;
+  }
+  // Grow the saved span so these world points land on the board. No-op when they already do.
+  function bbCover(p, x0, y0, x1, y1) {
+    if (!p) return false;
+    const loc = bbBoxLocal(p, x0, y0, x1, y1);
+    const s = bbSpan(p);
+    const a = Math.round((loc.x0 - 10) / G) + 1, b = Math.round((loc.x1 - 10) / G) + 1;
+    let c0 = s.c0, c1 = s.c1, b0 = s.b0, b1 = s.b1;
+    if (a <= s.c0 + 1) c0 = Math.min(c0, a - 2);
+    if (b >= s.c1 - 1) c1 = Math.max(c1, b + 2);
+    const ba = Math.floor((loc.y0 + 14) / BB_BAND), bb = Math.floor((loc.y1 + 14) / BB_BAND);
+    if (ba < s.b0) b0 = ba;
+    if (bb > s.b1) b1 = bb;
+    [c0, c1] = bbClampPair(c0, c1, BB_MAX_COLS);
+    [b0, b1] = bbClampPair(b0, b1, BB_MAX_BANDS);
+    const pr = p.props || (p.props = {});
+    const cols = pr.cols || 63;
+    if (c0 === 1 && c1 === cols && b0 === 0 && b1 === 0) {
+      const had = pr.c0 != null || pr.c1 != null || pr.b0 != null || pr.b1 != null;
+      delete pr.c0; delete pr.c1; delete pr.b0; delete pr.b1;
+      return had;
+    }
+    if (pr.c0 === c0 && pr.c1 === c1 && pr.b0 === b0 && pr.b1 === b1) return false;
+    pr.c0 = c0; pr.c1 = c1; pr.b0 = b0; pr.b1 = b1;
+    if (c0 <= 1 && c1 > cols) pr.cols = c1;
+    return true;
+  }
   def('breadboard', {
     label: 'Breadboard 830', cat: 'Boards', layer: 0,
     props: { cols: 63 },
-    pins: (p) => bbHoles(p.props.cols || 63),
-    size: (p) => ({ w: (p.props.cols || 63) * G + 10, h: 200 }),
+    pins: (p) => bbClassic(p) ? bbHoles(p.props.cols || 63) : bbHolesSpan(bbSpan(p)),
+    size: (p) => bbClassic(p) ? { w: (p.props.cols || 63) * G + 10, h: 200 } : (() => {
+      const s = bbSpan(p);
+      const x1 = 10 + (Math.max(s.c1, 1) - 1) * G + 10;
+      const y1 = 200 + Math.max(0, s.b1) * BB_BAND;
+      return { w: Math.max(x1, (p.props.cols || 63) * G + 10), h: y1 };
+    })(),
     groups(p) {
+      if (!bbClassic(p)) return bbGroupsSpan(bbSpan(p));
       const cols = p.props.cols || 63, g = [];
       for (let c = 1; c <= cols; c++) { g.push(['a', 'b', 'c', 'd', 'e'].map((r) => r + c)); g.push(['f', 'g', 'h', 'i', 'j'].map((r) => r + c)); }
       for (const rl in BB_RAILS) { const a = []; for (let c = 1; c <= cols; c++) if ((c - 1) % 6 !== 5) a.push(rl + c); g.push(a); }
       return g;
     },
     svg(p) {
+      const paint = root._bbPaint && root._bbPaint.id === p.id ? root._bbPaint : null;
+      if (!bbClassic(p) || paint) return bbSvgSpan(p, paint);
       const cols = p.props.cols || 63, W = cols * G + 10;
       let s = `<rect x="-6" y="-14" width="${W + 2}" height="222" rx="6" class="bb-body" filter="url(#fShadow)"/><rect x="-6" y="-14" width="${W + 2}" height="222" rx="6" fill="url(#gGloss)" opacity=".25" pointer-events="none"/>`;
       s += `<rect x="-6" y="-14" width="${W + 2}" height="38" rx="6" class="bb-railband"/><rect x="-6" y="170" width="${W + 2}" height="38" rx="6" class="bb-railband"/>`;
@@ -1135,7 +1324,7 @@
     return { x: x0 - 1, y: y0 - 1, w: x1 - x0 + 2, h: y1 - y0 + 2 };
   }
 
-  const api = { T, fmt, parseVal, parseProp, stampResistance, resistanceWarning, invalidValueWarning, WIRE_R, scopeChannel, bands, espGpio, ESP_TOP, ESP_BOT, INPUT_ONLY, STRAPPING, ADC1, ADC2, rotPt, orientPt, pinWorld, bodySpin, partTransform, canPhysicalFlip, isTwoTerminal, ALLOW_MIRROR_MULTIPIN, NO_FLIP_TIP, seating, placeNewPart, placeDroppedPart, placeOnEmptyStrips, reseat, gfxBox, G, VTH, esc, LEDCOL };
+  const api = { T, fmt, parseVal, parseProp, stampResistance, resistanceWarning, invalidValueWarning, WIRE_R, scopeChannel, bands, espGpio, ESP_TOP, ESP_BOT, INPUT_ONLY, STRAPPING, ADC1, ADC2, rotPt, orientPt, pinWorld, bodySpin, partTransform, canPhysicalFlip, isTwoTerminal, ALLOW_MIRROR_MULTIPIN, NO_FLIP_TIP, seating, placeNewPart, placeDroppedPart, placeOnEmptyStrips, reseat, gfxBox, G, VTH, esc, LEDCOL, bbClassic, bbSpan, bbNearest, bbStrip, bbCover, bbViewFor, BB_BAND };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.Parts = api;
 })(typeof window !== 'undefined' ? window : globalThis);

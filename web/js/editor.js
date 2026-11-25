@@ -12,11 +12,18 @@
       return !!(el && el.dataset && el.dataset.ui === '2');
     } catch (e) { return false; }
   }
+  function ui3On() {
+    try {
+      const doc = typeof document !== 'undefined' ? document : null;
+      const el = doc && doc.documentElement;
+      return !!(el && el.dataset && el.dataset.ui === '3');
+    } catch (e) { return false; }
+  }
   const WIRE_COLORS = { green: '#3ddc84', red: '#ff4d4d', black: '#1b1b1b', blue: '#4d8dff', yellow: '#ffd23d', orange: '#ff9a3d', white: '#e8e8e8', purple: '#b06bff', gray: '#9aa3b2', brown: '#a0632e' };
   class Editor {
     constructor(svg, hooks) {
       this.svg = svg; this.hooks = hooks; this.lParts = svg.querySelector('#lParts'); this.lWires = svg.querySelector('#lWires'); this.lOver = svg.querySelector('#lOver');
-      this.view = { x: -40, y: -40, s: 1 }; this.sel = null; this.multi = new Set(); this._clip = null; this.undoS = []; this.redoS = []; this.mode = null; this.wireColor = 'auto'; this.partEls = new Map(); this.svgCache = new Map(); this.ortho = true; this._pinIdx = null; this.hoverPin = null; this.warnings = [];
+      this.view = { x: -40, y: -40, s: 1 }; this.sel = null; this.multi = new Set(); this._clip = null; this.undoS = []; this.redoS = []; this.mode = null; this.wireColor = 'auto'; this.partEls = new Map(); this.svgCache = new Map(); this.ortho = true; this._shift = false; this._pinIdx = null; this.hoverPin = null; this.warnings = [];
       this.lOver.innerHTML = '<g class="ov-hl"></g><g class="ov-wire"></g>'; this.ovHl = this.lOver.firstChild; this.ovWire = this.lOver.lastChild;
       this.hintEl = svg.parentElement && svg.parentElement.querySelector('.hint'); this.menu = null;
       this._bind();
@@ -56,6 +63,7 @@
       const r = this.svg.getBoundingClientRect();
       this.svg.setAttribute('viewBox', `${this.view.x} ${this.view.y} ${r.width / this.view.s} ${r.height / this.view.s}`);
       this._scaleBoardLabels();
+      if (ui3On()) this._paintBoard();
     }
     // Part values on the breadboard use the same viewBox zoom as the schematic.
     // Keep them at least 11 screen px, and never larger than their natural size when zoomed in.
@@ -102,12 +110,64 @@
     bounds() {
       if (!this.proj || !this.proj.parts) return null;
       let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9; const add = (x, y) => { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); };
-      for (const p of this.proj.parts) { const d = P.T[p.type]; if (!d) continue; const sz = d.size(p); const c = [[-30, -50], [sz.w + 30, sz.h + 30]]; for (const [a, b] of c) { const [rx, ry] = P.orientPt(a, b, p); add(p.x + rx, p.y + ry); } }
+      for (const p of this.proj.parts) {
+        const d = P.T[p.type]; if (!d) continue;
+        // Studio Dark fit frames the circuit. The painted board fills the canvas, so it is not part of the content box.
+        if (ui3On() && p.type === 'breadboard') continue;
+        const sz = d.size(p); const c = [[-30, -50], [sz.w + 30, sz.h + 30]]; for (const [a, b] of c) { const [rx, ry] = P.orientPt(a, b, p); add(p.x + rx, p.y + ry); }
+      }
+      if (ui3On() && x0 > x1) {
+        const bb = this.proj.parts.find((p) => p && p.type === 'breadboard');
+        if (bb) { const cols = (bb.props && bb.props.cols) || 63, w = cols * G + 10; const c = [[-6, -14], [w, 208]]; for (const [a, b] of c) { const [rx, ry] = P.orientPt(a, b, bb); add(bb.x + rx, bb.y + ry); } }
+      }
       for (const w of this.proj.wires) { add(w.a.x, w.a.y); add(w.b.x, w.b.y); for (const q of w.pts || []) add(q.x, q.y); }
       return x0 > x1 ? null : { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
     }
     // ---------- rendering ----------
-    partSvg(p) { const d = P.T[p.type]; const st = this.hooks.state ? this.hooks.state(p) : null; try { return d.svg(p, st); } catch (e) { return `<text class="plbl">${p.type}?</text>`; } }
+    _viewWorld() {
+      const r = this.svg.getBoundingClientRect(), s = this.view.s || 1;
+      return { x0: this.view.x, y0: this.view.y, x1: this.view.x + r.width / s, y1: this.view.y + r.height / s };
+    }
+    partSvg(p) {
+      const d = P.T[p.type]; const st = this.hooks.state ? this.hooks.state(p) : null;
+      let paint = null;
+      if (p.type === 'breadboard' && ui3On() && P.bbViewFor) {
+        try { paint = P.bbViewFor(p, this._viewWorld()); } catch (e) { paint = null; }
+        if (paint) { root._bbView = root._bbView || {}; root._bbView[p.id] = paint.span; root._bbPaint = { id: p.id, span: paint.span, hole: paint.hole }; }
+      }
+      try { return d.svg(p, st); } catch (e) { return `<text class="plbl">${p.type}?</text>`; }
+      finally { if (paint) root._bbPaint = null; }
+    }
+    // Redraw visible tie points after a pan or zoom. The body tracks the view; holes stay inside it.
+    _paintBoard() {
+      if (!this.proj || !this.partEls) return;
+      const rect = this._viewWorld();
+      const key = [Math.round(rect.x0 / 20), Math.round(rect.y0 / 20), Math.round(rect.x1 / 20), Math.round(rect.y1 / 20), Math.round((this.view.s || 1) * 20)].join(',');
+      if (key === this._bbKey) return;
+      this._bbKey = key;
+      for (const p of this.proj.parts) {
+        if (!p || p.type !== 'breadboard') continue;
+        const g = this.partEls.get(p.id); if (!g) continue;
+        const html = this.partSvg(p);
+        if (this.svgCache.get(p.id) !== html) { g.innerHTML = html; this.svgCache.set(p.id, html); }
+      }
+    }
+    // Persist a larger tie-point span once a part or wire sits near the edge of the saved board.
+    _growBoard() {
+      if (!ui3On() || !this.proj || !P.bbCover) return false;
+      let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9, n = 0;
+      const add = (x, y) => { if (!Number.isFinite(x) || !Number.isFinite(y)) return; n++; x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); };
+      for (const p of this.proj.parts) {
+        if (!p || p.type === 'breadboard' || p.type === 'label' || !P.T[p.type]) continue;
+        for (const pin of this._pinWorlds(p)) add(pin.x, pin.y);
+      }
+      for (const w of this.proj.wires || []) { add(w.a.x, w.a.y); add(w.b.x, w.b.y); for (const q of w.pts || []) add(q.x, q.y); }
+      if (!n) return false;
+      let grew = false;
+      for (const p of this.proj.parts) if (p && p.type === 'breadboard' && P.bbCover(p, x0, y0, x1, y1)) grew = true;
+      if (grew) { this._pinIdx = null; this._bbKey = ''; }
+      return grew;
+    }
     render() {
       this._pinIdx = null; this.lParts.innerHTML = ''; this.partEls.clear(); this.svgCache.clear();
       const sorted = [...this.proj.parts].sort((a, b) => ((P.T[a.type] || {}).layer ?? 2) - ((P.T[b.type] || {}).layer ?? 2));
@@ -174,7 +234,7 @@
       const d = P.T[type]; this.push();
       let n = 1; const pre = (d.prefix || type.slice(0, 3).toUpperCase()); while (this.proj.parts.some((p) => p.id === pre + n)) n++;
       const p = { id: pre + n, type, x: snap(x), y: snap(y), rot: 0, props: JSON.parse(JSON.stringify(d.props || {})) };
-      this.proj.parts.push(p); this.render(); this.select({ part: p.id }); this.hooks.changed(true);
+      this.proj.parts.push(p); this._growBoard(); this.render(); this.select({ part: p.id }); this.hooks.changed(true);
       if (ui2On()) { try { this.fit(); } catch (e) { /* the part is already on the board */ } }
       return p;
     }
@@ -359,7 +419,7 @@
     pinIndex() {   // world positions of every pin (non-breadboard first so they win ties with the hole underneath)
       if (!this.proj) return [];
       if (this._pinIdx) return this._pinIdx; const a = [];
-      for (const p of this.proj.parts) { const d = P.T[p.type]; if (!d) continue; for (const pin of d.pins(p)) a.push({ part: p, pin, pos: P.pinWorld(p, pin), bb: p.type === 'breadboard' }); }
+      for (const p of this.proj.parts) { const d = P.T[p.type]; if (!d) continue; if (p.type === 'breadboard' && P.bbClassic && !P.bbClassic(p)) continue; for (const pin of d.pins(p)) a.push({ part: p, pin, pos: P.pinWorld(p, pin), bb: p.type === 'breadboard' }); }
       a.sort((x, y) => x.bb - y.bb); return (this._pinIdx = a);
     }
     pinNear(w, ev, maxR) {   // nearest pin within a finger/cursor-sized radius (bigger for touch, constant on screen)
@@ -373,6 +433,12 @@
       }
       let best = null, bd = r * r;
       for (const q of this.pinIndex()) { const dx = q.pos.x - w.x, dy = q.pos.y - w.y, d = dx * dx + dy * dy + (q.bb ? 0.5 : 0); if (d < bd) { bd = d; best = q; } }
+      if (P.bbNearest && this.proj) for (const p of this.proj.parts) {
+        if (!p || p.type !== 'breadboard' || (P.bbClassic && P.bbClassic(p) && !ui3On())) continue;
+        const hit = P.bbNearest(p, w.x, w.y); if (!hit) continue;
+        const d = (hit.x - w.x) * (hit.x - w.x) + (hit.y - w.y) * (hit.y - w.y) + 0.5;
+        if (d < bd) { bd = d; best = { part: p, pin: { name: hit.name, x: hit.lx, y: hit.ly }, pos: { x: hit.x, y: hit.y }, bb: true }; }
+      }
       return best;
     }
     pinAtEvent(ev) {
@@ -400,7 +466,7 @@
     pinLabel(h) {
       if (!h) return ''; const p = h.part, n = h.pin.name, d = P.T[p.type] || {};
       if (p.type === 'esp32') { const g = P.espGpio ? P.espGpio(n) : -1; return `ESP32 ${g >= 0 ? 'GPIO' + g + (('D' + g) === n ? '' : ' (' + n + ')') : n}`; }
-      if (p.type === 'breadboard') { const m = /^([a-j])(\d+)$/.exec(n); return m ? `Breadboard ${n} (row ${m[2]} ${'abcde'.includes(m[1]) ? 'a–e' : 'f–j'})` : `Breadboard rail ${n}`; }
+      if (p.type === 'breadboard') { const m = /^([a-j])(\d+)$/.exec(n); if (m) return `Breadboard ${n} (row ${m[2]} ${'abcde'.includes(m[1]) ? 'a–e' : 'f–j'})`; if (/^(tn|tp|bn|bp)\d+$/.test(n)) return `Breadboard rail ${n}`; return `Breadboard ${n}`; }
       return `${p.id} ${d.label || p.type} · pin ${n}`;
     }
     // highlight the hovered pin plus every pin/hole electrically joined to it (breadboard strip, wires, rails)
@@ -412,6 +478,7 @@
       if (nets.length && this.hooks.netKey) {
         const keys = new Set(nets.map((q) => this.hooks.netKey(q.x, q.y)));
         let n = 0; for (const q of this.pinIndex()) if (keys.has(this.hooks.netKey(q.pos.x, q.pos.y))) { mark(q.pos, 'hl-net'); if (++n > 400) break; }
+        if (h && h.bb && h.part && P.bbStrip && P.bbClassic && !P.bbClassic(h.part)) for (const q of P.bbStrip(h.part, h.pin.name)) { mark(q, 'hl-net'); if (++n > 400) break; }
       }
       if (h) mark(h.pos, 'hl-pin'); for (const q of extra || []) mark(q, 'hl-pin');
       this.ovHl.innerHTML = s;
@@ -435,6 +502,8 @@
       svg.addEventListener('pointerdown', (ev) => this._down(ev));
       svg.addEventListener('pointermove', (ev) => this._move(ev));
       window.addEventListener('pointerup', (ev) => this._up(ev));
+      window.addEventListener('keydown', (ev) => this._shiftGesture(ev));
+      window.addEventListener('keyup', (ev) => this._shiftGesture(ev));
       svg.addEventListener('wheel', (ev) => this._wheel(ev), { passive: false });
       svg.addEventListener('contextmenu', (ev) => {
         ev.preventDefault(); if (this.mode && this.mode.k === 'wire') { this.cancelWire(); return; }
@@ -554,13 +623,24 @@
       const wireGone = h.wire && (!proj || !(proj.wires || []).some((w) => w.id === h.wire.id));
       if (!proj || partGone || wireGone) this._emitHover(null);
     }
+    // Shift flips the 90° checkbox for this gesture only. this.ortho (and the saved checkbox) stay as they are.
+    _routingOrtho() { return this._shift ? !this.ortho : !!this.ortho; }
+    _shiftGesture(ev) {
+      if (!ev || ev.key !== 'Shift' || ev.repeat) return;
+      this._shift = ev.type === 'keydown';
+      const m = this.mode;
+      if (!m || !m.ptr) return;
+      if (m.k === 'wire') this._drawWirePreview(m.ptr);
+      else if (m.k === 'end') this._dragEnd(m.ptr);
+    }
     _down(ev) {
       // Pointer events can land before the example fetch finishes and setProject runs.
       if (!this.proj || !this.proj.parts) return;
+      this._shift = !!(ev && ev.shiftKey);
       // A drag started before undo still points at the replaced part object.
       if (this.mode && this.mode.p && !this.proj.parts.includes(this.mode.p)) this.mode = null;
       if (this.mode && this.mode.w && !this.proj.wires.includes(this.mode.w)) this.mode = null;
-      if (ui2On() && this._spacePan && ev.button === 0) { this.mode = { k: 'pan', sx: ev.clientX, sy: ev.clientY, vx: this.view.x, vy: this.view.y }; return; }
+      if ((ui2On() || ui3On()) && this._spacePan && ev.button === 0) { this.mode = { k: 'pan', sx: ev.clientX, sy: ev.clientY, vx: this.view.x, vy: this.view.y }; return; }
       if (ev.button === 1 || (ev.button === 0 && ev.altKey && !this.pinAtEvent(ev))) { this.mode = { k: 'pan', sx: ev.clientX, sy: ev.clientY, vx: this.view.x, vy: this.view.y }; return; }
       if (ev.button !== 0) return;
       const partEl = ev.target.closest && ev.target.closest('.part'); const p = partEl && this.part(this._partIdOf(partEl));
@@ -577,9 +657,23 @@
         // Empty canvas cancels. A click that is not on a pin must not extend the wire or start another one.
         this.cancelWire(); return;
       }
+      const endEl = ev.target && ev.target.closest && ev.target.closest('.w-end');
+      if (endEl && this.sel && this.sel.wire) {
+        const g = endEl.closest('.wire');
+        const wire = g && g.dataset.wid === this.sel.wire && this.wire(this.sel.wire);
+        if (wire) {
+          const cx = +(endEl.getAttribute && endEl.getAttribute('cx')), cy = +(endEl.getAttribute && endEl.getAttribute('cy'));
+          const end = Math.hypot(cx - wire.a.x, cy - wire.a.y) <= Math.hypot(cx - wire.b.x, cy - wire.b.y) ? 'a' : 'b';
+          this.push();
+          this.mode = { k: 'end', w: wire, end, moved: false, ptr: w };
+          svg_capture(this.svg, ev); return;
+        }
+      }
       const bEl = ev.target.closest && ev.target.closest('.w-bend');
       if (bEl) { const wid = bEl.closest('.wire').dataset.wid; this.push(); this.mode = { k: 'bend', w: this.wire(wid), i: +bEl.dataset.bend }; svg_capture(this.svg, ev); return; }
-      if (pin && !(p && p.type === 'breadboard' && ev.shiftKey)) { this.closeMenu(); this.mode = { k: 'wire', a: pin.pos, pts: [], start: pin, t0: Date.now() }; this._drawWirePreview(w); this.highlight(pin); this.setHint(`Wiring from ${this.pinLabel(pin)} — click the target pin · Esc / right-click / empty canvas cancels`); return; }
+      if (pin && !(p && p.type === 'breadboard' && ev.shiftKey)) { this.closeMenu(); this.mode = { k: 'wire', a: pin.pos, pts: [], start: pin, t0: Date.now(), ptr: w }; this._drawWirePreview(w); this.highlight(pin); const flip = document.body.classList.contains('m') ? '' : ' · Shift flips 90°'; this.setHint(`Wiring from ${this.pinLabel(pin)} — click the target pin${flip} · Esc / right-click / empty canvas cancels`); return; }
+      // Studio Dark: the plastic is the canvas. Dragging it pans. Holes still start wires.
+      if (ui3On() && p && p.type === 'breadboard' && !pinEl) { this.select(null); this.mode = { k: 'pan', sx: ev.clientX, sy: ev.clientY, vx: this.view.x, vy: this.view.y }; return; }
       const wEl = ev.target.closest('.wire');
       if (wEl) { const dbl = this._lastWireDown && this._lastWireDown.id === wEl.dataset.wid && Date.now() - this._lastWireDown.t < 450; this._lastWireDown = { id: wEl.dataset.wid, t: Date.now() };
         if (dbl && this.sel && this.sel.wire === wEl.dataset.wid) { this._lastWireDown = null; this._dblBend = Date.now(); this.addBend(wEl.dataset.wid, w); return; } this.select({ wire: wEl.dataset.wid }); return; }
@@ -602,10 +696,11 @@
       this.mode = { k: 'pan', sx: ev.clientX, sy: ev.clientY, vx: this.view.x, vy: this.view.y };
     }
     _ortho(a, q) {
-      const basic = this.ortho && a.x !== q.x && a.y !== q.y ? [{ x: q.x, y: a.y }, q] : [q];
-      if (!ui2On() || !this.ortho || !this.proj) return basic;
+      const ortho = this._routingOrtho();
+      const basic = ortho && a.x !== q.x && a.y !== q.y ? [{ x: q.x, y: a.y }, q] : [q];
+      if (!ui2On() || !ortho || !this.proj) return basic;
       return this._routeAround(a, q, basic);
-    }   // L-shaped bends; ui2 steps around part bodies when that path is clear
+    }   // L-shaped bends when 90° is on (Shift inverts it); ui2 steps around part bodies when that path is clear
     _drawWirePreview(w) {
       const m = this.mode, last = m.pts.length ? m.pts[m.pts.length - 1] : m.a, tgt = this.pinNear(w), end = tgt ? tgt.pos : { x: snap(w.x), y: snap(w.y) };
       const pts = [m.a, ...m.pts, ...this._ortho(last, end)].map((q) => `${q.x},${q.y}`).join(' ');
@@ -614,13 +709,30 @@
     _finishWire(b, endPin) {
       const m = this.mode; this.mode = null; this.ovWire.innerHTML = ''; this.highlight(null); this.setHint();
       if (b.x === m.a.x && b.y === m.a.y && !m.pts.length) return;
-      const last = m.pts.length ? m.pts[m.pts.length - 1] : m.a; if (this.ortho) { const c = this._ortho(last, b); if (c.length > 1) m.pts.push(...c.slice(0, -1)); }
+      const last = m.pts.length ? m.pts[m.pts.length - 1] : m.a; const c = this._ortho(last, b); if (c.length > 1) m.pts.push(...c.slice(0, -1));
       this.push();
       let n = 1; while (this.proj.wires.some((w) => w.id === 'w' + n)) n++;
       this.proj.wires.push({ id: 'w' + n, a: { ...m.a }, b: { x: b.x, y: b.y }, pts: m.pts, color: this.wireColor === 'auto' ? this.autoColor(m.start, endPin) : this.wireColor });
-      this.renderWires(); this.hooks.changed(true);
+      this._growBoard(); this.renderWires(); this.hooks.changed(true);
+    }
+    // Move one end of an existing wire. The leg is the same route a new wire would take, including the Shift invert.
+    _dragEnd(world) {
+      const m = this.mode; if (!m || m.k !== 'end' || !m.w) return;
+      const pin = this.pinNear(world);
+      const q = pin ? { x: pin.pos.x, y: pin.pos.y } : { x: snap(world.x), y: snap(world.y) };
+      const fixed = m.end === 'a' ? m.w.b : m.w.a;
+      if (q.x === fixed.x && q.y === fixed.y) return;
+      const from = m.end === 'a' ? q : fixed, to = m.end === 'a' ? fixed : q;
+      const pts = this._ortho(from, to).slice(0, -1).map((p) => ({ x: p.x, y: p.y }));
+      const cur = m.w[m.end];
+      if (cur.x === q.x && cur.y === q.y && JSON.stringify(m.w.pts || []) === JSON.stringify(pts)) return;
+      m.w[m.end] = { x: q.x, y: q.y };
+      m.w.pts = pts;
+      m.moved = true;
+      this.renderWires();
     }
     _move(ev) {
+      this._shift = !!(ev && ev.shiftKey);
       if (this.mode && this.mode.p && this.proj && !this.proj.parts.includes(this.mode.p)) this.mode = null;
       if (this.mode && this.mode.w && this.proj && !this.proj.wires.includes(this.mode.w)) this.mode = null;
       const w = this.toWorld(ev), m = this.mode;
@@ -632,7 +744,8 @@
       }
       if (m && m.k === 'pan') { if (ev.clientX !== m.sx || ev.clientY !== m.sy) this.markUserView(); this.view.x = m.vx - (ev.clientX - m.sx) / this.view.s; this.view.y = m.vy - (ev.clientY - m.sy) / this.view.s; this.applyView(); return; }
       if (m && m.k === 'knob') { const dlt = ((ev.clientX - m.sx) - (ev.clientY - m.sy)) / 150; m.p.props.pos = Math.min(1, Math.max(0, m.pos0 + dlt)); this.hooks.changed(false); this.refreshDynamic(); this.hooks.selected(this.sel); return; }
-      if (m && m.k === 'wire') { this._drawWirePreview(w); const t = this.pinNear(w, ev); this.highlight(m.start, t ? [t.pos] : []); this._emitHover(t ? { ev, pin: t, part: t.part, world: w, label: this.pinLabel(t) } : null); return; }
+      if (m && m.k === 'wire') { m.ptr = w; this._drawWirePreview(w); const t = this.pinNear(w, ev); this.highlight(m.start, t ? [t.pos] : []); this._emitHover(t ? { ev, pin: t, part: t.part, world: w, label: this.pinLabel(t) } : null); return; }
+      if (m && m.k === 'end') { m.ptr = w; this._dragEnd(w); return; }
       if (m && m.k === 'bend') { const q = { x: snap(w.x), y: snap(w.y) }; const b = m.w.pts[m.i]; if (b.x !== q.x || b.y !== q.y) { b.x = q.x; b.y = q.y; m.moved = true; this.renderWires(); } return; }
       if (m && m.k === 'drag') {
         const nx = snap(m.ox + w.x - m.sx), ny = snap(m.oy + w.y - m.sy);
@@ -666,6 +779,7 @@
     }
     _up(ev) {
       if (!this.proj) { this.mode = null; return; }
+      this._shift = !!(ev && ev.shiftKey);
       const m = this.mode; if (!m) return;
       if (m.k === 'press') { this.hooks.press(m.p, false); this.mode = null; return; }
       if (m.k === 'marquee') {
@@ -686,8 +800,9 @@
         if (box && !ids.length) this.select(null);
         return;
       }
-      if (m.k === 'drag') { this.mode = null; this.highlight(null); if (m.moved) this.hooks.changed(true); return; }
+      if (m.k === 'drag') { this.mode = null; this.highlight(null); if (m.moved) { this._growBoard(); this._paintBoard(); this.hooks.changed(true); } return; }
       if (m.k === 'bend') { this.mode = null; if (m.moved) this.hooks.changed(false); else this.undoS.pop(); return; }
+      if (m.k === 'end') { this.mode = null; if (m.moved) this.hooks.changed(true); else this.undoS.pop(); return; }
       if (m.k === 'pan') { this.mode = null; return; }
       if (m.k === 'knob') { this.mode = null; return; }
       if (m.k === 'wire') {   // drag-release on a pin finishes a wire too

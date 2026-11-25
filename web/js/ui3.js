@@ -907,6 +907,13 @@
       } else if (k === 'dock') setDrawer(false);
     }, true);
     document.addEventListener('keydown', (e) => {
+      if (e.key === ' ' && !e.repeat) {
+        const tag = (e.target && e.target.tagName) || '';
+        if (!/^(INPUT|TEXTAREA|SELECT)$/.test(tag)) {
+          const ed = app() && app().editor;
+          if (ed) { ed._spacePan = true; e.preventDefault(); }
+        }
+      }
       if (e.key !== 'Escape') return;
       if (menu) { closeMenu(); return; }
       if (document.body.classList.contains('ui3-more')) { closeMore(); return; }
@@ -914,6 +921,11 @@
       if (document.body.classList.contains('ui3-parts') || document.body.classList.contains('ui3-props')) {
         document.body.classList.remove('ui3-parts', 'ui3-props'); syncPhone();
       }
+    });
+    document.addEventListener('keyup', (e) => {
+      if (e.key !== ' ') return;
+      const ed = app() && app().editor;
+      if (ed) ed._spacePan = false;
     });
     document.addEventListener('pointerdown', (e) => {
       if (!menu || menu.contains(e.target)) return;

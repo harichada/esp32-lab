@@ -270,9 +270,11 @@
       for (const p of this.project.parts) {
         if (p.type !== 'breadboard') continue;
         const d = P.T.breadboard; if (!d || !d.groups) continue;
+        const byName = new Map();
+        for (const pin of d.pins(p)) byName.set(pin.name, pin);
         for (const g of d.groups(p)) {
           const pts = [];
-          for (const name of g) { const pin = d.pins(p).find((q) => q.name === name); if (pin) pts.push(key(P.pinWorld(p, pin).x, P.pinWorld(p, pin).y)); }
+          for (const name of g) { const pin = byName.get(name); if (pin) pts.push(key(P.pinWorld(p, pin).x, P.pinWorld(p, pin).y)); }
           for (let i = 1; i < pts.length; i++) link(pts[i - 1], pts[i], null, false);
         }
       }

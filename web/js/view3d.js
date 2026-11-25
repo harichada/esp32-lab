@@ -877,6 +877,8 @@
     }
 
     _makeBreadboard(p, d) {
+      const span = root.Parts.bbSpan ? root.Parts.bbSpan(p) : null;
+      if (span && !span.classic) return this._makeBreadboardSpan(p, span);
       const THREE = root.THREE, cols = p.props.cols || 63;
       const W = cols * 10 + 10, D = 200, H = 9.5 * MM;
       const g = new THREE.Group();
@@ -898,6 +900,40 @@
         inst.setMatrixAt(i, dummy.matrix);
       });
       inst.instanceMatrix.needsUpdate = true; g.add(inst);
+      return g;
+    }
+
+    // Saved span is wider or taller than the classic 830 board. One body per band, holes instanced.
+    _makeBreadboardSpan(p, span) {
+      const THREE = root.THREE;
+      const g = new THREE.Group();
+      const H = 9.5 * MM;
+      const band = (root.Parts.BB_BAND || 230);
+      const side = this._mat({ color: 0xe0d8c8, roughness: 0.75, metalness: 0.04 });
+      const topMat = this._mat({ color: 0xf3ecdf, roughness: 0.68, metalness: 0.04 });
+      for (let b = span.b0; b <= span.b1; b++) {
+        const x0 = 10 + (span.c0 - 1) * 10 - 16, x1 = 10 + (span.c1 - 1) * 10 + 16, w = Math.max(20, x1 - x0), z = b * band;
+        const body = new THREE.Mesh(new THREE.BoxGeometry(w, H, 222), side);
+        body.position.set(x0 + w / 2, -H / 2, z + 97); body.castShadow = true; body.receiveShadow = true; g.add(body);
+        const top = new THREE.Mesh(new THREE.PlaneGeometry(Math.max(4, w - 1), 220), topMat);
+        top.rotation.x = -Math.PI / 2; top.position.set(x0 + w / 2, 0.05, z + 97); top.receiveShadow = true; g.add(top);
+      }
+      const holes = (root.Parts.T.breadboard.pins(p) || []);
+      const step = Math.max(1, Math.ceil(holes.length / 8000));
+      const n = Math.ceil(holes.length / step);
+      if (n > 0) {
+        const holeGeo = new THREE.CylinderGeometry(1.15, 1.25, 1.4, 8);
+        const holeMat = this._mat({ color: 0x1a1a1c, metalness: 0.55, roughness: 0.35 });
+        const inst = new THREE.InstancedMesh(holeGeo, holeMat, n);
+        const dummy = new THREE.Object3D();
+        let i = 0;
+        for (let k = 0; k < holes.length; k += step) {
+          const h = holes[k];
+          dummy.position.set(h.x, 0.05, h.y); dummy.rotation.set(0, 0, 0); dummy.scale.set(1, 1, 1); dummy.updateMatrix();
+          inst.setMatrixAt(i++, dummy.matrix);
+        }
+        inst.instanceMatrix.needsUpdate = true; g.add(inst);
+      }
       return g;
     }
 
