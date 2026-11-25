@@ -2437,6 +2437,7 @@ async function fetchRetry(u, o, n = 4) {
     if (viewMode === '2d') {
       try { clStorage.local.removeItem(LSV); } catch (_) {}
       leaveSchematic();
+      try { if (app.editor) app.editor.setHint(); } catch (_) {}
       syncExampleReady();
       try { app.editor && app.editor.render && app.editor.render(); } catch (_) {}
       const z = $('#zoomPct'); if (z && app.editor) z.textContent = Math.round(app.editor.view.s * 100) + '%';
@@ -2528,7 +2529,7 @@ async function fetchRetry(u, o, n = 4) {
   }
   async function ensureSchematic() {
     if (app.schematic) return app.schematic;
-    const src = (window.__ui2Late && window.__ui2Late.schematic) || 'js/schematic.js?v=76';
+    const src = (window.__ui2Late && window.__ui2Late.schematic) || 'js/schematic.js?v=77';
     if (!window.Schematic) { try { await loadScriptOnce(src); } catch (e) { console.warn(e); return null; } }
     return mountSchematic();
   }

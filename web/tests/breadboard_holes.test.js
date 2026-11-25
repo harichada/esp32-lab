@@ -215,7 +215,11 @@ test('while the sim is running, a press on a wire that sits on a part body selec
   ed.sel = null;
   run.state = false;
   down(ed, wire, 220, 202);
-  assert.equal(ed.sel && ed.sel.wire, 'w1');
+  assert.equal(ed.sel && ed.sel.part, 'R1', 'artwork beats a wire even when the sim is stopped');
+  ed.sel = null;
+  ed.mode = null;
+  down(ed, wire, 220, 214);
+  assert.equal(ed.sel && ed.sel.wire, 'w1', 'a wire that misses the artwork still selects the wire');
 });
 
 test('a touch drag at phone zoom pans, and a desktop drag at 36% pans', () => {
@@ -301,4 +305,46 @@ test('while the sim is running, a wire over the LED dome selects the LED', () =>
   down(ed, wire, 405, 382);
   assert.equal(ed.sel && ed.sel.part, 'D1');
   assert.notEqual(ed.sel && ed.sel.wire, 'w1');
+  ed.sel = null;
+  ed.mode = null;
+  // The lower edge of the dome, where the leads meet the lens. The old box missed it and the click did nothing.
+  down(ed, wire, 405, 390);
+  assert.equal(ed.sel && ed.sel.part, 'D1', 'the lower dome is artwork, so it beats the wire');
+  ed.sel = null;
+  ed.mode = null;
+  down(ed, wire, 405, 396);
+  assert.equal(ed.sel && ed.sel.wire, 'w1', 'the gap under the dome is not artwork');
+});
+
+test('holes beside the ESP32 start a wire, and a click on the board selects it', () => {
+  const ed = editor({ state: false });
+  const esp = { id: 'esp', type: 'esp32', x: 20, y: 50, rot: 0, props: { power: 'usb' } };
+  ed.proj.parts.push(esp);
+  const holes = { a17: [170, 40], a18: [180, 40], a19: [190, 40], a20: [200, 40], e20: [200, 80], f20: [200, 110], j20: [200, 150] };
+  for (const name of Object.keys(holes)) {
+    const x = holes[name][0], y = holes[name][1];
+    assert.equal(P.gfxHit(ed.proj.parts, x, y), null, name + ' is outside the drawn board');
+    down(ed, holeMark(name), x, y);
+    assert.equal(ed.mode && ed.mode.k, 'wire', name + ' starts a wire');
+    assert.equal(ed.mode.start.pin.name, name);
+    ed.cancelWire();
+  }
+  assert.equal(P.gfxHit(ed.proj.parts, 80, 90).id, 'esp');
+  down(ed, plastic(), 80, 90);
+  assert.equal(ed.sel && ed.sel.part, 'esp');
+  assert.notEqual(ed.mode && ed.mode.k, 'wire');
+});
+
+test('overlapping artwork selects the topmost part', () => {
+  const r = { id: 'R1', type: 'resistor', x: 270, y: 120, rot: 0, props: { r: 220 } };
+  const led = { id: 'D1', type: 'led', x: 285, y: 138, rot: 0, props: { color: 'red', vf: 1.9, imax: 0.03 } };
+  assert.equal(P.gfxContains(r, 290, 120), true, 'the resistor body covers the point');
+  assert.equal(P.gfxContains(led, 290, 120), true, 'the LED body covers the same point');
+  assert.equal(P.gfxHit([r, led], 290, 120).id, 'D1', 'the later part is painted on top');
+  assert.equal(P.gfxHit([led, r], 290, 120).id, 'R1', 'reversing the order reverses which body wins');
+  const ed = editor({ state: false });
+  ed.proj.parts.push(r, led);
+  down(ed, plastic(), 290, 120);
+  assert.equal(ed.sel && ed.sel.part, 'D1');
+  assert.notEqual(ed.mode && ed.mode.k, 'wire');
 });

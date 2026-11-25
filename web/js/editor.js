@@ -573,34 +573,11 @@
       const flip = document.body.classList.contains('m') ? '' : ' · Shift flips 90°';
       this.setHint(`Wiring from ${this.pinLabel(pin)} — click the target pin${flip} · Esc / right-click / empty canvas cancels`);
     }
-    // Part artwork under a point. The declared size box misses the LED dome and other drawings that sit off the pins.
+    // Topmost drawn artwork under a point. The bounding box is not the body:
+    // labels and the gap beside a part must not steal a hole.
     _bodyNear(world) {
-      if (!this.proj || !world) return null;
-      const pad = 4;
-      let best = null, bd = Infinity;
-      for (const p of this.proj.parts) {
-        if (!p || p.type === 'breadboard' || p.type === 'label' || !P.T[p.type]) continue;
-        let box = null;
-        if (P.gfxBox) { try { box = P.gfxBox(p); } catch (e) { box = null; } }
-        let ox, oy;
-        if (box && box.w > 0 && box.h > 0) {
-          const x1 = box.x + box.w, y1 = box.y + box.h;
-          ox = world.x < box.x ? box.x - world.x : world.x > x1 ? world.x - x1 : 0;
-          oy = world.y < box.y ? box.y - world.y : world.y > y1 ? world.y - y1 : 0;
-        } else if (P.T[p.type].size) {
-          const sz = P.T[p.type].size(p) || { w: 16, h: 16 };
-          const dx = world.x - p.x, dy = world.y - p.y, r = ((p.rot || 0) % 4 + 4) % 4;
-          let lx, ly;
-          if (r === 1) { lx = dy; ly = -dx; } else if (r === 2) { lx = -dx; ly = -dy; } else if (r === 3) { lx = -dy; ly = dx; } else { lx = dx; ly = dy; }
-          const bw = sz.w || 16, bh = sz.h || 16;
-          ox = lx < 0 ? -lx : lx > bw ? lx - bw : 0;
-          oy = ly < 0 ? -ly : ly > bh ? ly - bh : 0;
-        } else continue;
-        if (ox > pad || oy > pad) continue;
-        const d = ox * ox + oy * oy;
-        if (d < bd) { bd = d; best = p; }
-      }
-      return best;
+      if (!this.proj || !world || !P.gfxHit) return null;
+      try { return P.gfxHit(this.proj.parts, world.x, world.y); } catch (e) { return null; }
     }
     pinAtEvent(ev) {
       // A wire starts on the pin or hole under the pointer, or within the
@@ -819,7 +796,7 @@
       const exact = (!onBody && !onWireEl && ui3On()) ? this._exactPin(ev) : null;
       let pin = exact || (onBody ? null : this.pinAtEvent(ev));
       if (ui3On() && pin && (pin.bb || pin.dot || (pin.part && pin.part.type === 'breadboard')) && !this._dragStartsWire(ev)) pin = null;
-      // A drawn part covers the holes and dots under it. Its own pins still start wires.
+      // Pin, then the topmost drawn artwork. A hole or dot that misses the artwork starts a wire.
       const cover = (ui3On() && !(pin && pin.part && pin.part.type !== 'breadboard')) ? this._bodyNear(w) : null;
       if (this.mode && this.mode.k === 'wire') {
         if (!cover) {
@@ -831,7 +808,7 @@
         }
         this.cancelWire();
       }
-      const endEl = ev.target && ev.target.closest && ev.target.closest('.w-end');
+      const endEl = !cover && ev.target && ev.target.closest && ev.target.closest('.w-end');
       if (endEl && this.sel && this.sel.wire) {
         const g = endEl.closest('.wire');
         const wire = g && g.dataset.wid === this.sel.wire && this.wire(this.sel.wire);
@@ -843,7 +820,7 @@
           svg_capture(this.svg, ev); return;
         }
       }
-      const bEl = ev.target.closest && ev.target.closest('.w-bend');
+      const bEl = !cover && ev.target.closest && ev.target.closest('.w-bend');
       if (bEl) { const wid = bEl.closest('.wire').dataset.wid; this.push(); this.mode = { k: 'bend', w: this.wire(wid), i: +bEl.dataset.bend }; svg_capture(this.svg, ev); return; }
       // Shift used to grab the whole breadboard, including a press that landed on a hole.
       // A hole (painted or snapped) still starts a wire, so Shift can invert 90° for that wire. The open plastic does not.
@@ -856,11 +833,10 @@
         this._arm(ev, w); return;
       }
       const wEl = ev.target.closest && ev.target.closest('.wire');
-      // While the sim is running, a press that lands on a wire but sits on a part body acts on the part.
-      const body = (ui3On() && this.hooks.running && this.hooks.running()) ? this._bodyNear(w) : null;
-      if (wEl && !body) { const dbl = this._lastWireDown && this._lastWireDown.id === wEl.dataset.wid && Date.now() - this._lastWireDown.t < 450; this._lastWireDown = { id: wEl.dataset.wid, t: Date.now() };
+      // Artwork beats a wire, running or not. A wire that misses the drawing still selects the wire.
+      if (wEl && !cover) { const dbl = this._lastWireDown && this._lastWireDown.id === wEl.dataset.wid && Date.now() - this._lastWireDown.t < 450; this._lastWireDown = { id: wEl.dataset.wid, t: Date.now() };
         if (dbl && this.sel && this.sel.wire === wEl.dataset.wid) { this._lastWireDown = null; this._dblBend = Date.now(); this.addBend(wEl.dataset.wid, w); return; } this.select({ wire: wEl.dataset.wid }); return; }
-      const hit = body || cover || p;
+      const hit = cover || p;
       if (hit) {
         const d = P.T[hit.type];
         if (d.wheel && !ev.shiftKey) { this.select({ part: hit.id }); this.mode = { k: 'knob', p: hit, sy: ev.clientY, sx: ev.clientX, pos0: +hit.props.pos }; svg_capture(this.svg, ev); return; }

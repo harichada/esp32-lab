@@ -3408,10 +3408,16 @@
       document.body.classList.toggle('viewsch', this.active);
       const hint = this.host.querySelector('.hint');
       if (hint) {
+        const schematicSentence = (s) => /View only|Edit wiring in 2D|mirrors the symbol/.test(s || '');
         if (this.active) {
-          if (!this._hint0) this._hint0 = hint.textContent;
+          if (!this._hint0 && !schematicSentence(hint.textContent)) this._hint0 = hint.textContent;
           hint.textContent = root.Pinch.schematicHint();
-        } else if (this._hint0) hint.textContent = this._hint0;
+        } else {
+          const ed = root.app && root.app.editor;
+          if (ed && typeof ed.setHint === 'function') ed.setHint();
+          else if (this._hint0 && !schematicSentence(this._hint0)) hint.textContent = this._hint0;
+          else if (schematicSentence(hint.textContent)) hint.textContent = '';
+        }
       }
       this._syncLayout();
       if (!this.active) { this._syncFitAll(false); this._syncNotice(); }
