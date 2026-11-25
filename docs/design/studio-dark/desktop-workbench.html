@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Studio Dark — desktop workbench</title>
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="frame desk">
+  <header class="card top">
+    <span class="logo"></span><h1>Circuit Lab</h1>
+    <span class="crumb">My projects / Blink <span class="mut">Saved locally</span></span>
+    <span class="search">Search · Ctrl K</span>
+    <span class="mut">ESP32 DevKit V1 · Arduino C++</span>
+    <button class="run" type="button">Stop</button><button class="more" type="button">▾</button>
+  </header>
+  <nav class="card rail" aria-label="Tools"><i class="on"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></nav>
+  <aside class="card parts">
+    <strong>Parts</strong>
+    <div class="row"><span>Starter</span></div>
+    <div class="row"><span>LED</span><span class="mut">red</span></div>
+    <div class="row"><span>Resistor</span><span class="mut">220 Ω · ¼ W</span></div>
+    <div class="row"><span>ESP32 DevKit</span><span class="mut">GPIO2</span></div>
+  </aside>
+  <aside class="card insp">
+    <strong>Properties</strong>
+    <p>LED1 · red</p>
+    <p class="mut">Anode on the GPIO2 net. Cathode on GND.</p>
+    <h2>Circuit check</h2>
+    <p>Current is limited by R1, 6.4 mA, safe.</p>
+  </aside>
+  <div class="card views"><span class="on">Schematic</span><span>Breadboard</span><span>3D</span><span class="on">Tidy</span><span>Board</span></div>
+  <div class="canvas" aria-hidden="true">
+    <svg viewBox="0 0 640 420" width="100%" height="100%">
+      <rect x="70" y="150" width="120" height="70" rx="8" fill="#14141b" stroke="rgba(255,255,255,.12)"/>
+      <text x="88" y="190" fill="#f4f6fb" font-size="14">ESP32</text>
+      <rect x="280" y="168" width="70" height="22" rx="4" fill="#1c1c26" stroke="#a78bfa"/>
+      <text x="292" y="184" fill="#f4f6fb" font-size="12">R1</text>
+      <circle cx="430" cy="178" r="14" fill="#f87171" filter="url(#g)"/>
+      <path class="wire sig" d="M190 176 H280"/>
+      <path class="wire led" d="M350 176 H416"/>
+      <path class="wire gnd" d="M430 192 V250 H190 V210"/>
+      <defs><filter id="g"><feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#f87171"/></filter></defs>
+    </svg>
+    <span class="badge" style="left:200px;top:120px">GPIO2 · HIGH</span>
+    <span class="badge" style="left:300px;top:140px">220 Ω</span>
+    <span class="badge" style="left:450px;top:150px">6.4 mA</span>
+    <div class="card ctx" style="left:460px;top:150px">
+      <button type="button">Rotate</button><button type="button">Delete</button><button type="button">Properties</button><button type="button">Duplicate</button>
+    </div>
+  </div>
+  <div class="card pill">Running · 00:12 · compile ok</div>
+</div>
+</body>
+</html>

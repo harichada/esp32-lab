@@ -1,0 +1,20 @@
+/* Opt-in switch. Fixed so it does not change the classic header layout. */
+#uiSwitch.ui-switch{
+  position:fixed;z-index:35;left:50%;bottom:24px;transform:translateX(-50%);
+  height:28px;padding:0 12px;border-radius:999px;border:1px solid rgba(255,255,255,.18);
+  background:#16181d;color:#f4f6fb;font:600 12px/1 Inter,system-ui,sans-serif;cursor:pointer;
+  box-shadow:0 6px 20px rgba(0,0,0,.35)
+}
+html[data-theme=light] #uiSwitch.ui-switch{background:#fff;color:#14171d;border-color:#cfd4dc}
+body.m #uiSwitch.ui-switch{
+  left:8px;right:auto;bottom:auto;top:calc(64px + env(safe-area-inset-top));transform:none;height:36px
+}
+html[data-ui="3"] #uiSwitch.ui-switch{
+  position:static;transform:none;height:32px;z-index:auto;background:transparent;color:#c9d0da;
+  border-color:rgba(255,255,255,.12);box-shadow:none;white-space:nowrap
+}
+@media (max-width:1080px){
+  html[data-ui="3"] #uiSwitch.ui-switch{min-height:40px;height:40px}
+}
+html[data-ui="3"][data-theme=light] #uiSwitch.ui-switch{color:#14171d;border-color:rgba(20,23,29,.16);background:transparent}
+#uiSwitch.ui-switch:focus-visible{outline:2px solid #22d3ee;outline-offset:2px}

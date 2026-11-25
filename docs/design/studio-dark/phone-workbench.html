@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Studio Dark — phone workbench</title>
+<link rel="stylesheet" href="reference.css">
+</head>
+<body>
+<div class="frame phone">
+  <header class="card top" style="top:0;left:0;right:0;border-radius:0">
+    <span class="logo"></span>
+    <span class="crumb">Blink <span class="mut">Example</span></span>
+  </header>
+  <div class="card views" style="top:64px;max-width:360px"><span class="on">Schematic</span><span>Breadboard</span><span>3D</span><span class="on">Tidy</span></div>
+  <svg viewBox="0 0 360 520" width="360" height="520" style="margin-top:120px" aria-hidden="true">
+    <rect x="40" y="180" width="90" height="54" rx="8" fill="#14141b" stroke="rgba(255,255,255,.12)"/>
+    <text x="52" y="212" fill="#f4f6fb" font-size="13">ESP32</text>
+    <rect x="160" y="196" width="48" height="18" rx="4" fill="#1c1c26" stroke="#a78bfa"/>
+    <circle cx="250" cy="204" r="10" fill="#f87171"/>
+    <path class="wire sig" d="M130 204 H160"/>
+    <path class="wire led" d="M208 204 H240"/>
+    <path class="wire gnd" d="M250 214 V260 H80 V220"/>
+  </svg>
+  <span class="badge" style="left:150px;top:250px">6.4 mA</span>
+  <div class="card pill" style="left:8px;bottom:76px">Running</div>
+  <nav class="tabs" aria-label="Workspace"><span>Circuit</span><span>Parts</span><b>Stop</b><span>Code</span><span>More</span></nav>
+</div>
+</body>
+</html>

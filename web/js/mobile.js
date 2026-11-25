@@ -551,6 +551,15 @@
   }
   installFitMargin();
   function apply() {
+    if (document.documentElement.getAttribute('data-ui') === '3') {
+      document.body.classList.remove('m');
+      if (built) { syncPhoneChrome(false); setSheet(null); }
+      setTimeout(() => {
+        const ed = window.app && window.app.editor;
+        if (ed) fitIfReady(ed, true);
+      }, 60);
+      return;
+    }
     const m = MQ.matches, entered = m && !document.body.classList.contains('m');
     document.body.classList.toggle('m', m);
     if (m && !built && window.app && window.app.editor) build();

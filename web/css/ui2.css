@@ -249,8 +249,8 @@ html[data-ui="2"] .part.sel>:first-child{filter:drop-shadow(0 0 0.6px #e0a15a)}
 html[data-ui="2"] #stage.flow.live .w-flow{stroke:#f2d48a;filter:drop-shadow(0 0 1.4px rgba(242,212,138,.95))}
 html[data-ui="2"] .pin{stroke:#6b5420}
 html[data-ui="2"] #side{background:var(--l1)}
-html[data-ui="2"] #insp h3{font-size:13px;letter-spacing:.01em}
-html[data-ui="2"] #insp h3 small{font-family:var(--mono);font-size:12px;font-weight:400;font-variant-numeric:tabular-nums}
+html[data-ui="2"] #insp h2{font-size:13px;letter-spacing:.01em}
+html[data-ui="2"] #insp h2 small{font-family:var(--mono);font-size:12px;font-weight:400;font-variant-numeric:tabular-nums}
 html[data-ui="2"] #insp label,html[data-ui="2"] #insp .insp-k{
   font-family:var(--mono);font-size:12px;font-weight:400;font-variant-numeric:tabular-nums;color:var(--txt2);
 }
