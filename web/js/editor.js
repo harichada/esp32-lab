@@ -671,7 +671,10 @@
       }
       const bEl = ev.target.closest && ev.target.closest('.w-bend');
       if (bEl) { const wid = bEl.closest('.wire').dataset.wid; this.push(); this.mode = { k: 'bend', w: this.wire(wid), i: +bEl.dataset.bend }; svg_capture(this.svg, ev); return; }
-      if (pin && !(p && p.type === 'breadboard' && ev.shiftKey)) { this.closeMenu(); this.mode = { k: 'wire', a: pin.pos, pts: [], start: pin, t0: Date.now(), ptr: w }; this._drawWirePreview(w); this.highlight(pin); const flip = document.body.classList.contains('m') ? '' : ' · Shift flips 90°'; this.setHint(`Wiring from ${this.pinLabel(pin)} — click the target pin${flip} · Esc / right-click / empty canvas cancels`); return; }
+      // Shift used to grab the whole breadboard, including a press that landed on a hole.
+      // A hole still starts a wire, so Shift can invert 90° for that wire. The plastic does not.
+      const onHole = !!(pinEl && p && p.type === 'breadboard');
+      if (pin && !(p && p.type === 'breadboard' && ev.shiftKey && !onHole)) { this.closeMenu(); this.mode = { k: 'wire', a: pin.pos, pts: [], start: pin, t0: Date.now(), ptr: w }; this._drawWirePreview(w); this.highlight(pin); const flip = document.body.classList.contains('m') ? '' : ' · Shift flips 90°'; this.setHint(`Wiring from ${this.pinLabel(pin)} — click the target pin${flip} · Esc / right-click / empty canvas cancels`); return; }
       // Studio Dark: the plastic is the canvas. Dragging it pans. Holes still start wires.
       if (ui3On() && p && p.type === 'breadboard' && !pinEl) { this.select(null); this.mode = { k: 'pan', sx: ev.clientX, sy: ev.clientY, vx: this.view.x, vy: this.view.y }; return; }
       const wEl = ev.target.closest('.wire');

@@ -143,3 +143,46 @@ test('pressing Shift during a wire redraws with the inverted route and does not 
   assert.equal(ed.ortho, true);
   assert.match(ed.ovWire.innerHTML, /0,0 40,0 40,20/);
 });
+
+function boardHit(pinName) {
+  const part = makeEl('g');
+  part.className = 'part';
+  part.dataset.id = 'bb1';
+  const hit = makeEl(pinName ? 'rect' : 'rect');
+  hit.className = pinName ? 'hole' : 'bb-body';
+  if (pinName) hit.dataset.pin = pinName;
+  hit.closest = (sel) => {
+    if (pinName && sel === '[data-pin]') return hit;
+    if (sel === '.part') return part;
+    return null;
+  };
+  part.appendChild(hit);
+  return hit;
+}
+
+test('Shift already held on a breadboard hole starts a wire and inverts 90°', () => {
+  document.documentElement.dataset.ui = '3';
+  const ed = editor();
+  ed.proj.parts.push({ id: 'bb1', type: 'breadboard', x: 0, y: 0, rot: 0, props: { cols: 63 } });
+  ed.ortho = true;
+  ed._shift = false;
+  const hole = boardHit('a1');
+  ed._down({ button: 0, clientX: 10, clientY: 40, target: hole, altKey: false, shiftKey: true, pointerType: 'mouse', detail: 1 });
+  assert.equal(ed.mode && ed.mode.k, 'wire', 'a hole press with Shift already down starts a wire');
+  assert.equal(ed.mode.start.pin.name, 'a1');
+  assert.equal(ed._shift, true);
+  assert.equal(ed.ortho, true, 'the saved 90° checkbox is unchanged');
+  assert.equal(ed.proj.wires.length, 0);
+  ed._drawWirePreview({ x: 50, y: 80 });
+  assert.match(ed.ovWire.innerHTML, /10,40 50,80/);
+  assert.doesNotMatch(ed.ovWire.innerHTML, /50,40/, 'Shift inverts 90° for this wire');
+  ed.cancelWire();
+
+  const plastic = boardHit(null);
+  ed._shift = false;
+  ed._down({ button: 0, clientX: -6, clientY: -14, target: plastic, altKey: false, shiftKey: true, pointerType: 'mouse', detail: 1 });
+  assert.notEqual(ed.mode && ed.mode.k, 'wire', 'Shift on the breadboard plastic still does not start a wire');
+  assert.equal(ed.mode && ed.mode.k, 'pan');
+  assert.equal(ed.ortho, true);
+  delete document.documentElement.dataset.ui;
+});

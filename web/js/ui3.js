@@ -18,6 +18,43 @@
 
   function on() { return document.documentElement.getAttribute('data-ui') === '3'; }
   function app() { return window.app; }
+  function ui3Api(extra) {
+    return Object.assign({
+      spacePanFocus: spacePanFocus,
+      onStudioKey: onStudioKey,
+      threeDAvailable: threeDAvailable,
+      applyWebgl: applyWebgl,
+      canvasLimits: canvasLimits,
+      placeContextBox: placeContextBox,
+    }, extra || {});
+  }
+  // Space pans only while the canvas or the page itself has focus. A focused control keeps Space.
+  function interactiveTarget(el) {
+    let n = el;
+    while (n && n !== document.body && n !== document.documentElement) {
+      const tag = String(n.tagName || '').toUpperCase();
+      if (tag === 'A' || tag === 'BUTTON' || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'SUMMARY' || tag === 'OPTION' || tag === 'LABEL') return true;
+      const role = (n.getAttribute && n.getAttribute('role')) || '';
+      if (/^(button|checkbox|link|menuitem|menuitemcheckbox|tab|switch|radio|option|slider|combobox)$/.test(role)) return true;
+      const editable = n.getAttribute && n.getAttribute('contenteditable');
+      if (editable != null && editable !== 'false') return true;
+      if (n.isContentEditable) return true;
+      n = n.parentElement;
+    }
+    return false;
+  }
+  function spacePanFocus(el) {
+    if (!el || interactiveTarget(el)) return false;
+    if (el === document || el === document.body || el === document.documentElement) return true;
+    const node = el.nodeType === 1 ? el : el.parentElement;
+    if (!node) return false;
+    const ids = ['stage', 'stageSch', 'stageWrap'];
+    for (let i = 0; i < ids.length; i++) {
+      const canvas = document.getElementById(ids[i]);
+      if (canvas && (node === canvas || (canvas.contains && canvas.contains(node)))) return true;
+    }
+    return false;
+  }
   function phone() { return window.matchMedia('(max-width: 1080px)').matches; }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
   function ic(id) { return `<svg class="ic" aria-hidden="true"><use href="#${id}"/></svg>`; }
@@ -28,7 +65,7 @@
     if (!on() || document.body.dataset.ui3 === '1') return;
     if (!app() || !app().editor) return;
     document.body.dataset.ui3 = '1';
-    window.UI3 = { on: on, openCode: (tab) => openDrawer(tab || 'code'), toggleCode: toggleCode, toggleParts: toggleParts, toggleInspector: toggleInspector, setHome: setHome };
+    window.UI3 = ui3Api({ on: on, openCode: (tab) => openDrawer(tab || 'code'), toggleCode: toggleCode, toggleParts: toggleParts, toggleInspector: toggleInspector, setHome: setHome });
     retireClassic();
     if (document.body.classList.contains('c-palette')) document.body.classList.add('ui3-pal-min');
     if (document.body.classList.contains('c-side')) document.body.classList.add('ui3-side-min');
@@ -313,15 +350,60 @@
     if (phone()) return;
     const id = sel.part;
     const el = id && (document.querySelector(`#lParts [data-id="${CSS.escape(id)}"]`) || document.querySelector(`#stageSch [data-pid="${CSS.escape(id)}"]`));
-    const wrap = document.getElementById('stageWrap').getBoundingClientRect();
+    const wrapEl = document.getElementById('stageWrap');
+    const wrap = wrapEl ? wrapEl.getBoundingClientRect() : { left: 0, top: 0, width: window.innerWidth || 0, height: window.innerHeight || 0 };
+    const box = canvasLimits(wrap);
     const r = el ? el.getBoundingClientRect() : null;
-    let left = r ? r.right - wrap.left + 8 : 80;
-    let top = r ? r.top - wrap.top : 120;
     const bw = bar.offsetWidth || 220;
-    if (left + bw > wrap.width - 8) left = Math.max(8, (r ? r.left - wrap.left : 80) - bw - 8);
-    top = Math.max(64, Math.min(top, wrap.height - 48));
-    bar.style.left = left + 'px';
-    bar.style.top = top + 'px';
+    const bh = bar.offsetHeight || 40;
+    const preferLeft = r ? r.right - wrap.left + 8 : box.x0;
+    const altLeft = (r ? r.left - wrap.left : preferLeft) - bw - 8;
+    const preferTop = r ? r.top - wrap.top : box.y0;
+    const pos = placeContextBox(preferLeft, preferTop, altLeft, bw, bh, box);
+    bar.style.left = pos.left + 'px';
+    bar.style.top = pos.top + 'px';
+  }
+  // The canvas is full-bleed under the floating inspector. The toolbar has to stay in the gap that is actually visible.
+  function shownBox(el) {
+    if (!el || el.hidden || typeof el.getBoundingClientRect !== 'function') return null;
+    try {
+      const cs = window.getComputedStyle && getComputedStyle(el);
+      if (cs && (cs.display === 'none' || cs.visibility === 'hidden')) return null;
+    } catch (e) { /* a missing style still has a rect */ }
+    const r = el.getBoundingClientRect();
+    if (!r || r.width < 2 || r.height < 2) return null;
+    return r;
+  }
+  function canvasLimits(wrap) {
+    const w = wrap || { left: 0, top: 0, width: 0, height: 0 };
+    const width = w.width || Math.max(0, (w.right || 0) - (w.left || 0));
+    const height = w.height || Math.max(0, (w.bottom || 0) - (w.top || 0));
+    let x0 = 8, y0 = 64, x1 = width - 8, y1 = height - 8;
+    const eat = (el, edge) => {
+      const r = shownBox(el); if (!r) return;
+      const originTop = w.top || 0, originLeft = w.left || 0;
+      if (r.bottom <= originTop + 1 || r.top >= originTop + height - 1) return;
+      if (edge === 'left') x0 = Math.max(x0, r.right - originLeft + 8);
+      else if (edge === 'right') x1 = Math.min(x1, r.left - originLeft - 8);
+      else if (edge === 'top') y0 = Math.max(y0, r.bottom - originTop + 8);
+    };
+    eat(document.getElementById('ui3rail'), 'left');
+    eat(document.getElementById('palette'), 'left');
+    eat(document.getElementById('side'), 'right');
+    if (document.body && document.body.classList.contains('ui3-code')) eat(document.getElementById('dock'), 'right');
+    eat(document.getElementById('ui3top'), 'top');
+    if (x1 < x0 + 48) x1 = x0 + 48;
+    if (y1 < y0 + 36) y1 = y0 + 36;
+    return { x0: x0, y0: y0, x1: x1, y1: y1 };
+  }
+  function placeContextBox(preferLeft, preferTop, altLeft, bw, bh, box) {
+    let left = preferLeft, top = preferTop;
+    if (left + bw > box.x1) left = altLeft;
+    const maxLeft = Math.max(box.x0, box.x1 - bw);
+    const maxTop = Math.max(box.y0, box.y1 - bh);
+    left = Math.min(Math.max(left, box.x0), maxLeft);
+    top = Math.min(Math.max(top, box.y0), maxTop);
+    return { left: left, top: top };
   }
 
   function buildStatus() {
@@ -689,18 +771,29 @@
       return !!(window.WebGLRenderingContext && (c.getContext('webgl') || c.getContext('experimental-webgl')));
     } catch (e) { return false; }
   }
+  // Same rule as the desktop view switch: phones and other touch-first devices stay in 2D, and so does a browser with no WebGL.
+  function threeDBlocked() {
+    if (document.body && document.body.classList.contains('no3d')) return true;
+    const mm = (q) => !!(window.matchMedia && window.matchMedia(q).matches);
+    const ua = (navigator && navigator.userAgent) || '';
+    const touchUA = /Mobi|Android|iPhone|iPad|iPod/i.test(ua) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(ua));
+    const env = { coarse: mm('(pointer: coarse)'), fine: mm('(any-pointer: fine)'), touchUA: touchUA };
+    if (window.ViewChrome && ViewChrome.blocks3d) return !!ViewChrome.blocks3d(env);
+    return !!(touchUA || (env.coarse && !env.fine));
+  }
+  function threeDAvailable() { return webglOk() && !threeDBlocked(); }
   function applyWebgl() {
-    const ok = webglOk();
+    const ok = threeDAvailable();
     const view = document.getElementById('bView3d');
     if (view) {
       view.disabled = !ok;
-      view.title = ok ? '3D cinematic view (WebGL)' : '3D needs WebGL, which this browser does not provide';
+      view.title = ok ? '3D cinematic view (WebGL)' : webglOk() ? '3D view is desktop-only for now' : '3D needs WebGL, which this browser does not provide';
     }
     const item = document.querySelector('#ui3more [data-go="3d"]');
     if (!item) return;
     item.hidden = !ok;
     item.setAttribute('aria-disabled', ok ? 'false' : 'true');
-    item.title = ok ? '3D view' : '3D needs WebGL, which this browser does not provide';
+    item.title = ok ? '3D view' : webglOk() ? '3D view is desktop-only for now' : '3D needs WebGL, which this browser does not provide';
   }
   function syncRun() {
     const busy = document.getElementById('bRun');
@@ -906,22 +999,7 @@
         else { document.body.classList.add('ui3-side-min'); syncRail(); }
       } else if (k === 'dock') setDrawer(false);
     }, true);
-    document.addEventListener('keydown', (e) => {
-      if (e.key === ' ' && !e.repeat) {
-        const tag = (e.target && e.target.tagName) || '';
-        if (!/^(INPUT|TEXTAREA|SELECT)$/.test(tag)) {
-          const ed = app() && app().editor;
-          if (ed) { ed._spacePan = true; e.preventDefault(); }
-        }
-      }
-      if (e.key !== 'Escape') return;
-      if (menu) { closeMenu(); return; }
-      if (document.body.classList.contains('ui3-more')) { closeMore(); return; }
-      if (document.body.classList.contains('ui3-code')) { setDrawer(false); return; }
-      if (document.body.classList.contains('ui3-parts') || document.body.classList.contains('ui3-props')) {
-        document.body.classList.remove('ui3-parts', 'ui3-props'); syncPhone();
-      }
-    });
+    document.addEventListener('keydown', onStudioKey);
     document.addEventListener('keyup', (e) => {
       if (e.key !== ' ') return;
       const ed = app() && app().editor;
@@ -934,7 +1012,20 @@
     }, true);
     setInterval(() => { syncRun(); syncAlerts(); syncLive(); }, 400);
   }
-  function syncAll() { syncId(); syncRun(); syncAlerts(); syncRail(); syncPhone(); placeMode(); }
+  function syncAll() { syncId(); syncRun(); syncAlerts(); syncRail(); syncPhone(); placeMode(); applyWebgl(); }
+  function onStudioKey(e) {
+    if (e.key === ' ' && !e.repeat && spacePanFocus(e.target)) {
+      const ed = app() && app().editor;
+      if (ed) { ed._spacePan = true; e.preventDefault(); }
+    }
+    if (e.key !== 'Escape') return;
+    if (menu) { closeMenu(); return; }
+    if (document.body.classList.contains('ui3-more')) { closeMore(); return; }
+    if (document.body.classList.contains('ui3-code')) { setDrawer(false); return; }
+    if (document.body.classList.contains('ui3-parts') || document.body.classList.contains('ui3-props')) {
+      document.body.classList.remove('ui3-parts', 'ui3-props'); syncPhone();
+    }
+  }
 
   function kick() {
     if (!on() || (document.body && document.body.dataset.ui3 === '1')) return;
@@ -943,6 +1034,7 @@
   }
   document.addEventListener('DOMContentLoaded', kick);
   window.addEventListener('load', kick);
+  window.UI3 = ui3Api(window.UI3);
   kick();
   setTimeout(kick, 0);
 })();
