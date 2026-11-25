@@ -3546,8 +3546,9 @@
       const show = !!this.active && matchFlagOn();
       bar.hidden = !show;
       bar.setAttribute('aria-hidden', show ? 'false' : 'true');
-      const short = { board: 'Breadboard', tidy: 'Tidy' };
-      const tip = { board: 'Like breadboard', tidy: 'Tidy arrangement' };
+      const ui3 = document.documentElement.getAttribute('data-ui') === '3';
+      const short = ui3 ? { board: 'Board', tidy: 'Tidy' } : { board: 'Breadboard', tidy: 'Tidy' };
+      const tip = ui3 ? { board: 'Board', tidy: 'Tidy' } : { board: 'Like breadboard', tidy: 'Tidy arrangement' };
       for (const b of bar.querySelectorAll('button')) {
         const mode = b.dataset.mode === 'tidy' ? 'tidy' : 'board';
         const on = mode === (this._mode === 'tidy' ? 'tidy' : 'board');

@@ -72,6 +72,36 @@ async function axe(page: Page) {
   expect(bad, bad.join('\n')).toEqual([]);
 }
 
+function overlaps(a: { x: number; y: number; width: number; height: number } | null, b: { x: number; y: number; width: number; height: number } | null) {
+  if (!a || !b || a.width < 2 || a.height < 2 || b.width < 2 || b.height < 2) return false;
+  return a.x < b.x + b.width - 1 && a.x + a.width > b.x + 1 && a.y < b.y + b.height - 1 && a.y + a.height > b.y + 1;
+}
+
+async function dockOpen(page: Page) {
+  await expect(page.locator('body')).toHaveClass(/ui3-code/);
+  await expect.poll(async () => {
+    const box = await page.locator('#dock').boundingBox();
+    const vp = page.viewportSize();
+    return !!box && box.x >= -1 && box.width > 80 && box.x + box.width <= (vp?.width || 0) + 2;
+  }).toBe(true);
+}
+
+async function dockClosed(page: Page) {
+  await expect(page.locator('body')).not.toHaveClass(/ui3-code/);
+  await expect.poll(async () => {
+    const box = await page.locator('#dock').boundingBox();
+    const vp = page.viewportSize();
+    if (!box) return true;
+    return box.x >= (vp?.width || 0) - 2;
+  }).toBe(true);
+}
+
+async function showCommand(page: Page, name: string) {
+  await page.locator('#ui3Search').click();
+  await page.locator('#cmdkIn').fill(name);
+  await page.locator('#cmdkList .ck', { hasText: name }).first().click();
+}
+
 async function inside(page: Page, loc: Locator) {
   const box = await loc.boundingBox();
   const vp = page.viewportSize();
@@ -282,7 +312,9 @@ test('phone and narrow phone: tabs, sheets, and a visible compile error', async 
   await expect(strip).toContainText('error: expected unqualified-id');
   const top = await page.locator('#ui3top').boundingBox();
   const err = await strip.boundingBox();
+  const views = await page.locator('#ui3views').boundingBox();
   expect(err!.y).toBeGreaterThanOrEqual((top!.y + top!.height) - 1);
+  expect(overlaps(err, views)).toBe(false);
   await inside(page, strip);
 
   await page.setViewportSize({ width: 360, height: 740 });
@@ -316,4 +348,205 @@ test('a missing backend is announced below the top bar', async ({ page }) => {
   const box = await alert.boundingBox();
   expect(box!.y).toBeGreaterThanOrEqual((top!.y + top!.height) - 1);
   await inside(page, alert);
+});
+
+test('desktop and tablet: every closed panel can be opened again', async ({ page }) => {
+  const errors = await install(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/?ui=3&ex=blink&resume=0');
+  await ready(page);
+  await expect(page.locator('#bView2d')).toHaveText('Breadboard');
+  await expect(page.locator('#schLayBoard')).toHaveText('Board');
+  await expect(page.locator('#ui3Code')).toBeVisible();
+  const hint = await page.locator('#stageWrap .hint').boundingBox();
+  const pill = await page.locator('#ui3status').boundingBox();
+  expect(overlaps(hint, pill)).toBe(false);
+
+  await page.locator('#ui3Code').click();
+  await dockOpen(page);
+  await expect(page.locator('#tab-code')).toBeVisible();
+  await page.locator('#ui3DockClose').click();
+  await dockClosed(page);
+  await page.locator('#ui3rail [data-rail="code"]').click();
+  await dockOpen(page);
+  await page.locator('#code').click();
+  await page.keyboard.press('Control+j');
+  await dockClosed(page);
+  await page.keyboard.press('Control+j');
+  await dockOpen(page);
+  await page.locator('[data-collapse="dock"]').click();
+  await dockClosed(page);
+  await page.evaluate(() => document.body.classList.add('c-dock'));
+  await showCommand(page, 'Show Code panel');
+  await dockOpen(page);
+  await expect(page.locator('#tab-code')).toBeVisible();
+
+  await page.locator('#tabs [data-tab="serial"]').click();
+  await expect(page.locator('#tab-serial')).toBeVisible();
+  await page.locator('#ui3DockClose').click();
+  await dockClosed(page);
+  await showCommand(page, 'Show Serial panel');
+  await dockOpen(page);
+  await expect(page.locator('#tab-serial')).toBeVisible();
+  await page.locator('#ui3DockClose').click();
+  await showCommand(page, 'Show Scope panel');
+  await dockOpen(page);
+  await expect(page.locator('#tab-scope')).toBeVisible();
+  await page.locator('#ui3DockClose').click();
+  await dockClosed(page);
+
+  await expect(page.locator('#palette')).toBeVisible();
+  await page.locator('[data-collapse="palette"]').click();
+  await expect(page.locator('#palette')).toBeHidden();
+  await page.locator('#ui3rail [data-rail="parts"]').click();
+  await expect(page.locator('#palette')).toBeVisible();
+  await expect(page.locator('#side')).toBeVisible();
+  await page.locator('[data-collapse="side"]').click();
+  await expect(page.locator('#side')).toBeHidden();
+  await page.locator('#ui3rail [data-rail="inspector"]').click();
+  await expect(page.locator('#side')).toBeVisible();
+
+  await page.locator('#bView2d').click();
+  await page.locator('.pitem[data-type="resistor"]').first().click();
+  await expect(page.locator('#ui3ctx')).toBeVisible();
+  await page.locator('#stage').focus();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#ui3ctx')).toBeHidden();
+  const partId = await page.evaluate(() => (window as unknown as { app: { proj: { parts: { id: string; type: string }[] } } }).app.proj.parts.filter((p) => p.type === 'resistor').slice(-1)[0].id);
+  await page.locator(`#stage [data-id="${partId}"]`).click();
+  await expect(page.locator('#ui3ctx')).toBeVisible();
+  await page.locator('[data-collapse="side"]').click();
+  await expect(page.locator('#side')).toBeHidden();
+  await page.locator('#ui3ctx [data-act="props"]').click();
+  await expect(page.locator('#side')).toBeVisible();
+
+  await page.locator('#ui3rail [data-rail="projects"]').click();
+  await expect(page.locator('#projDlg')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#projDlg')).toBeHidden();
+
+  await page.locator('#ui3rail [data-rail="home"]').click();
+  await expect(page.locator('#ui3home')).toBeVisible();
+  await page.locator('#ui3Back').click();
+  await expect(page.locator('#ui3home')).toBeHidden();
+  await page.locator('#ui3rail [data-rail="home"]').click();
+  await expect(page.locator('#ui3home')).toBeVisible();
+  await page.locator('#ui3Back').click();
+
+  await page.evaluate(() => {
+    const strip = document.getElementById('compileStrip');
+    if (!strip) return;
+    strip.hidden = false;
+    strip.textContent = 'error: expected unqualified-id';
+  });
+  await expect(page.locator('#compileStrip')).toBeVisible();
+  expect(overlaps(await page.locator('#compileStrip').boundingBox(), await page.locator('#ui3views').boundingBox())).toBe(false);
+
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await expect(page.locator('#ui3Code')).toBeVisible();
+  await expect(page.locator('#ui3rail')).toBeHidden();
+  await page.locator('#ui3Code').click();
+  await dockOpen(page);
+  await page.locator('#ui3DockClose').click();
+  await dockClosed(page);
+  await page.locator('#ui3Code').click();
+  await dockOpen(page);
+  expect(errors, errors.join('\n')).toEqual([]);
+});
+
+test('phone: every closed panel can be opened again', async ({ page }) => {
+  const errors = await install(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/?ui=3&ex=blink&resume=0');
+  await ready(page);
+  await expect(page.locator('#bView2d')).toHaveText('Breadboard');
+  await expect(page.locator('#schLayBoard')).toHaveText('Board');
+  await expect(page.locator('#schLayBoard')).not.toHaveText('Breadboard');
+
+  await page.locator('#ui3tabs [data-phone="code"]').click();
+  await dockOpen(page);
+  await page.locator('#ui3DockClose').click();
+  await dockClosed(page);
+  await page.evaluate(() => document.body.classList.add('c-dock'));
+  await page.locator('#ui3tabs [data-phone="code"]').click();
+  await dockOpen(page);
+  await page.locator('#tabs [data-tab="serial"]').click();
+  await expect(page.locator('#tab-serial')).toBeVisible();
+  await page.locator('#ui3DockClose').click();
+  await dockClosed(page);
+  await page.locator('#ui3tabs [data-phone="code"]').click();
+  await dockOpen(page);
+  await page.locator('#tabs [data-tab="serial"]').click();
+  await expect(page.locator('#tab-serial')).toBeVisible();
+  await page.locator('#tabs [data-tab="scope"]').click();
+  await expect(page.locator('#tab-scope')).toBeVisible();
+  await page.locator('#ui3DockClose').click();
+  await dockClosed(page);
+  await page.keyboard.press('Control+j');
+  await dockOpen(page);
+  await page.keyboard.press('Control+j');
+  await dockClosed(page);
+
+  await page.locator('#ui3tabs [data-phone="parts"]').click();
+  await expect(page.locator('#palette')).toBeVisible();
+  await page.locator('#ui3tabs [data-phone="circuit"]').click();
+  await expect(page.locator('#palette')).toBeHidden();
+  await page.locator('#ui3tabs [data-phone="parts"]').click();
+  await expect(page.locator('#palette')).toBeVisible();
+  await page.locator('.pitem[data-type="resistor"]').first().click();
+  await page.locator('#ui3tabs [data-phone="circuit"]').click();
+  await expect(page.locator('#ui3ctx')).toBeVisible();
+  await page.locator('#ui3ctx [data-act="props"]').click();
+  await expect(page.locator('#side')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#side')).toBeHidden();
+  await expect(page.locator('#ui3ctx')).toBeVisible();
+  await page.locator('#ui3ctx [data-act="props"]').click();
+  await expect(page.locator('#side')).toBeVisible();
+  await page.evaluate(() => { const active = document.activeElement as HTMLElement | null; if (active && active.blur) active.blur(); });
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#ui3ctx')).toBeHidden();
+  const partId = await page.evaluate(() => (window as unknown as { app: { proj: { parts: { id: string; type: string }[] } } }).app.proj.parts.filter((p) => p.type === 'resistor').slice(-1)[0].id);
+  await page.locator('#bView2d').click();
+  await page.locator(`#lParts [data-id="${partId}"]`).click({ force: true });
+  await expect(page.locator('#ui3ctx')).toBeVisible();
+
+  await page.locator('#ui3tabs [data-phone="more"]').click();
+  const more = page.locator('#ui3more');
+  await expect(more).toBeVisible();
+  await expect(more.locator('#ui3moreProj')).toHaveText(/Blink/);
+  await more.locator('[data-go="theme"]').click();
+  await expect(more).toBeHidden();
+  await page.locator('#ui3tabs [data-phone="more"]').click();
+  await more.locator('[data-go="home"]').click();
+  await expect(more).toBeHidden();
+  await expect(page.locator('#ui3home')).toBeVisible();
+  await page.locator('#ui3Back').click();
+  await expect(page.locator('#ui3home')).toBeHidden();
+  await page.locator('#ui3tabs [data-phone="more"]').click();
+  await expect(more.locator('#ui3moreProj')).toHaveText(/Blink/);
+  await more.locator('[data-go="home"]').click();
+  await expect(page.locator('#ui3home')).toBeVisible();
+  await page.locator('#ui3Back').click();
+  expect(errors, errors.join('\n')).toEqual([]);
+});
+
+test('phone More sheet hides 3D when WebGL is missing and still closes', async ({ page }) => {
+  await install(page);
+  await page.addInitScript(() => {
+    const orig = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement, type: string, ...args: unknown[]) {
+      if (String(type).toLowerCase().indexOf('webgl') >= 0) return null;
+      return orig.apply(this, [type, ...args] as never);
+    };
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/?ui=3&ex=blink&resume=0');
+  await ready(page);
+  await expect(page.locator('#bView3d')).toBeDisabled();
+  await page.locator('#ui3tabs [data-phone="more"]').click();
+  await expect(page.locator('#ui3more [data-go="3d"]')).toBeHidden();
+  await page.locator('#ui3more [data-go="sch"]').click();
+  await expect(page.locator('#ui3more')).toBeHidden();
+  await expect(page.locator('body')).toHaveClass(/viewsch/);
 });

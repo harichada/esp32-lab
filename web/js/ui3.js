@@ -28,8 +28,10 @@
     if (!on() || document.body.dataset.ui3 === '1') return;
     if (!app() || !app().editor) return;
     document.body.dataset.ui3 = '1';
-    window.UI3 = { on: on };
+    window.UI3 = { on: on, openCode: (tab) => openDrawer(tab || 'code'), toggleCode: toggleCode, toggleParts: toggleParts, toggleInspector: toggleInspector, setHome: setHome };
     retireClassic();
+    if (document.body.classList.contains('c-palette')) document.body.classList.add('ui3-pal-min');
+    if (document.body.classList.contains('c-side')) document.body.classList.add('ui3-side-min');
     buildTop();
     buildRail();
     buildCanvas();
@@ -61,6 +63,7 @@
     bar.innerHTML = `<div class="ui3-brand"><span class="ui3-logo" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 9-12h-7z" fill="currentColor"/></svg></span><h1>Circuit Lab</h1></div>
       <div class="ui3-crumb"><button type="button" id="ui3Name" aria-haspopup="menu" aria-expanded="false">No project</button><span id="ui3Save"></span></div>
       <button type="button" id="ui3Search" aria-keyshortcuts="Control+K">${ic('i-search')}<span>Search</span><kbd aria-hidden="true">Ctrl K</kbd></button>
+      <button type="button" id="ui3Code" aria-pressed="false" aria-keyshortcuts="Control+J">Code</button>
       <div class="ui3-chip" id="ui3ModeDesk"><span>ESP32 DevKit V1</span> <select id="ui3Mode" aria-label="Run as"></select></div>
       <div class="ui3-run"><button type="button" id="ui3Run">Run</button><button type="button" id="ui3RunMore" aria-haspopup="menu" aria-expanded="false"><span aria-hidden="true">▾</span><span class="sr-only">Run options</span></button></div>
       <span id="ui3SwitchSlot"></span>
@@ -76,6 +79,7 @@
       mode.addEventListener('change', () => { copy.value = mode.value; });
     }
     $('#ui3Search').onclick = () => click('bCmdk');
+    $('#ui3Code').onclick = () => toggleCode();
     $('#ui3Name').onclick = (e) => openMenu(e.currentTarget, crumbItems);
     $('#ui3Run').onclick = () => click(document.body.classList.contains('running') ? 'bStop' : 'bRun');
     $('#ui3RunMore').onclick = (e) => openMenu(e.currentTarget, [
@@ -93,6 +97,7 @@
 
   function crumbItems() {
     return [
+      ['Home', () => setHome(true)],
       ['New', () => blank()],
       ['Projects', () => app().cmd.projects()],
       ['Save', () => click('bSave')],
@@ -112,8 +117,9 @@
       ['projects', 'Projects', 'i-folder', () => app().cmd.projects()],
       ['examples', 'Examples', 'i-examples', () => openExamples()],
       ['learn', 'Learn', 'i-keyboard', () => startTour()],
-      ['parts', 'Parts', 'i-chip', () => { document.body.classList.toggle('ui3-pal-min'); syncRail(); }],
-      ['code', 'Code', 'i-cmd', () => openDrawer('code')],
+      ['parts', 'Parts', 'i-chip', () => toggleParts()],
+      ['inspector', 'Inspector', 'i-panelR', () => toggleInspector()],
+      ['code', 'Code', 'i-cmd', () => toggleCode()],
       ['bom', 'Parts list', 'i-examples', () => openDrawer('bom')],
       ['keys', 'Shortcuts', 'i-keyboard', () => click('bKeys')],
       ['settings', 'Settings', 'i-sun', (b) => openMenu(b, settingsItems)],
@@ -137,8 +143,13 @@
   function syncRail() {
     const parts = $('#ui3rail [data-rail="parts"]');
     if (parts) parts.setAttribute('aria-pressed', document.body.classList.contains('ui3-pal-min') ? 'false' : 'true');
+    const inspector = $('#ui3rail [data-rail="inspector"]');
+    if (inspector) inspector.setAttribute('aria-pressed', document.body.classList.contains('ui3-side-min') ? 'false' : 'true');
+    const open = document.body.classList.contains('ui3-code') && !document.body.classList.contains('c-dock');
     const code = $('#ui3rail [data-rail="code"]');
-    if (code) code.setAttribute('aria-pressed', document.body.classList.contains('ui3-code') ? 'true' : 'false');
+    if (code) code.setAttribute('aria-pressed', open ? 'true' : 'false');
+    const top = document.getElementById('ui3Code');
+    if (top) top.setAttribute('aria-pressed', open ? 'true' : 'false');
   }
 
   function buildCanvas() {
@@ -155,7 +166,15 @@
     if (sch) { sch.textContent = 'Schematic'; views.appendChild(sch); }
     if (v2) { v2.textContent = 'Breadboard'; views.appendChild(v2); }
     if (v3) { const span = v3.querySelector('span'); if (span) span.textContent = '3D'; views.appendChild(v3); }
-    if (lay) views.appendChild(lay);
+    if (lay) {
+      const board = document.getElementById('schLayBoard');
+      if (board) {
+        board.textContent = 'Board';
+        board.setAttribute('aria-label', 'Board');
+        board.title = 'Arrange like the breadboard';
+      }
+      views.appendChild(lay);
+    }
     wrap.appendChild(views);
     const tools = document.createElement('div');
     tools.id = 'ui3tools';
@@ -200,12 +219,53 @@
     if (tabs) tabs.appendChild(close);
     close.onclick = () => setDrawer(false);
   }
+  function releaseDock() {
+    document.body.classList.remove('c-dock');
+    try { clStorage.local.setItem('esp32lab.ui.c-dock', JSON.stringify(false)); } catch (e) { /* ignore */ }
+  }
   function openDrawer(tab) {
+    releaseDock();
     setDrawer(true);
     const btn = document.querySelector(`#tabs [data-tab="${tab}"]`);
     if (btn) btn.click();
     if (tab === 'scope' && app().ensureScope) app().ensureScope();
     if (phone()) document.body.classList.remove('ui3-parts', 'ui3-props', 'ui3-more');
+  }
+  function toggleCode() {
+    if (document.body.classList.contains('ui3-code') && !document.body.classList.contains('c-dock')) setDrawer(false);
+    else openDrawer('code');
+  }
+  function toggleParts() {
+    if (phone()) {
+      const on = document.body.classList.contains('ui3-parts');
+      document.body.classList.remove('ui3-parts', 'ui3-props', 'ui3-more');
+      closeMore();
+      setDrawer(false);
+      if (!on) document.body.classList.add('ui3-parts');
+      syncPhone();
+      return;
+    }
+    document.body.classList.toggle('ui3-pal-min');
+    syncRail();
+  }
+  function toggleInspector() {
+    if (phone()) {
+      const on = document.body.classList.contains('ui3-props');
+      document.body.classList.remove('ui3-parts', 'ui3-more');
+      closeMore();
+      if (on) document.body.classList.remove('ui3-props');
+      else {
+        document.body.classList.remove('ui3-side-min');
+        setDrawer(false);
+        document.body.classList.add('ui3-props');
+      }
+      syncPhone();
+      return;
+    }
+    document.body.classList.toggle('ui3-side-min');
+    const side = document.getElementById('side');
+    if (side && !document.body.classList.contains('ui3-side-min')) side.tabIndex = 0;
+    syncRail();
   }
   function setDrawer(open) {
     document.body.classList.toggle('ui3-code', open);
@@ -447,28 +507,33 @@
     more.setAttribute('role', 'dialog');
     more.setAttribute('aria-modal', 'true');
     more.setAttribute('aria-label', 'More');
-    more.innerHTML = `<h2>Project</h2><div id="ui3moreProj"></div><h2>Simulation</h2><div id="ui3ModePhone"></div><button type="button" data-go="restart">Restart</button><button type="button" data-go="reset">Reset</button><button type="button" data-go="flags">Build flags</button><h2>View</h2><button type="button" data-go="sch">Schematic</button><button type="button" data-go="2d">Breadboard</button><button type="button" data-go="3d">3D</button><button type="button" data-go="tidy">Tidy layout</button><button type="button" data-go="board">Board layout</button><button type="button" data-go="theme">Theme</button><button type="button" data-go="map">Minimap</button><button type="button" data-go="ortho">Right-angle wires</button><button type="button" data-go="flow">Animate current</button><h2>Account</h2><button type="button" data-go="account">Sign in</button><button type="button" data-go="about">About</button><button type="button" data-go="keys">Keyboard shortcuts</button><h2>Legal</h2><a href="notices.html">Open-source notices</a><p>Simulator for ESP32. Not affiliated with Espressif, Arduino, or Wokwi.</p><button type="button" data-go="close">Close</button>`;
+    more.innerHTML = `<h2>Project</h2><p id="ui3moreProj"></p><button type="button" data-go="home">Home</button><h2>Simulation</h2><div id="ui3ModePhone"></div><button type="button" data-go="restart">Restart</button><button type="button" data-go="reset">Reset</button><button type="button" data-go="flags">Build flags</button><h2>View</h2><button type="button" data-go="sch">Schematic</button><button type="button" data-go="2d">Breadboard</button><button type="button" data-go="3d">3D</button><button type="button" data-go="tidy">Tidy layout</button><button type="button" data-go="board">Board layout</button><button type="button" data-go="props">Properties</button><button type="button" data-go="theme">Theme</button><button type="button" data-go="map">Minimap</button><button type="button" data-go="ortho">Right-angle wires</button><button type="button" data-go="flow">Animate current</button><h2>Account</h2><button type="button" data-go="account">Sign in</button><button type="button" data-go="about">About</button><button type="button" data-go="keys">Keyboard shortcuts</button><h2>Legal</h2><a href="notices.html">Open-source notices</a><p>Simulator for ESP32. Not affiliated with Espressif, Arduino, or Wokwi.</p><button type="button" data-go="close">Close</button>`;
     document.body.appendChild(more);
     more.onclick = (e) => {
       const b = e.target.closest('[data-go]'); if (!b) return;
+      if (b.hidden || b.getAttribute('aria-disabled') === 'true') return;
       const go = b.dataset.go;
-      if (go === 'close') closeMore();
+      closeMore();
+      if (go === 'close') return;
+      if (go === 'home') setHome(true);
       else if (go === 'restart') click('bRestart');
       else if (go === 'reset') click('bReset');
-      else if (go === 'flags') { closeMore(); openDrawer('code'); const d = document.getElementById('codeAdvanced'); if (d) d.open = true; const inp = document.getElementById('inDefines'); if (inp) inp.focus(); }
+      else if (go === 'flags') { openDrawer('code'); const d = document.getElementById('codeAdvanced'); if (d) d.open = true; const inp = document.getElementById('inDefines'); if (inp) inp.focus(); }
       else if (go === 'sch') click('bViewSch');
       else if (go === '2d') click('bView2d');
       else if (go === '3d') click('bView3d');
       else if (go === 'tidy') click('schLayTidy');
       else if (go === 'board') click('schLayBoard');
+      else if (go === 'props') openProps();
       else if (go === 'theme') click('bTheme');
       else if (go === 'map') click('bMap');
       else if (go === 'ortho') click('cbOrtho');
       else if (go === 'flow') click('cbFlow');
       else if (go === 'account') account();
-      else if (go === 'about') { closeMore(); openDrawer('about'); }
+      else if (go === 'about') openDrawer('about');
       else if (go === 'keys') click('bKeys');
     };
+    applyWebgl();
     placeMode();
     window.addEventListener('resize', placeMode);
   }
@@ -600,12 +665,42 @@
     if (saved == null && mm && !mm.classList.contains('off')) click('bMap');
   }
 
+  function projectLabel() {
+    const p = app() && app().proj;
+    if (!p) return 'No project';
+    const name = String(p.name || '').trim();
+    if (name) return name;
+    const ex = new URLSearchParams(location.search).get('ex');
+    return ex || 'Untitled';
+  }
   function syncId() {
     const name = document.getElementById('ui3Name');
     const save = document.getElementById('ui3Save');
     const p = app() && app().proj;
-    if (name) name.textContent = p ? (p.name || 'Untitled') : 'No project';
+    const label = projectLabel();
+    if (name) name.textContent = label;
     if (save) save.textContent = !p ? '' : app().readOnly ? 'Example' : app().saveState === 'unsaved' ? 'Not saved' : 'Saved locally';
+    const moreName = document.getElementById('ui3moreProj');
+    if (moreName && moreName.textContent !== label) moreName.textContent = label;
+  }
+  function webglOk() {
+    try {
+      const c = document.createElement('canvas');
+      return !!(window.WebGLRenderingContext && (c.getContext('webgl') || c.getContext('experimental-webgl')));
+    } catch (e) { return false; }
+  }
+  function applyWebgl() {
+    const ok = webglOk();
+    const view = document.getElementById('bView3d');
+    if (view) {
+      view.disabled = !ok;
+      view.title = ok ? '3D cinematic view (WebGL)' : '3D needs WebGL, which this browser does not provide';
+    }
+    const item = document.querySelector('#ui3more [data-go="3d"]');
+    if (!item) return;
+    item.hidden = !ok;
+    item.setAttribute('aria-disabled', ok ? 'false' : 'true');
+    item.title = ok ? '3D view' : '3D needs WebGL, which this browser does not provide';
   }
   function syncRun() {
     const busy = document.getElementById('bRun');
@@ -635,8 +730,23 @@
         : title;
     }
     const strip = document.getElementById('compileStrip');
-    const top = (strip && !strip.hidden && strip.getBoundingClientRect().height > 2) ? strip.getBoundingClientRect().bottom + 8 : (phone() ? 64 : 68);
+    const err = !!(strip && !strip.hidden && strip.getBoundingClientRect().height > 2);
+    alert.style.top = '';
+    alert.style.bottom = '';
+    alert.style.left = '';
+    alert.style.right = '';
+    alert.style.width = '';
+    alert.style.transform = '';
+    if (phone()) return;
+    const views = document.getElementById('ui3views');
+    let top = views && views.getBoundingClientRect().height > 2 ? views.getBoundingClientRect().bottom + 8 : 116;
+    if (err) top = Math.max(top, strip.getBoundingClientRect().bottom + 8);
+    if (!bad) return;
     alert.style.top = top + 'px';
+    alert.style.left = '430px';
+    alert.style.right = '320px';
+    alert.style.width = 'auto';
+    alert.style.transform = 'none';
   }
   function syncLive() {
     paintNets();
@@ -774,6 +884,28 @@
       else if (forceSch) { forceSch = false; if (!requestedView) app().cmd.viewSch(); }
     });
     window.addEventListener('authchange', syncRun);
+    const keys = document.getElementById('keysList');
+    if (keys && !keys.querySelector('[data-ui3-key]')) {
+      const row = document.createElement('div');
+      row.className = 'krow';
+      row.dataset.ui3Key = 'code';
+      row.innerHTML = '<span>Open or close code</span><span><kbd>Ctrl J</kbd></span>';
+      keys.appendChild(row);
+    }
+    document.addEventListener('click', (e) => {
+      const c = e.target.closest && e.target.closest('[data-collapse]');
+      if (!c) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const k = c.dataset.collapse;
+      if (k === 'palette') {
+        if (phone()) { document.body.classList.remove('ui3-parts'); syncPhone(); }
+        else { document.body.classList.add('ui3-pal-min'); syncRail(); }
+      } else if (k === 'side') {
+        if (phone()) { document.body.classList.remove('ui3-props'); syncPhone(); }
+        else { document.body.classList.add('ui3-side-min'); syncRail(); }
+      } else if (k === 'dock') setDrawer(false);
+    }, true);
     document.addEventListener('keydown', (e) => {
       if (e.key !== 'Escape') return;
       if (menu) { closeMenu(); return; }

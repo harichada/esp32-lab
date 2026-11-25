@@ -68,6 +68,11 @@ html[data-ui="3"] #ui3Search{
   background:rgba(255,255,255,.04);color:var(--txt2);border:1px solid var(--line)
 }
 html[data-ui="3"] #ui3Search kbd{margin-left:auto}
+html[data-ui="3"] #ui3Code{
+  flex:none;height:34px;padding:0 14px;border-radius:999px;border:1px solid var(--line);
+  background:transparent;color:var(--txt);font-weight:650
+}
+html[data-ui="3"] #ui3Code[aria-pressed="true"]{background:#172033;color:#f4f6fb;box-shadow:inset 0 0 0 1px #22d3ee}
 html[data-ui="3"] .ui3-chip{display:flex;align-items:center;gap:6px;flex:none;color:var(--txt2);font-size:12px}
 html[data-ui="3"] #ui3Mode,#ui3Mode{
   height:32px;border-radius:999px;background:rgba(255,255,255,.04);border:1px solid var(--line);color:var(--txt);max-width:180px
@@ -107,7 +112,9 @@ html[data-ui="3"] #palette,html[data-ui="3"] #side{
 }
 html[data-ui="3"] #palette{left:76px}
 html[data-ui="3"] #side{right:12px;width:288px;left:auto}
+html[data-ui="3"] body.c-palette #palette{display:flex}
 html[data-ui="3"] body.ui3-pal-min #palette{display:none}
+html[data-ui="3"] body.c-side #side{display:flex}
 html[data-ui="3"] body.ui3-side-min #side{display:none}
 html[data-ui="3"] .panel-h{padding:10px 12px;border-bottom:1px solid var(--line);background:transparent}
 html[data-ui="3"] #palList,#ui3check,html[data-ui="3"] #tab-insp{overflow:auto}
@@ -134,7 +141,8 @@ html[data-ui="3"] #dock{
   min-width:0;overflow:hidden;
   background:var(--l1);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);box-shadow:0 16px 50px rgba(0,0,0,.4)
 }
-html[data-ui="3"] body.ui3-code #dock{transform:none!important;visibility:visible}
+html[data-ui="3"] body.c-dock #dock{display:flex}
+html[data-ui="3"] body.ui3-code #dock{display:flex!important;transform:none!important;visibility:visible}
 html[data-ui="3"] #tabs{padding:8px;gap:4px;flex-wrap:wrap}
 html[data-ui="3"] #tabs button{border-radius:999px;height:30px;background:transparent;border:0}
 html[data-ui="3"] #tabs button.on{background:#172033;color:#f4f6fb;box-shadow:inset 0 0 0 1px #22d3ee}
@@ -170,7 +178,7 @@ html[data-ui="3"] body.ui3-side-min #ui3zoom{right:16px}
 html[data-ui="3"] body:not(.ui3-side-min) #ui3zoom{right:312px}
 html[data-ui="3"] #minimap{right:16px;bottom:64px;border-radius:12px;border:1px solid var(--line)}
 html[data-ui="3"] .hint{
-  top:auto;bottom:24px;left:50%;transform:translateX(-50%);max-width:min(480px,46vw);text-align:center;
+  top:auto;bottom:88px;left:50%;transform:translateX(-50%);max-width:min(420px,34vw);text-align:center;
   white-space:normal;overflow:visible;text-overflow:clip;background:var(--l1);border-color:var(--line)
 }
 html[data-ui="3"] .projbanner{top:120px;left:520px;right:auto;max-width:min(420px,calc(100vw - 860px));z-index:5}
@@ -189,12 +197,12 @@ html[data-ui="3"] #ui3status{
 }
 html[data-ui="3"] #status{background:transparent;border:0;padding:0;height:auto;min-width:0}
 html[data-ui="3"] #compileStrip{
-  position:fixed;top:68px;left:50%;transform:translateX(-50%);width:min(720px,calc(100vw - 24px));z-index:46;
+  position:fixed;top:116px;left:430px;right:320px;width:auto;max-height:30vh;overflow:auto;z-index:46;
   border-radius:12px;border:1px solid rgba(248,113,113,.55);background:#2a1215;color:#fee2e2;
   box-shadow:0 12px 40px rgba(0,0,0,.45);pointer-events:auto
 }
 html[data-ui="3"] #ui3alert{
-  position:fixed;left:50%;transform:translateX(-50%);width:min(720px,calc(100vw - 24px));z-index:46;
+  position:fixed;top:116px;left:430px;right:320px;width:auto;z-index:46;
   margin:0;padding:8px 12px;border-radius:12px;border:1px solid rgba(251,191,36,.5);background:#2a2110;color:#fde68a;
   box-shadow:0 12px 40px rgba(0,0,0,.45)
 }
@@ -343,9 +351,13 @@ html[data-ui="3"] #ui3more{display:none}
   }
   html[data-ui="3"] .ui3-bento,html[data-ui="3"] .ui3-gallery{grid-template-columns:1fr}
   html[data-ui="3"] #ui3home{top:56px;padding:12px 12px 24px}
-  html[data-ui="3"] #compileStrip,html[data-ui="3"] #ui3alert{top:64px}
+  html[data-ui="3"] #compileStrip,html[data-ui="3"] #ui3alert{
+    top:auto;bottom:calc(148px + env(safe-area-inset-bottom));left:8px;right:8px;width:auto;max-height:28vh;transform:none
+  }
+  html[data-ui="3"] #ui3moreProj{margin:0 10px 4px;font-size:16px;font-weight:650;line-height:1.35;color:inherit}
 }
 @media (max-width:640px){
+  html[data-ui="3"] #ui3Code{display:none}
   html[data-ui="3"] #compileStrip:not([hidden]){display:block!important}
   html[data-ui="3"] #mCompileToast{display:none!important}
 }

@@ -260,6 +260,7 @@ async function fetchRetry(u, o, n = 4) {
   }
   function projectsDialog() {
     let d = $('#projDlg'); if (!d) { d = document.createElement('div'); d.id = 'projDlg'; d.className = 'modal'; document.body.appendChild(d); }
+    if (d._onEsc) window.removeEventListener('keydown', d._onEsc, true);
     const L = store.list();
     d.innerHTML = `<div class="modal-box"><div class="row"><h3 style="flex:1;margin:0">My Projects</h3><button data-a="close">✕</button></div>
       <div id="authProj"></div>
@@ -268,6 +269,16 @@ async function fetchRetry(u, o, n = 4) {
       <table class="projs">${L.map((e) => `<tr data-id="${e.id}" class="${app.proj && app.proj.id === e.id ? 'cur' : ''}"><td class="pn">${P.esc(e.name)}<br><small class="muted">${new Date(e.updated).toLocaleString()}${e.from ? ' · from ' + P.esc(e.from) : ''}</small></td>
         <td><button data-a="open">Open</button><button data-a="ren">Rename</button><button data-a="dup">Duplicate</button><button data-a="exp">Export</button><button data-a="del">Delete</button></td></tr>`).join('') || '<tr><td class="muted">No projects yet. Open an example and press “Make a copy” (or just start editing it).</td></tr>'}</table><div id="srvList"></div></div>`;
     d.hidden = false;
+    const onEsc = (e) => {
+      if (d.hidden || e.key !== 'Escape') return;
+      const blank = document.getElementById('newBlankDlg');
+      if (blank && !blank.hidden) return;
+      e.preventDefault();
+      e.stopPropagation();
+      d.hidden = true;
+    };
+    d._onEsc = onEsc;
+    window.addEventListener('keydown', onEsc, true);
     if (window.clAuth) window.clAuth.fillProjects(d);
     d.onclick = async (e) => {
       if (e.target === d) { d.hidden = true; return; }
@@ -2506,7 +2517,7 @@ async function fetchRetry(u, o, n = 4) {
   }
   async function ensureSchematic() {
     if (app.schematic) return app.schematic;
-    const src = (window.__ui2Late && window.__ui2Late.schematic) || 'js/schematic.js?v=75';
+    const src = (window.__ui2Late && window.__ui2Late.schematic) || 'js/schematic.js?v=76';
     if (!window.Schematic) { try { await loadScriptOnce(src); } catch (e) { console.warn(e); return null; } }
     return mountSchematic();
   }

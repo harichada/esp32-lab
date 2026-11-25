@@ -35,4 +35,17 @@ test('Studio Dark does not add an AI prompt or a new service', () => {
   assert.match(ui3, /ui3ctx/);
   assert.match(ui3, /Duplicate/);
   assert.match(ui3, /Start the Blink tour/);
+  assert.match(ui3, /id="ui3Code"/);
+  assert.match(ui3, /toggleCode/);
+  assert.match(ui3, /ui3moreProj/);
+  assert.match(ui3, /Board layout|aria-label', 'Board'/);
+});
+
+test('closed Studio Dark panels have a way back, including Escape on My Projects', () => {
+  const ui = fs.readFileSync(path.join(root, 'js', 'ui.js'), 'utf8');
+  const app = fs.readFileSync(path.join(root, 'js', 'app.js'), 'utf8');
+  assert.match(ui, /toggleCode/);
+  assert.match(ui, /key === 'j'/);
+  assert.match(app, /if \(d\.hidden \|\| e\.key !== 'Escape'\) return;/);
+  assert.match(app, /d\._onEsc = onEsc/);
 });
