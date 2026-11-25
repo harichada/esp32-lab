@@ -49,7 +49,8 @@ jobs:
 
   browser:
     name: Browser persistence (mocked)
-    runs-on: ubuntu-latest
+    # ubuntu-latest is 26.04, and Playwright 1.58 has no Chromium build for it.
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
