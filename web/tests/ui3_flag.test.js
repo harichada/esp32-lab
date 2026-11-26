@@ -28,6 +28,17 @@ test('the remembered choice is written only by the visible switch', () => {
   assert.match(toggle, /Try the new interface/);
   assert.match(toggle, /Switch back/);
   assert.equal(index.includes("setItem('esp32lab.ui'"), false);
+  const mobile = fs.readFileSync(path.join(root, 'js', 'mobile.js'), 'utf8');
+  const css = fs.readFileSync(path.join(root, 'css', 'ui3.css'), 'utf8');
+  assert.match(ui3, /data-go="classic">Classic UI/);
+  assert.match(ui3, /id="ui3Classic">Classic UI/);
+  assert.match(ui3, /getElementById\('uiSwitch'\)/);
+  assert.match(mobile, /id="mTryUi"/);
+  assert.match(mobile, /Try new UI \(Studio Dark\)/);
+  assert.match(mobile, /getElementById\('uiSwitch'\)/);
+  assert.match(css, /\.ui3-tile\{[^}]*background:var\(--l2\)/);
+  assert.match(css, /#ui3home\{[^}]*background:var\(--bg\)/);
+  assert.equal(css.includes('rgba(255,255,255,.03)'), false);
 });
 
 test('Studio Dark does not add an AI prompt or a new service', () => {

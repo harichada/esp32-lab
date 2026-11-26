@@ -458,7 +458,7 @@
     home.tabIndex = 0;
     home.hidden = true;
     home.setAttribute('aria-label', 'Welcome');
-    home.innerHTML = `<div class="ui3-bento">
+    home.innerHTML = `<button type="button" id="ui3Classic">Classic UI</button><div class="ui3-bento">
       <article class="ui3-card"><h2>Blink tour</h2>
         <p class="ui3-lede">Five steps on a real ESP32 DevKit. The tidy schematic stays available beside the breadboard.</p>
         <ol class="ui3-steps"><li>Add an LED.</li><li>Add a resistor.</li><li>Wire GPIO2 to the resistor, the resistor to the LED, and the LED to GND.</li><li>Open the sketch.</li><li>Run and watch the LED turn on and off.</li></ol>
@@ -472,6 +472,7 @@
       <div id="ui3AllEx" class="ui3-card ui3-more-ex"><h2>All examples</h2><div id="ui3AllList"></div></div>
     </div>`;
     document.getElementById('main').appendChild(home);
+    $('#ui3Classic').onclick = () => { const sw = document.getElementById('uiSwitch'); if (sw) sw.click(); };
     $('#ui3StartTour').onclick = () => startTour();
     $('#ui3Back').onclick = () => setHome(false);
     $('#ui3HomeKeys').onclick = () => click('bKeys');
@@ -603,7 +604,7 @@
     more.setAttribute('role', 'dialog');
     more.setAttribute('aria-modal', 'true');
     more.setAttribute('aria-label', 'More');
-    more.innerHTML = `<h2>Project</h2><p id="ui3moreProj"></p><button type="button" data-go="home">Home</button><h2>Simulation</h2><div id="ui3ModePhone"></div><button type="button" data-go="restart">Restart</button><button type="button" data-go="reset">Reset</button><button type="button" data-go="flags">Build flags</button><h2>View</h2><button type="button" data-go="sch">Schematic</button><button type="button" data-go="2d">Breadboard</button><button type="button" data-go="3d">3D</button><button type="button" data-go="tidy">Tidy layout</button><button type="button" data-go="board">Board layout</button><button type="button" data-go="props">Properties</button><button type="button" data-go="theme">Theme</button><button type="button" data-go="map">Minimap</button><button type="button" data-go="ortho">Right-angle wires</button><button type="button" data-go="flow">Animate current</button><h2>Account</h2><button type="button" data-go="account">Sign in</button><button type="button" data-go="about">About</button><button type="button" data-go="keys">Keyboard shortcuts</button><h2>Legal</h2><a href="notices.html">Open-source notices</a><p>Simulator for ESP32. Not affiliated with Espressif, Arduino, or Wokwi.</p><button type="button" data-go="close">Close</button>`;
+    more.innerHTML = `<h2>Interface</h2><button type="button" data-go="classic">Classic UI</button><h2>Project</h2><p id="ui3moreProj"></p><button type="button" data-go="home">Home</button><h2>Simulation</h2><div id="ui3ModePhone"></div><button type="button" data-go="restart">Restart</button><button type="button" data-go="reset">Reset</button><button type="button" data-go="flags">Build flags</button><h2>View</h2><button type="button" data-go="sch">Schematic</button><button type="button" data-go="2d">Breadboard</button><button type="button" data-go="3d">3D</button><button type="button" data-go="tidy">Tidy layout</button><button type="button" data-go="board">Board layout</button><button type="button" data-go="props">Properties</button><button type="button" data-go="theme">Theme</button><button type="button" data-go="map">Minimap</button><button type="button" data-go="ortho">Right-angle wires</button><button type="button" data-go="flow">Animate current</button><h2>Account</h2><button type="button" data-go="account">Sign in</button><button type="button" data-go="about">About</button><button type="button" data-go="keys">Keyboard shortcuts</button><h2>Legal</h2><a href="notices.html">Open-source notices</a><p>Simulator for ESP32. Not affiliated with Espressif, Arduino, or Wokwi.</p><button type="button" data-go="close">Close</button>`;
     document.body.appendChild(more);
     more.onclick = (e) => {
       const b = e.target.closest('[data-go]'); if (!b) return;
@@ -611,6 +612,7 @@
       const go = b.dataset.go;
       closeMore();
       if (go === 'close') return;
+      if (go === 'classic') { const sw = document.getElementById('uiSwitch'); if (sw) sw.click(); return; }
       if (go === 'home') setHome(true);
       else if (go === 'restart') click('bRestart');
       else if (go === 'reset') click('bReset');

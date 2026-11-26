@@ -272,6 +272,18 @@ test('phone and narrow phone: tabs, sheets, and a visible compile error', async 
   await ready(page);
   await expect(page.locator('#ui3home')).toBeVisible();
   await expect(page.locator('#ui3tabs')).toBeHidden();
+  const welcomeSwitch = page.locator('#ui3Classic');
+  await expect(welcomeSwitch).toBeVisible();
+  await expect(welcomeSwitch).toHaveText('Classic UI');
+  const welcomeBox = await welcomeSwitch.boundingBox();
+  expect(welcomeBox!.height).toBeGreaterThanOrEqual(44);
+  await inside(page, welcomeSwitch);
+  const tilePaint = await page.locator('.ui3-tile').first().evaluate((el) => {
+    const s = getComputedStyle(el);
+    return { color: s.color, background: s.backgroundColor };
+  });
+  expect(tilePaint.background).not.toBe('rgba(0, 0, 0, 0)');
+  expect(tilePaint.color).not.toBe(tilePaint.background);
   await quiet(page);
   await page.screenshot({ path: `${ART}/ui3-phone-welcome-390x844.png`, animations: 'disabled' });
   await axe(page);
@@ -298,7 +310,13 @@ test('phone and narrow phone: tabs, sheets, and a visible compile error', async 
   await page.locator('#ui3tabs [data-phone="more"]').click();
   const more = page.locator('#ui3more');
   await expect(more).toBeVisible();
+  await more.evaluate((el) => { el.scrollTop = 0; });
   await inside(page, more);
+  const classic390 = more.locator('[data-go="classic"]');
+  await expect(classic390).toHaveText('Classic UI');
+  const classic390Box = await classic390.boundingBox();
+  expect(classic390Box!.height).toBeGreaterThanOrEqual(44);
+  await inside(page, classic390);
   await more.locator('[data-go="close"]').scrollIntoViewIfNeeded();
   await inside(page, more.locator('[data-go="close"]'));
   await expect(more).toContainText('Build flags');
@@ -318,8 +336,26 @@ test('phone and narrow phone: tabs, sheets, and a visible compile error', async 
   await inside(page, strip);
 
   await page.setViewportSize({ width: 360, height: 740 });
+  await page.goto('/?ui=3&resume=0');
+  await ready(page);
+  const welcome360 = page.locator('#ui3Classic');
+  await expect(welcome360).toBeVisible();
+  const welcome360Box = await welcome360.boundingBox();
+  expect(welcome360Box!.height).toBeGreaterThanOrEqual(44);
+  await inside(page, welcome360);
+  await page.screenshot({ path: `${ART}/ui3-phone-welcome-360x740.png`, animations: 'disabled' });
+  await page.goto('/?ui=3&ex=blink&resume=0');
+  await ready(page);
   await page.locator('#ui3tabs [data-phone="more"]').click();
   await expect(page.locator('#ui3more')).toBeVisible();
+  await page.locator('#ui3more').evaluate((el) => { el.scrollTop = 0; });
+  const classicItem = page.locator('#ui3more [data-go="classic"]');
+  await expect(classicItem).toBeVisible();
+  await expect(classicItem).toHaveText('Classic UI');
+  const classicBox = await classicItem.boundingBox();
+  expect(classicBox!.height).toBeGreaterThanOrEqual(44);
+  await inside(page, classicItem);
+  await page.screenshot({ path: `${ART}/ui3-phone-more-360x740.png`, animations: 'disabled' });
   await page.locator('#ui3more [data-go="close"]').scrollIntoViewIfNeeded();
   await inside(page, page.locator('#ui3more [data-go="close"]'));
   await inside(page, page.locator('#ui3tabs'));
@@ -718,5 +754,29 @@ test('classic 3D keeps its selection on an empty click and on Escape', async ({ 
   await page.keyboard.press('Escape');
   await expect(page.locator('body')).not.toHaveClass(/view3d/);
   expect(await selection(page)).toBe(part!.id);
+  expect(errors, errors.join('\n')).toEqual([]);
+});
+
+test('classic phone More sheet offers Studio Dark at 390 and 360', async ({ page }) => {
+  const errors = await install(page);
+  for (const size of [{ width: 390, height: 844 }, { width: 360, height: 740 }]) {
+    await page.setViewportSize(size);
+    await page.goto('/?ex=blink&resume=0');
+    await expect(page.locator('#mMenu')).toBeVisible();
+    await page.locator('#mMenu').click();
+    const item = page.locator('#mTryUi');
+    await expect(item).toBeVisible();
+    await expect(item).toHaveText('Try new UI (Studio Dark)');
+    await expect.poll(async () => item.evaluate((el) => getComputedStyle(el.closest('section')!).transform)).toBe('none');
+    const box = await item.boundingBox();
+    expect(box!.height).toBeGreaterThanOrEqual(44);
+    await inside(page, item);
+    await page.screenshot({ path: `${ART}/classic-phone-more-${size.width}.png`, animations: 'disabled' });
+  }
+  await page.locator('#mTryUi').click();
+  await expect.poll(() => page.evaluate(() => document.documentElement.getAttribute('data-ui'))).toBe('3');
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('esp32lab.ui'))).toBe('3');
+  await expect.poll(() => page.evaluate(() => location.search)).toContain('ex=blink');
+  await expect.poll(() => page.evaluate(() => location.search)).toContain('ui=3');
   expect(errors, errors.join('\n')).toEqual([]);
 });

@@ -156,6 +156,7 @@
     // More sheet
     const more = document.createElement('section'); more.id = 'mMore'; more.className = 'panel m-sheet m-only';
     more.innerHTML = `<div class="m-more-b">
+      <div class="m-grp"><div class="m-lbl">Interface</div><div class="m-list"><button type="button" id="mTryUi" data-a="ui3">Try new UI (Studio Dark)</button></div></div>
       <div class="m-grp"><label class="m-lbl" for="mSelExample">Examples</label><div class="m-selwrap" id="mExWrap"></div></div>
       <div class="m-grp"><div class="m-lbl">Project</div><div class="m-grid">
         <button data-a="projects">${ic('i-folder')}<span>My projects</span></button><button data-a="save">${ic('i-save')}<span>Save</span></button>
@@ -176,6 +177,7 @@
     more.onclick = (e) => { const b = e.target.closest('[data-a],[data-d]'); if (!b) return; const a = b.dataset.a;
       if (b.dataset.d === 'scope' || b.dataset.d === 'code' || b.dataset.d === 'serial') { setSheet(b.dataset.d); return; }
       if (b.dataset.d) { openDock(b.dataset.d); return; }
+      if (a === 'ui3') { const sw = document.getElementById('uiSwitch'); if (sw) sw.click(); return; }
       if (a === 'projects') { setSheet(null); app.cmd.projects(); } else if (a === 'save') { app.cmd.save(); } else if (a === 'download') app.cmd.download();
       else if (a === 'import') $('#fileIn').click(); else if (a === 'restart') { setSheet(null); app.cmd.restart(); } else if (a === 'reset') $('#bReset').click();
       else if (a === 'fit') { setSheet(null); fitActive(); } else if (a === 'theme') $('#bTheme').click(); };

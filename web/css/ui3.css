@@ -241,8 +241,9 @@ html[data-ui="3"] .ui3-badge{
 }
 html[data-ui="3"] #ui3home{
   position:fixed;z-index:20;top:68px;left:0;right:0;bottom:0;overflow:auto;padding:24px 24px 48px;
-  background:transparent
+  background:var(--bg);color:var(--txt)
 }
+html[data-ui="3"] #ui3Classic{display:none}
 html[data-ui="3"] #ui3home[hidden]{display:none!important}
 html[data-ui="3"] .ui3-bento{max-width:1080px;margin:0 auto;display:grid;grid-template-columns:1.3fr 1fr;gap:16px}
 html[data-ui="3"] .ui3-card{
@@ -254,9 +255,11 @@ html[data-ui="3"] .ui3-lede{margin:0 0 12px;color:var(--txt2);font-size:14px}
 html[data-ui="3"] .ui3-steps{margin:0 0 12px;padding-left:18px;color:var(--txt2)}
 html[data-ui="3"] .ui3-gallery{grid-column:1 / -1;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
 html[data-ui="3"] .ui3-tile{
-  display:flex;flex-direction:column;align-items:flex-start;gap:6px;text-align:left;height:auto;padding:12px;border-radius:14px;
-  border:1px solid var(--line);background:rgba(255,255,255,.03);color:var(--txt)
+  display:flex;flex-direction:column;align-items:flex-start;gap:6px;text-align:left;height:auto;min-height:64px;padding:12px;border-radius:14px;
+  border:1px solid var(--line2);background:var(--l2);color:var(--txt);
+  white-space:normal;overflow-wrap:anywhere;width:100%;max-width:100%;box-sizing:border-box
 }
+html[data-ui="3"] .ui3-tile strong{color:inherit}
 html[data-ui="3"] .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 html[data-ui="3"] .ui3-level{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#67e8f9}
 html[data-theme="light"][data-ui="3"] .ui3-level,html[data-ui="3"][data-theme="light"] .ui3-level{color:#0e7490}
@@ -363,6 +366,12 @@ html[data-ui="3"] #ui3more{display:none}
   }
   html[data-ui="3"] .ui3-bento,html[data-ui="3"] .ui3-gallery{grid-template-columns:1fr}
   html[data-ui="3"] #ui3home{top:56px;padding:12px 12px 24px}
+  html[data-ui="3"] #ui3Classic{
+    display:flex;width:100%;max-width:100%;box-sizing:border-box;min-height:44px;margin:0 0 12px;
+    justify-content:center;white-space:normal;background:var(--l2);color:var(--txt);
+    border:1px solid var(--line2);border-radius:12px;font-size:15px;font-weight:650
+  }
+  html[data-ui="3"] #uiSwitch.ui-switch{display:none}
   html[data-ui="3"] #compileStrip,html[data-ui="3"] #ui3alert{
     top:auto;bottom:calc(148px + env(safe-area-inset-bottom));left:8px;right:8px;width:auto;max-height:28vh;transform:none
   }

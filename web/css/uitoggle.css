@@ -6,9 +6,7 @@
   box-shadow:0 6px 20px rgba(0,0,0,.35)
 }
 html[data-theme=light] #uiSwitch.ui-switch{background:#fff;color:#14171d;border-color:#cfd4dc}
-body.m #uiSwitch.ui-switch{
-  left:8px;right:auto;bottom:auto;top:calc(64px + env(safe-area-inset-top));transform:none;height:36px
-}
+body.m #uiSwitch.ui-switch{display:none}
 html[data-ui="3"] #uiSwitch.ui-switch{
   position:static;transform:none;height:32px;z-index:auto;background:transparent;color:#c9d0da;
   border-color:rgba(255,255,255,.12);box-shadow:none;white-space:nowrap
