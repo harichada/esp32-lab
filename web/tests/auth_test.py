@@ -588,7 +588,7 @@ class AuthTests(unittest.TestCase):
             self.assertEqual(status, 200, body)
         status, pairs, body = self._req('GET', '/auth/session', headers={'X-Forwarded-For': '203.0.113.10'})
         self.assertEqual(status, 429, body)
-        self.assertIn('Too many sign-in attempts', body.decode('utf-8'))
+        self.assertIn('Too many account requests', body.decode('utf-8'))
         self.assertTrue(_header(pairs, 'retry-after'))
         status, _pairs, body = self._req('GET', '/auth/session', headers={'X-Forwarded-For': '203.0.113.11'})
         self.assertEqual(status, 200, body)

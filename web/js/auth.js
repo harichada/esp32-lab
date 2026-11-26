@@ -612,7 +612,9 @@
       box = document.createElement('div');
       box.id = 'mAuth';
       box.className = 'm-grp';
-      more.insertBefore(box, more.firstChild);
+      const iface = document.getElementById('mTryUi');
+      const grp = iface && iface.closest ? iface.closest('.m-grp') : null;
+      more.insertBefore(box, grp && grp.parentNode === more ? grp.nextSibling : more.firstChild);
     }
     box.textContent = '';
     box.setAttribute('role', 'group');

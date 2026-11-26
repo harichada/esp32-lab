@@ -812,6 +812,7 @@
     else if (auth && auth.enabled && (auth.available || auth.status === 'error' || auth.status === 'loading')) {
       items = [[auth.status === 'error' ? 'Sign in (retry)' : 'Sign in', 'bSignIn'], ...items];
     }
+    items = [['Try new UI (Studio Dark)', 'uiSwitch'], ...items];
     pop.innerHTML = items.map(([label, id]) => `<button type="button" role="menuitem" data-go="${id}">${label}</button>`).join('');
     if (auth && auth.signed_in) {
       const summary = document.createElement('div'); summary.className = 'ui2-account-summary'; summary.setAttribute('role', 'none');
@@ -838,7 +839,8 @@
       const b = e.target.closest('[data-go]'); if (!b) return;
       const go = b.dataset.go;
       closePop();
-      if (go === 'bSignIn' && window.clAuth) clAuth.openWindow({ opener: anchor });
+      if (go === 'uiSwitch') { const sw = document.getElementById('uiSwitch'); if (sw) sw.click(); }
+      else if (go === 'bSignIn' && window.clAuth) clAuth.openWindow({ opener: anchor });
       else if (go === 'bSignOut' && window.clAuth) clAuth.signOut(anchor);
       else if (go === 'account-save' && window.clAuth) clAuth.saveCurrentProject();
       else if (go === 'guide') showStart();

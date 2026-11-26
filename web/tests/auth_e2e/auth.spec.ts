@@ -157,7 +157,7 @@ test('GitHub sign-in at 390 uses the More sheet', async ({ page }) => {
   await expect(heading).toBeVisible();
   const account = page.getByRole('button', { name: 'Sign in', exact: true });
   await expect(account).toBeVisible();
-  await expect(page.locator('#mMore .m-more-b button').first()).toHaveText('Sign in');
+  await expect(page.locator('#mMore .m-more-b button').first()).toHaveText('Try new UI (Studio Dark)');
   await account.click();
   const github = page.getByRole('button', { name: 'Continue with GitHub' });
   await expect(github).toBeVisible();

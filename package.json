@@ -2,7 +2,7 @@
   "name": "esp32-lab",
   "private": true,
   "scripts": {
-    "test:core": "node --test web/tests/projects.test.js web/tests/project_lifecycle.test.js web/tests/storage.test.js web/tests/compile_status.test.js web/tests/solver.test.js web/tests/netlist.test.js web/tests/jssketch.test.js web/tests/auth_ui.test.js web/tests/new_blank.test.js",
+    "test:core": "node --test web/tests/projects.test.js web/tests/project_lifecycle.test.js web/tests/storage.test.js web/tests/compile_status.test.js web/tests/solver.test.js web/tests/netlist.test.js web/tests/jssketch.test.js web/tests/auth_ui.test.js web/tests/new_blank.test.js web/tests/ui3_flag.test.js web/tests/wire_shift.test.js web/tests/breadboard_span.test.js web/tests/breadboard_holes.test.js web/tests/canvas_dots.test.js web/tests/ui3_qa.test.js",
     "test:smoke": "playwright test --config web/tests/e2e/playwright.config.ts project-lifecycle.spec.ts storage-full.spec.ts auth-off.spec.ts",
     "test:e2e": "playwright test --config web/tests/e2e/playwright.config.ts"
   },

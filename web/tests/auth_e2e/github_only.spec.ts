@@ -21,7 +21,7 @@ for (const width of [390, 1280]) {
       await expect(heading).toBeVisible();
       const signIn = page.getByRole('button', { name: 'Sign in', exact: true });
       await expect(signIn).toBeVisible();
-      await expect(page.locator('#mMore .m-more-b button').first()).toHaveText('Sign in');
+      await expect(page.locator('#mMore .m-more-b button').first()).toHaveText('Try new UI (Studio Dark)');
       await signIn.click();
       const go = page.getByRole('button', { name: 'Continue with GitHub' });
       await expect(go).toBeVisible();

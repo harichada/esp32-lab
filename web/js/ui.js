@@ -150,11 +150,20 @@
     keysDlg.addEventListener('click', (e) => { if (e.target === keysDlg || e.target.closest('[data-close]')) keysDlg.hidden = true; });
     // ----- command palette -----
     const tabs = [...document.querySelectorAll('#tabs [data-tab]')].map((b) => b.dataset.tab);
+    const ui3On = () => document.documentElement.getAttribute('data-ui') === '3' && root.UI3;
+    const showDock = (t) => {
+      if (ui3On() && root.UI3.openCode) { root.UI3.openCode(t); return; }
+      setC('dock', false);
+      const b = document.querySelector('#tabs [data-tab=' + t + ']');
+      if (b) b.click();
+    };
     const cmds = () => [
       ['Run simulation', 'Run', () => app.cmd.run()], ['Stop simulation', 'Run', () => app.cmd.stop()], ['Restart simulation', 'Run', () => app.cmd.restart()],
       ['Save project', 'Project', () => app.cmd.save()], ['Make a copy of this example', 'Project', () => app.cmd.makeCopy()], ['Open My Projects', 'Project', () => app.cmd.projects()], ['Download project JSON', 'Project', () => app.cmd.download()],
-      ...tabs.map((t) => [`Show ${document.querySelector(`#tabs [data-tab=${t}]`).textContent} panel`, 'View', () => { setC('dock', false); document.querySelector(`#tabs [data-tab=${t}]`).click(); }]),
-      ['Toggle parts panel', 'View', () => setC('palette', !body.classList.contains('c-palette'))], ['Toggle inspector', 'View', () => setC('side', !body.classList.contains('c-side'))], ['Toggle bottom panel', 'View', () => setC('dock', !body.classList.contains('c-dock'))],
+      ...tabs.map((t) => [`Show ${document.querySelector('#tabs [data-tab=' + t + ']').textContent} panel`, 'View', () => showDock(t)]),
+      ['Toggle parts panel', 'View', () => { if (ui3On() && root.UI3.toggleParts) root.UI3.toggleParts(); else setC('palette', !body.classList.contains('c-palette')); }],
+      ['Toggle inspector', 'View', () => { if (ui3On() && root.UI3.toggleInspector) root.UI3.toggleInspector(); else setC('side', !body.classList.contains('c-side')); }],
+      ['Toggle bottom panel', 'View', () => { if (ui3On() && root.UI3.toggleCode) root.UI3.toggleCode(); else setC('dock', !body.classList.contains('c-dock')); }],
       ['2D breadboard view', 'View', () => app.cmd.view2d()], ['Schematic view', 'View', () => app.cmd.viewSch && app.cmd.viewSch()], ['3D view', 'View', () => app.cmd.view3d()],
       ['Fit circuit to view', 'View', () => (app.schematic && app.schematic.active ? app.schematic.fit() : ed.fit())], ['Zoom in', 'View', () => zoomBy(1.25)], ['Zoom out', 'View', () => zoomBy(0.8)], ['Toggle minimap', 'View', () => $('#bMap').click()], ['Toggle light / dark theme', 'View', () => $('#bTheme').click()],
       ['Toggle current-flow animation', 'View', () => $('#cbFlow').click()], ['Toggle right-angle wires', 'Edit', () => $('#cbOrtho').click()], ['Undo', 'Edit', () => ed.undo()], ['Redo', 'Edit', () => ed.redo()], ['Keyboard shortcuts', 'Help', showKeys],
@@ -178,7 +187,17 @@
     window.addEventListener('keydown', (e) => {
       const typing = /INPUT|TEXTAREA|SELECT/.test(e.target.tagName);
       if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) { e.preventDefault(); ck.hidden ? openCk() : (ck.hidden = true); return; }
-      if ((e.ctrlKey || e.metaKey) && ['1', '2', '3'].includes(e.key)) { e.preventDefault(); const k = { 1: 'palette', 2: 'side', 3: 'dock' }[e.key]; setC(k, !body.classList.contains('c-' + k)); return; }
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'j' || e.key === 'J') && document.documentElement.getAttribute('data-ui') === '3' && root.UI3 && root.UI3.toggleCode) { e.preventDefault(); root.UI3.toggleCode(); return; }
+      if ((e.ctrlKey || e.metaKey) && ['1', '2', '3'].includes(e.key)) {
+        e.preventDefault();
+        if (document.documentElement.getAttribute('data-ui') === '3' && root.UI3) {
+          if (e.key === '1' && root.UI3.toggleParts) root.UI3.toggleParts();
+          else if (e.key === '2' && root.UI3.toggleInspector) root.UI3.toggleInspector();
+          else if (e.key === '3' && root.UI3.toggleCode) root.UI3.toggleCode();
+          return;
+        }
+        const k = { 1: 'palette', 2: 'side', 3: 'dock' }[e.key]; setC(k, !body.classList.contains('c-' + k)); return;
+      }
       if (e.key === 'Escape') { if (!ck.hidden) ck.hidden = true; if (!keysDlg.hidden) keysDlg.hidden = true; }
       if (typing || e.ctrlKey || e.metaKey || e.altKey || app.run) return;
       if (e.key === '?') { e.preventDefault(); keysDlg.hidden ? showKeys() : (keysDlg.hidden = true); }

@@ -260,6 +260,7 @@ async function fetchRetry(u, o, n = 4) {
   }
   function projectsDialog() {
     let d = $('#projDlg'); if (!d) { d = document.createElement('div'); d.id = 'projDlg'; d.className = 'modal'; document.body.appendChild(d); }
+    if (d._onEsc) window.removeEventListener('keydown', d._onEsc, true);
     const L = store.list();
     d.innerHTML = `<div class="modal-box"><div class="row"><h3 style="flex:1;margin:0">My Projects</h3><button data-a="close">✕</button></div>
       <div id="authProj"></div>
@@ -268,6 +269,16 @@ async function fetchRetry(u, o, n = 4) {
       <table class="projs">${L.map((e) => `<tr data-id="${e.id}" class="${app.proj && app.proj.id === e.id ? 'cur' : ''}"><td class="pn">${P.esc(e.name)}<br><small class="muted">${new Date(e.updated).toLocaleString()}${e.from ? ' · from ' + P.esc(e.from) : ''}</small></td>
         <td><button data-a="open">Open</button><button data-a="ren">Rename</button><button data-a="dup">Duplicate</button><button data-a="exp">Export</button><button data-a="del">Delete</button></td></tr>`).join('') || '<tr><td class="muted">No projects yet. Open an example and press “Make a copy” (or just start editing it).</td></tr>'}</table><div id="srvList"></div></div>`;
     d.hidden = false;
+    const onEsc = (e) => {
+      if (d.hidden || e.key !== 'Escape') return;
+      const blank = document.getElementById('newBlankDlg');
+      if (blank && !blank.hidden) return;
+      e.preventDefault();
+      e.stopPropagation();
+      d.hidden = true;
+    };
+    d._onEsc = onEsc;
+    window.addEventListener('keydown', onEsc, true);
     if (window.clAuth) window.clAuth.fillProjects(d);
     d.onclick = async (e) => {
       if (e.target === d) { d.hidden = true; return; }
@@ -611,7 +622,7 @@ async function fetchRetry(u, o, n = 4) {
       b.setAttribute('title', title);
       setRunLabel(buttonLabel);
     }
-    const narrow = !!(window.matchMedia && window.matchMedia('(max-width: 640px)').matches);
+    const narrow = compileNarrow();
     const showToast = !!(sentence && narrow);
     const showStrip = !!(sentence && !narrow);
     const strip = document.getElementById && document.getElementById('compileStrip');
@@ -772,7 +783,7 @@ async function fetchRetry(u, o, n = 4) {
   function showCompileTimeout(text) {
     const sentence = text || COMPILE_TIMEOUT_TEXT;
     setStatus('warn', sentence);
-    const narrow = !!(window.matchMedia && window.matchMedia('(max-width: 640px)').matches);
+    const narrow = compileNarrow();
     const strip = document.getElementById && document.getElementById('compileStrip');
     const phone = document.getElementById && document.getElementById('mCompileToast');
     if (strip) {
@@ -1100,9 +1111,15 @@ async function fetchRetry(u, o, n = 4) {
     }
     return firstCompilerLine(log);
   }
+  // Studio Dark keeps the compile sentence on the strip at every width. The phone
+  // toast is the classic shell's narrow layout; ui3 does not use that shell.
+  function compileNarrow() {
+    if (document.documentElement && document.documentElement.dataset.ui === '3') return false;
+    return !!(window.matchMedia && window.matchMedia('(max-width: 640px)').matches);
+  }
   function showFailureSurfaces(sentence) {
     // Phone toast and desktop strip both show the same plain sentence.
-    const narrow = !!(window.matchMedia && window.matchMedia('(max-width: 640px)').matches);
+    const narrow = compileNarrow();
     const strip = document.getElementById && document.getElementById('compileStrip');
     const toast = document.getElementById && document.getElementById('mCompileToast');
     if (strip) {
@@ -1497,12 +1514,12 @@ async function fetchRetry(u, o, n = 4) {
       const probeWire = ui2
         ? `<button class="probe-b" aria-label="Probe on scope" data-probe='${JSON.stringify({ kind: 'wire', wire: w.id })}'><svg class="ic" aria-hidden="true"><use href="#i-flow"/></svg> Probe</button><button class="probe-b" aria-label="Pin to telemetry" data-watch='${JSON.stringify({ kind: 'wire', wire: w.id })}'><svg class="ic" aria-hidden="true"><use href="#i-map"/></svg> Watch</button>`
         : `<button class="probe-b" data-probe='${JSON.stringify({ kind: 'wire', wire: w.id })}'>⌁ Probe on scope</button><button class="probe-b" data-watch='${JSON.stringify({ kind: 'wire', wire: w.id })}'>📌 Telemetry</button>`;
-      el.innerHTML = `<h3>Wire ${w.id}</h3><div class="insp-k">Colour</div><div class="row wrap">${Object.keys(window.WIRE_COLORS).map((c) => `<button class="sw ${w.color === c ? 'on' : ''}" data-col="${c}" style="background:${window.WIRE_COLORS[c]}" title="${c}"></button>`).join('')}</div><p id="ro" class="ro"></p><div class="row probe-row">${probeWire}</div><button id="iDel">Delete wire</button>`;
+      el.innerHTML = `<h2>Wire ${w.id}</h2><div class="insp-k">Colour</div><div class="row wrap">${Object.keys(window.WIRE_COLORS).map((c) => `<button class="sw ${w.color === c ? 'on' : ''}" data-col="${c}" style="background:${window.WIRE_COLORS[c]}" title="${c}"></button>`).join('')}</div><p id="ro" class="ro"></p><div class="row probe-row">${probeWire}</div><button id="iDel">Delete wire</button>`;
       el.querySelectorAll('[data-col]').forEach((b) => b.onclick = () => { app.editor.setWireColor(b.dataset.col); renderInspector(sel); });
       $('#iDel').onclick = () => app.editor.deleteSel(); return;
     }
     const p = app.editor.part(sel.part); if (!p) { el.innerHTML = '<p class="muted">Select a part or wire.</p>'; return; } shownPartId = p.id; const d = P.T[p.type];
-    let h = `<h3>${P.esc(d.label)} <small>${p.id}</small></h3>`;
+    let h = `<h2>${P.esc(d.label)} <small>${p.id}</small></h2>`;
     for (const e of d.edit || []) {
       const v = p.props[e.k];
       if (e.t === 'sel') h += `<label>${e.label}<select data-k="${e.k}">${e.opts.map((o) => `<option ${String(o) === String(v) ? 'selected' : ''}>${o}</option>`).join('')}</select></label>`;
@@ -1576,8 +1593,11 @@ async function fetchRetry(u, o, n = 4) {
       t = `<b>Wire ${P.esc(h.wire.id)}</b> · ${P.esc(h.wire.color || '')}<br>V <b>${P.fmt(flow.v, 'V')}</b> · I <b>${P.fmt(flow.i, 'A')}</b>`;
     } else if (h.pin) {
       const net = app.sim.netAt(h.pin.pos.x, h.pin.pos.y), v = app.sim.nodeVoltage(net);
-      const info = h.part.type === 'esp32' ? P.T.esp32.info(h.pin.pin.name) : '';
-      t = `<b>${P.esc(h.label || (h.part.id + '.' + h.pin.pin.name))}</b>${info ? ' · ' + P.esc(info) : ''}<br>${net < 0 ? 'unconnected' : net === 0 ? 'GND (0 V)' : 'node ' + net + ': <b>' + P.fmt(v, 'V') + '</b>'}`;
+      const part = h.part;
+      const pinName = (h.pin.pin && h.pin.pin.name) || '';
+      const info = part && part.type === 'esp32' ? P.T.esp32.info(pinName) : '';
+      const who = h.label || (part ? part.id + '.' + pinName : 'Dot');
+      t = `<b>${P.esc(who)}</b>${info ? ' · ' + P.esc(info) : ''}<br>${net < 0 ? 'unconnected' : net === 0 ? 'GND (0 V)' : 'node ' + net + ': <b>' + P.fmt(v, 'V') + '</b>'}`;
     } else if (h.part && h.part.type !== 'breadboard') {
       const r = app.sim.readout(h.part); t = `<b>${P.esc(h.part.id)}</b> ${P.esc(P.T[h.part.type].label)}${r ? '<br>' + P.esc(r) : ''}`;
     }
@@ -2232,6 +2252,7 @@ async function fetchRetry(u, o, n = 4) {
     else if (q && window.Examples && Examples.EX[q]) loadExample(q, { keepLocked: true });
     else if (store.current() && store.get(store.current())) openProject(store.current());
     else if (document.documentElement.dataset.ui === '2' && window.UI2 && UI2.freshStart) UI2.freshStart();
+    else if (document.documentElement.dataset.ui === '3') window.__ui3NeedWelcome = true;
     else if (window.Examples) loadExample('blink');
     try {
       const viewQ = sp.get('view');
@@ -2250,7 +2271,7 @@ async function fetchRetry(u, o, n = 4) {
 
   // ---------------- 2D / 3D view ----------------
   let viewMode = '2d', view3dLoading = null, knob3d = null;
-  const VIEW3D_SRC = 'js/view3d.js?v=57';
+  const VIEW3D_SRC = 'js/view3d.js?v=60';
   const THREE_SRC = 'vendor/three.min.js?v=2';
   function loadScriptOnce(src) {
     return new Promise((res, rej) => {
@@ -2307,6 +2328,14 @@ async function fetchRetry(u, o, n = 4) {
           hover({ wire: w, ev });
         },
         onPart: (id) => { app.editor.select({ part: id }); },
+        // A click that misses every part (or lands on the breadboard body) clears the
+        // selection in Studio Dark, the same as an empty 2D canvas click. Classic 3D
+        // keeps whatever was selected. An orbit drag never reaches this hook.
+        onEmpty: () => {
+          if (document.documentElement.getAttribute('data-ui') !== '3') return;
+          if (app.editor) app.editor.select(null);
+          if (app.schematic) app.schematic.select(null);
+        },
         // 3D part interaction mirrors the 2D editor: buttons press while running, click-parts toggle, pots turn by drag
         onPartDown: (id) => {
           const p = app.proj.parts.find((q) => q.id === id); if (!p) return false;
@@ -2408,6 +2437,7 @@ async function fetchRetry(u, o, n = 4) {
     if (viewMode === '2d') {
       try { clStorage.local.removeItem(LSV); } catch (_) {}
       leaveSchematic();
+      try { if (app.editor) app.editor.setHint(); } catch (_) {}
       syncExampleReady();
       try { app.editor && app.editor.render && app.editor.render(); } catch (_) {}
       const z = $('#zoomPct'); if (z && app.editor) z.textContent = Math.round(app.editor.view.s * 100) + '%';
@@ -2499,7 +2529,7 @@ async function fetchRetry(u, o, n = 4) {
   }
   async function ensureSchematic() {
     if (app.schematic) return app.schematic;
-    const src = (window.__ui2Late && window.__ui2Late.schematic) || 'js/schematic.js?v=75';
+    const src = (window.__ui2Late && window.__ui2Late.schematic) || 'js/schematic.js?v=77';
     if (!window.Schematic) { try { await loadScriptOnce(src); } catch (e) { console.warn(e); return null; } }
     return mountSchematic();
   }
@@ -2549,7 +2579,20 @@ async function fetchRetry(u, o, n = 4) {
     b2.onclick = () => setViewMode('2d'); b3.onclick = () => setViewMode('3d');
     if (bs) bs.onclick = () => setViewMode('schematic');
     const ex = $('#bExit3d'); if (ex) ex.onclick = () => setViewMode('2d');
-    window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && viewMode === '3d' && !document.querySelector('#newBlankDlg:not([hidden])')) { e.preventDefault(); setViewMode('2d'); } }, true);
+    window.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape' || viewMode !== '3d' || document.querySelector('#newBlankDlg:not([hidden])')) return;
+      // Studio Dark: Escape clears a 3D selection and stays in the view. A second
+      // Escape, with nothing selected, still leaves 3D. Classic always leaves.
+      if (document.documentElement.getAttribute('data-ui') === '3' && app.editor && app.editor.sel) {
+        e.preventDefault();
+        app.editor.cancelWire();
+        app.editor.select(null);
+        if (app.schematic) app.schematic.select(null);
+        return;
+      }
+      e.preventDefault();
+      setViewMode('2d');
+    }, true);
     // HOTFIX: always boot in 2D and drop any saved 3D preference.
     try { clStorage.local.removeItem(LSV); } catch (_) {}
     const f2 = $('#bForce2d'); if (f2) f2.onclick = () => { if (viewMode === '2d') return; setViewMode('2d'); toast('2D editor'); };

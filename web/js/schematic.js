@@ -3408,10 +3408,16 @@
       document.body.classList.toggle('viewsch', this.active);
       const hint = this.host.querySelector('.hint');
       if (hint) {
+        const schematicSentence = (s) => /View only|Edit wiring in 2D|mirrors the symbol/.test(s || '');
         if (this.active) {
-          if (!this._hint0) this._hint0 = hint.textContent;
+          if (!this._hint0 && !schematicSentence(hint.textContent)) this._hint0 = hint.textContent;
           hint.textContent = root.Pinch.schematicHint();
-        } else if (this._hint0) hint.textContent = this._hint0;
+        } else {
+          const ed = root.app && root.app.editor;
+          if (ed && typeof ed.setHint === 'function') ed.setHint();
+          else if (this._hint0 && !schematicSentence(this._hint0)) hint.textContent = this._hint0;
+          else if (schematicSentence(hint.textContent)) hint.textContent = '';
+        }
       }
       this._syncLayout();
       if (!this.active) { this._syncFitAll(false); this._syncNotice(); }
@@ -3546,8 +3552,9 @@
       const show = !!this.active && matchFlagOn();
       bar.hidden = !show;
       bar.setAttribute('aria-hidden', show ? 'false' : 'true');
-      const short = { board: 'Breadboard', tidy: 'Tidy' };
-      const tip = { board: 'Like breadboard', tidy: 'Tidy arrangement' };
+      const ui3 = document.documentElement.getAttribute('data-ui') === '3';
+      const short = ui3 ? { board: 'Board', tidy: 'Tidy' } : { board: 'Breadboard', tidy: 'Tidy' };
+      const tip = ui3 ? { board: 'Board', tidy: 'Tidy' } : { board: 'Like breadboard', tidy: 'Tidy arrangement' };
       for (const b of bar.querySelectorAll('button')) {
         const mode = b.dataset.mode === 'tidy' ? 'tidy' : 'board';
         const on = mode === (this._mode === 'tidy' ? 'tidy' : 'board');

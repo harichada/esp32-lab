@@ -86,19 +86,248 @@
     for (const rl in BB_RAILS) for (let c = 1; c <= cols; c++) { if ((c - 1) % 6 === 5) continue; h.push({ name: rl + c, x: 10 + (c - 1) * G, y: BB_RAILS[rl] }); }
     return h;
   }
+  // Extra tie-point bands sit this far below the previous one. Band 0 keeps the classic y values.
+  const BB_BAND = 230, BB_MAX_COLS = 240, BB_MAX_BANDS = 8, BB_HOLE_CAP = 1800;
+  function bbSpan(p) {
+    const pr = (p && p.props) || {};
+    const cols = pr.cols || 63;
+    if (pr.c0 == null && pr.c1 == null && pr.b0 == null && pr.b1 == null) return { c0: 1, c1: cols, b0: 0, b1: 0, cols: cols, classic: true };
+    let c0 = pr.c0 | 0, c1 = pr.c1 == null ? cols : (pr.c1 | 0), b0 = pr.b0 | 0, b1 = pr.b1 | 0;
+    if (c1 < c0) { const t = c0; c0 = c1; c1 = t; }
+    if (b1 < b0) { const t = b0; b0 = b1; b1 = t; }
+    return { c0: c0, c1: c1, b0: b0, b1: b1, cols: cols, classic: false };
+  }
+  function bbClassic(p) { return bbSpan(p).classic; }
+  // Studio Dark is one classic board on a dotted canvas. Extra saved bands stay in the file
+  // but are not breadboard: parts keep their coordinates and those dots do not conduct.
+  function bbStudio() {
+    try {
+      const el = typeof document !== 'undefined' && document.documentElement;
+      if (!el) return false;
+      if (el.dataset && el.dataset.ui === '3') return true;
+      return !!(el.getAttribute && el.getAttribute('data-ui') === '3');
+    } catch (e) { return false; }
+  }
+  function bbShown(p) {
+    const saved = bbSpan(p);
+    if (!bbStudio() || saved.classic) return saved;
+    return { c0: 1, c1: 63, b0: 0, b1: 0, cols: 63, classic: true, plain: true };
+  }
+  function bbCols(p) {
+    const shown = bbShown(p);
+    if (shown.plain) return 63;
+    return (p && p.props && p.props.cols) || shown.cols || 63;
+  }
+  function bbRailSkip(c) { return ((c - 1) % 6 + 6) % 6 === 5; }
+  function bbName(row, c, band) { const base = row + c; return band ? base + '@' + band : base; }
+  function bbXY(c, y, band) { return { x: 10 + (c - 1) * G, y: y + band * BB_BAND }; }
+  function bbLocal(p, x, y) {
+    const dx = x - p.x, dy = y - p.y, r = ((p.rot || 0) % 4 + 4) % 4;
+    if (r === 1) return { x: dy, y: -dx };
+    if (r === 2) return { x: -dx, y: -dy };
+    if (r === 3) return { x: -dy, y: dx };
+    return { x: dx, y: dy };
+  }
+  function bbBoxLocal(p, x0, y0, x1, y1) {
+    let lx0 = 1e9, ly0 = 1e9, lx1 = -1e9, ly1 = -1e9;
+    for (const x of [x0, x1]) for (const y of [y0, y1]) {
+      const q = bbLocal(p, x, y);
+      lx0 = Math.min(lx0, q.x); ly0 = Math.min(ly0, q.y); lx1 = Math.max(lx1, q.x); ly1 = Math.max(ly1, q.y);
+    }
+    return { x0: lx0, y0: ly0, x1: lx1, y1: ly1 };
+  }
+  function bbClampPair(a, b, max) {
+    if (b - a + 1 <= max) return [a, b];
+    const mid = (a + b) / 2, half = Math.floor(max / 2);
+    const lo = Math.round(mid) - half;
+    return [lo, lo + max - 1];
+  }
+  // Keep the saved columns, then grow toward the view until the cap.
+  function bbUnion(s0, s1, v0, v1, max) {
+    let a = Math.min(s0, v0), b = Math.max(s1, v1);
+    if (b - a + 1 <= max) return [a, b];
+    if (s1 - s0 + 1 >= max) return [s0, s0 + max - 1];
+    let extra = max - (s1 - s0 + 1);
+    const left = Math.max(0, s0 - v0), right = Math.max(0, v1 - s1), sum = left + right || 1;
+    const takeL = Math.min(left, Math.ceil(extra * left / sum));
+    const takeR = Math.min(right, extra - takeL);
+    return [s0 - takeL, s1 + takeR];
+  }
+  // Screen pitch of one 0.1" column. Below ~3px the dots merge, so painting can skip columns.
+  function bbHoleStep(scale) {
+    const pitch = G * (Number(scale) > 0 ? Number(scale) : 1);
+    if (pitch >= 3) return 1;
+    return Math.max(1, Math.ceil(3 / pitch));
+  }
+  function bbCapStep(s, hole) {
+    const cLo = hole ? Math.max(s.c0, hole.c0) : s.c0, cHi = hole ? Math.min(s.c1, hole.c1) : s.c1;
+    const bLo = hole ? Math.max(s.b0, hole.b0) : s.b0, bHi = hole ? Math.min(s.b1, hole.b1) : s.b1;
+    const cols = Math.max(1, cHi - cLo + 1), bands = Math.max(1, bHi - bLo + 1);
+    return Math.max(1, Math.ceil((cols * bands * 14) / BB_HOLE_CAP));
+  }
+  function bbHolesSpan(s, hole, step) {
+    const h = [];
+    const cLo = hole ? Math.max(s.c0, hole.c0) : s.c0, cHi = hole ? Math.min(s.c1, hole.c1) : s.c1;
+    const bLo = hole ? Math.max(s.b0, hole.b0) : s.b0, bHi = hole ? Math.min(s.b1, hole.b1) : s.b1;
+    const stride = Math.max(1, step || 1);
+    for (let b = bLo; b <= bHi; b++) for (let c = cLo; c <= cHi; c += stride) {
+      for (const r in BB_ROWS) { const q = bbXY(c, BB_ROWS[r], b); h.push({ name: bbName(r, c, b), x: q.x, y: q.y }); }
+      if (bbRailSkip(c)) continue;
+      for (const rl in BB_RAILS) { const q = bbXY(c, BB_RAILS[rl], b); h.push({ name: bbName(rl, c, b), x: q.x, y: q.y }); }
+    }
+    return h;
+  }
+  function bbGroupsSpan(s) {
+    const g = [];
+    for (let b = s.b0; b <= s.b1; b++) {
+      for (let c = s.c0; c <= s.c1; c++) {
+        g.push(['a', 'b', 'c', 'd', 'e'].map((r) => bbName(r, c, b)));
+        g.push(['f', 'g', 'h', 'i', 'j'].map((r) => bbName(r, c, b)));
+      }
+      for (const rl in BB_RAILS) {
+        const a = [];
+        for (let c = s.c0; c <= s.c1; c++) if (!bbRailSkip(c)) a.push(bbName(rl, c, b));
+        g.push(a);
+      }
+    }
+    return g;
+  }
+  function bbSvgSpan(p, paint) {
+    const saved = bbSpan(p);
+    const span = (paint && paint.span) || saved;
+    const hole = (paint && paint.hole) || null;
+    let s = '';
+    for (let b = span.b0; b <= span.b1; b++) {
+      const y = b * BB_BAND;
+      const x0 = 10 + (span.c0 - 1) * G - 16, x1 = 10 + (span.c1 - 1) * G + 16, w = Math.max(20, x1 - x0);
+      s += `<rect x="${x0}" y="${y - 14}" width="${w}" height="222" rx="6" class="bb-body" filter="url(#fShadow)"/>`;
+      s += `<rect x="${x0}" y="${y - 14}" width="${w}" height="38" rx="6" class="bb-railband"/><rect x="${x0}" y="${y + 170}" width="${w}" height="38" rx="6" class="bb-railband"/>`;
+      s += `<rect x="${x0}" y="${y + 91}" width="${w}" height="12" class="bb-channel"/>`;
+      s += `<rect x="${x0 + 10}" y="${y - 9.6}" width="${Math.max(8, w - 20)}" height="1.6" rx=".8" class="rail-n"/><rect x="${x0 + 10}" y="${y + 17.4}" width="${Math.max(8, w - 20)}" height="1.6" rx=".8" class="rail-p"/>`;
+      s += `<rect x="${x0 + 10}" y="${y + 171.4}" width="${Math.max(8, w - 20)}" height="1.6" rx=".8" class="rail-p"/><rect x="${x0 + 10}" y="${y + 197.4}" width="${Math.max(8, w - 20)}" height="1.6" rx=".8" class="rail-n"/>`;
+      const cLo = hole ? Math.max(span.c0, hole.c0) : span.c0, cHi = hole ? Math.min(span.c1, hole.c1) : span.c1;
+      for (let c = cLo; c <= cHi; c++) if (c === 1 || c % 5 === 0) {
+        const x = 10 + (c - 1) * G;
+        s += `<text x="${x}" y="${y + 31}" class="bb-num">${c}</text><text x="${x}" y="${y + 166}" class="bb-num">${c}</text>`;
+      }
+    }
+    // Studio Dark passes a step from the screen pitch and a hole window that is only the
+    // visible columns. Off-screen holes are not painted. Classic expanded boards keep the count cap.
+    const step = paint ? (paint.step || 1) : bbCapStep(span, hole);
+    for (const h of bbHolesSpan(span, hole, step)) s += `<rect x="${h.x - 2.5}" y="${h.y - 2.5}" width="5" height="5" rx="1" class="hole" data-pin="${h.name}"/>`;
+    return s;
+  }
+  // World rect the 2D view should paint, unioned with the saved board and capped.
+  // Holes are the columns actually on screen. rect.s is the view scale (world units to pixels).
+  function bbViewFor(p, rect) {
+    const saved = bbSpan(p);
+    const box = rect || { x0: 0, y0: 0, x1: 0, y1: 0 };
+    const loc = bbBoxLocal(p, box.x0, box.y0, box.x1, box.y1);
+    const v0 = Math.floor((loc.x0 - 10) / G) + 1, v1 = Math.ceil((loc.x1 - 10) / G) + 1;
+    const u0 = Math.floor((loc.y0 + 14) / BB_BAND), u1 = Math.floor((loc.y1 + 14) / BB_BAND);
+    const [c0, c1] = bbUnion(saved.c0, saved.c1, v0, v1, BB_MAX_COLS);
+    const [b0, b1] = bbUnion(saved.b0, saved.b1, u0, u1, BB_MAX_BANDS);
+    const span = { c0: c0, c1: c1, b0: b0, b1: b1 };
+    let hc0 = Math.max(span.c0, v0 - 1), hc1 = Math.min(span.c1, v1 + 1);
+    let hb0 = Math.max(span.b0, u0), hb1 = Math.min(span.b1, u1);
+    if (hc1 < hc0) { hc0 = span.c0; hc1 = Math.min(span.c1, span.c0); }
+    if (hb1 < hb0) { hb0 = span.b0; hb1 = Math.min(span.b1, span.b0); }
+    return { span: span, hole: { c0: hc0, c1: hc1, b0: hb0, b1: hb1 }, step: bbHoleStep(box.s) };
+  }
+  // Nearest hole of this board (saved span, or the painted view when one is set). World coordinates in, world coordinates out.
+  function bbNearest(p, wx, wy) {
+    const loc = bbLocal(p, wx, wy);
+    const view = root._bbView && root._bbView[p.id];
+    const s = bbStudio() ? bbShown(p) : (view || bbSpan(p));
+    const c = Math.round((loc.x - 10) / G) + 1;
+    const cols = [];
+    for (const dc of [-1, 0, 1]) { const cc = c + dc; if (cc >= s.c0 && cc <= s.c1) cols.push(cc); }
+    if (!cols.length) return null;
+    let best = null, bd = 1e18;
+    for (let b = s.b0; b <= s.b1; b++) {
+      const rows = [];
+      for (const r in BB_ROWS) rows.push([r, BB_ROWS[r], false]);
+      for (const rl in BB_RAILS) rows.push([rl, BB_RAILS[rl], true]);
+      for (const cc of cols) for (const row of rows) {
+        if (row[2] && bbRailSkip(cc)) continue;
+        const q = bbXY(cc, row[1], b), d = (q.x - loc.x) * (q.x - loc.x) + (q.y - loc.y) * (q.y - loc.y);
+        if (d >= bd) continue;
+        bd = d;
+        const pin = { name: bbName(row[0], cc, b), x: q.x, y: q.y };
+        const w = pinWorld(p, pin);
+        best = { name: pin.name, x: w.x, y: w.y, lx: pin.x, ly: pin.y };
+      }
+    }
+    return best;
+  }
+  function bbParse(name) {
+    const m = /^(tn|tp|bn|bp|[a-j])(-?\d+)(?:@(-?\d+))?$/.exec(name || '');
+    return m ? { row: m[1], c: +m[2], band: m[3] ? +m[3] : 0 } : null;
+  }
+  // World positions of the strip or rail that contains this hole.
+  function bbStrip(p, name) {
+    const hit = bbParse(name); if (!hit) return [];
+    const s = bbSpan(p), out = [];
+    const push = (pin) => { const w = pinWorld(p, pin); out.push({ x: w.x, y: w.y }); };
+    if (BB_ROWS[hit.row]) {
+      const rows = 'abcde'.includes(hit.row) ? ['a', 'b', 'c', 'd', 'e'] : ['f', 'g', 'h', 'i', 'j'];
+      for (const r of rows) { const q = bbXY(hit.c, BB_ROWS[r], hit.band); push({ name: bbName(r, hit.c, hit.band), x: q.x, y: q.y }); }
+    } else if (BB_RAILS[hit.row]) {
+      for (let c = s.c0; c <= s.c1; c++) {
+        if (bbRailSkip(c)) continue;
+        const q = bbXY(c, BB_RAILS[hit.row], hit.band);
+        push({ name: bbName(hit.row, c, hit.band), x: q.x, y: q.y });
+      }
+    }
+    return out;
+  }
+  // Grow the saved span so these world points land on the board. No-op when they already do.
+  function bbCover(p, x0, y0, x1, y1) {
+    if (!p) return false;
+    const loc = bbBoxLocal(p, x0, y0, x1, y1);
+    const s = bbSpan(p);
+    const a = Math.round((loc.x0 - 10) / G) + 1, b = Math.round((loc.x1 - 10) / G) + 1;
+    let c0 = s.c0, c1 = s.c1, b0 = s.b0, b1 = s.b1;
+    if (a <= s.c0 + 1) c0 = Math.min(c0, a - 2);
+    if (b >= s.c1 - 1) c1 = Math.max(c1, b + 2);
+    const ba = Math.floor((loc.y0 + 14) / BB_BAND), bb = Math.floor((loc.y1 + 14) / BB_BAND);
+    if (ba < s.b0) b0 = ba;
+    if (bb > s.b1) b1 = bb;
+    [c0, c1] = bbClampPair(c0, c1, BB_MAX_COLS);
+    [b0, b1] = bbClampPair(b0, b1, BB_MAX_BANDS);
+    const pr = p.props || (p.props = {});
+    const cols = pr.cols || 63;
+    if (c0 === 1 && c1 === cols && b0 === 0 && b1 === 0) {
+      const had = pr.c0 != null || pr.c1 != null || pr.b0 != null || pr.b1 != null;
+      delete pr.c0; delete pr.c1; delete pr.b0; delete pr.b1;
+      return had;
+    }
+    if (pr.c0 === c0 && pr.c1 === c1 && pr.b0 === b0 && pr.b1 === b1) return false;
+    pr.c0 = c0; pr.c1 = c1; pr.b0 = b0; pr.b1 = b1;
+    if (c0 <= 1 && c1 > cols) pr.cols = c1;
+    return true;
+  }
   def('breadboard', {
     label: 'Breadboard 830', cat: 'Boards', layer: 0,
     props: { cols: 63 },
-    pins: (p) => bbHoles(p.props.cols || 63),
-    size: (p) => ({ w: (p.props.cols || 63) * G + 10, h: 200 }),
+    pins: (p) => bbShown(p).classic ? bbHoles(bbCols(p)) : bbHolesSpan(bbSpan(p)),
+    size: (p) => bbShown(p).classic ? { w: bbCols(p) * G + 10, h: 200 } : (() => {
+      const s = bbSpan(p);
+      const x1 = 10 + (Math.max(s.c1, 1) - 1) * G + 10;
+      const y1 = 200 + Math.max(0, s.b1) * BB_BAND;
+      return { w: Math.max(x1, (p.props.cols || 63) * G + 10), h: y1 };
+    })(),
     groups(p) {
-      const cols = p.props.cols || 63, g = [];
+      if (!bbShown(p).classic) return bbGroupsSpan(bbSpan(p));
+      const cols = bbCols(p), g = [];
       for (let c = 1; c <= cols; c++) { g.push(['a', 'b', 'c', 'd', 'e'].map((r) => r + c)); g.push(['f', 'g', 'h', 'i', 'j'].map((r) => r + c)); }
       for (const rl in BB_RAILS) { const a = []; for (let c = 1; c <= cols; c++) if ((c - 1) % 6 !== 5) a.push(rl + c); g.push(a); }
       return g;
     },
     svg(p) {
-      const cols = p.props.cols || 63, W = cols * G + 10;
+      const paint = !bbStudio() && root._bbPaint && root._bbPaint.id === p.id ? root._bbPaint : null;
+      if (!bbShown(p).classic || paint) return bbSvgSpan(p, paint);
+      const cols = bbCols(p), W = cols * G + 10;
       let s = `<rect x="-6" y="-14" width="${W + 2}" height="222" rx="6" class="bb-body" filter="url(#fShadow)"/><rect x="-6" y="-14" width="${W + 2}" height="222" rx="6" fill="url(#gGloss)" opacity=".25" pointer-events="none"/>`;
       s += `<rect x="-6" y="-14" width="${W + 2}" height="38" rx="6" class="bb-railband"/><rect x="-6" y="170" width="${W + 2}" height="38" rx="6" class="bb-railband"/>`;
       s += `<rect x="-6" y="91" width="${W + 2}" height="12" class="bb-channel"/><line x1="-6" y1="91.5" x2="${W - 4}" y2="91.5" class="bb-chedge"/><line x1="-6" y1="102.5" x2="${W - 4}" y2="102.5" class="bb-chedge2"/>`;
@@ -976,6 +1205,260 @@
     return { x: seat.x, y: seat.y, moved: seat.x !== part.x || seat.y !== part.y };
   }
 
+  // Inverse of orientPt. A click is in world space; the drawing is in local space.
+  function localOf(part, wx, wy) {
+    let x = wx - (part.x || 0), y = wy - (part.y || 0);
+    const r = ((part.rot || 0) % 4 + 4) % 4;
+    if (r === 1) { const t = x; x = y; y = -t; }
+    else if (r === 2) { x = -x; y = -y; }
+    else if (r === 3) { const t = x; x = -y; y = t; }
+    if (part && part.type !== 'breadboard' && part.type !== 'label' && (part.flipX || part.flipY)) {
+      const pins = localPinsOf(part);
+      if (pins.length >= 2) {
+        if (pins.length === 2 && !ALLOW_MIRROR_MULTIPIN) { const s = endSwap(x, y, pins); x = s[0]; y = s[1]; }
+        else if (ALLOW_MIRROR_MULTIPIN) {
+          const c = pinCenter(pins);
+          if (part.flipX) x = 2 * c.x - x;
+          if (part.flipY) y = 2 * c.y - y;
+        }
+      }
+    }
+    return [x, y];
+  }
+  // Point on the drawn shapes. Labels, pin marks and glow are not the body, so a
+  // hole that only falls inside the bounding box does not count.
+  function gfxContains(part, wx, wy) {
+    const spec = T[part && part.type];
+    if (!spec || part.type === 'breadboard' || part.type === 'label' || typeof spec.svg !== 'function') return false;
+    let svg = '';
+    try { svg = spec.svg(part, null) || ''; } catch (e) { return false; }
+    if (typeof svg !== 'string' || !svg) return false;
+    const loc = localOf(part, wx, wy);
+    return svgContains(svg, loc[0], loc[1]);
+  }
+  // Topmost painted part whose artwork contains the point. Later parts of the
+  // same layer are drawn on top, and a higher layer is on top of a lower one.
+  function gfxHit(parts, wx, wy) {
+    if (!parts) return null;
+    const order = [];
+    for (let i = 0; i < parts.length; i++) {
+      const p = parts[i];
+      if (!p || p.type === 'breadboard' || p.type === 'label' || !T[p.type]) continue;
+      order.push({ p: p, i: i, layer: (T[p.type].layer == null ? 2 : T[p.type].layer) });
+    }
+    order.sort((a, b) => (a.layer - b.layer) || (a.i - b.i));
+    for (let i = order.length - 1; i >= 0; i--) if (gfxContains(order[i].p, wx, wy)) return order[i].p;
+    return null;
+  }
+  function svgContains(svg, x, y) {
+    const src = String(svg).replace(/<!--[\s\S]*?-->/g, '');
+    const skipTag = { defs: 1, lineargradient: 1, radialgradient: 1, filter: 1, clippath: 1, mask: 1, pattern: 1, marker: 1, symbol: 1, style: 1, title: 1, desc: 1, metadata: 1 };
+    const strokeClass = /\b(lead|esp-ant|bb-chedge|bb-chedge2)\b/;
+    const skipClass = /\b(glow|smoke|ir-arcs)\b/;
+    const stack = [[1, 0, 0, 1, 0, 0]];
+    let skip = 0;
+    const mul = (A, B) => [A[0] * B[0] + A[2] * B[1], A[1] * B[0] + A[3] * B[1], A[0] * B[2] + A[2] * B[3], A[1] * B[2] + A[3] * B[3], A[0] * B[4] + A[2] * B[5] + A[4], A[1] * B[4] + A[3] * B[5] + A[5]];
+    const inv = (m, px, py) => {
+      const det = m[0] * m[3] - m[1] * m[2];
+      if (Math.abs(det) < 1e-8) return null;
+      const dx = px - m[4], dy = py - m[5];
+      return [(m[3] * dx - m[2] * dy) / det, (-m[1] * dx + m[0] * dy) / det];
+    };
+    const num = (v, d) => { const n = parseFloat(v); return Number.isFinite(n) ? n : d; };
+    const attrsOf = (s) => { const o = {}, re = /([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g; let m; while ((m = re.exec(s))) o[m[1]] = m[2] != null ? m[2] : m[3]; return o; };
+    const styleVal = (style, key) => { if (!style) return ''; const m = new RegExp('(?:^|;)\\s*' + key + '\\s*:\\s*([^;]+)').exec(style); return m ? m[1].trim().replace(/px$/, '') : ''; };
+    const xform = (kind, a) => {
+      if (kind === 'matrix') return [a[0], a[1], a[2], a[3], a[4] || 0, a[5] || 0];
+      if (kind === 'translate') return [1, 0, 0, 1, a[0] || 0, a[1] || 0];
+      if (kind === 'scale') { const sx = a[0] == null ? 1 : a[0], sy = a.length > 1 ? a[1] : sx; return [sx, 0, 0, sy, 0, 0]; }
+      if (kind === 'skewX') { const t = Math.tan((a[0] || 0) * Math.PI / 180); return [1, 0, t, 1, 0, 0]; }
+      if (kind === 'skewY') { const t = Math.tan((a[0] || 0) * Math.PI / 180); return [1, t, 0, 1, 0, 0]; }
+      const ang = (a[0] || 0) * Math.PI / 180, c = Math.cos(ang), s = Math.sin(ang), r = [c, s, -s, c, 0, 0];
+      if (a.length < 3) return r;
+      return mul(mul([1, 0, 0, 1, a[1], a[2]], r), [1, 0, 0, 1, -a[1], -a[2]]);
+    };
+    const parseTransform = (s) => {
+      if (!s) return null;
+      let m = null, hit, re = /(matrix|translate|scale|rotate|skewX|skewY)\s*\(([^)]*)\)/g;
+      while ((hit = re.exec(s))) {
+        const args = hit[2].split(/[\s,]+/).map(parseFloat).filter((n) => Number.isFinite(n));
+        const t = xform(hit[1], args);
+        m = m ? mul(m, t) : t;
+      }
+      return m;
+    };
+    const inside = (rings, px, py) => {
+      let w = 0;
+      for (const pts of rings) {
+        for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+          const yi = pts[i][1], yj = pts[j][1];
+          if ((yi > py) === (yj > py)) continue;
+          const xi = pts[i][0], xj = pts[j][0];
+          if (px < (xj - xi) * (py - yi) / (yj - yi) + xi) w++;
+        }
+      }
+      return w % 2 === 1;
+    };
+    const nearStroke = (lines, px, py, rad) => {
+      const r2 = rad * rad;
+      for (const pts of lines) {
+        for (let i = 1; i < pts.length; i++) {
+          const ax = pts[i - 1][0], ay = pts[i - 1][1], bx = pts[i][0], by = pts[i][1];
+          const dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy;
+          let t = len2 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0;
+          if (t < 0) t = 0; else if (t > 1) t = 1;
+          const qx = ax + t * dx - px, qy = ay + t * dy - py;
+          if (qx * qx + qy * qy <= r2) return true;
+        }
+      }
+      return false;
+    };
+    const flatten = (d) => {
+      const toks = [], re = /([MmLlHhVvCcSsQqTtAaZz])|(-?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)/g; let m;
+      while ((m = re.exec(d || ''))) toks.push(m[1] || m[2]);
+      const rings = [], lines = [];
+      let i = 0, cx = 0, cy = 0, sx = 0, sy = 0, cmd = '', cur = [], qx = 0, qy = 0, lastC = false, lastQ = false;
+      const take = () => parseFloat(toks[i++]);
+      const more = () => i < toks.length && !/^[A-Za-z]$/.test(toks[i]);
+      const start = (px, py) => { if (cur.length) lines.push(cur); cur = [[px, py]]; cx = px; cy = py; sx = px; sy = py; };
+      const to = (px, py) => { cur.push([px, py]); cx = px; cy = py; };
+      const bez = (x1, y1, x2, y2, px, py) => {
+        const x0 = cx, y0 = cy, n = 8;
+        for (let k = 1; k <= n; k++) {
+          const t = k / n, u = 1 - t;
+          to(u * u * u * x0 + 3 * u * u * t * x1 + 3 * u * t * t * x2 + t * t * t * px, u * u * u * y0 + 3 * u * u * t * y1 + 3 * u * t * t * y2 + t * t * t * py);
+        }
+      };
+      const quad = (x1, y1, px, py) => {
+        const x0 = cx, y0 = cy, n = 6;
+        for (let k = 1; k <= n; k++) {
+          const t = k / n, u = 1 - t;
+          to(u * u * x0 + 2 * u * t * x1 + t * t * px, u * u * y0 + 2 * u * t * y1 + t * t * py);
+        }
+      };
+      const arc = (rx, ry, phi, fa, fs, px, py) => {
+        rx = Math.abs(rx); ry = Math.abs(ry);
+        if (!(rx > 0) || !(ry > 0)) { to(px, py); return; }
+        const rad = phi * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad);
+        const dx = (cx - px) / 2, dy = (cy - py) / 2;
+        const x1p = cos * dx + sin * dy, y1p = -sin * dx + cos * dy;
+        let rx2 = rx * rx, ry2 = ry * ry;
+        const lam = x1p * x1p / rx2 + y1p * y1p / ry2;
+        if (lam > 1) { const s = Math.sqrt(lam); rx *= s; ry *= s; rx2 = rx * rx; ry2 = ry * ry; }
+        const sign = fa === fs ? -1 : 1;
+        const sq = Math.max(0, (rx2 * ry2 - rx2 * y1p * y1p - ry2 * x1p * x1p) / (rx2 * y1p * y1p + ry2 * x1p * x1p || 1));
+        const coef = sign * Math.sqrt(sq);
+        const cxp = coef * rx * y1p / ry, cyp = coef * -ry * x1p / rx;
+        const ocx = cos * cxp - sin * cyp + (cx + px) / 2, ocy = sin * cxp + cos * cyp + (cy + py) / 2;
+        const ang = (ux, uy, vx, vy) => {
+          const d = ux * vx + uy * vy, len = Math.hypot(ux, uy) * Math.hypot(vx, vy) || 1;
+          let a = Math.acos(Math.max(-1, Math.min(1, d / len)));
+          if (ux * vy - uy * vx < 0) a = -a;
+          return a;
+        };
+        const th = ang(1, 0, (x1p - cxp) / rx, (y1p - cyp) / ry);
+        let dth = ang((x1p - cxp) / rx, (y1p - cyp) / ry, (-x1p - cxp) / rx, (-y1p - cyp) / ry);
+        if (!fs && dth > 0) dth -= Math.PI * 2;
+        if (fs && dth < 0) dth += Math.PI * 2;
+        const n = Math.max(6, Math.ceil(Math.abs(dth) / (Math.PI / 8)));
+        for (let k = 1; k <= n; k++) {
+          const t = th + dth * (k / n), c = Math.cos(t) * rx, s = Math.sin(t) * ry;
+          to(cos * c - sin * s + ocx, sin * c + cos * s + ocy);
+        }
+      };
+      while (i < toks.length) {
+        if (/^[A-Za-z]$/.test(toks[i])) cmd = toks[i++];
+        else if (!cmd) break;
+        const rel = cmd === cmd.toLowerCase(), c = cmd.toUpperCase();
+        if (c === 'Z') {
+          if (cur.length) { cur.push([sx, sy]); rings.push(cur.slice(0, -1)); lines.push(cur); cur = []; }
+          cx = sx; cy = sy; lastC = lastQ = false; continue;
+        }
+        if (!more()) break;
+        if (c === 'M') {
+          const px = take(), py = take(); start(rel ? cx + px : px, rel ? cy + py : py); cmd = rel ? 'l' : 'L'; lastC = lastQ = false; continue;
+        }
+        if (c === 'L') { const px = take(), py = take(); to(rel ? cx + px : px, rel ? cy + py : py); lastC = lastQ = false; }
+        else if (c === 'H') { const px = take(); to(rel ? cx + px : px, cy); lastC = lastQ = false; }
+        else if (c === 'V') { const py = take(); to(cx, rel ? cy + py : py); lastC = lastQ = false; }
+        else if (c === 'C') {
+          const x1 = take(), y1 = take(), x2 = take(), y2 = take(), px = take(), py = take();
+          const X1 = rel ? cx + x1 : x1, Y1 = rel ? cy + y1 : y1, X2 = rel ? cx + x2 : x2, Y2 = rel ? cy + y2 : y2, X = rel ? cx + px : px, Y = rel ? cy + py : py;
+          bez(X1, Y1, X2, Y2, X, Y); qx = X2; qy = Y2; lastC = true; lastQ = false;
+        } else if (c === 'Q') {
+          const x1 = take(), y1 = take(), px = take(), py = take();
+          const X1 = rel ? cx + x1 : x1, Y1 = rel ? cy + y1 : y1, X = rel ? cx + px : px, Y = rel ? cy + py : py;
+          quad(X1, Y1, X, Y); qx = X1; qy = Y1; lastQ = true; lastC = false;
+        } else if (c === 'A') {
+          const rx = take(), ry = take(), phi = take(), fa = take(), fs = take(), px = take(), py = take();
+          arc(rx, ry, phi, fa, fs, rel ? cx + px : px, rel ? cy + py : py); lastC = lastQ = false;
+        } else if (c === 'S') {
+          const x2 = take(), y2 = take(), px = take(), py = take();
+          const X1 = lastC ? 2 * cx - qx : cx, Y1 = lastC ? 2 * cy - qy : cy;
+          const X2 = rel ? cx + x2 : x2, Y2 = rel ? cy + y2 : y2, X = rel ? cx + px : px, Y = rel ? cy + py : py;
+          bez(X1, Y1, X2, Y2, X, Y); qx = X2; qy = Y2; lastC = true; lastQ = false;
+        } else if (c === 'T') {
+          const px = take(), py = take();
+          const X1 = lastQ ? 2 * cx - qx : cx, Y1 = lastQ ? 2 * cy - qy : cy, X = rel ? cx + px : px, Y = rel ? cy + py : py;
+          quad(X1, Y1, X, Y); qx = X1; qy = Y1; lastQ = true; lastC = false;
+        } else break;
+      }
+      if (cur.length) lines.push(cur);
+      return { rings: rings, lines: lines };
+    };
+    const tagRe = /<(\/?)([A-Za-z][\w:.-]*)\b([^>]*?)(\/?)>/g;
+    let m, tm = stack[0];
+    while ((m = tagRe.exec(src))) {
+      const closing = m[1] === '/', name = m[2].toLowerCase().replace(/^.*:/, ''), self = m[4] === '/';
+      if (closing) {
+        if (skipTag[name]) skip = Math.max(0, skip - 1);
+        else if ((name === 'g' || name === 'svg' || name === 'a') && stack.length > 1) stack.pop();
+        continue;
+      }
+      if (skipTag[name]) { if (!self) skip++; continue; }
+      if (skip || name === 'text' || name === 'tspan') continue;
+      const attrs = attrsOf(m[3] || '');
+      if (attrs['data-pin'] || attrs['pointer-events'] === 'none' || /pointer-events\s*:\s*none/.test(attrs.style || '')) continue;
+      if (skipClass.test(attrs.class || '') || attrs.opacity === '0' || styleVal(attrs.style, 'opacity') === '0') continue;
+      const localT = parseTransform(attrs.transform);
+      const parent = stack[stack.length - 1];
+      tm = localT ? mul(parent, localT) : parent;
+      if ((name === 'g' || name === 'svg' || name === 'a') && !self) { stack.push(tm); continue; }
+      const q = inv(tm, x, y);
+      if (!q) continue;
+      const px = q[0], py = q[1];
+      const fillAttr = (styleVal(attrs.style, 'fill') || attrs.fill || '').trim().toLowerCase();
+      const filled = fillAttr ? fillAttr !== 'none' : !strokeClass.test(attrs.class || '');
+      const sw = num(attrs['stroke-width'], num(styleVal(attrs.style, 'stroke-width'), 1.2));
+      const rad = Math.min(Math.max((Number.isFinite(sw) ? sw : 1.2) / 2, 0.6), 2.2);
+      if (name === 'rect' || name === 'image') {
+        const rx = num(attrs.x, 0), ry = num(attrs.y, 0), w = num(attrs.width, 0), h = num(attrs.height, 0);
+        if (filled && px >= rx && px <= rx + w && py >= ry && py <= ry + h) return true;
+      } else if (name === 'circle') {
+        const r = num(attrs.r, 0), cx = num(attrs.cx, 0), cy = num(attrs.cy, 0);
+        if (filled && (px - cx) * (px - cx) + (py - cy) * (py - cy) <= r * r) return true;
+      } else if (name === 'ellipse') {
+        const rx = num(attrs.rx, 0), ry = num(attrs.ry, 0), cx = num(attrs.cx, 0), cy = num(attrs.cy, 0);
+        if (filled && rx > 0 && ry > 0 && ((px - cx) * (px - cx)) / (rx * rx) + ((py - cy) * (py - cy)) / (ry * ry) <= 1) return true;
+      } else if (name === 'line') {
+        if (nearStroke([[[num(attrs.x1, 0), num(attrs.y1, 0)], [num(attrs.x2, 0), num(attrs.y2, 0)]]], px, py, rad)) return true;
+      } else if (name === 'polygon' || name === 'polyline') {
+        const pts = (attrs.points || '').trim().split(/[\s,]+/).map(parseFloat).filter((n) => Number.isFinite(n));
+        const ring = [];
+        for (let k = 0; k + 1 < pts.length; k += 2) ring.push([pts[k], pts[k + 1]]);
+        if (name === 'polygon' && filled && inside([ring], px, py)) return true;
+        if (nearStroke([ring], px, py, rad)) return true;
+      } else if (name === 'path') {
+        const flat = flatten(attrs.d || '');
+        const closed = /\b[Zz]\b/.test(attrs.d || '');
+        if (filled && closed && inside(flat.rings, px, py)) return true;
+        if ((!filled || !closed || strokeClass.test(attrs.class || '')) && nearStroke(flat.lines, px, py, rad)) return true;
+        if (filled && closed && nearStroke(flat.lines, px, py, 0.8)) return true;
+      }
+    }
+    return false;
+  }
+
   // Artwork extent in world space. size() and the pin box miss horns, labels and
   // the USB plug, so a fit that only uses those clips the drawing. Null when the
   // picture cannot be read; the caller keeps its own fallback box.
@@ -1135,7 +1618,7 @@
     return { x: x0 - 1, y: y0 - 1, w: x1 - x0 + 2, h: y1 - y0 + 2 };
   }
 
-  const api = { T, fmt, parseVal, parseProp, stampResistance, resistanceWarning, invalidValueWarning, WIRE_R, scopeChannel, bands, espGpio, ESP_TOP, ESP_BOT, INPUT_ONLY, STRAPPING, ADC1, ADC2, rotPt, orientPt, pinWorld, bodySpin, partTransform, canPhysicalFlip, isTwoTerminal, ALLOW_MIRROR_MULTIPIN, NO_FLIP_TIP, seating, placeNewPart, placeDroppedPart, placeOnEmptyStrips, reseat, gfxBox, G, VTH, esc, LEDCOL };
+  const api = { T, fmt, parseVal, parseProp, stampResistance, resistanceWarning, invalidValueWarning, WIRE_R, scopeChannel, bands, espGpio, ESP_TOP, ESP_BOT, INPUT_ONLY, STRAPPING, ADC1, ADC2, rotPt, orientPt, pinWorld, bodySpin, partTransform, canPhysicalFlip, isTwoTerminal, ALLOW_MIRROR_MULTIPIN, NO_FLIP_TIP, seating, placeNewPart, placeDroppedPart, placeOnEmptyStrips, reseat, gfxBox, gfxContains, gfxHit, G, VTH, esc, LEDCOL, bbClassic, bbSpan, bbShown, bbHoleStep, bbNearest, bbStrip, bbCover, bbViewFor, BB_BAND };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.Parts = api;
 })(typeof window !== 'undefined' ? window : globalThis);
