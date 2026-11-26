@@ -187,7 +187,7 @@ body.m .projbanner,body.m #mWireBar{top:36px}body.m .warnbox{top:84px}
 /* HUD glass panels with corner brackets */
 body.m .m-sheet{background:linear-gradient(180deg,rgba(8,14,22,.9),rgba(4,7,12,.94));border:1px solid var(--hudl);border-bottom:0;border-radius:4px 4px 0 0;box-shadow:0 -1px 0 rgba(34,211,238,.25),0 -30px 80px rgba(0,0,0,.6)}
 body.m .m-sheet::before,body.m .m-sheet::after{content:'';position:absolute;top:-1px;width:22px;height:14px;border-top:2px solid var(--acc);pointer-events:none;filter:drop-shadow(0 0 4px var(--acc))}
-body.m .m-sheet::before{left:-1px;border-left:2px solid var(--acc)}body.m .m-sheet::after{right:-1px;border-right:2px solid var(--acc)}
+body.m .m-sheet::before{left:0;border-left:2px solid var(--acc)}body.m .m-sheet::after{right:0;border-right:2px solid var(--acc)}
 body.m .m-sh-t{font-family:var(--mono);font-size:12.5px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;color:var(--acc)}
 body.m .m-sh-t::before{content:'◢ ';opacity:.6}
 body.m .m-grab{background:var(--hud);height:3px;width:44px;box-shadow:0 0 8px var(--acc)}

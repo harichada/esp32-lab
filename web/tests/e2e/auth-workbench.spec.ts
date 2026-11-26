@@ -111,7 +111,7 @@ async function menu(page: Page, name: string) {
 async function openSignIn(page: Page, width: number) {
   if (width < 821) {
     await page.locator('#ui2Phone [data-a="more"]').click();
-    await expect(page.locator('#ui2Pop [role="menuitem"]').first()).toHaveText('Sign in');
+    await expect(page.locator('#ui2Pop [role="menuitem"]').first()).toHaveText('Try new UI (Studio Dark)');
     await page.getByRole('menuitem', { name: 'Sign in', exact: true }).click();
   } else await page.locator('#ui2Sign').click();
   await expect(page.locator('#authDlg')).toBeVisible();
@@ -161,7 +161,8 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     } else await page.locator('#ui2Phone [data-a="more"]').click();
     await expect(page.locator('.ui2-account-summary')).toContainText('learner@example.test');
     await expect(page.locator('.ui2-account-summary')).toContainText('email');
-    await expect(page.locator('#ui2Pop [role="menuitem"]').first()).toContainText('Save current project to account');
+    await expect(page.locator('#ui2Pop [role="menuitem"]').first()).toHaveText('Try new UI (Studio Dark)');
+    await expect(page.getByRole('menuitem', { name: 'Save current project to account' })).toBeVisible();
     await page.screenshot({ path: test.info().outputPath('account-menu-' + viewport.width + '.png'), animations: 'disabled' });
     expect(model.errors).toEqual([]);
   });

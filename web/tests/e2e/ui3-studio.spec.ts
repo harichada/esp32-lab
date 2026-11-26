@@ -278,6 +278,7 @@ test('phone and narrow phone: tabs, sheets, and a visible compile error', async 
   const welcomeBox = await welcomeSwitch.boundingBox();
   expect(welcomeBox!.height).toBeGreaterThanOrEqual(44);
   await inside(page, welcomeSwitch);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth && document.getElementById('ui3home')!.scrollWidth <= document.getElementById('ui3home')!.clientWidth + 1)).toBe(true);
   const tilePaint = await page.locator('.ui3-tile').first().evaluate((el) => {
     const s = getComputedStyle(el);
     return { color: s.color, background: s.backgroundColor };
@@ -343,6 +344,7 @@ test('phone and narrow phone: tabs, sheets, and a visible compile error', async 
   const welcome360Box = await welcome360.boundingBox();
   expect(welcome360Box!.height).toBeGreaterThanOrEqual(44);
   await inside(page, welcome360);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth && document.getElementById('ui3home')!.scrollWidth <= document.getElementById('ui3home')!.clientWidth + 1)).toBe(true);
   await page.screenshot({ path: `${ART}/ui3-phone-welcome-360x740.png`, animations: 'disabled' });
   await page.goto('/?ui=3&ex=blink&resume=0');
   await ready(page);
@@ -779,4 +781,66 @@ test('classic phone More sheet offers Studio Dark at 390 and 360', async ({ page
   await expect.poll(() => page.evaluate(() => location.search)).toContain('ex=blink');
   await expect.poll(() => page.evaluate(() => location.search)).toContain('ui=3');
   expect(errors, errors.join('\n')).toEqual([]);
+});
+
+test.describe('default classic phone can reach Studio Dark', () => {
+  test.use({ hasTouch: true });
+  test('a real tap in ui2Pop switches at 360 and 390', async ({ page }) => {
+    const errors = await install(page);
+    for (const size of [
+      { width: 360, height: 740, opener: '#ui2Phone [data-a="more"]' },
+      { width: 390, height: 844, opener: '#ui2Menu' },
+    ]) {
+      await page.setViewportSize({ width: size.width, height: size.height });
+      await page.goto('/?ui=2&ex=blink&resume=0');
+      await expect.poll(() => page.evaluate(() => document.body.dataset.ui2 === '1' && document.documentElement.getAttribute('data-ui') === '2')).toBe(true);
+      const hit = await page.evaluate(() => {
+        const menu = document.getElementById('mMenu')!.getBoundingClientRect();
+        const el = document.elementFromPoint(menu.x + menu.width / 2, menu.y + menu.height / 2);
+        const owner = el && el.closest ? el.closest('#mMenu') : null;
+        const copy = document.getElementById('ui2Copy')!.getBoundingClientRect();
+        return { id: owner ? 'mMenu' : (el && el.id), overlaps: !(menu.right <= copy.left || copy.right <= menu.left || menu.bottom <= copy.top || copy.bottom <= menu.top) };
+      });
+      expect(hit.id).toBe('mMenu');
+      expect(hit.overlaps).toBe(false);
+      await page.locator(size.opener).tap();
+      const item = page.getByRole('menuitem', { name: 'Try new UI (Studio Dark)' });
+      await expect(item).toBeVisible();
+      const box = await item.boundingBox();
+      expect(box!.height).toBeGreaterThanOrEqual(44);
+      await inside(page, item);
+      const switched = page.waitForURL(/[?&]ui=3/);
+      await item.tap();
+      await switched;
+      await expect.poll(() => page.evaluate(() => document.documentElement.getAttribute('data-ui'))).toBe('3');
+      await expect.poll(() => page.evaluate(() => localStorage.getItem('esp32lab.ui'))).toBe('3');
+      await expect.poll(() => page.evaluate(() => location.search)).toContain('ex=blink');
+    }
+    await page.setViewportSize({ width: 360, height: 740 });
+    await page.goto('/?ui=2&resume=0');
+    await expect.poll(() => page.evaluate(() => document.body.dataset.ui2 === '1')).toBe(true);
+    await page.locator('#ui2Start [data-go="new"]').tap();
+    await expect.poll(() => page.evaluate(() => {
+      const menu = document.getElementById('mMenu')!.getBoundingClientRect();
+      const el = document.elementFromPoint(menu.x + menu.width / 2, menu.y + menu.height / 2);
+      const save = document.getElementById('ui2Save')!.getBoundingClientRect();
+      const overlaps = save.width > 0 && !(menu.right <= save.left || save.right <= menu.left || menu.bottom <= save.top || save.bottom <= menu.top);
+      return !!(el && el.closest && el.closest('#mMenu')) && !overlaps;
+    })).toBe(true);
+    for (const width of [360, 390]) {
+      await page.setViewportSize({ width, height: 740 });
+      await page.goto('/?ui=1&ex=blink&resume=0');
+      await expect.poll(() => page.evaluate(() => document.body.classList.contains('m'))).toBe(true);
+      await page.locator('#mMenu').tap();
+      await expect.poll(() => page.evaluate(() => {
+        const sheet = document.getElementById('mMore')!;
+        return sheet.scrollWidth <= sheet.clientWidth;
+      })).toBe(true);
+      const first = page.locator('#mMore .m-more-b button').first();
+      await expect(first).toHaveText('Try new UI (Studio Dark)');
+      const box = await first.boundingBox();
+      expect(box!.height).toBeGreaterThanOrEqual(44);
+    }
+    expect(errors, errors.join('\n')).toEqual([]);
+  });
 });

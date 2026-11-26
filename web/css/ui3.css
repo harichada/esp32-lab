@@ -364,7 +364,12 @@ html[data-ui="3"] #ui3more{display:none}
     display:flex;width:100%;min-height:44px;align-items:center;justify-content:flex-start;padding:0 10px;border-radius:12px;
     border:0;background:transparent;color:inherit;text-decoration:none
   }
-  html[data-ui="3"] .ui3-bento,html[data-ui="3"] .ui3-gallery{grid-template-columns:1fr}
+  html[data-ui="3"] .ui3-bento,html[data-ui="3"] .ui3-gallery{grid-template-columns:minmax(0,1fr);min-width:0}
+  html[data-ui="3"] .ui3-bento>*,html[data-ui="3"] .ui3-gallery>*{min-width:0;max-width:100%}
+  html[data-ui="3"] #ui3home button,html[data-ui="3"] #ui3home p,html[data-ui="3"] #ui3home h2,
+  html[data-ui="3"] #ui3home li,html[data-ui="3"] #ui3home a,html[data-ui="3"] #ui3home strong{
+    white-space:normal;overflow-wrap:anywhere;max-width:100%
+  }
   html[data-ui="3"] #ui3home{top:56px;padding:12px 12px 24px}
   html[data-ui="3"] #ui3Classic{
     display:flex;width:100%;max-width:100%;box-sizing:border-box;min-height:44px;margin:0 0 12px;

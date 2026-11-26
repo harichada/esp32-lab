@@ -35,6 +35,8 @@ test('the remembered choice is written only by the visible switch', () => {
   assert.match(ui3, /getElementById\('uiSwitch'\)/);
   assert.match(mobile, /id="mTryUi"/);
   assert.match(mobile, /Try new UI \(Studio Dark\)/);
+  const ui2 = fs.readFileSync(path.join(root, 'js', 'ui2.js'), 'utf8');
+  assert.match(ui2, /\['Try new UI \(Studio Dark\)', 'uiSwitch'\]/);
   assert.match(mobile, /getElementById\('uiSwitch'\)/);
   assert.match(css, /\.ui3-tile\{[^}]*background:var\(--l2\)/);
   assert.match(css, /#ui3home\{[^}]*background:var\(--bg\)/);
